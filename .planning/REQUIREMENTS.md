@@ -109,39 +109,39 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CORE-01 | — | Pending |
-| CORE-02 | — | Pending |
-| CORE-03 | — | Pending |
-| CORE-04 | — | Pending |
-| CORE-05 | — | Pending |
-| CORE-06 | — | Pending |
-| CORE-07 | — | Pending |
-| CORE-08 | — | Pending |
-| RNDR-01 | — | Pending |
-| RNDR-02 | — | Pending |
-| RNDR-03 | — | Pending |
-| RNDR-04 | — | Pending |
-| SHEL-01 | — | Pending |
-| SHEL-02 | — | Pending |
-| SHEL-03 | — | Pending |
-| SHEL-04 | — | Pending |
-| BLOK-01 | — | Pending |
-| BLOK-02 | — | Pending |
-| BLOK-03 | — | Pending |
-| STAT-01 | — | Pending |
-| STAT-02 | — | Pending |
-| CONF-01 | — | Pending |
-| CONF-02 | — | Pending |
-| CONF-03 | — | Pending |
-| PERF-01 | — | Pending |
-| PERF-02 | — | Pending |
-| PERF-03 | — | Pending |
+| CORE-01 | Phase 1 | Pending |
+| CORE-02 | Phase 2 | Pending |
+| CORE-03 | Phase 2 | Pending |
+| CORE-04 | Phase 2 | Pending |
+| CORE-05 | Phase 2 | Pending |
+| CORE-06 | Phase 2 | Pending |
+| CORE-07 | Phase 2 | Pending |
+| CORE-08 | Phase 2 | Pending |
+| RNDR-01 | Phase 1 | Pending |
+| RNDR-02 | Phase 2 | Pending |
+| RNDR-03 | Phase 2 | Pending |
+| RNDR-04 | Phase 2 | Pending |
+| SHEL-01 | Phase 3 | Pending |
+| SHEL-02 | Phase 3 | Pending |
+| SHEL-03 | Phase 3 | Pending |
+| SHEL-04 | Phase 3 | Pending |
+| BLOK-01 | Phase 3 | Pending |
+| BLOK-02 | Phase 3 | Pending |
+| BLOK-03 | Phase 3 | Pending |
+| STAT-01 | Phase 3 | Pending |
+| STAT-02 | Phase 3 | Pending |
+| CONF-01 | Phase 4 | Pending |
+| CONF-02 | Phase 4 | Pending |
+| CONF-03 | Phase 4 | Pending |
+| PERF-01 | Phase 4 | Pending |
+| PERF-02 | Phase 4 | Pending |
+| PERF-03 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 27 total
-- Mapped to phases: 0
-- Unmapped: 27 ⚠️
+- Mapped to phases: 27
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-04*
-*Last updated: 2026-03-04 after initial definition*
+*Last updated: 2026-03-04 after roadmap creation*
