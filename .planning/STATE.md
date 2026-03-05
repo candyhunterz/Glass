@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
-status: executing
-stopped_at: Completed 10-01-PLAN.md
-last_updated: "2026-03-05T21:35:03.156Z"
-last_activity: 2026-03-05 -- Completed 10-01-PLAN.md
+status: completed
+stopped_at: Completed 10-02-PLAN.md (Phase 10 complete)
+last_updated: "2026-03-05T22:16:14.448Z"
+last_activity: 2026-03-05 -- Completed 10-02-PLAN.md (Phase 10 complete)
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
-  percent: 10
+  completed_plans: 2
+  percent: 20
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 
 ## Current Position
 
-Phase: 10 (1 of 5 in v1.2)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-03-05 -- Completed 10-01-PLAN.md
+Phase: 10 (1 of 5 in v1.2) -- COMPLETE
+Plan: 2 of 2 in current phase (all complete)
+Status: Phase 10 complete, ready for Phase 11
+Last activity: 2026-03-05 -- Completed 10-02-PLAN.md (Phase 10 complete)
 
-Progress: [#.........] 10% (v1.2)
+Progress: [##........] 20% (v1.2)
 
 ## Performance Metrics
 
@@ -53,6 +53,9 @@ Recent decisions affecting current work:
 - [10-01]: BLAKE3 hex hashes stored as TEXT in SQLite for debuggability
 - [10-01]: NULL blob_hash for files that did not exist before command
 - [10-01]: Symlinks skipped during snapshot file storage
+- [10-02]: Command text extracted after block_manager processes CommandExecuted (output_start_line must be set first)
+- [10-02]: pending_command_text uses Option<String> with take() for single-consumption semantics
+- [10-02]: SnapshotStore opened alongside HistoryDb at window creation with warn-on-failure
 
 ### Pending Todos
 
@@ -60,12 +63,12 @@ None.
 
 ### Blockers/Concerns
 
-- Command text extraction timing: must move from CommandFinished to CommandExecuted -- needs grid state validation
+- ~~Command text extraction timing: must move from CommandFinished to CommandExecuted~~ RESOLVED in 10-02
 - notify crate default buffer size on Windows needs verification during Phase 12 planning
 - PowerShell command parsing needs separate tokenizer (not shlex) -- design deferred to Phase 11
 
 ## Session Continuity
 
-Last session: 2026-03-05T21:35:03.154Z
-Stopped at: Completed 10-01-PLAN.md
+Last session: 2026-03-05T22:16:14.446Z
+Stopped at: Completed 10-02-PLAN.md (Phase 10 complete)
 Resume file: None

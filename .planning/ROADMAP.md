@@ -33,7 +33,7 @@
 
 **Milestone Goal:** Automatic filesystem snapshots per command with one-keystroke revert via Ctrl+Shift+Z.
 
-- [ ] **Phase 10: Content Store + DB Schema** - Content-addressed blob storage and snapshot database foundation
+- [x] **Phase 10: Content Store + DB Schema** - Content-addressed blob storage and snapshot database foundation (completed 2026-03-05)
 - [ ] **Phase 11: Command Parser** - Heuristic command text parsing to identify file targets for pre-exec snapshot
 - [ ] **Phase 12: FS Watcher Engine** - Filesystem monitoring during command execution with ignore patterns
 - [ ] **Phase 13: Integration + Undo Engine** - Main-thread snapshot lifecycle and file restoration with conflict detection
@@ -134,7 +134,7 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 7. CLI Query Interface | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 8. Search Overlay | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 9. MCP Server | v1.1 | 2/2 | Complete | 2026-03-05 |
-| 10. Content Store + DB Schema | 1/2 | In Progress|  | - |
+| 10. Content Store + DB Schema | 2/2 | Complete   | 2026-03-05 | - |
 | 11. Command Parser | v1.2 | 0/? | Not started | - |
 | 12. FS Watcher Engine | v1.2 | 0/? | Not started | - |
 | 13. Integration + Undo Engine | v1.2 | 0/? | Not started | - |
