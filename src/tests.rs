@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod subcommand_tests {
     use clap::Parser;
-    use crate::{Cli, Commands, McpAction};
+    use crate::{Cli, Commands, McpAction, HistoryAction, HistoryFilters};
 
     #[test]
     fn test_no_subcommand_is_none() {
@@ -12,9 +12,115 @@ mod subcommand_tests {
     }
 
     #[test]
-    fn test_history_subcommand() {
+    fn test_history_subcommand_defaults_to_none_action() {
         let cli = Cli::try_parse_from(["glass", "history"]).unwrap();
-        assert_eq!(cli.command, Some(Commands::History));
+        assert_eq!(
+            cli.command,
+            Some(Commands::History { action: None })
+        );
+    }
+
+    #[test]
+    fn test_history_list_subcommand() {
+        let cli = Cli::try_parse_from(["glass", "history", "list"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Commands::History {
+                action: Some(HistoryAction::List {
+                    filters: HistoryFilters {
+                        limit: 25,
+                        ..HistoryFilters::default()
+                    },
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_history_search_subcommand() {
+        let cli = Cli::try_parse_from(["glass", "history", "search", "cargo"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Commands::History {
+                action: Some(HistoryAction::Search {
+                    query: "cargo".to_string(),
+                    filters: HistoryFilters {
+                        limit: 25,
+                        ..HistoryFilters::default()
+                    },
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_history_list_with_all_filters() {
+        let cli = Cli::try_parse_from([
+            "glass", "history", "list",
+            "--exit", "1",
+            "--after", "1h",
+            "--cwd", "/project",
+            "-n", "10",
+        ]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Commands::History {
+                action: Some(HistoryAction::List {
+                    filters: HistoryFilters {
+                        exit: Some(1),
+                        after: Some("1h".to_string()),
+                        before: None,
+                        cwd: Some("/project".to_string()),
+                        limit: 10,
+                    },
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_history_search_with_limit() {
+        let cli = Cli::try_parse_from([
+            "glass", "history", "search", "deploy",
+            "--limit", "5",
+        ]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Commands::History {
+                action: Some(HistoryAction::Search {
+                    query: "deploy".to_string(),
+                    filters: HistoryFilters {
+                        exit: None,
+                        after: None,
+                        before: None,
+                        cwd: None,
+                        limit: 5,
+                    },
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_history_list_with_before_filter() {
+        let cli = Cli::try_parse_from([
+            "glass", "history", "list",
+            "--before", "2024-01-15",
+        ]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Commands::History {
+                action: Some(HistoryAction::List {
+                    filters: HistoryFilters {
+                        exit: None,
+                        after: None,
+                        before: Some("2024-01-15".to_string()),
+                        cwd: None,
+                        limit: 25,
+                    },
+                }),
+            })
+        );
     }
 
     #[test]

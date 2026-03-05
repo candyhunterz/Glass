@@ -1,3 +1,5 @@
+mod history;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,12 +37,50 @@ struct Cli {
 #[derive(Subcommand, Debug, PartialEq)]
 enum Commands {
     /// Query command history
-    History,
+    History {
+        #[command(subcommand)]
+        action: Option<HistoryAction>,
+    },
     /// MCP server commands
     Mcp {
         #[command(subcommand)]
         action: McpAction,
     },
+}
+
+#[derive(Subcommand, Debug, PartialEq)]
+enum HistoryAction {
+    /// Search command history by text
+    Search {
+        /// Search term (FTS5 query)
+        query: String,
+        #[command(flatten)]
+        filters: HistoryFilters,
+    },
+    /// List recent commands
+    List {
+        #[command(flatten)]
+        filters: HistoryFilters,
+    },
+}
+
+#[derive(clap::Args, Debug, PartialEq, Default)]
+struct HistoryFilters {
+    /// Filter by exit code
+    #[arg(long)]
+    exit: Option<i32>,
+    /// Only show commands after this time (e.g. 1h, 2d, 2024-01-15)
+    #[arg(long)]
+    after: Option<String>,
+    /// Only show commands before this time (e.g. 1h, 2d, 2024-01-15)
+    #[arg(long)]
+    before: Option<String>,
+    /// Filter by working directory prefix
+    #[arg(long)]
+    cwd: Option<String>,
+    /// Maximum number of results
+    #[arg(long, short = 'n', default_value_t = 25)]
+    limit: usize,
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -650,9 +690,8 @@ fn main() {
                 .run_app(&mut processor)
                 .expect("Event loop exited with error");
         }
-        Some(Commands::History) => {
-            eprintln!("glass history: not yet implemented (Phase 7)");
-            std::process::exit(1);
+        Some(Commands::History { action }) => {
+            history::run_history(action);
         }
         Some(Commands::Mcp { action: McpAction::Serve }) => {
             eprintln!("glass mcp serve: not yet implemented (Phase 9)");
