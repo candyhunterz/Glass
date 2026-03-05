@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod db;
+pub mod output;
 pub mod retention;
 pub mod search;
 
