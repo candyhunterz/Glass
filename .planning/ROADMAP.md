@@ -12,7 +12,7 @@ Glass is built in four phases that follow a strict dependency chain. Phase 1 est
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Scaffold** - Cargo workspace, wgpu GPU surface, PTY spawn with keyboard round-trip, and all structural pitfalls addressed
+- [x] **Phase 1: Scaffold** - Cargo workspace, wgpu GPU surface, PTY spawn with keyboard round-trip, and all structural pitfalls addressed (completed 2026-03-05)
 - [ ] **Phase 2: Terminal Core** - Full VTE rendering pipeline producing a functional terminal (colors, keyboard, scrollback, copy/paste, resize, UTF-8)
 - [ ] **Phase 3: Shell Integration and Block UI** - OSC 133/7 parsing, PowerShell and bash integration scripts, block-based command output, status bar
 - [ ] **Phase 4: Configuration and Performance** - TOML config file, font/shell override, cold start and latency targets confirmed
@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Glass launches and displays a wgpu-rendered window with DX12 backend; window can be dragged and resized without crash or visible flicker
   3. PowerShell spawns via ConPTY and the user can type a command and see output — keyboard input reaches the PTY stdin
   4. Escape sequence fixture tests pass (ConPTY ENABLE_VIRTUAL_TERMINAL_INPUT verified, UTF-8 code page 65001 set)
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 01-01-PLAN.md — Cargo workspace with all 7 crates, glass_core types, and compiling root binary
@@ -92,7 +92,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scaffold | 2/3 | In Progress|  |
+| 1. Scaffold | 3/3 | Complete   | 2026-03-05 |
 | 2. Terminal Core | 0/3 | Not started | - |
 | 3. Shell Integration and Block UI | 0/4 | Not started | - |
 | 4. Configuration and Performance | 0/2 | Not started | - |

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-scaffold 01-02-PLAN.md
-last_updated: "2026-03-05T01:40:38.689Z"
-last_activity: "2026-03-05 — Plan 01-01 complete: Cargo workspace scaffold with 7 crates"
+stopped_at: Completed 01-scaffold 01-03-PLAN.md
+last_updated: "2026-03-05T01:59:49.939Z"
+last_activity: "2026-03-05 — Plan 01-02 complete: wgpu DX12 GPU surface with winit event loop, human-verified"
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
+  completed_plans: 3
   percent: 67
 ---
 
@@ -51,6 +51,7 @@ Progress: [███████░░░] 67%
 
 *Updated after each plan completion*
 | Phase 01-scaffold P02 | 10 | 2 tasks | 5 files |
+| Phase 01-scaffold P03 | 45 | 4 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,9 @@ Recent decisions affecting current work:
 - [01-01] Rust 1.93.1 stable MSVC installed via rustup (was missing from system)
 - [Phase 01-scaffold]: winit 0.30.13 uses resumed() not can_create_surfaces() — can_create_surfaces does not exist in installed crate despite research documentation; confirmed against installed source
 - [Phase 01-scaffold]: wgpu 28.0.0 API fixes: request_device takes 1 arg; RenderPassColorAttachment needs depth_slice; RenderPassDescriptor needs multiview_mask
+- [Phase 01-scaffold]: ASCII-only keyboard forwarding in scaffold (event.text); full escape sequence encoding (Ctrl/Alt/arrows) deferred to Phase 2 Plan 03
+- [Phase 01-scaffold]: PTY reader thread uses std::thread via event_loop.spawn() NOT tokio::spawn — blocking PTY I/O must not block async executor
+- [Phase 01-scaffold]: EventProxy derives Clone to satisfy alacritty_terminal consuming listener by value in both Term::new() and PtyEventLoop::new()
 
 ### Pending Todos
 
@@ -81,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T01:40:26.401Z
-Stopped at: Completed 01-scaffold 01-02-PLAN.md
+Last session: 2026-03-05T01:59:49.937Z
+Stopped at: Completed 01-scaffold 01-03-PLAN.md
 Resume file: None

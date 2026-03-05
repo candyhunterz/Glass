@@ -9,7 +9,7 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 ### Terminal Core
 
-- [ ] **CORE-01**: User can launch Glass and get a working PowerShell prompt via ConPTY
+- [x] **CORE-01**: User can launch Glass and get a working PowerShell prompt via ConPTY
 - [ ] **CORE-02**: User can run any CLI tool with correct VT/ANSI escape sequence rendering (colors, formatting, cursor movement)
 - [ ] **CORE-03**: User can use keyboard with Ctrl, Alt, Shift modifiers correctly (vim, fzf, tmux work)
 - [ ] **CORE-04**: User can paste multi-line text safely via bracketed paste mode (no accidental execution)
