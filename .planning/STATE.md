@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-scaffold 01-03-PLAN.md
-last_updated: "2026-03-05T02:05:15.426Z"
-last_activity: "2026-03-05 — Plan 01-02 complete: wgpu DX12 GPU surface with winit event loop, human-verified"
+stopped_at: Completed 02-terminal-core 02-01-PLAN.md
+last_updated: "2026-03-05T04:17:44Z"
+last_activity: "2026-03-05 — Plan 02-01 complete: GridSnapshot with 256-color resolution and GlyphCache glyphon init"
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 6
+  completed_plans: 4
   percent: 67
 ---
 
@@ -21,37 +21,39 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything — surfacing intelligence only when you need it.
-**Current focus:** Phase 1 — Scaffold
+**Current focus:** Phase 2 — Terminal Core
 
 ## Current Position
 
-Phase: 1 of 4 (Scaffold)
-Plan: 2 of 3 in current phase (01-02 complete, ready for 01-03)
+Phase: 2 of 4 (Terminal Core)
+Plan: 1 of 3 in current phase (02-01 complete, ready for 02-02)
 Status: In progress
-Last activity: 2026-03-05 — Plan 01-02 complete: wgpu DX12 GPU surface with winit event loop, human-verified
+Last activity: 2026-03-05 — Plan 02-01 complete: GridSnapshot with 256-color resolution and GlyphCache glyphon init
 
 Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 5 min
-- Total execution time: 0.08 hours
+- Total plans completed: 4
+- Average duration: 16 min
+- Total execution time: 1.08 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-scaffold | 1 | 5 min | 5 min |
+| 01-scaffold | 3 | 60 min | 20 min |
+| 02-terminal-core | 1 | 5 min | 5 min |
 
 **Recent Trend:**
-- Last 5 plans: 5 min
-- Trend: baseline
+- Last 5 plans: 5, 45, 10, 5 min
+- Trend: stable
 
 *Updated after each plan completion*
 | Phase 01-scaffold P02 | 10 | 2 tasks | 5 files |
 | Phase 01-scaffold P03 | 45 | 4 tasks | 7 files |
+| Phase 02-terminal-core P01 | 5 | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -73,6 +75,9 @@ Recent decisions affecting current work:
 - [Phase 01-scaffold]: ASCII-only keyboard forwarding in scaffold (event.text); full escape sequence encoding (Ctrl/Alt/arrows) deferred to Phase 2 Plan 03
 - [Phase 01-scaffold]: PTY reader thread uses std::thread via event_loop.spawn() NOT tokio::spawn — blocking PTY I/O must not block async executor
 - [Phase 01-scaffold]: EventProxy derives Clone to satisfy alacritty_terminal consuming listener by value in both Term::new() and PtyEventLoop::new()
+- [02-01] RenderableCursor does not implement Debug; GridSnapshot omits derive(Debug)
+- [02-01] xterm default ANSI palette used for 256-color fallback
+- [02-01] DefaultColors fg=204,204,204 bg=26,26,26 matching GlassRenderer clear color
 
 ### Pending Todos
 
@@ -85,6 +90,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T01:59:49.937Z
-Stopped at: Completed 01-scaffold 01-03-PLAN.md
+Last session: 2026-03-05T04:17:44Z
+Stopped at: Completed 02-terminal-core 02-01-PLAN.md
 Resume file: None
