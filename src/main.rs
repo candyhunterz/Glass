@@ -4,16 +4,17 @@ use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::event_loop::{EventLoopSender, Msg as PtyMsg};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::Term;
+use alacritty_terminal::term::{Term, TermMode};
 use glass_core::config::GlassConfig;
 use glass_core::event::AppEvent;
 use glass_renderer::{FrameRenderer, GlassRenderer};
-use glass_terminal::{DefaultColors, EventProxy, snapshot_term};
+use glass_terminal::{DefaultColors, EventProxy, encode_key, snapshot_term};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// Simple grid dimensions for Term::resize().
@@ -56,6 +57,8 @@ struct Processor {
     windows: HashMap<WindowId, WindowContext>,
     /// Pre-created proxy for sending AppEvent from PTY threads to the winit event loop.
     proxy: EventLoopProxy<AppEvent>,
+    /// Current keyboard modifier state, updated by ModifiersChanged events.
+    modifiers: ModifiersState,
 }
 
 impl ApplicationHandler<AppEvent> for Processor {
@@ -203,19 +206,75 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Request a redraw after resize so the surface is repainted immediately
                 ctx.window.request_redraw();
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
-                // Forward keyboard text input to the PTY on key press.
-                // This is a minimal handler for ASCII text — Phase 2 Plan 03 adds full
-                // escape sequence encoding for Ctrl, Alt, arrows, function keys, etc.
                 if event.state == ElementState::Pressed {
-                    if let Some(text) = event.text {
-                        let bytes: Cow<'static, [u8]> =
-                            Cow::Owned(text.as_bytes().to_vec());
-                        if !bytes.is_empty() {
-                            let _ = ctx.pty_sender.send(PtyMsg::Input(bytes));
-                            tracing::trace!("Key input: {:?}", text);
+                    let modifiers = self.modifiers;
+                    let mode = *ctx.term.lock().mode();
+
+                    // Check for Glass-handled keys first
+                    if modifiers.control_key() && modifiers.shift_key() {
+                        match &event.logical_key {
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("c") =>
+                            {
+                                clipboard_copy(&ctx.term);
+                                return;
+                            }
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("v") =>
+                            {
+                                clipboard_paste(&ctx.pty_sender, mode);
+                                return;
+                            }
+                            _ => {}
                         }
                     }
+
+                    // Shift+PageUp/Down: scrollback
+                    if modifiers.shift_key()
+                        && !modifiers.control_key()
+                        && !modifiers.alt_key()
+                    {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::PageUp) => {
+                                ctx.term.lock().scroll_display(Scroll::PageUp);
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::PageDown) => {
+                                ctx.term.lock().scroll_display(Scroll::PageDown);
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Forward to PTY via encoder
+                    if let Some(bytes) =
+                        encode_key(&event.logical_key, modifiers, mode)
+                    {
+                        let _ = ctx
+                            .pty_sender
+                            .send(PtyMsg::Input(Cow::Owned(bytes)));
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y as i32,
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        let (_, cell_h) = ctx.frame_renderer.cell_size();
+                        (pos.y / cell_h as f64) as i32
+                    }
+                };
+                if lines != 0 {
+                    // Negative delta = scroll down (towards bottom), positive = scroll up
+                    ctx.term.lock().scroll_display(Scroll::Delta(-lines));
+                    ctx.window.request_redraw();
                 }
             }
             _ => {}
@@ -249,6 +308,35 @@ impl ApplicationHandler<AppEvent> for Processor {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
 }
 
+/// Copy the current terminal selection to the system clipboard.
+fn clipboard_copy(term: &Arc<FairMutex<Term<EventProxy>>>) {
+    let term = term.lock();
+    if let Some(selection) = term.selection_to_string() {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(selection);
+        }
+    }
+}
+
+/// Paste text from the system clipboard into the PTY.
+/// Wraps with bracketed paste sequences when BRACKETED_PASTE mode is active.
+fn clipboard_paste(sender: &EventLoopSender, mode: TermMode) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if let Ok(text) = clipboard.get_text() {
+            let bytes = if mode.contains(TermMode::BRACKETED_PASTE) {
+                let mut buf = Vec::new();
+                buf.extend_from_slice(b"\x1b[200~");
+                buf.extend_from_slice(text.as_bytes());
+                buf.extend_from_slice(b"\x1b[201~");
+                buf
+            } else {
+                text.into_bytes()
+            };
+            let _ = sender.send(PtyMsg::Input(Cow::Owned(bytes)));
+        }
+    }
+}
+
 fn main() {
     // FIRST: set UTF-8 console code page on Windows before any PTY creation (Pitfall 5)
     #[cfg(target_os = "windows")]
@@ -276,6 +364,7 @@ fn main() {
     let mut processor = Processor {
         windows: HashMap::new(),
         proxy,
+        modifiers: ModifiersState::empty(),
     };
 
     event_loop

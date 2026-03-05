@@ -54,3 +54,4 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 windows-sys.workspace = true
 alacritty_terminal.workspace = true
+arboard.workspace = true
