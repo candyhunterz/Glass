@@ -12,7 +12,16 @@ use crate::block_renderer::BlockRenderer;
 use crate::glyph_cache::GlyphCache;
 use crate::grid_renderer::GridRenderer;
 use crate::rect_renderer::RectRenderer;
+use crate::search_overlay_renderer::SearchOverlayRenderer;
 use crate::status_bar::StatusBarRenderer;
+
+/// Display data for the search overlay, extracted from SearchOverlay state.
+/// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
+pub struct SearchOverlayRenderData {
+    pub query: String,
+    pub results: Vec<(String, Option<i32>, String, String)>, // (command, exit_code, timestamp, preview)
+    pub selected: usize,
+}
 
 /// Orchestrates the complete GPU rendering pipeline for terminal content.
 ///
@@ -23,6 +32,7 @@ pub struct FrameRenderer {
     grid_renderer: GridRenderer,
     rect_renderer: RectRenderer,
     block_renderer: BlockRenderer,
+    search_overlay_renderer: SearchOverlayRenderer,
     status_bar: StatusBarRenderer,
     default_bg: Rgb,
     /// Reusable buffer storage to avoid per-frame allocation
@@ -67,6 +77,7 @@ impl FrameRenderer {
         let rect_renderer = RectRenderer::new(device, surface_format);
         let (cell_width, cell_height) = grid_renderer.cell_size();
         let block_renderer = BlockRenderer::new(cell_width, cell_height);
+        let search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
         let status_bar = StatusBarRenderer::new(cell_height);
         let default_bg = Rgb { r: 26, g: 26, b: 26 };
 
@@ -75,6 +86,7 @@ impl FrameRenderer {
             grid_renderer,
             rect_renderer,
             block_renderer,
+            search_overlay_renderer,
             status_bar,
             default_bg,
             text_buffers: Vec::new(),
@@ -103,6 +115,7 @@ impl FrameRenderer {
         snapshot: &GridSnapshot,
         blocks: &[&Block],
         status: Option<&StatusState>,
+        search_overlay: Option<&SearchOverlayRenderData>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -127,6 +140,17 @@ impl FrameRenderer {
         if status.is_some() {
             let status_rects = self.status_bar.build_status_rects(w, h);
             rect_instances.extend(status_rects);
+        }
+
+        // 1d. Append search overlay rects (backdrop, input box, result rows)
+        if let Some(overlay) = search_overlay {
+            let overlay_rects = self.search_overlay_renderer.build_overlay_rects(
+                overlay.results.len(),
+                overlay.selected,
+                w,
+                h,
+            );
+            rect_instances.extend(overlay_rects);
         }
 
         let rect_count = rect_instances.len() as u32;
@@ -278,6 +302,41 @@ impl FrameRenderer {
                         status_label.right_color.b,
                         255,
                     ),
+                });
+            }
+        }
+
+        // Search overlay text buffers
+        if let Some(overlay) = search_overlay {
+            let overlay_labels = self.search_overlay_renderer.build_overlay_text(
+                &overlay.query,
+                &overlay.results,
+                overlay.selected,
+                w,
+                h,
+            );
+            for label in &overlay_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
                 });
             }
         }

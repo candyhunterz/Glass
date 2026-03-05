@@ -359,6 +359,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     &snapshot,
                     &visible_blocks,
                     Some(&ctx.status),
+                    None, // search overlay render data (wired in Task 2)
                 );
 
                 frame.present();
