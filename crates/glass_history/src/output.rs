@@ -5,7 +5,8 @@
 
 /// Strip all ANSI escape sequences from raw bytes, returning a UTF-8 string.
 pub fn strip_ansi(input: &[u8]) -> String {
-    todo!("implement strip_ansi")
+    let stripped = strip_ansi_escapes::strip(input);
+    String::from_utf8_lossy(&stripped).into_owned()
 }
 
 /// Detect whether the given bytes are likely binary content.
@@ -13,7 +14,15 @@ pub fn strip_ansi(input: &[u8]) -> String {
 /// Samples the first 8KB and returns true if more than 30% of bytes
 /// are non-printable (excluding `\n`, `\r`, `\t`).
 pub fn is_binary(data: &[u8]) -> bool {
-    todo!("implement is_binary")
+    if data.is_empty() {
+        return false;
+    }
+    let sample = &data[..data.len().min(8192)];
+    let non_printable = sample
+        .iter()
+        .filter(|&&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+        .count();
+    non_printable as f64 / sample.len() as f64 > 0.30
 }
 
 /// Truncate text using head+tail split if it exceeds `max_bytes`.
@@ -22,7 +31,20 @@ pub fn is_binary(data: &[u8]) -> bool {
 /// `[...truncated N bytes...]` marker in between. Respects UTF-8
 /// character boundaries.
 pub fn truncate_head_tail(text: &str, max_bytes: usize) -> String {
-    todo!("implement truncate_head_tail")
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let half = max_bytes / 2;
+    let skipped = text.len() - max_bytes;
+    // Find safe UTF-8 boundaries
+    let head_end = text.floor_char_boundary(half);
+    let tail_start = text.ceil_char_boundary(text.len() - half);
+    format!(
+        "{}\n[...truncated {} bytes...]\n{}",
+        &text[..head_end],
+        skipped,
+        &text[tail_start..],
+    )
 }
 
 /// Process raw command output bytes into storable text.
@@ -34,7 +56,26 @@ pub fn truncate_head_tail(text: &str, max_bytes: usize) -> String {
 /// 4. Convert to UTF-8 (lossy)
 /// 5. Truncate if exceeds `max_kb` kilobytes
 pub fn process_output(raw: Option<Vec<u8>>, max_kb: u32) -> Option<String> {
-    todo!("implement process_output")
+    let raw = raw?;
+
+    // Check for binary content before any processing
+    if is_binary(&raw) {
+        return Some(format!("[binary output: {} bytes]", raw.len()));
+    }
+
+    // Strip ANSI escape sequences
+    let stripped = strip_ansi_escapes::strip(&raw);
+
+    // Convert to UTF-8 (lossy)
+    let text = String::from_utf8_lossy(&stripped).into_owned();
+
+    // Truncate if exceeds max size
+    let max_bytes = (max_kb as usize) * 1024;
+    if text.len() > max_bytes {
+        Some(truncate_head_tail(&text, max_bytes))
+    } else {
+        Some(text)
+    }
 }
 
 #[cfg(test)]
