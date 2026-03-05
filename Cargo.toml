@@ -28,6 +28,9 @@ glyphon       = "0.10.0"
 # Clipboard
 arboard       = "3"
 
+# URL parsing (OSC 7 file:// paths)
+url           = "2"
+
 # Stub crate deps (future phases)
 rusqlite      = { version = "0.38.0", features = ["bundled"] }
 
