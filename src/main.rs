@@ -349,6 +349,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let view = frame.texture.create_view(&Default::default());
                 let sc = ctx.renderer.surface_config();
 
+                // Extract overlay render data (avoids borrow conflict with ctx fields)
+                let search_overlay_data = ctx.search_overlay.as_ref().map(|overlay| {
+                    let data = overlay.extract_display_data();
+                    glass_renderer::frame::SearchOverlayRenderData {
+                        query: data.query,
+                        results: data.results.iter().map(|r| {
+                            (r.command.clone(), r.exit_code, r.timestamp.clone(), r.output_preview.clone())
+                        }).collect(),
+                        selected: data.selected,
+                    }
+                });
+
                 // Draw frame using FrameRenderer with block decorations and status bar
                 ctx.frame_renderer.draw_frame(
                     ctx.renderer.device(),
@@ -359,7 +371,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     &snapshot,
                     &visible_blocks,
                     Some(&ctx.status),
-                    None, // search overlay render data (wired in Task 2)
+                    search_overlay_data.as_ref(),
                 );
 
                 frame.present();
@@ -434,7 +446,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Named(NamedKey::Enter) => {
-                                // TODO: scroll-to-block navigation (Plan 02)
+                                // Scroll-to-block: find the block matching the selected result
+                                // and scroll the terminal to show it.
+                                if overlay.selected < overlay.results.len() {
+                                    let all_blocks = ctx.block_manager.blocks();
+                                    if !all_blocks.is_empty() {
+                                        // Results are newest-first, blocks are oldest-first.
+                                        // Map selected index to block from the end.
+                                        let block_idx = all_blocks.len().saturating_sub(overlay.selected + 1);
+                                        if block_idx < all_blocks.len() {
+                                            let target_line = all_blocks[block_idx].prompt_start_line;
+                                            let mut term = ctx.term.lock();
+                                            let history_size = term.grid().history_size();
+                                            let current_offset = term.grid().display_offset();
+                                            // display_offset = distance from bottom of history
+                                            // target display_offset to show target_line near top of viewport
+                                            let target_offset = history_size.saturating_sub(target_line);
+                                            let delta = target_offset as i32 - current_offset as i32;
+                                            if delta != 0 {
+                                                term.scroll_display(Scroll::Delta(delta));
+                                            }
+                                        }
+                                    }
+                                }
                                 ctx.search_overlay = None;
                                 ctx.window.request_redraw();
                                 return;
