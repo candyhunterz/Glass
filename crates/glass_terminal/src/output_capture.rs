@@ -5,35 +5,111 @@
 //! Alternate-screen applications (vim, less, top) are detected via raw byte
 //! scanning and their output is excluded from capture.
 
+/// Alt-screen enter sequence: `ESC[?1049h`
+const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
+/// Alt-screen leave sequence: `ESC[?1049l`
+const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
+
 /// Buffer that accumulates PTY output bytes during command execution.
-pub struct OutputBuffer;
+///
+/// Lives entirely in the PTY reader thread -- no mutex needed.
+/// Accumulates bytes between `CommandExecuted` and `CommandFinished`,
+/// respecting a configurable maximum size and skipping alt-screen content.
+pub struct OutputBuffer {
+    buffer: Vec<u8>,
+    capturing: bool,
+    max_bytes: usize,
+    total_seen: usize,
+    alt_screen: bool,
+    /// Tracks whether alt-screen was entered at any point during this capture.
+    /// Once set, finish() returns None even if alt-screen was later exited.
+    alt_screen_seen: bool,
+}
 
 impl OutputBuffer {
     /// Create a new buffer with the given maximum byte capacity.
-    pub fn new(_max_bytes: usize) -> Self {
-        Self
+    ///
+    /// Pre-allocates `min(max_bytes, 65536)` to avoid massive allocs for high limits.
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(max_bytes.min(65536)),
+            capturing: false,
+            max_bytes,
+            total_seen: 0,
+            alt_screen: false,
+            alt_screen_seen: false,
+        }
     }
 
-    /// Begin capturing output. Clears any previous data.
-    pub fn start_capture(&mut self) {}
+    /// Begin capturing output. Clears any previous data and resets all state.
+    pub fn start_capture(&mut self) {
+        self.buffer.clear();
+        self.capturing = true;
+        self.total_seen = 0;
+        self.alt_screen = false;
+        self.alt_screen_seen = false;
+    }
 
     /// Set alt-screen state directly.
-    pub fn set_alt_screen(&mut self, _active: bool) {}
+    pub fn set_alt_screen(&mut self, active: bool) {
+        self.alt_screen = active;
+        if active {
+            self.alt_screen_seen = true;
+        }
+    }
 
     /// Scan raw bytes for alt-screen enter/leave escape sequences.
-    pub fn check_alt_screen(&mut self, _data: &[u8]) {}
+    ///
+    /// Detects `\x1b[?1049h` (enter) and `\x1b[?1049l` (leave) in the byte stream.
+    /// These sequences are rarely split across read buffers.
+    pub fn check_alt_screen(&mut self, data: &[u8]) {
+        if data.len() >= ALT_SCREEN_ENTER.len() {
+            for window in data.windows(ALT_SCREEN_ENTER.len()) {
+                if window == ALT_SCREEN_ENTER {
+                    self.alt_screen = true;
+                    self.alt_screen_seen = true;
+                } else if window == ALT_SCREEN_LEAVE {
+                    self.alt_screen = false;
+                }
+            }
+        }
+    }
 
     /// Append bytes to the buffer if currently capturing.
-    pub fn append(&mut self, _data: &[u8]) {}
+    ///
+    /// No-op when not capturing, when alt-screen is active, or when buffer is full.
+    /// Always tracks `total_seen` for bytes that arrive while capturing.
+    pub fn append(&mut self, data: &[u8]) {
+        if !self.capturing || self.alt_screen {
+            return;
+        }
+        self.total_seen += data.len();
+        let remaining = self.max_bytes.saturating_sub(self.buffer.len());
+        if remaining > 0 {
+            let take = data.len().min(remaining);
+            self.buffer.extend_from_slice(&data[..take]);
+        }
+    }
 
-    /// Finish capture and return accumulated bytes (or None).
+    /// Finish capture and return accumulated bytes.
+    ///
+    /// Returns `None` if not capturing or if alt-screen was entered during capture.
+    /// Returns `Some(bytes)` otherwise (may be empty if command produced no output).
+    /// Resets capturing state to false.
     pub fn finish(&mut self) -> Option<Vec<u8>> {
-        None
+        if !self.capturing {
+            return None;
+        }
+        self.capturing = false;
+        if self.alt_screen_seen {
+            return None;
+        }
+        Some(std::mem::take(&mut self.buffer))
     }
 
     /// Total bytes seen during this capture session (including those not buffered).
     pub fn total_seen(&self) -> usize {
-        0
+        self.total_seen
     }
 }
 
@@ -164,7 +240,10 @@ mod tests {
         buf.append(b"XXXXX"); // 5 more, all should be dropped
         let result = buf.finish().unwrap();
         assert_eq!(result, b"1234567890");
-        assert_eq!(buf.total_seen(), 0); // total_seen resets after finish via start_capture
+        assert_eq!(buf.total_seen(), 15); // total_seen retains value after finish
+        // start_capture resets total_seen
+        buf.start_capture();
+        assert_eq!(buf.total_seen(), 0);
     }
 
     #[test]
