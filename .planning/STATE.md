@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
-status: in-progress
-stopped_at: Completed 09-01-PLAN.md
-last_updated: "2026-03-05T20:20:00.000Z"
-last_activity: 2026-03-05 -- Completed 09-01 MCP server core implementation
+status: completed
+stopped_at: Completed 09-02-PLAN.md
+last_updated: "2026-03-05T20:21:19.359Z"
+last_activity: 2026-03-05 -- Completed 09-02 MCP integration tests
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 12
-  completed_plans: 11
-  percent: 92
+  completed_plans: 12
+  percent: 100
 ---
 
 # Project State
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 Milestone: v1.1 Structured Scrollback + MCP Server
 Phase: 9 of 9 (MCP Server)
-Plan: 1 of 2 in current phase
-Status: Phase 09 in progress
-Last activity: 2026-03-05 -- Completed 09-01 MCP server core implementation
+Plan: 2 of 2 in current phase (complete)
+Status: Phase 09 complete -- all plans finished
+Last activity: 2026-03-05 -- Completed 09-02 MCP integration tests
 
-Progress: [#########-] 92% (v1.1: 4/5 phases, 1/2 plans in phase 9)
+Progress: [██████████] 100% (v1.1: 5/5 phases, 2/2 plans in phase 9)
 
 ## Performance Metrics
 
@@ -82,6 +82,8 @@ Recent decisions affecting v1.1:
 - [Phase 09]: Per-branch tracing init in main.rs to prevent double-init panic (MCP needs stderr writer)
 - [Phase 09]: HistoryEntry response type separate from CommandRecord for controlled serialization
 - [Phase 09]: internal_err() helper for concise McpError conversion in tool handlers
+- [Phase 09]: Newline-delimited JSON framing for MCP stdio transport (rmcp JsonRpcMessageCodec splits on \n)
+- [Phase 09]: McpTestClient pattern: reader thread + mpsc channel for non-blocking stdout with timeout
 
 ### Pending Todos
 
@@ -93,6 +95,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T20:20:00Z
-Stopped at: Completed 09-01-PLAN.md
+Last session: 2026-03-05T20:21:19.357Z
+Stopped at: Completed 09-02-PLAN.md
 Resume file: None
