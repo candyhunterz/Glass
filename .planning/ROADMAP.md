@@ -28,12 +28,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Glass launches and displays a wgpu-rendered window with DX12 backend; window can be dragged and resized without crash or visible flicker
   3. PowerShell spawns via ConPTY and the user can type a command and see output — keyboard input reaches the PTY stdin
   4. Escape sequence fixture tests pass (ConPTY ENABLE_VIRTUAL_TERMINAL_INPUT verified, UTF-8 code page 65001 set)
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 01-01: Cargo workspace setup with all crates and stub structure
-- [ ] 01-02: winit window with wgpu DX12 surface (clear-to-color, resize-stable)
-- [ ] 01-03: ConPTY PTY spawn with dedicated reader thread and keyboard round-trip
+- [ ] 01-01-PLAN.md — Cargo workspace with all 7 crates, glass_core types, and compiling root binary
+- [ ] 01-02-PLAN.md — winit window with wgpu DX12 GPU surface (clear-to-color, resize-stable)
+- [ ] 01-03-PLAN.md — ConPTY PTY spawn with dedicated reader thread and keyboard round-trip
 
 ### Phase 2: Terminal Core
 **Goal**: Glass is a functional terminal — any CLI tool works correctly with full color, keyboard modifiers, scrollback, copy/paste, and window resize
@@ -92,7 +92,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scaffold | 0/3 | Not started | - |
+| 1. Scaffold | 0/3 | Planned | - |
 | 2. Terminal Core | 0/3 | Not started | - |
 | 3. Shell Integration and Block UI | 0/4 | Not started | - |
 | 4. Configuration and Performance | 0/2 | Not started | - |
