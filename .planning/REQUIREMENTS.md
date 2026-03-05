@@ -29,8 +29,8 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 - [ ] **SHEL-01**: Glass parses OSC 133 sequences to detect command lifecycle (prompt start, input start, command executed, command finished with exit code)
 - [ ] **SHEL-02**: Glass parses OSC 7 sequences to track current working directory
-- [ ] **SHEL-03**: PowerShell integration script installs and emits OSC 133/7 sequences (wraps existing prompt, compatible with Oh My Posh/Starship)
-- [ ] **SHEL-04**: Bash integration script installs and emits OSC 133/7 sequences (via PROMPT_COMMAND/PS0)
+- [x] **SHEL-03**: PowerShell integration script installs and emits OSC 133/7 sequences (wraps existing prompt, compatible with Oh My Posh/Starship)
+- [x] **SHEL-04**: Bash integration script installs and emits OSC 133/7 sequences (via PROMPT_COMMAND/PS0)
 
 ### Block UI
 
@@ -123,8 +123,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RNDR-04 | Phase 2 | Complete |
 | SHEL-01 | Phase 3 | Pending |
 | SHEL-02 | Phase 3 | Pending |
-| SHEL-03 | Phase 3 | Pending |
-| SHEL-04 | Phase 3 | Pending |
+| SHEL-03 | Phase 3 | Complete |
+| SHEL-04 | Phase 3 | Complete |
 | BLOK-01 | Phase 3 | Pending |
 | BLOK-02 | Phase 3 | Pending |
 | BLOK-03 | Phase 3 | Pending |

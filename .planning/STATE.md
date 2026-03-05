@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 02-terminal-core 02-03-PLAN.md
-last_updated: "2026-03-05T05:03:02.335Z"
-last_activity: "2026-03-04 — Plan 02-03 complete: keyboard encoder, clipboard, scrollback interaction"
+status: in-progress
+stopped_at: Completed 03-shell-integration-and-block-ui 03-03-PLAN.md
+last_updated: "2026-03-05T05:30:53Z"
+last_activity: "2026-03-05 — Plan 03-03 complete: PowerShell and Bash shell integration scripts"
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_plans: 10
+  completed_plans: 7
+  percent: 70
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything — surfacing intelligence only when you need it.
-**Current focus:** Phase 2 complete — ready for Phase 3
+**Current focus:** Phase 3 in progress — shell integration and block UI
 
 ## Current Position
 
-Phase: 2 of 4 (Terminal Core) -- COMPLETE
-Plan: 3 of 3 in current phase (all plans complete)
-Status: Phase complete
-Last activity: 2026-03-04 — Plan 02-03 complete: keyboard encoder, clipboard, scrollback interaction
+Phase: 3 of 4 (Shell Integration and Block UI)
+Plan: 3 of 4 in current phase
+Status: In progress
+Last activity: 2026-03-05 — Plan 03-03 complete: PowerShell and Bash shell integration scripts
 
-Progress: [██████████] 100%
+Progress: [███████---] 70%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
-- Average duration: 14 min
-- Total execution time: 1.42 hours
+- Total plans completed: 7
+- Average duration: 13 min
+- Total execution time: 1.45 hours
 
 **By Phase:**
 
@@ -45,9 +45,10 @@ Progress: [██████████] 100%
 |-------|-------|-------|----------|
 | 01-scaffold | 3 | 60 min | 20 min |
 | 02-terminal-core | 3 | 25 min | 8 min |
+| 03-shell-integration | 1 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 8, 5, 45, 10, 5 min
+- Last 5 plans: 5, 45, 10, 5, 2 min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -56,6 +57,7 @@ Progress: [██████████] 100%
 | Phase 02-terminal-core P01 | 5 | 2 tasks | 9 files |
 | Phase 02-terminal-core P02 | 8 | 3 tasks | 7 files |
 | Phase 02-terminal-core P03 | 12 | 3 tasks | 4 files |
+| Phase 03-shell-integration P03 | 2 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -85,6 +87,9 @@ Recent decisions affecting current work:
 - [02-02] Font metrics cell sizing via 'M' advance width — replaces hardcoded 8x16
 - [Phase 02-terminal-core]: encode_key returns None for Glass-handled keys (clipboard, scrollback); Ctrl+C sends 0x03 to PTY, Ctrl+Shift+C for copy
 - [Phase 02-terminal-core]: Arrow keys use SS3 in APP_CURSOR mode, CSI in normal mode; arboard crate for clipboard
+- [03-03] PowerShell shell integration uses backtick-e escape (requires pwsh 7+, not Windows PowerShell 5.1)
+- [03-03] Bash shell integration includes double-source guard; uses PROMPT_COMMAND prepend and PS0 for 133;C
+- [03-03] PSReadLine Enter key handler for 133;C (not PreExecution hook -- more reliable across versions)
 
 ### Pending Todos
 
@@ -97,6 +102,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T04:59:34.551Z
-Stopped at: Completed 02-terminal-core 02-03-PLAN.md
+Last session: 2026-03-05T05:30:53Z
+Stopped at: Completed 03-shell-integration-and-block-ui 03-03-PLAN.md
 Resume file: None
