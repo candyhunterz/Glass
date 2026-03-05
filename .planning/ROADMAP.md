@@ -21,7 +21,7 @@
 
 - [x] **Phase 5: History Database Foundation** - Standalone glass_history crate with SQLite schema, FTS5 search, retention, and subcommand routing
 - [ ] **Phase 6: Output Capture + Writer Integration** - PTY output capture pipeline, history writer thread, and display_offset fix
-- [ ] **Phase 7: CLI Query Interface** - `glass history` subcommands with filters and formatted output
+- [x] **Phase 7: CLI Query Interface** - `glass history` subcommands with filters and formatted output
 - [ ] **Phase 8: Search Overlay** - Ctrl+Shift+F modal overlay with live incremental search and block navigation
 - [ ] **Phase 9: MCP Server** - glass_mcp crate with stdio JSON-RPC server exposing GlassHistory and GlassContext tools
 
@@ -68,8 +68,8 @@ Plans:
   3. Results display as structured terminal output showing command text, exit code, timestamp, duration, and cwd
 **Plans:** 2 plans
 Plans:
-- [ ] 07-01-PLAN.md -- QueryFilter + filtered_query + parse_time in glass_history query module
-- [ ] 07-02-PLAN.md -- CLI subcommand expansion + display formatting in glass binary
+- [x] 07-01-PLAN.md -- QueryFilter + filtered_query + parse_time in glass_history query module
+- [x] 07-02-PLAN.md -- CLI subcommand expansion + display formatting in glass binary
 
 ### Phase 8: Search Overlay
 **Goal**: Users can search their entire command history from within the running terminal via a modal overlay
@@ -106,6 +106,6 @@ Plans:
 | 4. Configuration and Performance | v1.0 | 2/2 | Complete | 2026-03-05 |
 | 5. History Database Foundation | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 6. Output Capture + Writer Integration | v1.1 | 3/4 | In Progress | - |
-| 7. CLI Query Interface | v1.1 | 0/2 | Not started | - |
+| 7. CLI Query Interface | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 8. Search Overlay | v1.1 | 0/? | Not started | - |
 | 9. MCP Server | v1.1 | 0/? | Not started | - |

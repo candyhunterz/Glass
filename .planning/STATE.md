@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: Completed 07-01 QueryFilter module
-last_updated: "2026-03-05T18:35:31Z"
-last_activity: 2026-03-05 -- Completed 07-01 QueryFilter module
+stopped_at: Completed 07-02 CLI history subcommands
+last_updated: "2026-03-05T18:40:34Z"
+last_activity: 2026-03-05 -- Completed 07-02 CLI history subcommands
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 8
-  completed_plans: 7
-  percent: 88
+  completed_plans: 8
+  percent: 100
 ---
 
 # Project State
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 Milestone: v1.1 Structured Scrollback + MCP Server
 Phase: 7 of 9 (CLI Query Interface)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-03-05 -- Completed 07-01 QueryFilter module
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 7 Complete
+Last activity: 2026-03-05 -- Completed 07-02 CLI history subcommands
 
-Progress: [=========-] 88% (v1.1: 2/5 phases, 1/2 plans in phase 7)
+Progress: [=========+] 92% (v1.1: 3/5 phases, 2/2 plans in phase 7)
 
 ## Performance Metrics
 
@@ -68,6 +68,9 @@ Recent decisions affecting v1.1:
 - [Phase 07]: Dynamic SQL with params_from_iter and Vec<Value> for QueryFilter
 - [Phase 07]: FTS5 special chars escaped via double-quoting search terms
 - [Phase 07]: CWD prefix matching via SQL LIKE with trailing %
+- [Phase 07]: HistoryFilters clap::Args with flatten for shared filter args between Search/List
+- [Phase 07]: Default limit 25 via clap default_value_t, not Default trait
+- [Phase 07]: Relative timestamps (Nh ago) for recent entries, full datetime for older
 
 ### Pending Todos
 
@@ -79,6 +82,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T18:35:31Z
-Stopped at: Completed 07-01 QueryFilter module
-Resume file: .planning/phases/07-cli-query-interface/07-01-SUMMARY.md
+Last session: 2026-03-05T18:40:34Z
+Stopped at: Completed 07-02 CLI history subcommands
+Resume file: .planning/phases/07-cli-query-interface/07-02-SUMMARY.md

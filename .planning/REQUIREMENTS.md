@@ -26,7 +26,7 @@ Requirements for Structured Scrollback + MCP Server. Each maps to roadmap phases
 
 - [x] **CLI-01**: `glass history` subcommand queries the history database
 - [x] **CLI-02**: Filter by exit code, time range, cwd, and text content
-- [ ] **CLI-03**: Results formatted as structured terminal output
+- [x] **CLI-03**: Results formatted as structured terminal output
 
 ### MCP Server
 
@@ -82,7 +82,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SRCH-04 | Phase 8 | Pending |
 | CLI-01 | Phase 7 | Complete |
 | CLI-02 | Phase 7 | Complete |
-| CLI-03 | Phase 7 | Pending |
+| CLI-03 | Phase 7 | Complete |
 | MCP-01 | Phase 9 | Pending |
 | MCP-02 | Phase 9 | Pending |
 | MCP-03 | Phase 9 | Pending |
