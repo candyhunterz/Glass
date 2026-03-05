@@ -37,9 +37,24 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
+## Current Milestone: v1.2 Command-Level Undo
+
+**Goal:** Automatic filesystem snapshots per command with one-keystroke revert via Ctrl+Shift+Z.
+
+**Target features:**
+- Filesystem monitoring engine (ReadDirectoryChangesW on Windows)
+- Pre-exec command parsing to identify file targets for snapshot
+- Snapshot storage with content-addressed deduplication
+- Ctrl+Shift+Z undo and [undo] button on command blocks
+- CLI interface: `glass undo <command-id>`
+- MCP tools: GlassUndo, GlassFileDiff
+- Storage management and pruning
+- File modification tracking integrated into history DB
+
+**Approach:** Targeted pre-exec snapshot (parse command text for file arguments, snapshot before execution) + FS watcher for recording all modifications. Honest limitations: commands with unpredictable file targets (scripts, build tools) get recorded but may not be fully undoable.
+
 #### Future
 
-- [ ] Command-level undo with filesystem snapshots
 - [ ] Pipe visualization with intermediate stage output
 - [ ] Block collapse/expand, URL detection, block keyboard navigation
 - [ ] Config hot reload
@@ -107,4 +122,4 @@ Known tech debt:
 | Epoch timestamp matching for scroll-to-block | Wall-clock match between DB records and Block structs | ✓ Good -- reliable navigation |
 
 ---
-*Last updated: 2026-03-05 after v1.1 milestone*
+*Last updated: 2026-03-05 after v1.2 milestone start*

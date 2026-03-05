@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Structured Scrollback + MCP Server
-status: archived
-stopped_at: Milestone v1.1 archived
-last_updated: "2026-03-05T23:59:00.000Z"
-last_activity: 2026-03-05 -- Milestone v1.1 archived
+milestone: v1.2
+milestone_name: Command-Level Undo
+status: active
+stopped_at: null
+last_updated: "2026-03-05"
+last_activity: 2026-03-05 -- Milestone v1.2 started
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 12
-  completed_plans: 12
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,13 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** v1.2 Command-Level Undo
 
 ## Current Position
 
-Milestone: v1.1 Structured Scrollback + MCP Server -- SHIPPED
-Status: Archived to .planning/milestones/
-Next: `/gsd:new-milestone` to start v1.2 planning
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-03-05 -- Milestone v1.2 started
 
 ## Performance Metrics
 
