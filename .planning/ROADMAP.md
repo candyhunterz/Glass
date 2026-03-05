@@ -65,7 +65,7 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — OscScanner byte parser, BlockManager state machine, StatusState with git queries (TDD)
+- [x] 03-01-PLAN.md — OscScanner byte parser, BlockManager state machine, StatusState with git queries (TDD)
 - [ ] 03-02-PLAN.md — Block rendering (separators, exit code badges, duration labels) and status bar in FrameRenderer
 - [x] 03-03-PLAN.md — PowerShell and Bash shell integration scripts emitting OSC 133/7
 - [ ] 03-04-PLAN.md — Custom PTY read loop with OscScanner, full wiring into main.rs
@@ -94,5 +94,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Scaffold | 3/3 | Complete   | 2026-03-05 |
 | 2. Terminal Core | 3/3 | Complete   | 2026-03-05 |
-| 3. Shell Integration and Block UI | 1/4 | In progress | - |
+| 3. Shell Integration and Block UI | 2/4 | In progress | - |
 | 4. Configuration and Performance | 0/2 | Not started | - |

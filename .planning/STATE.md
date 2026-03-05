@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 03-shell-integration-and-block-ui 03-03-PLAN.md
-last_updated: "2026-03-05T05:30:53Z"
-last_activity: "2026-03-05 — Plan 03-03 complete: PowerShell and Bash shell integration scripts"
+stopped_at: Completed 03-shell-integration-and-block-ui 03-01-PLAN.md
+last_updated: "2026-03-05T05:34:44Z"
+last_activity: "2026-03-05 — Plan 03-01 complete: OscScanner, BlockManager, StatusState data layer with TDD"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 10
-  completed_plans: 7
-  percent: 70
+  completed_plans: 8
+  percent: 80
 ---
 
 # Project State
@@ -26,18 +26,18 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 ## Current Position
 
 Phase: 3 of 4 (Shell Integration and Block UI)
-Plan: 3 of 4 in current phase
+Plan: 3 of 4 in current phase (03-01, 03-03 complete)
 Status: In progress
-Last activity: 2026-03-05 — Plan 03-03 complete: PowerShell and Bash shell integration scripts
+Last activity: 2026-03-05 — Plan 03-01 complete: OscScanner, BlockManager, StatusState data layer with TDD
 
-Progress: [███████---] 70%
+Progress: [████████--] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: 13 min
-- Total execution time: 1.45 hours
+- Total plans completed: 8
+- Average duration: 12 min
+- Total execution time: 1.55 hours
 
 **By Phase:**
 
@@ -45,10 +45,10 @@ Progress: [███████---] 70%
 |-------|-------|-------|----------|
 | 01-scaffold | 3 | 60 min | 20 min |
 | 02-terminal-core | 3 | 25 min | 8 min |
-| 03-shell-integration | 1 | 2 min | 2 min |
+| 03-shell-integration | 2 | 8 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 5, 45, 10, 5, 2 min
+- Last 5 plans: 45, 10, 5, 2, 6 min
 - Trend: stable
 
 *Updated after each plan completion*
@@ -58,6 +58,7 @@ Progress: [███████---] 70%
 | Phase 02-terminal-core P02 | 8 | 3 tasks | 7 files |
 | Phase 02-terminal-core P03 | 12 | 3 tasks | 4 files |
 | Phase 03-shell-integration P03 | 2 | 2 tasks | 2 files |
+| Phase 03-shell-integration P01 | 6 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -90,6 +91,9 @@ Recent decisions affecting current work:
 - [03-03] PowerShell shell integration uses backtick-e escape (requires pwsh 7+, not Windows PowerShell 5.1)
 - [03-03] Bash shell integration includes double-source guard; uses PROMPT_COMMAND prepend and PS0 for 133;C
 - [03-03] PSReadLine Enter key handler for 133;C (not PreExecution hook -- more reliable across versions)
+- [03-01] url crate v2 for OSC 7 file:// path parsing; 3-state scanner (Ground/Escape/Accumulating)
+- [03-01] BlockManager ignores events without prior PromptStart for resilience to partial streams
+- [03-01] query_git_status() is synchronous with GIT_OPTIONAL_LOCKS=0, meant for background thread usage
 
 ### Pending Todos
 
@@ -102,6 +106,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T05:30:53Z
-Stopped at: Completed 03-shell-integration-and-block-ui 03-03-PLAN.md
+Last session: 2026-03-05T05:34:44Z
+Stopped at: Completed 03-shell-integration-and-block-ui 03-01-PLAN.md
 Resume file: None

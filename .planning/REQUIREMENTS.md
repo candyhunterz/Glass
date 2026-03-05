@@ -27,21 +27,21 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 ### Shell Integration
 
-- [ ] **SHEL-01**: Glass parses OSC 133 sequences to detect command lifecycle (prompt start, input start, command executed, command finished with exit code)
-- [ ] **SHEL-02**: Glass parses OSC 7 sequences to track current working directory
+- [x] **SHEL-01**: Glass parses OSC 133 sequences to detect command lifecycle (prompt start, input start, command executed, command finished with exit code)
+- [x] **SHEL-02**: Glass parses OSC 7 sequences to track current working directory
 - [x] **SHEL-03**: PowerShell integration script installs and emits OSC 133/7 sequences (wraps existing prompt, compatible with Oh My Posh/Starship)
 - [x] **SHEL-04**: Bash integration script installs and emits OSC 133/7 sequences (via PROMPT_COMMAND/PS0)
 
 ### Block UI
 
 - [ ] **BLOK-01**: Each command's prompt, input, and output renders as a visually distinct block
-- [ ] **BLOK-02**: Each block displays an exit code badge (green checkmark for success, red X for failure)
-- [ ] **BLOK-03**: Each block displays command wall-clock duration
+- [x] **BLOK-02**: Each block displays an exit code badge (green checkmark for success, red X for failure)
+- [x] **BLOK-03**: Each block displays command wall-clock duration
 
 ### Status Bar
 
-- [ ] **STAT-01**: Status bar displays current working directory (updated via OSC 7 events)
-- [ ] **STAT-02**: Status bar displays git branch name and dirty file count (via async subprocess)
+- [x] **STAT-01**: Status bar displays current working directory (updated via OSC 7 events)
+- [x] **STAT-02**: Status bar displays git branch name and dirty file count (via async subprocess)
 
 ### Configuration
 
@@ -121,15 +121,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RNDR-02 | Phase 2 | Complete |
 | RNDR-03 | Phase 2 | Complete |
 | RNDR-04 | Phase 2 | Complete |
-| SHEL-01 | Phase 3 | Pending |
-| SHEL-02 | Phase 3 | Pending |
+| SHEL-01 | Phase 3 | Complete |
+| SHEL-02 | Phase 3 | Complete |
 | SHEL-03 | Phase 3 | Complete |
 | SHEL-04 | Phase 3 | Complete |
 | BLOK-01 | Phase 3 | Pending |
-| BLOK-02 | Phase 3 | Pending |
-| BLOK-03 | Phase 3 | Pending |
-| STAT-01 | Phase 3 | Pending |
-| STAT-02 | Phase 3 | Pending |
+| BLOK-02 | Phase 3 | Complete |
+| BLOK-03 | Phase 3 | Complete |
+| STAT-01 | Phase 3 | Complete |
+| STAT-02 | Phase 3 | Complete |
 | CONF-01 | Phase 4 | Pending |
 | CONF-02 | Phase 4 | Pending |
 | CONF-03 | Phase 4 | Pending |
