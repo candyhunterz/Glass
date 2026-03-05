@@ -15,3 +15,6 @@ pub use grid_renderer::GridRenderer;
 pub use rect_renderer::{RectInstance, RectRenderer};
 pub use status_bar::{StatusBarRenderer, StatusLabel};
 pub use surface::GlassRenderer;
+
+/// Re-export FontSystem for parallel init in main.
+pub use glyphon::FontSystem;

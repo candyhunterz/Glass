@@ -33,9 +33,16 @@ impl GlyphCache {
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
-        // Discovers system fonts automatically (Windows font directories)
-        let font_system = FontSystem::new();
+        Self::with_font_system(FontSystem::new(), device, queue, surface_format)
+    }
 
+    /// Initialize with a pre-created FontSystem (for parallel init).
+    pub fn with_font_system(
+        font_system: FontSystem,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+    ) -> Self {
         // Glyph rasterization cache (swash is the rasterizer used by cosmic-text)
         let swash_cache = SwashCache::new();
 

@@ -44,7 +44,20 @@ impl FrameRenderer {
         font_size: f32,
         scale_factor: f32,
     ) -> Self {
-        let mut glyph_cache = GlyphCache::new(device, queue, surface_format);
+        Self::with_font_system(glyphon::FontSystem::new(), device, queue, surface_format, font_family, font_size, scale_factor)
+    }
+
+    /// Create the rendering pipeline with a pre-created FontSystem (for parallel init).
+    pub fn with_font_system(
+        font_system: glyphon::FontSystem,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        font_family: &str,
+        font_size: f32,
+        scale_factor: f32,
+    ) -> Self {
+        let mut glyph_cache = GlyphCache::with_font_system(font_system, device, queue, surface_format);
         let grid_renderer = GridRenderer::new(
             &mut glyph_cache.font_system,
             font_family,

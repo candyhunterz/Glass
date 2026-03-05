@@ -8,7 +8,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, ShellEvent};
-use glass_renderer::{FrameRenderer, GlassRenderer};
+use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
 use glass_terminal::{
     BlockManager, DefaultColors, EventProxy, OscEvent, PtyMsg, PtySender, StatusState,
     encode_key, query_git_status, snapshot_term,
@@ -104,12 +104,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                 .expect("Failed to create window"),
         );
 
+        // Parallelize font discovery with GPU init — FontSystem::new() enumerates
+        // all system fonts (~35ms) and doesn't need the GPU device.
+        let font_handle = std::thread::spawn(FontSystem::new);
+
         // wgpu init is async; block via pollster from this sync callback
         let renderer = pollster::block_on(GlassRenderer::new(Arc::clone(&window)));
 
-        // Create FrameRenderer with font config from loaded config
+        // Join font thread — should already be done since GPU init takes longer
+        let font_system = font_handle.join().expect("Font system thread panicked");
+
+        // Create FrameRenderer with pre-loaded font system
         let scale_factor = window.scale_factor() as f32;
-        let frame_renderer = FrameRenderer::new(
+        let frame_renderer = FrameRenderer::with_font_system(
+            font_system,
             renderer.device(),
             renderer.queue(),
             renderer.surface_format(),

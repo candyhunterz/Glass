@@ -18,8 +18,14 @@ impl GlassRenderer {
     /// On Windows this auto-selects the DX12 backend. The selected backend is logged via
     /// `tracing::info!` so callers can confirm "GPU backend: Dx12" in the log output.
     pub async fn new(window: Arc<winit::window::Window>) -> Self {
-        // Auto-selects DX12 on Windows, Metal on macOS, Vulkan on Linux
-        let instance = wgpu::Instance::default();
+        // Prefer DX12 on Windows (faster init than Vulkan), Metal on macOS, Vulkan on Linux
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            #[cfg(target_os = "windows")]
+            backends: wgpu::Backends::DX12,
+            #[cfg(not(target_os = "windows"))]
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
 
         let surface = instance
             .create_surface(window.clone())
@@ -50,7 +56,7 @@ impl GlassRenderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
         };
