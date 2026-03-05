@@ -25,6 +25,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Stub crate deps (future phases)
 rusqlite      = { version = "0.38.0", features = ["bundled"] }
 
+# Windows API (UTF-8 console code page)
+windows-sys   = { version = "0.59", features = ["Win32_System_Console"] }
+
 [package]
 name = "glass"
 version = "0.1.0"
@@ -43,3 +46,4 @@ pollster.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+windows-sys.workspace = true
