@@ -118,28 +118,15 @@ impl HistoryDb {
     /// Delete a command record by id (from both commands and FTS tables).
     /// Returns true if a record was deleted.
     pub fn delete_command(&self, id: i64) -> Result<bool> {
-        // Read command text first (needed for FTS delete)
-        let command_text: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT command FROM commands WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .ok();
-
-        if let Some(text) = command_text {
-            let tx = self.conn.unchecked_transaction()?;
-            tx.execute(
-                "INSERT INTO commands_fts(commands_fts, rowid, command) VALUES('delete', ?1, ?2)",
-                params![id, text],
-            )?;
-            tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
-            tx.commit()?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        let tx = self.conn.unchecked_transaction()?;
+        // Delete from FTS first (standard FTS5 -- just DELETE by rowid)
+        tx.execute(
+            "DELETE FROM commands_fts WHERE rowid = ?1",
+            params![id],
+        )?;
+        let deleted = tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(deleted > 0)
     }
 
     /// Return the total number of command records.

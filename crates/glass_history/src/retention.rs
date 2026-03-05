@@ -17,30 +17,30 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
         .as_secs() as i64
         - (max_age_days as i64 * 86400);
 
-    // Collect (id, command_text) pairs to delete (need text for FTS cleanup)
-    let records_to_delete: Vec<(i64, String)> = {
+    // Collect ids to delete first
+    let ids_to_delete: Vec<i64> = {
         let mut stmt =
-            conn.prepare("SELECT id, command FROM commands WHERE started_at < ?1")?;
+            conn.prepare("SELECT id FROM commands WHERE started_at < ?1")?;
         let result = stmt
-            .query_map(params![cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map(params![cutoff], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         result
     };
 
-    if !records_to_delete.is_empty() {
+    if !ids_to_delete.is_empty() {
         let tx = conn.unchecked_transaction()?;
-        for (id, command_text) in &records_to_delete {
-            // Delete from FTS first using the special 'delete' command
+        for &id in &ids_to_delete {
+            // Delete from FTS table (standard FTS5 -- just DELETE by rowid)
             tx.execute(
-                "INSERT INTO commands_fts(commands_fts, rowid, command) VALUES('delete', ?1, ?2)",
-                params![id, command_text],
+                "DELETE FROM commands_fts WHERE rowid = ?1",
+                params![id],
             )?;
         }
-        for (id, _) in &records_to_delete {
+        for &id in &ids_to_delete {
             tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
         }
         tx.commit()?;
-        total_deleted += records_to_delete.len() as u64;
+        total_deleted += ids_to_delete.len() as u64;
     }
 
     // 2. Size-based pruning
@@ -57,30 +57,30 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
         let count = count as u64;
         let to_delete = (count / 10).max(1) as i64;
 
-        // Collect (id, command_text) of oldest records
-        let old_records: Vec<(i64, String)> = {
+        // Collect ids of oldest records
+        let old_ids: Vec<i64> = {
             let mut stmt = conn.prepare(
-                "SELECT id, command FROM commands ORDER BY started_at ASC LIMIT ?1",
+                "SELECT id FROM commands ORDER BY started_at ASC LIMIT ?1",
             )?;
             let result = stmt
-                .query_map(params![to_delete], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map(params![to_delete], |row| row.get(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             result
         };
 
-        if !old_records.is_empty() {
+        if !old_ids.is_empty() {
             let tx = conn.unchecked_transaction()?;
-            for (id, command_text) in &old_records {
+            for &id in &old_ids {
                 tx.execute(
-                    "INSERT INTO commands_fts(commands_fts, rowid, command) VALUES('delete', ?1, ?2)",
-                    params![id, command_text],
+                    "DELETE FROM commands_fts WHERE rowid = ?1",
+                    params![id],
                 )?;
             }
-            for (id, _) in &old_records {
+            for &id in &old_ids {
                 tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
             }
             tx.commit()?;
-            total_deleted += old_records.len() as u64;
+            total_deleted += old_ids.len() as u64;
         }
     }
 
