@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 glass_core = { path = "../glass_core" }
+glyphon.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 bytemuck.workspace = true
