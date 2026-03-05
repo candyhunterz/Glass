@@ -3,6 +3,9 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
+/// Current schema version. Bump when adding migrations.
+const SCHEMA_VERSION: i64 = 1;
+
 /// A command execution record with all metadata.
 #[derive(Debug, Clone)]
 pub struct CommandRecord {
@@ -20,6 +23,8 @@ pub struct CommandRecord {
     pub finished_at: i64,
     /// Duration in milliseconds.
     pub duration_ms: i64,
+    /// Captured command output (ANSI-stripped, possibly truncated).
+    pub output: Option<String>,
 }
 
 /// SQLite-backed command history database.
@@ -41,6 +46,7 @@ impl HistoryDb {
              PRAGMA busy_timeout = 5000;",
         )?;
         Self::create_schema(&conn)?;
+        Self::migrate(&conn)?;
         Ok(Self { conn })
     }
 
@@ -54,6 +60,7 @@ impl HistoryDb {
                 started_at  INTEGER NOT NULL,
                 finished_at INTEGER NOT NULL,
                 duration_ms INTEGER NOT NULL,
+                output      TEXT,
                 created_at  INTEGER NOT NULL DEFAULT (unixepoch())
             );
             CREATE INDEX IF NOT EXISTS idx_commands_started_at ON commands(started_at);
@@ -67,12 +74,35 @@ impl HistoryDb {
         Ok(())
     }
 
+    /// Apply schema migrations based on PRAGMA user_version.
+    fn migrate(conn: &Connection) -> Result<()> {
+        let version: i64 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+        if version < 1 {
+            // Phase 6: add output column to existing databases.
+            // For fresh databases, the column already exists from create_schema,
+            // so we check if it's missing before altering.
+            let has_output: bool = conn
+                .prepare("SELECT output FROM commands LIMIT 0")
+                .is_ok();
+
+            if !has_output {
+                conn.execute_batch("ALTER TABLE commands ADD COLUMN output TEXT;")?;
+            }
+
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+
+        Ok(())
+    }
+
     /// Insert a command record into the database. Returns the row id.
     pub fn insert_command(&self, record: &CommandRecord) -> Result<i64> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO commands (command, cwd, exit_code, started_at, finished_at, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO commands (command, cwd, exit_code, started_at, finished_at, duration_ms, output)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 record.command,
                 record.cwd,
@@ -80,6 +110,7 @@ impl HistoryDb {
                 record.started_at,
                 record.finished_at,
                 record.duration_ms,
+                record.output,
             ],
         )?;
         let rowid = tx.last_insert_rowid();
@@ -94,7 +125,7 @@ impl HistoryDb {
     /// Retrieve a command record by id.
     pub fn get_command(&self, id: i64) -> Result<Option<CommandRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, cwd, exit_code, started_at, finished_at, duration_ms
+            "SELECT id, command, cwd, exit_code, started_at, finished_at, duration_ms, output
              FROM commands WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -106,6 +137,7 @@ impl HistoryDb {
                 started_at: row.get(4)?,
                 finished_at: row.get(5)?,
                 duration_ms: row.get(6)?,
+                output: row.get(7)?,
             })
         })?;
         match rows.next() {
@@ -174,6 +206,7 @@ mod tests {
             started_at: 1700000000,
             finished_at: 1700000005,
             duration_ms: 5000,
+            output: None,
         }
     }
 
@@ -188,6 +221,7 @@ mod tests {
             started_at: 1700000000,
             finished_at: 1700000010,
             duration_ms: 10000,
+            output: None,
         };
         let id = db.insert_command(&record).unwrap();
         assert!(id > 0);
@@ -273,6 +307,7 @@ mod tests {
                 started_at: *ts,
                 finished_at: ts + 5,
                 duration_ms: 5000,
+                output: None,
             })
             .unwrap();
         }
@@ -303,6 +338,7 @@ mod tests {
                 started_at: old_time,
                 finished_at: old_time + 1,
                 duration_ms: 1000,
+                output: None,
             })
             .unwrap();
         }
@@ -340,5 +376,125 @@ mod tests {
 
         // Deleting non-existent returns false
         assert!(!db.delete_command(9999).unwrap());
+    }
+
+    #[test]
+    fn test_migration_v0_to_v1() {
+        // Create a v0 database manually (no output column, user_version=0)
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("v0.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE commands (
+                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                     command     TEXT NOT NULL,
+                     cwd         TEXT NOT NULL,
+                     exit_code   INTEGER,
+                     started_at  INTEGER NOT NULL,
+                     finished_at INTEGER NOT NULL,
+                     duration_ms INTEGER NOT NULL,
+                     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE INDEX idx_commands_started_at ON commands(started_at);
+                 CREATE INDEX idx_commands_cwd ON commands(cwd);
+                 CREATE VIRTUAL TABLE commands_fts USING fts5(
+                     command, tokenize='unicode61'
+                 );
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+        }
+
+        // Open via HistoryDb::open -- should trigger migration
+        let db = HistoryDb::open(&db_path).unwrap();
+
+        // Verify output column exists by inserting with output
+        let mut record = sample_record("migrated cmd");
+        record.output = Some("output after migration".to_string());
+        let id = db.insert_command(&record).unwrap();
+        let retrieved = db.get_command(id).unwrap().unwrap();
+        assert_eq!(retrieved.output, Some("output after migration".to_string()));
+
+        // Verify user_version is now 1
+        let version: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_existing_records_survive_migration() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("v0_with_data.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE commands (
+                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                     command     TEXT NOT NULL,
+                     cwd         TEXT NOT NULL,
+                     exit_code   INTEGER,
+                     started_at  INTEGER NOT NULL,
+                     finished_at INTEGER NOT NULL,
+                     duration_ms INTEGER NOT NULL,
+                     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE VIRTUAL TABLE commands_fts USING fts5(
+                     command, tokenize='unicode61'
+                 );
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+            // Insert a record into v0 schema
+            conn.execute(
+                "INSERT INTO commands (command, cwd, exit_code, started_at, finished_at, duration_ms)
+                 VALUES ('old cmd', '/tmp', 0, 1700000000, 1700000005, 5000)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open via HistoryDb -- migrates v0 -> v1
+        let db = HistoryDb::open(&db_path).unwrap();
+
+        // Old record should be accessible with output=None
+        let record = db.get_command(1).unwrap().unwrap();
+        assert_eq!(record.command, "old cmd");
+        assert_eq!(record.output, None);
+    }
+
+    #[test]
+    fn test_insert_with_output() {
+        let (db, _dir) = test_db();
+        let mut record = sample_record("echo hello");
+        record.output = Some("hello\n".to_string());
+        let id = db.insert_command(&record).unwrap();
+
+        let retrieved = db.get_command(id).unwrap().unwrap();
+        assert_eq!(retrieved.output, Some("hello\n".to_string()));
+    }
+
+    #[test]
+    fn test_insert_without_output() {
+        let (db, _dir) = test_db();
+        let record = sample_record("ls");
+        let id = db.insert_command(&record).unwrap();
+
+        let retrieved = db.get_command(id).unwrap().unwrap();
+        assert_eq!(retrieved.output, None);
+    }
+
+    #[test]
+    fn test_fresh_db_has_output_column_and_version() {
+        let (db, _dir) = test_db();
+        let version: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

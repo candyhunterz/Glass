@@ -118,6 +118,7 @@ mod tests {
                 started_at: old_time,
                 finished_at: old_time + 1,
                 duration_ms: 1000,
+                output: None,
             })
             .unwrap();
         }
@@ -131,6 +132,7 @@ mod tests {
             started_at: now,
             finished_at: now + 1,
             duration_ms: 1000,
+            output: None,
         })
         .unwrap();
 
@@ -160,6 +162,7 @@ mod tests {
                 started_at: now,
                 finished_at: now + 1,
                 duration_ms: 1000,
+                output: None,
             })
             .unwrap();
         }
@@ -187,6 +190,7 @@ mod tests {
             started_at: old_time,
             finished_at: old_time + 1,
             duration_ms: 1000,
+            output: None,
         })
         .unwrap();
 
