@@ -20,7 +20,7 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 ### Rendering
 
-- [ ] **RNDR-01**: Terminal output renders via GPU acceleration (wgpu with DX12 on Windows)
+- [x] **RNDR-01**: Terminal output renders via GPU acceleration (wgpu with DX12 on Windows)
 - [ ] **RNDR-02**: User sees truecolor (24-bit RGB) output from tools like bat, delta, neovim
 - [ ] **RNDR-03**: Cursor renders correctly in block, beam, and underline shapes with optional blink
 - [ ] **RNDR-04**: User can configure font family and font size, and text renders in chosen monospace font
