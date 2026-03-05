@@ -802,16 +802,18 @@ fn main() {
         SetConsoleOutputCP(65001);
     }
 
-    // Initialize structured logging; use RUST_LOG env var to control verbosity
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     // Parse CLI BEFORE creating the event loop — subcommands must not open a window.
+    // Tracing is initialized per-branch: MCP mode writes to stderr (stdout is JSON-RPC),
+    // while terminal mode uses the default stdout writer.
     let cli = Cli::parse();
 
     match cli.command {
         None => {
+            // Initialize structured logging for terminal mode (stdout)
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .init();
+
             // No subcommand: launch the terminal GUI (default behavior)
             tracing::info!("Glass starting");
 
@@ -840,11 +842,26 @@ fn main() {
                 .expect("Event loop exited with error");
         }
         Some(Commands::History { action }) => {
+            // Initialize structured logging for CLI mode (stdout)
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .init();
             history::run_history(action);
         }
         Some(Commands::Mcp { action: McpAction::Serve }) => {
-            eprintln!("glass mcp serve: not yet implemented (Phase 9)");
-            std::process::exit(1);
+            // MCP server mode: logging goes to stderr, stdout is reserved for JSON-RPC
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .init();
+
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime");
+            if let Err(e) = rt.block_on(glass_mcp::run_mcp_server()) {
+                eprintln!("MCP server error: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
