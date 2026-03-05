@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in-progress
+status: completed
 stopped_at: Completed 03-shell-integration-and-block-ui 03-04-PLAN.md
-last_updated: "2026-03-05T05:50:43Z"
+last_updated: "2026-03-05T06:04:01.860Z"
 last_activity: "2026-03-05 — Plan 03-04 complete: End-to-end wiring of PTY->OscScanner->BlockManager/StatusState->FrameRenderer"
 progress:
   total_phases: 4
