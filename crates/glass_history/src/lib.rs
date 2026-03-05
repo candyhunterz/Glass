@@ -7,11 +7,13 @@
 pub mod config;
 pub mod db;
 pub mod output;
+pub mod query;
 pub mod retention;
 pub mod search;
 
 pub use config::HistoryConfig;
 pub use db::{CommandRecord, HistoryDb};
+pub use query::QueryFilter;
 pub use search::SearchResult;
 
 use std::path::{Path, PathBuf};

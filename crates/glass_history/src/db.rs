@@ -188,6 +188,14 @@ impl HistoryDb {
         crate::search::search(&self.conn, query, limit)
     }
 
+    /// Execute a filtered query combining FTS5 text search with SQL WHERE clauses.
+    pub fn filtered_query(
+        &self,
+        filter: &crate::query::QueryFilter,
+    ) -> Result<Vec<CommandRecord>> {
+        crate::query::filtered_query(&self.conn, filter)
+    }
+
     /// Prune old records by age and size limits.
     pub fn prune(&self, max_age_days: u32, max_size_bytes: u64) -> Result<u64> {
         crate::retention::prune(&self.conn, max_age_days, max_size_bytes)
