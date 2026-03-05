@@ -62,7 +62,7 @@ Plans:
   3. Each block displays the wall-clock duration of the command (e.g., "1.2s")
   4. The status bar shows the current working directory, updating when `cd` is run; it shows the git branch name and dirty file count when inside a git repository
   5. Shell integration is compatible with Oh My Posh and Starship — their prompt styling is preserved when integration scripts are installed
-**Plans:** 4 plans
+**Plans:** 3/4 plans executed
 
 Plans:
 - [x] 03-01-PLAN.md — OscScanner byte parser, BlockManager state machine, StatusState with git queries (TDD)
@@ -94,5 +94,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Scaffold | 3/3 | Complete   | 2026-03-05 |
 | 2. Terminal Core | 3/3 | Complete   | 2026-03-05 |
-| 3. Shell Integration and Block UI | 2/4 | In progress | - |
+| 3. Shell Integration and Block UI | 3/4 | In Progress|  |
 | 4. Configuration and Performance | 0/2 | Not started | - |

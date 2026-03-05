@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 03-shell-integration-and-block-ui 03-01-PLAN.md
-last_updated: "2026-03-05T05:34:44Z"
-last_activity: "2026-03-05 — Plan 03-01 complete: OscScanner, BlockManager, StatusState data layer with TDD"
+stopped_at: Completed 03-shell-integration-and-block-ui 03-02-PLAN.md
+last_updated: "2026-03-05T05:41:11Z"
+last_activity: "2026-03-05 — Plan 03-02 complete: BlockRenderer and StatusBarRenderer integrated into GPU pipeline"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 10
-  completed_plans: 8
-  percent: 80
+  completed_plans: 9
+  percent: 90
 ---
 
 # Project State
@@ -26,16 +26,16 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 ## Current Position
 
 Phase: 3 of 4 (Shell Integration and Block UI)
-Plan: 3 of 4 in current phase (03-01, 03-03 complete)
+Plan: 4 of 4 in current phase (03-01, 03-02, 03-03 complete)
 Status: In progress
-Last activity: 2026-03-05 — Plan 03-01 complete: OscScanner, BlockManager, StatusState data layer with TDD
+Last activity: 2026-03-05 — Plan 03-02 complete: BlockRenderer and StatusBarRenderer integrated into GPU pipeline
 
-Progress: [████████--] 80%
+Progress: [█████████-] 90%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 12 min
 - Total execution time: 1.55 hours
 
@@ -45,7 +45,7 @@ Progress: [████████--] 80%
 |-------|-------|-------|----------|
 | 01-scaffold | 3 | 60 min | 20 min |
 | 02-terminal-core | 3 | 25 min | 8 min |
-| 03-shell-integration | 2 | 8 min | 4 min |
+| 03-shell-integration | 3 | 12 min | 4 min |
 
 **Recent Trend:**
 - Last 5 plans: 45, 10, 5, 2, 6 min
@@ -59,6 +59,7 @@ Progress: [████████--] 80%
 | Phase 02-terminal-core P03 | 12 | 3 tasks | 4 files |
 | Phase 03-shell-integration P03 | 2 | 2 tasks | 2 files |
 | Phase 03-shell-integration P01 | 6 | 2 tasks | 6 files |
+| Phase 03-shell-integration P02 | 4 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,9 @@ Recent decisions affecting current work:
 - [03-01] url crate v2 for OSC 7 file:// path parsing; 3-state scanner (Ground/Escape/Accumulating)
 - [03-01] BlockManager ignores events without prior PromptStart for resilience to partial streams
 - [03-01] query_git_status() is synchronous with GIT_OPTIONAL_LOCKS=0, meant for background thread usage
+- [03-02] Two-phase overlay buffer pattern: build all Buffers (mutable) then create TextAreas (immutable) for borrow-checker safety
+- [03-02] Badge text uses ASCII OK/X (not Unicode checkmark/cross) for maximum font compatibility
+- [03-02] Status bar overlaps last terminal line; PTY resize adjustment deferred to Plan 04 wiring
 
 ### Pending Todos
 
@@ -106,6 +110,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T05:34:44Z
-Stopped at: Completed 03-shell-integration-and-block-ui 03-01-PLAN.md
+Last session: 2026-03-05T05:41:11Z
+Stopped at: Completed 03-shell-integration-and-block-ui 03-02-PLAN.md
 Resume file: None

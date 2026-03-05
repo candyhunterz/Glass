@@ -34,7 +34,7 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 ### Block UI
 
-- [ ] **BLOK-01**: Each command's prompt, input, and output renders as a visually distinct block
+- [x] **BLOK-01**: Each command's prompt, input, and output renders as a visually distinct block
 - [x] **BLOK-02**: Each block displays an exit code badge (green checkmark for success, red X for failure)
 - [x] **BLOK-03**: Each block displays command wall-clock duration
 
@@ -125,7 +125,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SHEL-02 | Phase 3 | Complete |
 | SHEL-03 | Phase 3 | Complete |
 | SHEL-04 | Phase 3 | Complete |
-| BLOK-01 | Phase 3 | Pending |
+| BLOK-01 | Phase 3 | Complete |
 | BLOK-02 | Phase 3 | Complete |
 | BLOK-03 | Phase 3 | Complete |
 | STAT-01 | Phase 3 | Complete |
