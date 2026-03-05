@@ -247,4 +247,98 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "cargo build");
     }
+
+    #[test]
+    fn test_full_lifecycle_integration() {
+        let (db, _dir) = test_db();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // 1-2. Insert 5 diverse command records
+        let commands = vec![
+            ("cargo build --release", "/home/user/project", Some(0), now),
+            ("git push origin main", "/home/user/project", Some(0), now),
+            ("git log --oneline", "/home/user/project", Some(0), now),
+            ("npm install", "/home/user/webapp", Some(0), now),
+            ("docker compose up", "/home/user/infra", Some(1), now),
+        ];
+        for (cmd, cwd, exit_code, ts) in &commands {
+            db.insert_command(&CommandRecord {
+                id: None,
+                command: cmd.to_string(),
+                cwd: cwd.to_string(),
+                exit_code: *exit_code,
+                started_at: *ts,
+                finished_at: ts + 5,
+                duration_ms: 5000,
+            })
+            .unwrap();
+        }
+
+        // 3. Verify count
+        assert_eq!(db.command_count().unwrap(), 5);
+
+        // 4. Search for "docker", verify correct result
+        let results = db.search("docker", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "docker compose up");
+        assert_eq!(results[0].cwd, "/home/user/infra");
+        assert_eq!(results[0].exit_code, Some(1));
+
+        // 5. Prefix query for "git*"
+        let results = db.search("git*", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.command.starts_with("git")));
+
+        // 6. Insert 3 old records (older than 1 day)
+        let old_time = now - 2 * 86400;
+        for i in 0..3 {
+            db.insert_command(&CommandRecord {
+                id: None,
+                command: format!("old_integration_cmd_{}", i),
+                cwd: "/tmp".to_string(),
+                exit_code: Some(0),
+                started_at: old_time,
+                finished_at: old_time + 1,
+                duration_ms: 1000,
+            })
+            .unwrap();
+        }
+        assert_eq!(db.command_count().unwrap(), 8);
+
+        // 7. Prune with max_age = 1 day
+        let deleted = db.prune(1, u64::MAX).unwrap();
+        assert_eq!(deleted, 3);
+
+        // 8. Verify old records are gone
+        assert_eq!(db.command_count().unwrap(), 5);
+
+        // 9. FTS search for pruned commands returns empty
+        let results = db.search("old_integration_cmd_0", 10).unwrap();
+        assert!(results.is_empty());
+
+        // 10. Recent commands still searchable
+        let results = db.search("cargo", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "cargo build --release");
+    }
+
+    #[test]
+    fn test_delete_command() {
+        let (db, _dir) = test_db();
+        let id = db.insert_command(&sample_record("delete me")).unwrap();
+
+        assert!(db.get_command(id).unwrap().is_some());
+        assert!(db.delete_command(id).unwrap());
+        assert!(db.get_command(id).unwrap().is_none());
+
+        // FTS should also be cleaned up
+        let results = db.search("delete", 10).unwrap();
+        assert!(results.is_empty());
+
+        // Deleting non-existent returns false
+        assert!(!db.delete_command(9999).unwrap());
+    }
 }
