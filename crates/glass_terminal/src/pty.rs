@@ -96,13 +96,20 @@ fn convert_osc_to_shell(osc: crate::osc_scanner::OscEvent) -> ShellEvent {
 /// The PTY reader thread runs independently on a dedicated std::thread (NOT a Tokio task).
 /// It pre-scans PTY output through OscScanner before feeding bytes to the VTE parser,
 /// sending ShellEvent variants to the winit event loop for block/status tracking.
+///
+/// If `shell_override` is `Some`, that shell program is used directly (e.g. "powershell",
+/// "bash"). If `None`, the default detection logic runs: pwsh 7 if available, else
+/// Windows PowerShell 5.1.
 pub fn spawn_pty(
     event_proxy: EventProxy,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     window_id: WindowId,
+    shell_override: Option<&str>,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
-    // Prefer pwsh (PowerShell 7) if available; fall back to powershell (Windows PowerShell 5.1)
-    let shell_program = if std::process::Command::new("pwsh").arg("--version").output().is_ok() {
+    // Use configured shell if provided, otherwise detect pwsh vs powershell
+    let shell_program = if let Some(shell) = shell_override {
+        shell.to_owned()
+    } else if std::process::Command::new("pwsh").arg("--version").output().is_ok() {
         "pwsh".to_owned()
     } else {
         "powershell".to_owned()

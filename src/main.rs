@@ -65,6 +65,8 @@ struct Processor {
     proxy: EventLoopProxy<AppEvent>,
     /// Current keyboard modifier state, updated by ModifiersChanged events.
     modifiers: ModifiersState,
+    /// User configuration loaded from ~/.glass/config.toml at startup.
+    config: GlassConfig,
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -101,15 +103,14 @@ impl ApplicationHandler<AppEvent> for Processor {
         // wgpu init is async; block via pollster from this sync callback
         let renderer = pollster::block_on(GlassRenderer::new(Arc::clone(&window)));
 
-        // Create FrameRenderer with font config
-        let config = GlassConfig::default();
+        // Create FrameRenderer with font config from loaded config
         let scale_factor = window.scale_factor() as f32;
         let frame_renderer = FrameRenderer::new(
             renderer.device(),
             renderer.queue(),
             renderer.surface_format(),
-            &config.font_family,
-            config.font_size,
+            &self.config.font_family,
+            self.config.font_size,
             scale_factor,
         );
 
@@ -128,11 +129,12 @@ impl ApplicationHandler<AppEvent> for Processor {
         // Create EventProxy using the pre-created proxy (EventLoopProxy is Clone)
         let event_proxy = EventProxy::new(self.proxy.clone(), window.id());
 
-        // Spawn PowerShell via ConPTY with a dedicated reader thread + OscScanner
+        // Spawn shell via ConPTY with a dedicated reader thread + OscScanner
         let (pty_sender, term) = glass_terminal::spawn_pty(
             event_proxy,
             self.proxy.clone(),
             window.id(),
+            self.config.shell.as_deref(),
         );
 
         // Send initial resize with correct font-metrics-based cell dimensions
@@ -452,6 +454,10 @@ fn main() {
 
     tracing::info!("Glass starting");
 
+    let config = GlassConfig::load();
+    tracing::info!("Config: font_family={}, font_size={}, shell={:?}",
+        config.font_family, config.font_size, config.shell);
+
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .expect("Failed to create event loop");
@@ -464,6 +470,7 @@ fn main() {
         windows: HashMap::new(),
         proxy,
         modifiers: ModifiersState::empty(),
+        config,
     };
 
     event_loop
