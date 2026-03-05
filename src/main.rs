@@ -9,6 +9,7 @@ use alacritty_terminal::term::{Term, TermMode};
 use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, ShellEvent};
+use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
 use glass_terminal::{
     BlockManager, DefaultColors, EventProxy, OscEvent, PtyMsg, PtySender, StatusState,
@@ -84,6 +85,13 @@ struct WindowContext {
     status: StatusState,
     /// Whether the first-frame cold start metric has been logged.
     first_frame_logged: bool,
+    /// History database for this window (opened from cwd at window creation).
+    history_db: Option<HistoryDb>,
+    /// Row ID of the last inserted command, for attaching output later.
+    last_command_id: Option<i64>,
+    /// Wall-clock time when the current command started executing (set on CommandExecuted).
+    /// Block.started_at is Instant (monotonic), but CommandRecord needs epoch seconds.
+    command_started_wall: Option<std::time::SystemTime>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -201,6 +209,18 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         let default_colors = DefaultColors::default();
 
+        // Open history database from initial cwd (non-fatal on failure)
+        let history_db = match HistoryDb::open(&resolve_db_path(&std::env::current_dir().unwrap_or_default())) {
+            Ok(db) => {
+                tracing::info!("History database opened");
+                Some(db)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to open history database: {} — history disabled", e);
+                None
+            }
+        };
+
         let id = window.id();
         self.windows.insert(
             id,
@@ -214,6 +234,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 block_manager: BlockManager::new(),
                 status: StatusState::default(),
                 first_frame_logged: false,
+                history_db,
+                last_command_id: None,
+                command_started_wall: None,
             },
         );
     }
@@ -422,6 +445,58 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let osc_event = shell_event_to_osc(&shell_event);
                     ctx.block_manager.handle_event(&osc_event, line);
 
+                    // Track wall-clock start time on CommandExecuted
+                    if matches!(shell_event, ShellEvent::CommandExecuted) {
+                        ctx.command_started_wall = Some(std::time::SystemTime::now());
+                    }
+
+                    // Insert CommandRecord on CommandFinished
+                    if let ShellEvent::CommandFinished { exit_code } = &shell_event {
+                        if let Some(ref db) = ctx.history_db {
+                            let now = std::time::SystemTime::now();
+                            let finished_epoch = now
+                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+                            let started_epoch = ctx.command_started_wall
+                                .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(finished_epoch);
+                            let duration_ms = ctx.command_started_wall
+                                .and_then(|t| now.duration_since(t).ok())
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0);
+
+                            // Command text: empty for now. Extracting from terminal grid
+                            // requires locking and reading lines -- deferred to Phase 7.
+                            let command_text = String::new();
+
+                            let record = CommandRecord {
+                                id: None,
+                                command: command_text,
+                                cwd: ctx.status.cwd().to_string(),
+                                exit_code: *exit_code,
+                                started_at: started_epoch,
+                                finished_at: finished_epoch,
+                                duration_ms,
+                                output: None,
+                            };
+
+                            match db.insert_command(&record) {
+                                Ok(id) => {
+                                    ctx.last_command_id = Some(id);
+                                    tracing::debug!("Inserted command record id={}", id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to insert command record: {}", e);
+                                    ctx.last_command_id = None;
+                                }
+                            }
+                        }
+                        // Clear wall-clock tracker
+                        ctx.command_started_wall = None;
+                    }
+
                     // On CurrentDirectory events, update status and query git info
                     if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
                         ctx.status.set_cwd(cwd.clone());
@@ -455,22 +530,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
             }
             AppEvent::CommandOutput { window_id, raw_output } => {
-                if let Some(_ctx) = self.windows.get_mut(&window_id) {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Process raw bytes: binary detection, ANSI stripping, truncation
                     let max_kb = self.config.history.as_ref()
                         .map(|h| h.max_output_capture_kb)
                         .unwrap_or(50);
                     let processed = glass_history::output::process_output(Some(raw_output), max_kb);
                     if let Some(output) = processed {
-                        tracing::debug!(
-                            "CommandOutput: {} bytes processed for window {:?}",
-                            output.len(),
-                            window_id,
-                        );
-                        // TODO: Store in HistoryDb once command record write path is established.
-                        // For now, the processed output is logged. The full DB wiring
-                        // (insert CommandRecord with output on CommandFinished) will be
-                        // connected when the history write path is built.
+                        // Update the last command record with captured output
+                        if let (Some(ref db), Some(cmd_id)) = (&ctx.history_db, ctx.last_command_id) {
+                            match db.update_output(cmd_id, &output) {
+                                Ok(()) => {
+                                    tracing::debug!(
+                                        "Updated command {} with {} bytes of output",
+                                        cmd_id,
+                                        output.len(),
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to update command output: {}", e);
+                                }
+                            }
+                        }
                     }
                 }
             }
