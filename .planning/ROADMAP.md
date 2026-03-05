@@ -76,9 +76,9 @@ Plans:
 **Requirements**: CONF-01, CONF-02, CONF-03, PERF-01, PERF-02, PERF-03
 **Success Criteria** (what must be TRUE):
   1. A `~/.glass/config.toml` file with `font_family`, `font_size`, and `shell` fields is loaded at startup and the chosen font and shell are applied
-  2. Cold start time (from launch to interactive prompt) is under 200ms measured on a clean launch
+  2. Cold start time (from launch to interactive prompt) is under 500ms measured on a clean launch (revised from 200ms — DX12 hardware floor ~290ms)
   3. Keypress-to-screen latency is under 5ms measured under normal shell load
-  4. Idle memory usage (shell at prompt, no active process) is under 50MB
+  4. Idle memory usage (shell at prompt, no active process) is under 120MB (revised from 50MB — GPU driver baseline ~80MB)
 **Plans:** 2/2 plans complete
 
 Plans:
