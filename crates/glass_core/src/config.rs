@@ -1,4 +1,12 @@
-#[derive(Debug, Clone)]
+use serde::Deserialize;
+
+/// Glass terminal configuration, loaded from `~/.glass/config.toml`.
+///
+/// All fields have sensible defaults. Missing fields in the TOML file
+/// are filled from the `Default` implementation. A missing or malformed
+/// config file silently falls back to all defaults (no crash, no error dialog).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct GlassConfig {
     pub font_family: String,
     pub font_size: f32,
@@ -11,6 +19,50 @@ impl Default for GlassConfig {
             font_family: "Consolas".into(),
             font_size: 14.0,
             shell: None,
+        }
+    }
+}
+
+impl GlassConfig {
+    /// Load configuration from `~/.glass/config.toml`.
+    ///
+    /// Returns `Self::default()` if the file is missing, unreadable, or malformed.
+    /// Does NOT create the config file if it does not exist.
+    pub fn load() -> Self {
+        let Some(home) = dirs::home_dir() else {
+            tracing::debug!("Could not determine home directory; using default config");
+            return Self::default();
+        };
+
+        let config_path = home.join(".glass").join("config.toml");
+
+        match std::fs::read_to_string(&config_path) {
+            Ok(contents) => {
+                let config = Self::load_from_str(&contents);
+                tracing::info!("Loaded config from {}", config_path.display());
+                config
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("No config file at {}; using defaults", config_path.display());
+                Self::default()
+            }
+            Err(err) => {
+                tracing::warn!("Failed to read {}: {}; using defaults", config_path.display(), err);
+                Self::default()
+            }
+        }
+    }
+
+    /// Parse a TOML string into a `GlassConfig`, falling back to defaults on error.
+    ///
+    /// Used by `load()` and useful for testing.
+    pub fn load_from_str(s: &str) -> Self {
+        match toml::from_str(s) {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::warn!("Failed to parse config TOML: {err}; using defaults");
+                Self::default()
+            }
         }
     }
 }
