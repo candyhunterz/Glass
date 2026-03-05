@@ -70,30 +70,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SNAP-01 | — | Pending |
-| SNAP-02 | — | Pending |
-| SNAP-03 | — | Pending |
-| SNAP-04 | — | Pending |
-| SNAP-05 | — | Pending |
-| SNAP-06 | — | Pending |
-| UNDO-01 | — | Pending |
-| UNDO-02 | — | Pending |
-| UNDO-03 | — | Pending |
-| UNDO-04 | — | Pending |
-| UI-01 | — | Pending |
-| UI-02 | — | Pending |
-| UI-03 | — | Pending |
-| STOR-01 | — | Pending |
-| STOR-02 | — | Pending |
-| STOR-03 | — | Pending |
-| MCP-01 | — | Pending |
-| MCP-02 | — | Pending |
+| SNAP-01 | Phase 13 | Pending |
+| SNAP-02 | Phase 10 | Pending |
+| SNAP-03 | Phase 11 | Pending |
+| SNAP-04 | Phase 12 | Pending |
+| SNAP-05 | Phase 10 | Pending |
+| SNAP-06 | Phase 10 | Pending |
+| UNDO-01 | Phase 13 | Pending |
+| UNDO-02 | Phase 13 | Pending |
+| UNDO-03 | Phase 13 | Pending |
+| UNDO-04 | Phase 13 | Pending |
+| UI-01 | Phase 14 | Pending |
+| UI-02 | Phase 14 | Pending |
+| UI-03 | Phase 14 | Pending |
+| STOR-01 | Phase 14 | Pending |
+| STOR-02 | Phase 12 | Pending |
+| STOR-03 | Phase 13 | Pending |
+| MCP-01 | Phase 14 | Pending |
+| MCP-02 | Phase 14 | Pending |
 
 **Coverage:**
 - v1.2 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18
+- Mapped to phases: 18
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-05*
-*Last updated: 2026-03-05 after initial definition*
+*Last updated: 2026-03-05 after roadmap creation*
