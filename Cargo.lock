@@ -935,6 +935,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "arboard",
+ "chrono",
  "clap",
  "glass_core",
  "glass_history",
