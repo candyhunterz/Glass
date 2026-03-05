@@ -4,7 +4,7 @@ milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: completed
 stopped_at: Completed 08-02-PLAN.md
-last_updated: "2026-03-05T20:15:00Z"
+last_updated: "2026-03-05T19:31:16.414Z"
 last_activity: 2026-03-05 -- Completed 08-02 search overlay rendering
 progress:
   total_phases: 5
