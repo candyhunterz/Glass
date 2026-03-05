@@ -115,6 +115,44 @@ impl GlassRenderer {
         frame.present();
     }
 
+    /// Get a reference to the wgpu device.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Get a reference to the wgpu queue.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Get the surface texture format.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_config.format
+    }
+
+    /// Get a reference to the surface configuration.
+    pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
+        &self.surface_config
+    }
+
+    /// Get the current surface texture for rendering.
+    ///
+    /// Returns None if the surface texture could not be acquired (recoverable error).
+    /// On Lost/Outdated, reconfigures the surface automatically.
+    pub fn get_current_texture(&mut self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            Ok(frame) => Some(frame),
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                None
+            }
+            Err(e) => {
+                tracing::error!("Surface error: {e}");
+                None
+            }
+        }
+    }
+
     /// Update the surface configuration to match the new window size.
     ///
     /// Returns early (no-op) if either dimension is zero, which can occur
