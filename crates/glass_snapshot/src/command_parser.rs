@@ -3,7 +3,7 @@
 //! Pure function: `(command_text, cwd) -> ParseResult` with no state or DB access.
 //! Uses a whitelist of known destructive commands and per-command argument extractors.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::types::{Confidence, ParseResult};
 
@@ -13,21 +13,605 @@ use crate::types::{Confidence, ParseResult};
 /// (rm, mv, cp, sed -i, chmod, git checkout, truncate) and returns
 /// `Confidence::Low` for anything it cannot parse.
 pub fn parse_command(command_text: &str, cwd: &Path) -> ParseResult {
-    let _trimmed = command_text.trim();
-    // Stub: return Low confidence for everything
+    let trimmed = command_text.trim();
+    if trimmed.is_empty() {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        };
+    }
+
+    // Check for shell features we cannot parse
+    if contains_unparseable_syntax(trimmed) {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        };
+    }
+
+    // Extract redirect targets (applies regardless of command)
+    let mut redirect_targets = extract_redirect_targets(trimmed, cwd);
+
+    // Tokenize
+    let tokens = tokenize(trimmed);
+    if tokens.is_empty() {
+        let confidence = if redirect_targets.is_empty() {
+            Confidence::Low
+        } else {
+            Confidence::High
+        };
+        return ParseResult {
+            targets: redirect_targets,
+            confidence,
+        };
+    }
+
+    // Dispatch to per-command parser
+    let cmd = base_command(&tokens[0]);
+    let args: Vec<String> = tokens[1..].to_vec();
+    let mut result = dispatch_command(cmd, &args, cwd);
+
+    // Merge redirect targets
+    result.targets.append(&mut redirect_targets);
+
+    // If base command is read-only but we have redirect targets, upgrade confidence
+    if result.confidence == Confidence::ReadOnly && !result.targets.is_empty() {
+        result.confidence = Confidence::High;
+    }
+
+    result
+}
+
+/// Tokenize a command string using shlex for POSIX shell splitting.
+/// Falls back to whitespace splitting if shlex cannot parse (e.g., unterminated quotes).
+fn tokenize(command_text: &str) -> Vec<String> {
+    // Strip redirect operators and their targets before tokenizing,
+    // since shlex treats > as a normal character
+    let cleaned = strip_redirects(command_text);
+    shlex::split(&cleaned).unwrap_or_else(|| {
+        cleaned.split_whitespace().map(String::from).collect()
+    })
+}
+
+/// Remove redirect operators and their targets from command text.
+/// This prevents redirect filenames from appearing as command arguments.
+fn strip_redirects(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                result.push('\'');
+                i += 1;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                result.push('"');
+                i += 1;
+            }
+            b'>' if !in_single_quote && !in_double_quote => {
+                // Skip the > or >>
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'>' {
+                    i += 1;
+                }
+                // Skip whitespace after redirect
+                while i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
+                // Skip the filename token
+                if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1; // skip closing quote
+                    }
+                } else {
+                    while i < bytes.len()
+                        && bytes[i] != b' '
+                        && bytes[i] != b'\t'
+                        && bytes[i] != b'>'
+                        && bytes[i] != b'|'
+                        && bytes[i] != b';'
+                    {
+                        i += 1;
+                    }
+                }
+            }
+            // Also skip fd redirects like 2>
+            b'0'..=b'9' if !in_single_quote && !in_double_quote => {
+                // Check if next char is >
+                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                    // Skip the digit and let the > handler above deal with it
+                    i += 1;
+                    // Now skip > or >>
+                    i += 1;
+                    if i < bytes.len() && bytes[i] == b'>' {
+                        i += 1;
+                    }
+                    while i < bytes.len() && bytes[i] == b' ' {
+                        i += 1;
+                    }
+                    while i < bytes.len()
+                        && bytes[i] != b' '
+                        && bytes[i] != b'\t'
+                        && bytes[i] != b'>'
+                    {
+                        i += 1;
+                    }
+                } else {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            _ => {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+    }
+    result
+}
+
+/// Extract the base command name, stripping path prefixes.
+/// `/usr/bin/rm` -> `rm`, `./script.sh` -> `script.sh`
+fn base_command(cmd: &str) -> &str {
+    // Handle both forward and back slashes
+    cmd.rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(cmd)
+}
+
+/// Resolve a path argument against the working directory.
+/// Does NOT check if the file exists -- the file may not exist yet
+/// (e.g., cp destination) or may be deleted by the command.
+fn resolve_path(path_str: &str, cwd: &Path) -> PathBuf {
+    let path = Path::new(path_str);
+    // On Windows, POSIX paths starting with `/` are not considered absolute
+    // by Path::is_absolute(), but they ARE absolute in WSL/bash context.
+    if path.is_absolute() || path_str.starts_with('/') {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+/// Detect syntax we cannot reliably parse.
+fn contains_unparseable_syntax(text: &str) -> bool {
+    text.contains("$(")
+        || text.contains('`')
+        || text.contains("${")
+        || text.contains(" | ")
+        || text.contains(" && ")
+        || text.contains(" || ")
+        || text.contains(';')
+        || text.starts_with("for ")
+        || text.starts_with("while ")
+        || text.starts_with("if ")
+}
+
+/// Check for output redirections: `> file`, `>> file`, `2> file`.
+/// These modify the redirect target regardless of the command.
+fn extract_redirect_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    let bytes = command_text.as_bytes();
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            b'>' if !in_single_quote && !in_double_quote => {
+                // Skip >> (append) -- still a target
+                let mut j = i + 1;
+                if j < bytes.len() && bytes[j] == b'>' {
+                    j += 1;
+                }
+                // Skip whitespace after >
+                while j < bytes.len() && bytes[j] == b' ' {
+                    j += 1;
+                }
+                // Extract the filename token
+                let start = j;
+                while j < bytes.len()
+                    && bytes[j] != b' '
+                    && bytes[j] != b'\t'
+                    && bytes[j] != b'>'
+                    && bytes[j] != b'|'
+                    && bytes[j] != b';'
+                {
+                    j += 1;
+                }
+                if start < j {
+                    let filename = &command_text[start..j];
+                    targets.push(resolve_path(filename, cwd));
+                }
+                i = j;
+                continue;
+            }
+            // Handle fd redirects like 2>
+            b'0'..=b'9' if !in_single_quote && !in_double_quote => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                    let mut j = i + 2;
+                    if j < bytes.len() && bytes[j] == b'>' {
+                        j += 1;
+                    }
+                    while j < bytes.len() && bytes[j] == b' ' {
+                        j += 1;
+                    }
+                    let start = j;
+                    while j < bytes.len()
+                        && bytes[j] != b' '
+                        && bytes[j] != b'\t'
+                        && bytes[j] != b'>'
+                    {
+                        j += 1;
+                    }
+                    if start < j {
+                        let filename = &command_text[start..j];
+                        targets.push(resolve_path(filename, cwd));
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    targets
+}
+
+/// Dispatch to per-command parser based on command name.
+fn dispatch_command(cmd: &str, args: &[String], cwd: &Path) -> ParseResult {
+    match cmd {
+        // Destructive commands -- extract file targets
+        "rm" | "del" | "unlink" => parse_rm(args, cwd),
+        "mv" | "move" | "rename" => parse_mv(args, cwd),
+        "cp" | "copy" => parse_cp(args, cwd),
+        "sed" => parse_sed(args, cwd),
+        "chmod" | "chown" => parse_chmod(args, cwd),
+        "git" => parse_git(args, cwd),
+        "truncate" => parse_truncate(args, cwd),
+
+        // Read-only commands -- skip snapshot
+        "ls" | "dir" | "cat" | "type" | "head" | "tail" | "less" | "more" | "grep" | "rg"
+        | "find" | "which" | "where" | "echo" | "printf" | "pwd" | "whoami" | "date" | "env"
+        | "set" | "wc" | "file" | "stat" | "df" | "du" | "ps" | "top" | "htop" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+
+        // Everything else -- unknown, rely on watcher
+        _ => ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        },
+    }
+}
+
+/// Parse `rm [-rfiv] file1 [file2 ...]`
+fn parse_rm(args: &[String], cwd: &Path) -> ParseResult {
+    let mut targets = Vec::new();
+
+    for arg in args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        // If arg contains glob characters, return Low confidence
+        if contains_glob(arg) {
+            return ParseResult {
+                targets: vec![],
+                confidence: Confidence::Low,
+            };
+        }
+        targets.push(resolve_path(arg, cwd));
+    }
+
+    ParseResult {
+        targets,
+        confidence: Confidence::High,
+    }
+}
+
+/// Parse `mv [-fivn] source... dest`
+/// All arguments (sources + dest) are targets.
+fn parse_mv(args: &[String], cwd: &Path) -> ParseResult {
+    let non_flag_args: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+
+    if non_flag_args.len() < 2 {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        };
+    }
+
+    let targets: Vec<PathBuf> = non_flag_args.iter().map(|a| resolve_path(a, cwd)).collect();
+
+    ParseResult {
+        targets,
+        confidence: Confidence::High,
+    }
+}
+
+/// Parse `cp [-rfiv] source... dest`
+/// Destination file is the target (may be overwritten).
+fn parse_cp(args: &[String], cwd: &Path) -> ParseResult {
+    let non_flag_args: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+
+    if non_flag_args.len() < 2 {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        };
+    }
+
+    // Destination is the last non-flag argument
+    let dest = non_flag_args.last().unwrap();
+    let targets = vec![resolve_path(dest, cwd)];
+
+    ParseResult {
+        targets,
+        confidence: Confidence::High,
+    }
+}
+
+/// Parse `sed [-i[suffix]] [-e expr] [-f script] 'pattern' file...`
+fn parse_sed(args: &[String], cwd: &Path) -> ParseResult {
+    let has_inplace = args.iter().any(|a| a == "-i" || a.starts_with("-i"));
+    if !has_inplace {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        };
+    }
+
+    let mut targets = Vec::new();
+    let mut past_expression = false;
+    let mut skip_next = false;
+
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with('-') {
+            // -e and -f take a following argument
+            if arg == "-e" || arg == "-f" {
+                skip_next = true;
+            }
+            continue;
+        }
+        if !past_expression {
+            past_expression = true; // First non-flag arg is the sed expression
+            continue;
+        }
+        targets.push(resolve_path(arg, cwd));
+    }
+
+    ParseResult {
+        targets: targets.clone(),
+        confidence: if targets.is_empty() {
+            Confidence::Low
+        } else {
+            Confidence::High
+        },
+    }
+}
+
+/// Parse `chmod/chown mode/owner file...`
+/// First non-flag argument is mode/owner, rest are files.
+fn parse_chmod(args: &[String], cwd: &Path) -> ParseResult {
+    let mut targets = Vec::new();
+    let mut past_mode = false;
+
+    for arg in args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        if !past_mode {
+            past_mode = true; // First non-flag arg is mode/owner
+            continue;
+        }
+        targets.push(resolve_path(arg, cwd));
+    }
+
+    ParseResult {
+        targets: targets.clone(),
+        confidence: if targets.is_empty() {
+            Confidence::Low
+        } else {
+            Confidence::High
+        },
+    }
+}
+
+/// Parse git subcommands.
+fn parse_git(args: &[String], cwd: &Path) -> ParseResult {
+    let subcommand = match args.first() {
+        Some(s) => s.as_str(),
+        None => {
+            return ParseResult {
+                targets: vec![],
+                confidence: Confidence::Low,
+            }
+        }
+    };
+
+    match subcommand {
+        // Destructive subcommands
+        "checkout" => parse_git_checkout(&args[1..], cwd),
+        "restore" => parse_git_restore(&args[1..], cwd),
+        "clean" => parse_git_clean(&args[1..], cwd),
+        "reset" => parse_git_reset(&args[1..], cwd),
+
+        // Read-only subcommands
+        "status" | "log" | "diff" | "show" | "branch" | "remote" | "fetch" | "stash" | "tag"
+        | "blame" | "reflog" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+
+        // Unknown git subcommands -- could modify files
+        _ => ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        },
+    }
+}
+
+/// `git checkout -- file1 file2` or `git checkout branch -- file1`
+fn parse_git_checkout(args: &[String], cwd: &Path) -> ParseResult {
+    // After `--`, everything is a file path
+    if let Some(dashdash_pos) = args.iter().position(|a| a == "--") {
+        let targets: Vec<PathBuf> = args[dashdash_pos + 1..]
+            .iter()
+            .filter(|a| !a.starts_with('-'))
+            .map(|a| resolve_path(a, cwd))
+            .collect();
+        return ParseResult {
+            targets,
+            confidence: Confidence::High,
+        };
+    }
+
+    // Without `--`, ambiguous (could be branch name or file)
     ParseResult {
         targets: vec![],
         confidence: Confidence::Low,
     }
 }
 
+/// `git restore [--source=ref] [--staged] [--worktree] -- file...`
+fn parse_git_restore(args: &[String], cwd: &Path) -> ParseResult {
+    // After `--`, everything is a file path
+    if let Some(dashdash_pos) = args.iter().position(|a| a == "--") {
+        let targets: Vec<PathBuf> = args[dashdash_pos + 1..]
+            .iter()
+            .filter(|a| !a.starts_with('-'))
+            .map(|a| resolve_path(a, cwd))
+            .collect();
+        return ParseResult {
+            targets,
+            confidence: Confidence::High,
+        };
+    }
+
+    // Without --, files could be at the end after flags
+    let non_flag_args: Vec<&String> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    let targets: Vec<PathBuf> = non_flag_args.iter().map(|a| resolve_path(a, cwd)).collect();
+    ParseResult {
+        targets: targets.clone(),
+        confidence: if targets.is_empty() {
+            Confidence::Low
+        } else {
+            Confidence::High
+        },
+    }
+}
+
+/// `git clean [-fdxn]` -- removes untracked files
+fn parse_git_clean(_args: &[String], _cwd: &Path) -> ParseResult {
+    // git clean operates on untracked files -- we cannot predict which ones
+    ParseResult {
+        targets: vec![],
+        confidence: Confidence::Low,
+    }
+}
+
+/// `git reset [--hard|--soft|--mixed] [ref] [-- file...]`
+fn parse_git_reset(args: &[String], cwd: &Path) -> ParseResult {
+    if let Some(dashdash_pos) = args.iter().position(|a| a == "--") {
+        let targets: Vec<PathBuf> = args[dashdash_pos + 1..]
+            .iter()
+            .filter(|a| !a.starts_with('-'))
+            .map(|a| resolve_path(a, cwd))
+            .collect();
+        return ParseResult {
+            targets,
+            confidence: Confidence::High,
+        };
+    }
+
+    // git reset --hard is destructive but affects all tracked files
+    if args.iter().any(|a| a == "--hard") {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        };
+    }
+
+    ParseResult {
+        targets: vec![],
+        confidence: Confidence::Low,
+    }
+}
+
+/// Parse `truncate [-s size] file...`
+fn parse_truncate(args: &[String], cwd: &Path) -> ParseResult {
+    let mut targets = Vec::new();
+    let mut skip_next = false;
+
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "-s" || arg == "--size" {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        targets.push(resolve_path(arg, cwd));
+    }
+
+    ParseResult {
+        targets: targets.clone(),
+        confidence: if targets.is_empty() {
+            Confidence::Low
+        } else {
+            Confidence::High
+        },
+    }
+}
+
+/// Check if a string contains glob characters.
+fn contains_glob(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn cwd() -> PathBuf {
         PathBuf::from("/home/user/project")
+    }
+
+    /// Helper to build expected resolved path.
+    /// On Windows, PathBuf::from("/home/user/project").join("foo.txt")
+    /// uses backslash separators. This helper matches that behavior.
+    fn resolved(relative: &str) -> PathBuf {
+        cwd().join(relative)
     }
 
     #[test]
@@ -41,7 +625,7 @@ mod tests {
     fn test_rm_single_file() {
         let result = parse_command("rm foo.txt", &cwd());
         assert_eq!(result.confidence, Confidence::High);
-        assert_eq!(result.targets, vec![cwd().join("foo.txt")]);
+        assert_eq!(result.targets, vec![resolved("foo.txt")]);
     }
 
     #[test]
@@ -50,13 +634,19 @@ mod tests {
         assert_eq!(result.confidence, Confidence::High);
         assert_eq!(
             result.targets,
-            vec![cwd().join("foo.txt"), cwd().join("bar.txt")]
+            vec![resolved("foo.txt"), resolved("bar.txt")]
         );
     }
 
     #[test]
     fn test_readonly_commands() {
-        for cmd in &["ls foo", "cat file.txt", "grep pattern file", "echo hello", "pwd"] {
+        for cmd in &[
+            "ls foo",
+            "cat file.txt",
+            "grep pattern file",
+            "echo hello",
+            "pwd",
+        ] {
             let result = parse_command(cmd, &cwd());
             assert_eq!(
                 result.confidence,
@@ -80,17 +670,14 @@ mod tests {
     fn test_quoted_args() {
         let result = parse_command("rm \"file with spaces.txt\"", &cwd());
         assert_eq!(result.confidence, Confidence::High);
-        assert_eq!(
-            result.targets,
-            vec![cwd().join("file with spaces.txt")]
-        );
+        assert_eq!(result.targets, vec![resolved("file with spaces.txt")]);
     }
 
     #[test]
     fn test_path_resolution() {
         // Relative path resolved against cwd
         let result = parse_command("rm foo.txt", &cwd());
-        assert_eq!(result.targets, vec![cwd().join("foo.txt")]);
+        assert_eq!(result.targets, vec![resolved("foo.txt")]);
 
         // Absolute path kept as-is
         let result = parse_command("rm /tmp/foo.txt", &cwd());
@@ -103,7 +690,7 @@ mod tests {
         assert_eq!(result.confidence, Confidence::High);
         assert_eq!(
             result.targets,
-            vec![cwd().join("src.txt"), cwd().join("dst.txt")]
+            vec![resolved("src.txt"), resolved("dst.txt")]
         );
     }
 
@@ -111,7 +698,7 @@ mod tests {
     fn test_cp_dest() {
         let result = parse_command("cp src.txt dst.txt", &cwd());
         assert_eq!(result.confidence, Confidence::High);
-        assert!(result.targets.contains(&cwd().join("dst.txt")));
+        assert!(result.targets.contains(&resolved("dst.txt")));
     }
 
     #[test]
@@ -119,7 +706,7 @@ mod tests {
         // sed -i is destructive
         let result = parse_command("sed -i 's/a/b/' file.txt", &cwd());
         assert_eq!(result.confidence, Confidence::High);
-        assert!(result.targets.contains(&cwd().join("file.txt")));
+        assert!(result.targets.contains(&resolved("file.txt")));
 
         // sed without -i is read-only
         let result = parse_command("sed 's/a/b/' file.txt", &cwd());
@@ -130,20 +717,20 @@ mod tests {
     fn test_chmod() {
         let result = parse_command("chmod 755 file.txt", &cwd());
         assert_eq!(result.confidence, Confidence::High);
-        assert!(result.targets.contains(&cwd().join("file.txt")));
+        assert!(result.targets.contains(&resolved("file.txt")));
     }
 
     #[test]
     fn test_git_checkout_with_dashdash() {
         let result = parse_command("git checkout -- file.txt", &cwd());
         assert_eq!(result.confidence, Confidence::High);
-        assert!(result.targets.contains(&cwd().join("file.txt")));
+        assert!(result.targets.contains(&resolved("file.txt")));
     }
 
     #[test]
     fn test_redirect() {
         let result = parse_command("echo hello > out.txt", &cwd());
-        assert!(result.targets.contains(&cwd().join("out.txt")));
+        assert!(result.targets.contains(&resolved("out.txt")));
     }
 
     #[test]
