@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
-status: completed
-stopped_at: Completed 07-02 CLI history subcommands
-last_updated: "2026-03-05T18:45:27.049Z"
-last_activity: 2026-03-05 -- Completed 07-02 CLI history subcommands
+status: in-progress
+stopped_at: Completed 08-01 search overlay state and input
+last_updated: "2026-03-05T19:04:49.384Z"
+last_activity: 2026-03-05 -- Completed 08-01 search overlay state and input
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
-  percent: 92
+  total_plans: 10
+  completed_plans: 9
+  percent: 94
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 7 - CLI Query Interface
+**Current focus:** Phase 8 - Search Overlay
 
 ## Current Position
 
 Milestone: v1.1 Structured Scrollback + MCP Server
-Phase: 7 of 9 (CLI Query Interface)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 7 Complete
-Last activity: 2026-03-05 -- Completed 07-02 CLI history subcommands
+Phase: 8 of 9 (Search Overlay)
+Plan: 1 of 2 in current phase
+Status: Plan 08-01 Complete
+Last activity: 2026-03-05 -- Completed 08-01 search overlay state and input
 
-Progress: [=========+] 92% (v1.1: 3/5 phases, 2/2 plans in phase 7)
+Progress: [=========+] 94% (v1.1: 3/5 phases, 1/2 plans in phase 8)
 
 ## Performance Metrics
 
@@ -71,6 +71,10 @@ Recent decisions affecting v1.1:
 - [Phase 07]: HistoryFilters clap::Args with flatten for shared filter args between Search/List
 - [Phase 07]: Default limit 25 via clap default_value_t, not Default trait
 - [Phase 07]: Relative timestamps (Nh ago) for recent entries, full datetime for older
+- [Phase 08]: Overlay input interception placed BEFORE Ctrl+Shift check to fully swallow keys
+- [Phase 08]: Ctrl+Shift+F toggle works both to open and close overlay
+- [Phase 08]: Debounce polling via continuous request_redraw while search_pending
+- [Phase 08]: 150ms debounce timer for search execution
 
 ### Pending Todos
 
@@ -82,6 +86,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T18:40:34Z
-Stopped at: Completed 07-02 CLI history subcommands
-Resume file: .planning/phases/07-cli-query-interface/07-02-SUMMARY.md
+Last session: 2026-03-05T19:04:49.382Z
+Stopped at: Completed 08-01-PLAN.md
+Resume file: None
