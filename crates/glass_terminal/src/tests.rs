@@ -37,6 +37,17 @@ mod escape_seq_tests {
         }
     }
 
+    /// Return the shell program name to use in tests.
+    /// Prefer `pwsh` (PowerShell 7), fall back to `powershell` (Windows PowerShell 5.1).
+    fn shell_program() -> &'static str {
+        // Check if pwsh is available on PATH by attempting to resolve it
+        if std::process::Command::new("pwsh").arg("--version").output().is_ok() {
+            "pwsh"
+        } else {
+            "powershell"
+        }
+    }
+
     fn make_term_size() -> TestSize {
         TestSize { columns: 80, lines: 24 }
     }
@@ -69,10 +80,10 @@ mod escape_seq_tests {
         let wakeup = Arc::new(AtomicBool::new(false));
         let listener = TestListener { wakeup_received: Arc::clone(&wakeup) };
 
-        // Spawn a PTY with PowerShell
+        // Spawn a PTY with PowerShell (prefer pwsh/PS7, fall back to powershell/PS5.1)
         let options = alacritty_terminal::tty::Options {
             shell: Some(alacritty_terminal::tty::Shell::new(
-                "pwsh".to_owned(),
+                shell_program().to_owned(),
                 vec![],
             )),
             working_directory: None,
@@ -85,7 +96,7 @@ mod escape_seq_tests {
 
         let window_size = make_window_size();
         let pty = alacritty_terminal::tty::new(&options, window_size, 0)
-            .expect("Failed to spawn ConPTY — is pwsh available?");
+            .expect("Failed to spawn ConPTY — is powershell/pwsh available?");
 
         let size = make_term_size();
         let term = Arc::new(alacritty_terminal::sync::FairMutex::new(
@@ -145,7 +156,7 @@ mod escape_seq_tests {
 
         let options = alacritty_terminal::tty::Options {
             shell: Some(alacritty_terminal::tty::Shell::new(
-                "pwsh".to_owned(),
+                shell_program().to_owned(),
                 vec![],
             )),
             working_directory: None,
