@@ -4,7 +4,7 @@ milestone: v1.2
 milestone_name: Command-Level Undo
 status: completed
 stopped_at: Completed 11-02-PLAN.md
-last_updated: "2026-03-05T22:52:45.016Z"
+last_updated: "2026-03-05T22:55:01.683Z"
 last_activity: 2026-03-05 -- Completed 11-02-PLAN.md (PowerShell command parser)
 progress:
   total_phases: 5
