@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
 status: completed
-stopped_at: Completed 11-01-PLAN.md
-last_updated: "2026-03-05T22:47:30.341Z"
-last_activity: 2026-03-05 -- Completed 11-01-PLAN.md (POSIX command parser)
+stopped_at: Completed 11-02-PLAN.md
+last_updated: "2026-03-05T22:52:45.016Z"
+last_activity: 2026-03-05 -- Completed 11-02-PLAN.md (PowerShell command parser)
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 3
-  percent: 75
+  completed_plans: 4
+  percent: 100
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 11 (2 of 5 in v1.2)
-Plan: 1 of 1 in current phase (all complete)
+Plan: 2 of 2 in current phase (all complete)
 Status: Phase 11 complete, ready for Phase 12
-Last activity: 2026-03-05 -- Completed 11-01-PLAN.md (POSIX command parser)
+Last activity: 2026-03-05 -- Completed 11-02-PLAN.md (PowerShell command parser)
 
-Progress: [########..] 75% (v1.2)
+Progress: [██████████] 100% (v1.2)
 
 ## Performance Metrics
 
@@ -61,6 +61,11 @@ Recent decisions affecting current work:
 - [11-01]: POSIX / paths treated as absolute on Windows for WSL compatibility
 - [11-01]: Glob characters in arguments trigger Low confidence (no expansion)
 - [Phase 11]: Single-file parser with whitelist dispatch, shlex tokenization, redirect detection, WSL path compatibility
+- [11-02]: PowerShell aliases (del, move, copy) routed to PS parser, shadowing POSIX dispatch
+- [11-02]: Verb-Noun heuristic detects arbitrary cmdlets via alphabetic-hyphen-alphabetic pattern
+- [11-02]: tokenize_powershell uses simple quote-aware splitter (PS uses backtick, not backslash)
+- [11-02]: Unknown Verb-Noun cmdlets return Low confidence
+- [Phase 11-02]: PowerShell aliases routed to PS parser, Verb-Noun heuristic for cmdlet detection, tokenize_powershell without backslash escaping
 
 ### Pending Todos
 
@@ -70,10 +75,10 @@ None.
 
 - ~~Command text extraction timing: must move from CommandFinished to CommandExecuted~~ RESOLVED in 10-02
 - notify crate default buffer size on Windows needs verification during Phase 12 planning
-- PowerShell command parsing needs separate tokenizer (not shlex) -- design deferred to Phase 11
+- ~~PowerShell command parsing needs separate tokenizer (not shlex) -- design deferred to Phase 11~~ RESOLVED in 11-02
 
 ## Session Continuity
 
-Last session: 2026-03-05T22:47:28.814Z
-Stopped at: Completed 11-01-PLAN.md
+Last session: 2026-03-05T22:52:41.058Z
+Stopped at: Completed 11-02-PLAN.md
 Resume file: None
