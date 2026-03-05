@@ -1,0 +1,335 @@
+//! Block manager for shell integration command lifecycle tracking.
+//!
+//! Tracks commands through PromptActive -> InputActive -> Executing -> Complete
+//! states, recording line ranges, exit codes, and timing for duration display.
+
+use std::time::{Duration, Instant};
+
+use crate::osc_scanner::OscEvent;
+
+/// State of a command block in its lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockState {
+    /// Shell prompt is being displayed
+    PromptActive,
+    /// User is typing a command
+    InputActive,
+    /// Command is executing
+    Executing,
+    /// Command has finished
+    Complete,
+}
+
+/// A single command block representing one prompt-command-output cycle.
+#[derive(Debug, Clone)]
+pub struct Block {
+    /// Line where the prompt started
+    pub prompt_start_line: usize,
+    /// Line where command input started
+    pub command_start_line: usize,
+    /// Line where command output started (after execution began)
+    pub output_start_line: Option<usize>,
+    /// Line where command output ended
+    pub output_end_line: Option<usize>,
+    /// Exit code from the command (if finished)
+    pub exit_code: Option<i32>,
+    /// When command execution started
+    pub started_at: Option<Instant>,
+    /// When command execution finished
+    pub finished_at: Option<Instant>,
+    /// Current lifecycle state
+    pub state: BlockState,
+}
+
+impl Block {
+    fn new(prompt_line: usize) -> Self {
+        Self {
+            prompt_start_line: prompt_line,
+            command_start_line: prompt_line,
+            output_start_line: None,
+            output_end_line: None,
+            exit_code: None,
+            started_at: None,
+            finished_at: None,
+            state: BlockState::PromptActive,
+        }
+    }
+
+    /// Calculate the duration of command execution.
+    pub fn duration(&self) -> Option<Duration> {
+        match (self.started_at, self.finished_at) {
+            (Some(start), Some(end)) => Some(end.duration_since(start)),
+            _ => None,
+        }
+    }
+}
+
+/// Manages the collection of command blocks.
+pub struct BlockManager {
+    blocks: Vec<Block>,
+    current: Option<usize>,
+}
+
+impl BlockManager {
+    pub fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            current: None,
+        }
+    }
+
+    /// Process an OSC event and update block state.
+    pub fn handle_event(&mut self, event: &OscEvent, line: usize) {
+        match event {
+            OscEvent::PromptStart => {
+                let block = Block::new(line);
+                self.blocks.push(block);
+                self.current = Some(self.blocks.len() - 1);
+            }
+            OscEvent::CommandStart => {
+                if let Some(idx) = self.current {
+                    if let Some(block) = self.blocks.get_mut(idx) {
+                        block.state = BlockState::InputActive;
+                        block.command_start_line = line;
+                    }
+                }
+            }
+            OscEvent::CommandExecuted => {
+                if let Some(idx) = self.current {
+                    if let Some(block) = self.blocks.get_mut(idx) {
+                        block.state = BlockState::Executing;
+                        block.output_start_line = Some(line);
+                        block.started_at = Some(Instant::now());
+                    }
+                }
+            }
+            OscEvent::CommandFinished { exit_code } => {
+                if let Some(idx) = self.current {
+                    if let Some(block) = self.blocks.get_mut(idx) {
+                        block.state = BlockState::Complete;
+                        block.exit_code = *exit_code;
+                        block.output_end_line = Some(line);
+                        block.finished_at = Some(Instant::now());
+                    }
+                }
+            }
+            // CurrentDirectory events are handled by StatusState, not BlockManager
+            OscEvent::CurrentDirectory(_) => {}
+        }
+    }
+
+    /// Return blocks that overlap the given viewport.
+    pub fn visible_blocks(
+        &self,
+        display_offset: usize,
+        screen_lines: usize,
+    ) -> Vec<&Block> {
+        let viewport_start = display_offset;
+        let viewport_end = display_offset + screen_lines;
+
+        self.blocks
+            .iter()
+            .filter(|block| {
+                let block_start = block.prompt_start_line;
+                let block_end = block
+                    .output_end_line
+                    .or(block.output_start_line)
+                    .unwrap_or(block.command_start_line);
+                // Block overlaps viewport if it starts before viewport ends
+                // and ends at or after viewport starts
+                block_start < viewport_end && block_end >= viewport_start
+            })
+            .collect()
+    }
+
+    /// Get all blocks.
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+}
+
+impl Default for BlockManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Format a duration into a human-readable string.
+pub fn format_duration(d: Duration) -> String {
+    let total_secs = d.as_secs_f64();
+
+    if total_secs < 0.001 {
+        "<1ms".to_string()
+    } else if total_secs < 1.0 {
+        format!("{}ms", d.as_millis())
+    } else if total_secs < 60.0 {
+        format!("{:.1}s", total_secs)
+    } else {
+        let mins = d.as_secs() / 60;
+        let secs = d.as_secs() % 60;
+        format!("{}m {}s", mins, secs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::osc_scanner::OscEvent;
+    use std::time::Duration;
+
+    #[test]
+    fn prompt_start_creates_block() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        assert_eq!(bm.blocks().len(), 1);
+        assert_eq!(bm.blocks()[0].state, BlockState::PromptActive);
+        assert_eq!(bm.blocks()[0].prompt_start_line, 0);
+    }
+
+    #[test]
+    fn command_start_transitions_to_input_active() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        assert_eq!(bm.blocks()[0].state, BlockState::InputActive);
+        assert_eq!(bm.blocks()[0].command_start_line, 1);
+    }
+
+    #[test]
+    fn command_executed_transitions_to_executing() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        assert_eq!(bm.blocks()[0].state, BlockState::Executing);
+        assert!(bm.blocks()[0].started_at.is_some());
+    }
+
+    #[test]
+    fn command_finished_transitions_to_complete() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(0),
+            },
+            5,
+        );
+        assert_eq!(bm.blocks()[0].state, BlockState::Complete);
+        assert_eq!(bm.blocks()[0].exit_code, Some(0));
+        assert!(bm.blocks()[0].finished_at.is_some());
+    }
+
+    #[test]
+    fn multiple_commands_create_multiple_blocks() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(0),
+            },
+            5,
+        );
+        // Second command
+        bm.handle_event(&OscEvent::PromptStart, 6);
+        bm.handle_event(&OscEvent::CommandStart, 7);
+        assert_eq!(bm.blocks().len(), 2);
+        assert_eq!(bm.blocks()[0].state, BlockState::Complete);
+        assert_eq!(bm.blocks()[1].state, BlockState::InputActive);
+    }
+
+    #[test]
+    fn visible_blocks_returns_overlapping() {
+        let mut bm = BlockManager::new();
+        // Block at lines 0-5
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(0),
+            },
+            5,
+        );
+        // Block at lines 10-15
+        bm.handle_event(&OscEvent::PromptStart, 10);
+        bm.handle_event(&OscEvent::CommandStart, 11);
+        bm.handle_event(&OscEvent::CommandExecuted, 11);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(0),
+            },
+            15,
+        );
+
+        // Viewport covers lines 0-9 (should only see first block)
+        let visible = bm.visible_blocks(0, 10);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].prompt_start_line, 0);
+
+        // Viewport covers lines 0-15 (should see both blocks)
+        let visible = bm.visible_blocks(0, 16);
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn duration_for_complete_block() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        // Manually set timing for deterministic test
+        bm.blocks[0].started_at = Some(Instant::now());
+        bm.blocks[0].finished_at =
+            Some(bm.blocks[0].started_at.unwrap() + Duration::from_millis(1500));
+        let d = bm.blocks[0].duration().unwrap();
+        assert_eq!(d, Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn handle_event_without_prompt_start_is_resilient() {
+        let mut bm = BlockManager::new();
+        // Should not panic even without a prior PromptStart
+        bm.handle_event(&OscEvent::CommandStart, 0);
+        bm.handle_event(&OscEvent::CommandExecuted, 0);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(1),
+            },
+            0,
+        );
+        // No blocks created — all events ignored gracefully
+        assert!(bm.blocks().is_empty());
+    }
+
+    // format_duration tests
+    #[test]
+    fn format_duration_milliseconds() {
+        assert_eq!(format_duration(Duration::from_millis(500)), "500ms");
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(
+            format_duration(Duration::from_secs_f64(1.23)),
+            "1.2s"
+        );
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
+    }
+
+    #[test]
+    fn format_duration_sub_millisecond() {
+        assert_eq!(
+            format_duration(Duration::from_secs_f64(0.0005)),
+            "<1ms"
+        );
+    }
+}
