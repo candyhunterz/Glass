@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: Completed 06-02 PTY output capture pipeline
-last_updated: "2026-03-05T17:43:53.000Z"
+stopped_at: Completed 06-04 HistoryDb wiring
+last_updated: "2026-03-05T18:00:22.682Z"
 last_activity: 2026-03-05 -- Completed 06-02 PTY output capture pipeline
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 2
+  total_plans: 6
+  completed_plans: 6
   percent: 100
 ---
 
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 Milestone: v1.1 Structured Scrollback + MCP Server
 Phase: 6 of 9 (Output Capture + Writer Integration)
-Plan: 3 of 3 in current phase (phase complete)
+Plan: 4 of 4 in current phase (phase complete)
 Status: Executing
-Last activity: 2026-03-05 -- Completed 06-02 PTY output capture pipeline
+Last activity: 2026-03-05 -- Completed 06-04 HistoryDb wiring
 
-Progress: [##########] 100% (v1.1: 1/5 phases, 3/3 plans in phase 6)
+Progress: [##########] 100% (v1.1: 2/5 phases, 4/4 plans in phase 6)
 
 ## Performance Metrics
 
@@ -63,6 +63,8 @@ Recent decisions affecting v1.1:
 - Raw bytes via AppEvent to main thread for output processing (avoids glass_terminal -> glass_history dep)
 - Alt-screen detection via raw byte scanning (ESC[?1049h/l) instead of locking terminal TermMode
 - HistorySection as Option in GlassConfig for backward-compatible config parsing
+- [Phase 06]: Command text left empty -- metadata (cwd, exit_code, timestamps, output) is the high-value data; grid extraction deferred
+- [Phase 06]: HistoryDb::open failure is non-fatal -- history never crashes the terminal
 
 ### Pending Todos
 
@@ -74,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T17:43:53Z
-Stopped at: Completed 06-02 PTY output capture pipeline
-Resume file: .planning/phases/06-output-capture-writer-integration/06-02-SUMMARY.md
+Last session: 2026-03-05T18:00:22.680Z
+Stopped at: Completed 06-04 HistoryDb wiring
+Resume file: .planning/phases/06-output-capture-writer-integration/06-04-SUMMARY.md
