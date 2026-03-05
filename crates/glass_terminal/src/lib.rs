@@ -9,6 +9,7 @@ pub mod event_proxy;
 pub mod grid_snapshot;
 pub mod input;
 pub mod osc_scanner;
+pub mod output_capture;
 pub mod pty;
 pub mod status;
 
