@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
-status: in-progress
-stopped_at: Completed 08-01 search overlay state and input
-last_updated: "2026-03-05T19:04:49.384Z"
-last_activity: 2026-03-05 -- Completed 08-01 search overlay state and input
+status: completed
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-03-05T20:15:00Z"
+last_activity: 2026-03-05 -- Completed 08-02 search overlay rendering
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 10
-  completed_plans: 9
-  percent: 94
+  completed_plans: 10
+  percent: 100
 ---
 
 # Project State
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 Milestone: v1.1 Structured Scrollback + MCP Server
 Phase: 8 of 9 (Search Overlay)
-Plan: 1 of 2 in current phase
-Status: Plan 08-01 Complete
-Last activity: 2026-03-05 -- Completed 08-01 search overlay state and input
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 08 Complete
+Last activity: 2026-03-05 -- Completed 08-02 search overlay rendering
 
-Progress: [=========+] 94% (v1.1: 3/5 phases, 1/2 plans in phase 8)
+Progress: [##########] 100% (v1.1: 4/5 phases, 2/2 plans in phase 8)
 
 ## Performance Metrics
 
@@ -75,6 +75,9 @@ Recent decisions affecting v1.1:
 - [Phase 08]: Ctrl+Shift+F toggle works both to open and close overlay
 - [Phase 08]: Debounce polling via continuous request_redraw while search_pending
 - [Phase 08]: 150ms debounce timer for search execution
+- [Phase 08]: Epoch timestamp matching for scroll-to-block instead of index-position heuristic
+- [Phase 08]: Command text extracted from terminal grid using block line ranges at finish time
+- [Phase 08]: started_epoch on Block struct for wall-clock matching with DB records
 
 ### Pending Todos
 
@@ -86,6 +89,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T19:04:49.382Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-03-05T20:15:00Z
+Stopped at: Completed 08-02-PLAN.md
 Resume file: None

@@ -20,7 +20,7 @@ Requirements for Structured Scrollback + MCP Server. Each maps to roadmap phases
 - [x] **SRCH-01**: User can open search overlay with Ctrl+Shift+F
 - [x] **SRCH-02**: Incremental/live search results as user types
 - [x] **SRCH-03**: Arrow key navigation through results with enter to select
-- [ ] **SRCH-04**: Results displayed as structured blocks (command text, exit code, timestamp, preview)
+- [x] **SRCH-04**: Results displayed as structured blocks (command text, exit code, timestamp, preview)
 
 ### CLI Query
 
@@ -79,7 +79,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SRCH-01 | Phase 8 | Complete |
 | SRCH-02 | Phase 8 | Complete |
 | SRCH-03 | Phase 8 | Complete |
-| SRCH-04 | Phase 8 | Pending |
+| SRCH-04 | Phase 8 | Complete |
 | CLI-01 | Phase 7 | Complete |
 | CLI-02 | Phase 7 | Complete |
 | CLI-03 | Phase 7 | Complete |

@@ -22,7 +22,7 @@
 - [x] **Phase 5: History Database Foundation** - Standalone glass_history crate with SQLite schema, FTS5 search, retention, and subcommand routing
 - [ ] **Phase 6: Output Capture + Writer Integration** - PTY output capture pipeline, history writer thread, and display_offset fix
 - [x] **Phase 7: CLI Query Interface** - `glass history` subcommands with filters and formatted output
-- [ ] **Phase 8: Search Overlay** - Ctrl+Shift+F modal overlay with live incremental search and block navigation
+- [x] **Phase 8: Search Overlay** - Ctrl+Shift+F modal overlay with live incremental search and block navigation (completed 2026-03-05)
 - [ ] **Phase 9: MCP Server** - glass_mcp crate with stdio JSON-RPC server exposing GlassHistory and GlassContext tools
 
 ## Phase Details
@@ -80,7 +80,7 @@ Plans:
   2. Typing in the search box shows matching results immediately (live/incremental, debounced)
   3. Arrow keys navigate through results; pressing Enter jumps to the selected command block in scrollback
   4. Each result shows command text, exit code, timestamp, and an output preview as a structured block
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 08-01-PLAN.md -- SearchOverlay state module + input interception + debounced search
 - [ ] 08-02-PLAN.md -- Overlay renderer + draw_frame integration + scroll-to-block navigation
@@ -110,5 +110,5 @@ Plans:
 | 5. History Database Foundation | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 6. Output Capture + Writer Integration | v1.1 | 3/4 | In Progress | - |
 | 7. CLI Query Interface | v1.1 | 2/2 | Complete | 2026-03-05 |
-| 8. Search Overlay | v1.1 | 0/2 | Not started | - |
+| 8. Search Overlay | 2/2 | Complete   | 2026-03-05 | - |
 | 9. MCP Server | v1.1 | 0/? | Not started | - |
