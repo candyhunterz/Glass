@@ -10,11 +10,11 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 ### Snapshot Engine
 
 - [ ] **SNAP-01**: Glass automatically snapshots target files before a command executes, triggered by OSC 133;C
-- [ ] **SNAP-02**: File contents are stored in a content-addressed blob store using BLAKE3 hashing with deduplication
+- [x] **SNAP-02**: File contents are stored in a content-addressed blob store using BLAKE3 hashing with deduplication
 - [ ] **SNAP-03**: Command text is parsed to identify file targets for pre-exec snapshot (rm, mv, sed -i, cp, chmod, git checkout, etc.)
 - [ ] **SNAP-04**: FS watcher monitors CWD during command execution and records all file modifications as ground truth
 - [ ] **SNAP-05**: Command text is extracted from the terminal grid at command start (fixes empty-string tech debt)
-- [ ] **SNAP-06**: Snapshot metadata is stored in a separate snapshots.db with command_id linking to history.db
+- [x] **SNAP-06**: Snapshot metadata is stored in a separate snapshots.db with command_id linking to history.db
 
 ### Undo Mechanics
 
@@ -71,11 +71,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SNAP-01 | Phase 13 | Pending |
-| SNAP-02 | Phase 10 | Pending |
+| SNAP-02 | Phase 10 | Complete |
 | SNAP-03 | Phase 11 | Pending |
 | SNAP-04 | Phase 12 | Pending |
 | SNAP-05 | Phase 10 | Pending |
-| SNAP-06 | Phase 10 | Pending |
+| SNAP-06 | Phase 10 | Complete |
 | UNDO-01 | Phase 13 | Pending |
 | UNDO-02 | Phase 13 | Pending |
 | UNDO-03 | Phase 13 | Pending |
