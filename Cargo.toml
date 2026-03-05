@@ -22,6 +22,12 @@ anyhow        = "1.0.102"
 tracing       = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Text rendering
+glyphon       = "0.10.0"
+
+# Clipboard
+arboard       = "3"
+
 # Stub crate deps (future phases)
 rusqlite      = { version = "0.38.0", features = ["bundled"] }
 

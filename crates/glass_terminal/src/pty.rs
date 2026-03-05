@@ -71,8 +71,12 @@ pub fn spawn_pty(
     let pty = tty::new(&options, window_size, 0).expect("Failed to spawn ConPTY (pwsh)");
 
     let term_size = TermSize { columns: 80, lines: 24 };
+    let term_config = TermConfig {
+        scrolling_history: 10_000, // CORE-05: 10,000 lines scrollback
+        ..TermConfig::default()
+    };
     let term = Arc::new(FairMutex::new(Term::new(
-        TermConfig::default(),
+        term_config,
         &term_size,
         event_proxy.clone(),
     )));

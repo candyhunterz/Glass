@@ -5,9 +5,11 @@
 //! - `spawn_pty`: spawns PowerShell via ConPTY and starts the dedicated reader thread
 
 pub mod event_proxy;
+pub mod grid_snapshot;
 pub mod pty;
 
 pub use event_proxy::EventProxy;
+pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, snapshot_term};
 pub use pty::spawn_pty;
 
 #[cfg(test)]
