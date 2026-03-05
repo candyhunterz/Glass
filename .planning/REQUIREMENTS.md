@@ -15,15 +15,15 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 - [ ] **CORE-04**: User can paste multi-line text safely via bracketed paste mode (no accidental execution)
 - [x] **CORE-05**: User can scroll back through at least 10,000 lines of output (configurable)
 - [ ] **CORE-06**: User can copy text with Ctrl+Shift+C and paste with Ctrl+Shift+V
-- [ ] **CORE-07**: User can resize the Glass window and terminal content reflows correctly
+- [x] **CORE-07**: User can resize the Glass window and terminal content reflows correctly
 - [x] **CORE-08**: UTF-8 text renders correctly (no mojibake from Windows code page issues)
 
 ### Rendering
 
 - [x] **RNDR-01**: Terminal output renders via GPU acceleration (wgpu with DX12 on Windows)
 - [x] **RNDR-02**: User sees truecolor (24-bit RGB) output from tools like bat, delta, neovim
-- [ ] **RNDR-03**: Cursor renders correctly in block, beam, and underline shapes with optional blink
-- [ ] **RNDR-04**: User can configure font family and font size, and text renders in chosen monospace font
+- [x] **RNDR-03**: Cursor renders correctly in block, beam, and underline shapes with optional blink
+- [x] **RNDR-04**: User can configure font family and font size, and text renders in chosen monospace font
 
 ### Shell Integration
 
@@ -115,12 +115,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CORE-04 | Phase 2 | Pending |
 | CORE-05 | Phase 2 | Complete |
 | CORE-06 | Phase 2 | Pending |
-| CORE-07 | Phase 2 | Pending |
+| CORE-07 | Phase 2 | Complete |
 | CORE-08 | Phase 2 | Complete |
 | RNDR-01 | Phase 1 | In progress (01-01 scaffold done) |
 | RNDR-02 | Phase 2 | Complete |
-| RNDR-03 | Phase 2 | Pending |
-| RNDR-04 | Phase 2 | Pending |
+| RNDR-03 | Phase 2 | Complete |
+| RNDR-04 | Phase 2 | Complete |
 | SHEL-01 | Phase 3 | Pending |
 | SHEL-02 | Phase 3 | Pending |
 | SHEL-03 | Phase 3 | Pending |

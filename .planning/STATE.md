@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-terminal-core 02-01-PLAN.md
-last_updated: "2026-03-05T04:17:44Z"
-last_activity: "2026-03-05 — Plan 02-01 complete: GridSnapshot with 256-color resolution and GlyphCache glyphon init"
+stopped_at: Completed 02-terminal-core 02-02-PLAN.md
+last_updated: "2026-03-05T04:32:46.069Z"
+last_activity: "2026-03-05 — Plan 02-02 complete: GPU text rendering pipeline with instanced rect renderer and glyphon text"
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
-  percent: 67
+  completed_plans: 5
+  percent: 83
 ---
 
 # Project State
@@ -26,34 +26,35 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 ## Current Position
 
 Phase: 2 of 4 (Terminal Core)
-Plan: 1 of 3 in current phase (02-01 complete, ready for 02-02)
+Plan: 2 of 3 in current phase (02-02 complete, ready for 02-03)
 Status: In progress
-Last activity: 2026-03-05 — Plan 02-01 complete: GridSnapshot with 256-color resolution and GlyphCache glyphon init
+Last activity: 2026-03-05 — Plan 02-02 complete: GPU text rendering pipeline with instanced rect renderer and glyphon text
 
-Progress: [███████░░░] 67%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: 16 min
-- Total execution time: 1.08 hours
+- Total plans completed: 5
+- Average duration: 15 min
+- Total execution time: 1.22 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-scaffold | 3 | 60 min | 20 min |
-| 02-terminal-core | 1 | 5 min | 5 min |
+| 02-terminal-core | 2 | 13 min | 7 min |
 
 **Recent Trend:**
-- Last 5 plans: 5, 45, 10, 5 min
+- Last 5 plans: 8, 5, 45, 10, 5 min
 - Trend: stable
 
 *Updated after each plan completion*
 | Phase 01-scaffold P02 | 10 | 2 tasks | 5 files |
 | Phase 01-scaffold P03 | 45 | 4 tasks | 7 files |
 | Phase 02-terminal-core P01 | 5 | 2 tasks | 9 files |
+| Phase 02-terminal-core P02 | 8 | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,9 @@ Recent decisions affecting current work:
 - [02-01] RenderableCursor does not implement Debug; GridSnapshot omits derive(Debug)
 - [02-01] xterm default ANSI palette used for 256-color fallback
 - [02-01] DefaultColors fg=204,204,204 bg=26,26,26 matching GlassRenderer clear color
+- [02-02] Instanced WGSL quad rendering for cell backgrounds — 6 vertices per instance, no index buffer
+- [02-02] Per-line cosmic_text::Buffer with set_rich_text for per-character fg color and font weight/style
+- [02-02] Font metrics cell sizing via 'M' advance width — replaces hardcoded 8x16
 
 ### Pending Todos
 
@@ -90,6 +94,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T04:17:44Z
-Stopped at: Completed 02-terminal-core 02-01-PLAN.md
+Last session: 2026-03-05T04:32:00Z
+Stopped at: Completed 02-terminal-core 02-02-PLAN.md
 Resume file: None

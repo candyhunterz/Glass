@@ -45,7 +45,7 @@ Plans:
   3. Pasting multi-line text (e.g., a shell script) does not execute immediately; bracketed paste mode prevents accidental execution
   4. Scrolling back through 10,000 lines of output works without blank regions or performance degradation
   5. Copying with Ctrl+Shift+C and pasting with Ctrl+Shift+V works; window resize causes terminal content to reflow correctly; non-ASCII characters (emoji, CJK, accented chars) render without mojibake
-**Plans:** 3 plans
+**Plans:** 2/3 plans executed
 
 Plans:
 - [ ] 02-01-PLAN.md — GridSnapshot data pipeline, color resolution, glyphon initialization, workspace dependencies
@@ -93,6 +93,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Scaffold | 3/3 | Complete   | 2026-03-05 |
-| 2. Terminal Core | 0/3 | Not started | - |
+| 2. Terminal Core | 2/3 | In Progress|  |
 | 3. Shell Integration and Block UI | 0/4 | Not started | - |
 | 4. Configuration and Performance | 0/2 | Not started | - |
