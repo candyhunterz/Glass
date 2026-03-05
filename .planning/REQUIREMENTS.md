@@ -36,7 +36,7 @@ Requirements for Structured Scrollback + MCP Server. Each maps to roadmap phases
 
 ### Infrastructure
 
-- [ ] **INFR-01**: Subcommand routing via clap (default = terminal, `history` = CLI, `mcp serve` = MCP server)
+- [x] **INFR-01**: Subcommand routing via clap (default = terminal, `history` = CLI, `mcp serve` = MCP server)
 - [ ] **INFR-02**: Fix display_offset tech debt so block decorations scroll correctly (prerequisite for search navigation)
 
 ## v2 Requirements
@@ -86,7 +86,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MCP-01 | Phase 9 | Pending |
 | MCP-02 | Phase 9 | Pending |
 | MCP-03 | Phase 9 | Pending |
-| INFR-01 | Phase 5 | Pending |
+| INFR-01 | Phase 5 | Complete |
 | INFR-02 | Phase 6 | Pending |
 
 **Coverage:**

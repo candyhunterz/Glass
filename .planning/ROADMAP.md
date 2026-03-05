@@ -19,7 +19,7 @@
 
 ### v1.1 Structured Scrollback + MCP Server
 
-- [ ] **Phase 5: History Database Foundation** - Standalone glass_history crate with SQLite schema, FTS5 search, retention, and subcommand routing
+- [x] **Phase 5: History Database Foundation** - Standalone glass_history crate with SQLite schema, FTS5 search, retention, and subcommand routing
 - [ ] **Phase 6: Output Capture + Writer Integration** - PTY output capture pipeline, history writer thread, and display_offset fix
 - [ ] **Phase 7: CLI Query Interface** - `glass history` subcommands with filters and formatted output
 - [ ] **Phase 8: Search Overlay** - Ctrl+Shift+F modal overlay with live incremental search and block navigation
@@ -39,8 +39,8 @@
   5. Running `glass history` or `glass mcp serve` routes to the correct subcommand instead of launching the terminal
 **Plans:** 2 plans
 Plans:
-- [ ] 05-01-PLAN.md -- glass_history crate: schema, insert, FTS5 search, path resolution, retention
-- [ ] 05-02-PLAN.md -- Clap subcommand routing in glass binary
+- [x] 05-01-PLAN.md -- glass_history crate: schema, insert, FTS5 search, path resolution, retention
+- [x] 05-02-PLAN.md -- Clap subcommand routing in glass binary
 
 ### Phase 6: Output Capture + Writer Integration
 **Goal**: Command output is captured from the PTY and stored alongside command metadata, and block decorations scroll correctly
@@ -96,7 +96,7 @@ Plans:
 | 2. Terminal Core | v1.0 | 3/3 | Complete | 2026-03-05 |
 | 3. Shell Integration and Block UI | v1.0 | 4/4 | Complete | 2026-03-05 |
 | 4. Configuration and Performance | v1.0 | 2/2 | Complete | 2026-03-05 |
-| 5. History Database Foundation | v1.1 | 0/2 | Planning complete | - |
+| 5. History Database Foundation | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 6. Output Capture + Writer Integration | v1.1 | 0/? | Not started | - |
 | 7. CLI Query Interface | v1.1 | 0/? | Not started | - |
 | 8. Search Overlay | v1.1 | 0/? | Not started | - |

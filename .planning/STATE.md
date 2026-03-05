@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: "Completed 05-01-PLAN.md"
+stopped_at: "Completed 05-02-PLAN.md"
 last_updated: "2026-03-05"
-last_activity: "2026-03-05 — Completed 05-01 glass_history crate (SQLite, FTS5, retention)"
+last_activity: "2026-03-05 — Completed 05-02 clap subcommand routing"
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
-  percent: 10
+  completed_plans: 2
+  percent: 20
 ---
 
 # Project State
@@ -26,12 +26,12 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 ## Current Position
 
 Milestone: v1.1 Structured Scrollback + MCP Server
-Phase: 5 of 9 (History Database Foundation) -- first of 5 v1.1 phases
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-03-05 -- Completed 05-01 glass_history crate
+Phase: 5 of 9 (History Database Foundation) -- COMPLETE
+Plan: 2 of 2 in current phase (phase complete)
+Status: Executing (ready for Phase 6)
+Last activity: 2026-03-05 -- Completed 05-02 clap subcommand routing
 
-Progress: [#.........] 10% (v1.1: 0/5 phases, 1/2 plans in phase 5)
+Progress: [##........] 20% (v1.1: 1/5 phases, 2/2 plans in phase 5)
 
 ## Performance Metrics
 
@@ -47,6 +47,8 @@ Progress: [#.........] 10% (v1.1: 0/5 phases, 1/2 plans in phase 5)
 See PROJECT.md Key Decisions table for full history.
 Recent decisions affecting v1.1:
 
+- Option<Commands> clap pattern for default-to-terminal subcommand routing
+- Clap parse before EventLoop creation to avoid window flash
 - Use rmcp (official Rust MCP SDK) over hand-rolled JSON-RPC
 - Use content FTS5 tables (not external content) for safety
 - FTS5 on command text only for v1.1; defer output indexing to v1.2
@@ -65,5 +67,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Completed 05-01-PLAN.md (glass_history crate)
+Stopped at: Completed 05-02-PLAN.md (clap subcommand routing) -- Phase 5 complete
 Resume file: None
