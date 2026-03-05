@@ -28,8 +28,21 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-- [ ] History database with searchable scrollback (Ctrl+Shift+F overlay)
-- [ ] MCP server for AI assistant integration (GlassHistory, GlassContext tools)
+#### Current Milestone: v1.1 Structured Scrollback + MCP Server
+
+**Goal:** Turn terminal history into a queryable database and expose it to AI assistants via MCP.
+
+**Target features:**
+- SQLite history database with FTS5 indexing
+- Command metadata logging (cwd, exit code, duration, output capture)
+- Search overlay UI (Ctrl+Shift+F)
+- CLI query interface (glass history)
+- MCP server (JSON-RPC over stdio)
+- Tool definitions: GlassHistory, GlassContext
+- Retention policies and storage management
+
+#### Future
+
 - [ ] Command-level undo with filesystem snapshots
 - [ ] Pipe visualization with intermediate stage output
 - [ ] Block collapse/expand, URL detection, block keyboard navigation
@@ -81,4 +94,4 @@ Known tech debt: display_offset hardcoded to 0, Nyquist validation partial on ph
 | Revised memory <120MB | GPU driver allocations ~80MB baseline | ✓ Good — realistic target met |
 
 ---
-*Last updated: 2026-03-05 after v1.0 milestone*
+*Last updated: 2026-03-04 after v1.1 milestone start*
