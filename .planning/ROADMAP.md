@@ -51,11 +51,11 @@ Plans:
   2. Output from alternate-screen applications (vim, less, top) is not captured
   3. Block decorations (separator lines, exit code badges) render at correct positions during scrollback navigation
   4. PTY throughput does not regress measurably compared to v1.0 baseline (output capture is non-blocking)
-**Plans:** 3 plans
+**Plans:** 2/3 plans executed
 Plans:
-- [ ] 06-01-PLAN.md -- Output processing module + schema migration + config (glass_history)
+- [x] 06-01-PLAN.md -- Output processing module + schema migration + config (glass_history)
 - [ ] 06-02-PLAN.md -- OutputBuffer in PTY thread + AppEvent wiring + DB write integration
-- [ ] 06-03-PLAN.md -- display_offset fix in frame.rs
+- [x] 06-03-PLAN.md -- display_offset fix in frame.rs
 
 ### Phase 7: CLI Query Interface
 **Goal**: Users can query their command history from the terminal using `glass history` with flexible filters
@@ -101,7 +101,7 @@ Plans:
 | 3. Shell Integration and Block UI | v1.0 | 4/4 | Complete | 2026-03-05 |
 | 4. Configuration and Performance | v1.0 | 2/2 | Complete | 2026-03-05 |
 | 5. History Database Foundation | v1.1 | 2/2 | Complete | 2026-03-05 |
-| 6. Output Capture + Writer Integration | v1.1 | 0/3 | Not started | - |
+| 6. Output Capture + Writer Integration | 2/3 | In Progress|  | - |
 | 7. CLI Query Interface | v1.1 | 0/? | Not started | - |
 | 8. Search Overlay | v1.1 | 0/? | Not started | - |
 | 9. MCP Server | v1.1 | 0/? | Not started | - |

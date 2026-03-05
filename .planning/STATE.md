@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: Completed 06-01 output storage foundation
-last_updated: "2026-03-05T15:55:06Z"
-last_activity: 2026-03-05 -- Completed 06-01 output storage foundation
+stopped_at: Completed 06-03 block decoration scrollback
+last_updated: "2026-03-05T17:37:45.549Z"
+last_activity: 2026-03-05 -- Completed 06-03 block decoration scrollback
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 1
-  percent: 27
+  total_plans: 5
+  completed_plans: 4
+  percent: 80
 ---
 
 # Project State
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 Milestone: v1.1 Structured Scrollback + MCP Server
 Phase: 6 of 9 (Output Capture + Writer Integration)
-Plan: 1 of 3 in current phase
+Plan: 3 of 3 in current phase (phase complete)
 Status: Executing
-Last activity: 2026-03-05 -- Completed 06-01 output storage foundation
+Last activity: 2026-03-05 -- Completed 06-03 block decoration scrollback
 
-Progress: [###.......] 27% (v1.1: 1/5 phases, 1/3 plans in phase 6)
+Progress: [########..] 80% (v1.1: 1/5 phases, 3/3 plans in phase 6)
 
 ## Performance Metrics
 
@@ -58,6 +58,8 @@ Recent decisions affecting v1.1:
 - Binary detection runs on raw bytes before ANSI stripping to preserve accurate non-printable ratio
 - PRAGMA user_version migration pattern for schema evolution (v0->v1 adds output column)
 - serde default function for backward-compatible TOML config parsing
+- Absolute line numbers from PTY for block tracking (not viewport-relative)
+- history_size in GridSnapshot for absolute-to-viewport coordinate conversion
 
 ### Pending Todos
 
@@ -65,10 +67,10 @@ None.
 
 ### Blockers/Concerns
 
-- display_offset hardcoded to 0 in frame.rs -- must fix in Phase 6 before Phase 8
+None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T15:55:06Z
-Stopped at: Completed 06-01 output storage foundation
-Resume file: .planning/phases/06-output-capture-writer-integration/06-01-SUMMARY.md
+Last session: 2026-03-05T17:37:45.547Z
+Stopped at: Completed 06-03 block decoration scrollback
+Resume file: .planning/phases/06-output-capture-writer-integration/06-03-SUMMARY.md
