@@ -211,21 +211,23 @@ fn glass_pty_loop(
             }
         }
 
-        // Handle synchronized update timeout (no events and no messages).
-        if events.is_empty() && rx.try_recv().is_err() {
-            parser.stop_sync(&mut *terminal.lock());
-            event_proxy.send_event(Event::Wakeup);
-            continue;
-        }
-
-        // Drain the message channel.
+        // Drain the message channel BEFORE the empty-events check,
+        // so messages are processed rather than consumed by try_recv().
+        let mut got_messages = false;
         loop {
             match rx.try_recv() {
-                Ok(PtyMsg::Input(data)) => write_list.push_back(data),
-                Ok(PtyMsg::Resize(size)) => pty.on_resize(size),
+                Ok(PtyMsg::Input(data)) => { write_list.push_back(data); got_messages = true; }
+                Ok(PtyMsg::Resize(size)) => { pty.on_resize(size); got_messages = true; }
                 Ok(PtyMsg::Shutdown) => break 'event_loop,
                 Err(_) => break,
             }
+        }
+
+        // Handle synchronized update timeout (no events and no messages).
+        if events.is_empty() && !got_messages {
+            parser.stop_sync(&mut *terminal.lock());
+            event_proxy.send_event(Event::Wakeup);
+            continue;
         }
 
         for event in events.iter() {

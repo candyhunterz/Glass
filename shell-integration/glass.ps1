@@ -9,7 +9,10 @@
 # Compatible with Oh My Posh and Starship -- this script wraps around
 # any existing prompt function rather than replacing it.
 #
-# Requires: PowerShell 7+ (uses `e escape character)
+# Compatible with PowerShell 5.1+ and PowerShell 7+.
+
+# ESC character that works on all PowerShell versions (5.1+).
+$Global:__GlassESC = [char]0x1b
 
 # ---------------------------------------------------------------------------
 # State: track the last history entry ID so we can tell whether the user
@@ -68,23 +71,25 @@ function prompt {
 
     $out = ""
 
+    $E = $Global:__GlassESC
+
     # End previous command (OSC 133;D with exit code)
     if ($Global:__GlassLastHistoryId -ne -1) {
         if ($LastHistoryEntry.Id -eq $Global:__GlassLastHistoryId) {
             # User pressed Enter without typing a command -- no exit code
-            $out += "`e]133;D`a"
+            $out += "$E]133;D$([char]7)"
         } else {
-            $out += "`e]133;D;$gle`a"
+            $out += "$E]133;D;$gle$([char]7)"
         }
     }
 
     # Report CWD via OSC 7  (backslashes -> forward slashes)
     $loc = $executionContext.SessionState.Path.CurrentLocation
     $cwd = $loc.Path.Replace('\', '/')
-    $out += "`e]7;file://$($env:COMPUTERNAME)/$cwd`a"
+    $out += "$E]7;file://$($env:COMPUTERNAME)/$cwd$([char]7)"
 
     # Prompt start (OSC 133;A)
-    $out += "`e]133;A`a"
+    $out += "$E]133;A$([char]7)"
 
     # Call the original prompt (preserves Oh My Posh / Starship styling)
     if ($Global:__GlassOriginalPrompt) {
@@ -94,7 +99,7 @@ function prompt {
     }
 
     # Command-input start (OSC 133;B)
-    $out += "`e]133;B`a"
+    $out += "$E]133;B$([char]7)"
 
     # Remember the current history ID for the next prompt cycle
     $Global:__GlassLastHistoryId = $LastHistoryEntry.Id
@@ -112,6 +117,6 @@ function prompt {
 if (Get-Module PSReadLine) {
     Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        [Console]::Write("`e]133;C`a")
+        [Console]::Write("$([char]0x1b)]133;C$([char]7)")
     }
 }
