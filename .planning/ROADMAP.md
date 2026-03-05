@@ -32,8 +32,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — Cargo workspace with all 7 crates, glass_core types, and compiling root binary
-- [ ] 01-02-PLAN.md — winit window with wgpu DX12 GPU surface (clear-to-color, resize-stable)
-- [ ] 01-03-PLAN.md — ConPTY PTY spawn with dedicated reader thread and keyboard round-trip
+- [x] 01-02-PLAN.md — winit window with wgpu DX12 GPU surface (clear-to-color, resize-stable)
+- [x] 01-03-PLAN.md — ConPTY PTY spawn with dedicated reader thread and keyboard round-trip
 
 ### Phase 2: Terminal Core
 **Goal**: Glass is a functional terminal — any CLI tool works correctly with full color, keyboard modifiers, scrollback, copy/paste, and window resize
@@ -45,12 +45,12 @@ Plans:
   3. Pasting multi-line text (e.g., a shell script) does not execute immediately; bracketed paste mode prevents accidental execution
   4. Scrolling back through 10,000 lines of output works without blank regions or performance degradation
   5. Copying with Ctrl+Shift+C and pasting with Ctrl+Shift+V works; window resize causes terminal content to reflow correctly; non-ASCII characters (emoji, CJK, accented chars) render without mojibake
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 02-01: alacritty_terminal VTE grid integration and GridSnapshot pipeline
-- [ ] 02-02: glyphon text rendering pipeline (TextAtlas, font rendering, truecolor, cursor shapes)
-- [ ] 02-03: Keyboard input, bracketed paste, copy/paste, scrollback, UTF-8 code page
+- [ ] 02-01-PLAN.md — GridSnapshot data pipeline, color resolution, glyphon initialization, workspace dependencies
+- [ ] 02-02-PLAN.md — GPU text rendering pipeline (RectRenderer, GridRenderer, FrameRenderer, cursor, font-metrics resize)
+- [ ] 02-03-PLAN.md — Keyboard escape encoding, clipboard copy/paste, scrollback interaction, bracketed paste
 
 ### Phase 3: Shell Integration and Block UI
 **Goal**: Shell integration scripts emit OSC 133/7 sequences that Glass parses into a BlockManager, rendering each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch
