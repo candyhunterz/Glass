@@ -38,8 +38,8 @@ pub fn build_context_summary(
                     MIN(started_at), \
                     MAX(finished_at) \
              FROM commands WHERE started_at >= ?1",
-            "SELECT DISTINCT cwd FROM commands WHERE started_at >= ?1 \
-             ORDER BY MAX(started_at) DESC LIMIT 10",
+            "SELECT cwd, MAX(started_at) as last_used FROM commands WHERE started_at >= ?1 \
+             GROUP BY cwd ORDER BY last_used DESC LIMIT 10",
             vec![rusqlite::types::Value::Integer(after_epoch)],
         )
     } else {
@@ -84,4 +84,95 @@ pub fn build_context_summary(
         latest_timestamp,
         recent_directories,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glass_history::db::{CommandRecord, HistoryDb};
+    use tempfile::TempDir;
+
+    fn test_db() -> (HistoryDb, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test_context.db");
+        let db = HistoryDb::open(&db_path).unwrap();
+        (db, dir)
+    }
+
+    fn insert(db: &HistoryDb, cmd: &str, cwd: &str, exit_code: Option<i32>, started_at: i64) {
+        let record = CommandRecord {
+            id: None,
+            command: cmd.to_string(),
+            cwd: cwd.to_string(),
+            exit_code,
+            started_at,
+            finished_at: started_at + 5,
+            duration_ms: 5000,
+            output: None,
+        };
+        db.insert_command(&record).unwrap();
+    }
+
+    #[test]
+    fn test_empty_db_returns_zeros() {
+        let (db, _dir) = test_db();
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.command_count, 0);
+        assert_eq!(summary.failure_count, 0);
+        assert_eq!(summary.earliest_timestamp, None);
+        assert_eq!(summary.latest_timestamp, None);
+        assert!(summary.recent_directories.is_empty());
+    }
+
+    #[test]
+    fn test_mixed_commands_correct_counts() {
+        let (db, _dir) = test_db();
+        insert(&db, "cargo build", "/home/user", Some(0), 1700000000);
+        insert(&db, "bad cmd", "/home/user", Some(1), 1700000010);
+        insert(&db, "another fail", "/home/user", Some(127), 1700000020);
+        insert(&db, "ls", "/home/user", Some(0), 1700000030);
+
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.command_count, 4);
+        assert_eq!(summary.failure_count, 2);
+        assert_eq!(summary.earliest_timestamp, Some(1700000000));
+        // finished_at = started_at + 5, so latest = 1700000035
+        assert_eq!(summary.latest_timestamp, Some(1700000035));
+    }
+
+    #[test]
+    fn test_after_filter_excludes_old_commands() {
+        let (db, _dir) = test_db();
+        insert(&db, "old cmd", "/tmp", Some(0), 1700000000);
+        insert(&db, "old fail", "/tmp", Some(1), 1700000010);
+        insert(&db, "new cmd", "/home", Some(0), 1700000100);
+        insert(&db, "new fail", "/home", Some(1), 1700000200);
+
+        // Filter: only commands after epoch 1700000050
+        let summary = build_context_summary(db.conn(), Some(1700000050)).unwrap();
+        assert_eq!(summary.command_count, 2);
+        assert_eq!(summary.failure_count, 1);
+        assert_eq!(summary.earliest_timestamp, Some(1700000100));
+    }
+
+    #[test]
+    fn test_recent_directories_distinct_max_10() {
+        let (db, _dir) = test_db();
+        // Insert commands in 12 different directories
+        for i in 0..12 {
+            insert(
+                &db,
+                &format!("cmd{}", i),
+                &format!("/dir/{}", i),
+                Some(0),
+                1700000000 + i * 10,
+            );
+        }
+
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.recent_directories.len(), 10);
+        // Most recent directories should come first
+        assert_eq!(summary.recent_directories[0], "/dir/11");
+        assert_eq!(summary.recent_directories[1], "/dir/10");
+    }
 }
