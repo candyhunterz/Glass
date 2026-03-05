@@ -1,0 +1,263 @@
+use std::path::Path;
+
+use anyhow::Result;
+use rusqlite::{params, Connection};
+
+/// A command execution record with all metadata.
+#[derive(Debug, Clone)]
+pub struct CommandRecord {
+    /// Database row id. None before insert, Some after.
+    pub id: Option<i64>,
+    /// The command text that was executed.
+    pub command: String,
+    /// Working directory where the command was run.
+    pub cwd: String,
+    /// Process exit code, if available.
+    pub exit_code: Option<i32>,
+    /// When the command started (Unix epoch seconds).
+    pub started_at: i64,
+    /// When the command finished (Unix epoch seconds).
+    pub finished_at: i64,
+    /// Duration in milliseconds.
+    pub duration_ms: i64,
+}
+
+/// SQLite-backed command history database.
+pub struct HistoryDb {
+    conn: Connection,
+}
+
+impl HistoryDb {
+    /// Open (or create) a history database at the given path.
+    /// Sets WAL mode and creates the schema if needed.
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;",
+        )?;
+        Self::create_schema(&conn)?;
+        Ok(Self { conn })
+    }
+
+    fn create_schema(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS commands (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                command     TEXT NOT NULL,
+                cwd         TEXT NOT NULL,
+                exit_code   INTEGER,
+                started_at  INTEGER NOT NULL,
+                finished_at INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE INDEX IF NOT EXISTS idx_commands_started_at ON commands(started_at);
+            CREATE INDEX IF NOT EXISTS idx_commands_cwd ON commands(cwd);
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS commands_fts USING fts5(
+                command,
+                tokenize='unicode61'
+            );",
+        )?;
+        Ok(())
+    }
+
+    /// Insert a command record into the database. Returns the row id.
+    pub fn insert_command(&self, record: &CommandRecord) -> Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO commands (command, cwd, exit_code, started_at, finished_at, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                record.command,
+                record.cwd,
+                record.exit_code,
+                record.started_at,
+                record.finished_at,
+                record.duration_ms,
+            ],
+        )?;
+        let rowid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO commands_fts (rowid, command) VALUES (?1, ?2)",
+            params![rowid, record.command],
+        )?;
+        tx.commit()?;
+        Ok(rowid)
+    }
+
+    /// Retrieve a command record by id.
+    pub fn get_command(&self, id: i64) -> Result<Option<CommandRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, command, cwd, exit_code, started_at, finished_at, duration_ms
+             FROM commands WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(CommandRecord {
+                id: Some(row.get(0)?),
+                command: row.get(1)?,
+                cwd: row.get(2)?,
+                exit_code: row.get(3)?,
+                started_at: row.get(4)?,
+                finished_at: row.get(5)?,
+                duration_ms: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(record)) => Ok(Some(record)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a command record by id (from both commands and FTS tables).
+    /// Returns true if a record was deleted.
+    pub fn delete_command(&self, id: i64) -> Result<bool> {
+        // Read command text first (needed for FTS delete)
+        let command_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT command FROM commands WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(text) = command_text {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute(
+                "INSERT INTO commands_fts(commands_fts, rowid, command) VALUES('delete', ?1, ?2)",
+                params![id, text],
+            )?;
+            tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
+            tx.commit()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Return the total number of command records.
+    pub fn command_count(&self) -> Result<u64> {
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
+        Ok(count as u64)
+    }
+
+    /// Get a reference to the underlying connection (for search/retention modules).
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Search command history using FTS5 full-text search.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<crate::search::SearchResult>> {
+        crate::search::search(&self.conn, query, limit)
+    }
+
+    /// Prune old records by age and size limits.
+    pub fn prune(&self, max_age_days: u32, max_size_bytes: u64) -> Result<u64> {
+        crate::retention::prune(&self.conn, max_age_days, max_size_bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_db() -> (HistoryDb, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = HistoryDb::open(&db_path).unwrap();
+        (db, dir)
+    }
+
+    fn sample_record(command: &str) -> CommandRecord {
+        CommandRecord {
+            id: None,
+            command: command.to_string(),
+            cwd: "/home/user".to_string(),
+            exit_code: Some(0),
+            started_at: 1700000000,
+            finished_at: 1700000005,
+            duration_ms: 5000,
+        }
+    }
+
+    #[test]
+    fn test_insert_and_retrieve() {
+        let (db, _dir) = test_db();
+        let record = CommandRecord {
+            id: None,
+            command: "cargo build".to_string(),
+            cwd: "/home/user/project".to_string(),
+            exit_code: Some(0),
+            started_at: 1700000000,
+            finished_at: 1700000010,
+            duration_ms: 10000,
+        };
+        let id = db.insert_command(&record).unwrap();
+        assert!(id > 0);
+
+        let retrieved = db.get_command(id).unwrap().expect("record should exist");
+        assert_eq!(retrieved.id, Some(id));
+        assert_eq!(retrieved.command, "cargo build");
+        assert_eq!(retrieved.cwd, "/home/user/project");
+        assert_eq!(retrieved.exit_code, Some(0));
+        assert_eq!(retrieved.started_at, 1700000000);
+        assert_eq!(retrieved.finished_at, 1700000010);
+        assert_eq!(retrieved.duration_ms, 10000);
+    }
+
+    #[test]
+    fn test_insert_populates_fts() {
+        let (db, _dir) = test_db();
+        let record = sample_record("cargo build");
+        db.insert_command(&record).unwrap();
+
+        let results = db.search("cargo", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "cargo build");
+    }
+
+    #[test]
+    fn test_search_bm25_ranking() {
+        let (db, _dir) = test_db();
+        // Insert commands with varying relevance to "cargo"
+        db.insert_command(&sample_record("cargo build")).unwrap();
+        db.insert_command(&sample_record("cargo test --release"))
+            .unwrap();
+        db.insert_command(&sample_record("git commit -m fix"))
+            .unwrap();
+
+        let results = db.search("cargo", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        // Both cargo commands returned, git command excluded
+        assert!(results.iter().all(|r| r.command.contains("cargo")));
+    }
+
+    #[test]
+    fn test_search_no_results() {
+        let (db, _dir) = test_db();
+        db.insert_command(&sample_record("cargo build")).unwrap();
+
+        let results = db.search("nonexistent_xyz", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_prefix() {
+        let (db, _dir) = test_db();
+        db.insert_command(&sample_record("cargo build")).unwrap();
+
+        let results = db.search("car*", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "cargo build");
+    }
+}

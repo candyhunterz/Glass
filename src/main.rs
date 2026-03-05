@@ -6,6 +6,7 @@ use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
+use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, ShellEvent};
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
@@ -18,6 +19,34 @@ use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
+
+// ---------------------------------------------------------------------------
+// CLI definition (clap derive)
+// ---------------------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(name = "glass", version, about = "GPU-accelerated terminal emulator")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug, PartialEq)]
+enum Commands {
+    /// Query command history
+    History,
+    /// MCP server commands
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Subcommand, Debug, PartialEq)]
+enum McpAction {
+    /// Start the MCP server over stdio
+    Serve,
+}
 
 /// Simple grid dimensions for Term::resize().
 struct TermDimensions {
@@ -481,31 +510,47 @@ fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    tracing::info!("Glass starting");
+    // Parse CLI BEFORE creating the event loop — subcommands must not open a window.
+    let cli = Cli::parse();
 
-    let config = GlassConfig::load();
-    tracing::info!("Config: font_family={}, font_size={}, shell={:?}",
-        config.font_family, config.font_size, config.shell);
+    match cli.command {
+        None => {
+            // No subcommand: launch the terminal GUI (default behavior)
+            tracing::info!("Glass starting");
 
-    let event_loop = EventLoop::<AppEvent>::with_user_event()
-        .build()
-        .expect("Failed to create event loop");
+            let config = GlassConfig::load();
+            tracing::info!("Config: font_family={}, font_size={}, shell={:?}",
+                config.font_family, config.font_size, config.shell);
 
-    // Create proxy BEFORE run_app() — EventLoopProxy<AppEvent> is Clone + Send,
-    // so the PTY EventProxy stores a clone of this.
-    let proxy = event_loop.create_proxy();
+            let event_loop = EventLoop::<AppEvent>::with_user_event()
+                .build()
+                .expect("Failed to create event loop");
 
-    let mut processor = Processor {
-        windows: HashMap::new(),
-        proxy,
-        modifiers: ModifiersState::empty(),
-        config,
-        cold_start,
-    };
+            // Create proxy BEFORE run_app() — EventLoopProxy<AppEvent> is Clone + Send,
+            // so the PTY EventProxy stores a clone of this.
+            let proxy = event_loop.create_proxy();
 
-    event_loop
-        .run_app(&mut processor)
-        .expect("Event loop exited with error");
+            let mut processor = Processor {
+                windows: HashMap::new(),
+                proxy,
+                modifiers: ModifiersState::empty(),
+                config,
+                cold_start,
+            };
+
+            event_loop
+                .run_app(&mut processor)
+                .expect("Event loop exited with error");
+        }
+        Some(Commands::History) => {
+            eprintln!("glass history: not yet implemented (Phase 7)");
+            std::process::exit(1);
+        }
+        Some(Commands::Mcp { action: McpAction::Serve }) => {
+            eprintln!("glass mcp serve: not yet implemented (Phase 9)");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
