@@ -45,9 +45,9 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 ### Configuration
 
-- [ ] **CONF-01**: User can configure Glass via TOML config file (~/.glass/config.toml)
-- [ ] **CONF-02**: User can set font family and font size in config
-- [ ] **CONF-03**: User can override default shell in config
+- [x] **CONF-01**: User can configure Glass via TOML config file (~/.glass/config.toml)
+- [x] **CONF-02**: User can set font family and font size in config
+- [x] **CONF-03**: User can override default shell in config
 
 ### Performance
 
@@ -130,9 +130,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BLOK-03 | Phase 3 | Complete |
 | STAT-01 | Phase 3 | Complete |
 | STAT-02 | Phase 3 | Complete |
-| CONF-01 | Phase 4 | Pending |
-| CONF-02 | Phase 4 | Pending |
-| CONF-03 | Phase 4 | Pending |
+| CONF-01 | Phase 4 | Complete |
+| CONF-02 | Phase 4 | Complete |
+| CONF-03 | Phase 4 | Complete |
 | PERF-01 | Phase 4 | Pending |
 | PERF-02 | Phase 4 | Pending |
 | PERF-03 | Phase 4 | Pending |

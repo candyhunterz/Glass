@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 03-shell-integration-and-block-ui 03-04-PLAN.md
-last_updated: "2026-03-05T06:04:01.860Z"
-last_activity: "2026-03-05 — Plan 03-04 complete: End-to-end wiring of PTY->OscScanner->BlockManager/StatusState->FrameRenderer"
+status: in-progress
+stopped_at: Completed 04-configuration-and-performance 04-01-PLAN.md
+last_updated: "2026-03-05T06:20:04Z"
+last_activity: "2026-03-05 — Plan 04-01 complete: TOML config loading with serde, font/shell wiring"
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
-  percent: 100
+  total_plans: 12
+  completed_plans: 11
+  percent: 92
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything — surfacing intelligence only when you need it.
-**Current focus:** Phase 3 in progress — shell integration and block UI
+**Current focus:** Phase 4 in progress — configuration and performance
 
 ## Current Position
 
-Phase: 3 of 4 (Shell Integration and Block UI)
-Plan: 4 of 4 in current phase (03-01, 03-02, 03-03, 03-04 complete)
-Status: Phase 3 complete
-Last activity: 2026-03-05 — Plan 03-04 complete: End-to-end wiring of PTY->OscScanner->BlockManager/StatusState->FrameRenderer
+Phase: 4 of 4 (Configuration and Performance)
+Plan: 1 of 2 in current phase (04-01 complete)
+Status: Phase 4 in progress
+Last activity: 2026-03-05 — Plan 04-01 complete: TOML config loading with serde, font/shell wiring
 
-Progress: [██████████] 100%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
-- Average duration: 12 min
-- Total execution time: 1.55 hours
+- Total plans completed: 10
+- Average duration: 11 min
+- Total execution time: 1.6 hours
 
 **By Phase:**
 
@@ -46,6 +46,7 @@ Progress: [██████████] 100%
 | 01-scaffold | 3 | 60 min | 20 min |
 | 02-terminal-core | 3 | 25 min | 8 min |
 | 03-shell-integration | 3 | 12 min | 4 min |
+| 04-configuration | 1 | 3 min | 3 min |
 
 **Recent Trend:**
 - Last 5 plans: 45, 10, 5, 2, 6 min
@@ -61,6 +62,7 @@ Progress: [██████████] 100%
 | Phase 03-shell-integration P01 | 6 | 2 tasks | 6 files |
 | Phase 03-shell-integration P02 | 4 | 2 tasks | 6 files |
 | Phase 03-shell-integration P04 | 7 | 2 tasks | 5 files |
+| Phase 04-configuration P01 | 3 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -104,6 +106,9 @@ Recent decisions affecting current work:
 - [03-04] PtySender wraps mpsc::Sender + polling::Poller to wake PTY thread on send
 - [03-04] Grid height reduced by 1 line for status bar; PTY resize reflects content area
 - [03-04] Git status queried on background thread with git_query_pending dedup flag
+- [04-01] dirs crate v6 for cross-platform home directory detection
+- [04-01] serde(default) on GlassConfig struct enables partial TOML with per-field defaults
+- [04-01] Config file not auto-created if missing; silent defaults (no error dialog)
 
 ### Pending Todos
 
@@ -116,6 +121,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T05:50:43Z
-Stopped at: Completed 03-shell-integration-and-block-ui 03-04-PLAN.md
+Last session: 2026-03-05T06:20:04Z
+Stopped at: Completed 04-configuration-and-performance 04-01-PLAN.md
 Resume file: None
