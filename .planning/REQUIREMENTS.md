@@ -1,7 +1,7 @@
 # Requirements: Glass
 
 **Defined:** 2026-03-05
-**Core Value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything — surfacing intelligence only when you need it.
+**Core Value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
 
 ## v1.1 Requirements
 
@@ -71,29 +71,29 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HIST-01 | — | Pending |
-| HIST-02 | — | Pending |
-| HIST-03 | — | Pending |
-| HIST-04 | — | Pending |
-| HIST-05 | — | Pending |
-| SRCH-01 | — | Pending |
-| SRCH-02 | — | Pending |
-| SRCH-03 | — | Pending |
-| SRCH-04 | — | Pending |
-| CLI-01 | — | Pending |
-| CLI-02 | — | Pending |
-| CLI-03 | — | Pending |
-| MCP-01 | — | Pending |
-| MCP-02 | — | Pending |
-| MCP-03 | — | Pending |
-| INFR-01 | — | Pending |
-| INFR-02 | — | Pending |
+| HIST-01 | Phase 5 | Pending |
+| HIST-02 | Phase 6 | Pending |
+| HIST-03 | Phase 5 | Pending |
+| HIST-04 | Phase 5 | Pending |
+| HIST-05 | Phase 5 | Pending |
+| SRCH-01 | Phase 8 | Pending |
+| SRCH-02 | Phase 8 | Pending |
+| SRCH-03 | Phase 8 | Pending |
+| SRCH-04 | Phase 8 | Pending |
+| CLI-01 | Phase 7 | Pending |
+| CLI-02 | Phase 7 | Pending |
+| CLI-03 | Phase 7 | Pending |
+| MCP-01 | Phase 9 | Pending |
+| MCP-02 | Phase 9 | Pending |
+| MCP-03 | Phase 9 | Pending |
+| INFR-01 | Phase 5 | Pending |
+| INFR-02 | Phase 6 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17
+- Mapped to phases: 17
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-05*
-*Last updated: 2026-03-05 after initial definition*
+*Last updated: 2026-03-05 after roadmap creation*
