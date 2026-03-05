@@ -80,7 +80,10 @@ Plans:
   2. Typing in the search box shows matching results immediately (live/incremental, debounced)
   3. Arrow keys navigate through results; pressing Enter jumps to the selected command block in scrollback
   4. Each result shows command text, exit code, timestamp, and an output preview as a structured block
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 08-01-PLAN.md -- SearchOverlay state module + input interception + debounced search
+- [ ] 08-02-PLAN.md -- Overlay renderer + draw_frame integration + scroll-to-block navigation
 
 ### Phase 9: MCP Server
 **Goal**: AI assistants can query terminal history and context through a standards-compliant MCP server
@@ -107,5 +110,5 @@ Plans:
 | 5. History Database Foundation | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 6. Output Capture + Writer Integration | v1.1 | 3/4 | In Progress | - |
 | 7. CLI Query Interface | v1.1 | 2/2 | Complete | 2026-03-05 |
-| 8. Search Overlay | v1.1 | 0/? | Not started | - |
+| 8. Search Overlay | v1.1 | 0/2 | Not started | - |
 | 9. MCP Server | v1.1 | 0/? | Not started | - |
