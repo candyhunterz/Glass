@@ -46,8 +46,32 @@ pub fn parse_command(command_text: &str, cwd: &Path) -> ParseResult {
         };
     }
 
-    // Dispatch to per-command parser
+    // Check if the command is a PowerShell cmdlet or alias
     let cmd = base_command(&tokens[0]);
+    if is_powershell_cmdlet(cmd) {
+        let ps_tokens = tokenize_powershell(trimmed);
+        if ps_tokens.is_empty() {
+            let confidence = if redirect_targets.is_empty() {
+                Confidence::Low
+            } else {
+                Confidence::High
+            };
+            return ParseResult {
+                targets: redirect_targets,
+                confidence,
+            };
+        }
+        let ps_cmd = base_command(&ps_tokens[0]);
+        let ps_args: Vec<String> = ps_tokens[1..].to_vec();
+        let mut result = parse_powershell_command(ps_cmd, &ps_args, cwd);
+        result.targets.append(&mut redirect_targets);
+        if result.confidence == Confidence::ReadOnly && !result.targets.is_empty() {
+            result.confidence = Confidence::High;
+        }
+        return result;
+    }
+
+    // Dispatch to per-command parser (POSIX)
     let args: Vec<String> = tokens[1..].to_vec();
     let mut result = dispatch_command(cmd, &args, cwd);
 
@@ -274,6 +298,197 @@ fn extract_redirect_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
         i += 1;
     }
     targets
+}
+
+// --- PowerShell support ---
+
+/// Known PowerShell aliases that don't match the Verb-Noun pattern.
+const PS_ALIASES: &[&str] = &[
+    "ri", "mi", "ci", "si", "gc", "gci", "gl", "gi", "sc", "clc", "sls",
+    "del", "erase", "rd", "rmdir", "move", "copy",
+];
+
+/// Check if a command is a PowerShell cmdlet (Verb-Noun pattern) or known alias.
+fn is_powershell_cmdlet(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+
+    // Check known aliases first
+    if PS_ALIASES.contains(&lower.as_str()) {
+        return true;
+    }
+
+    // Check Verb-Noun pattern: contains `-` with letters on both sides
+    // e.g., Remove-Item, Get-Content, Set-Content
+    if let Some(hyphen_pos) = cmd.find('-') {
+        if hyphen_pos > 0 && hyphen_pos < cmd.len() - 1 {
+            let before = &cmd[..hyphen_pos];
+            let after = &cmd[hyphen_pos + 1..];
+            return before.chars().all(|c| c.is_ascii_alphabetic())
+                && after.chars().all(|c| c.is_ascii_alphabetic());
+        }
+    }
+
+    false
+}
+
+/// Simple quote-aware tokenizer for PowerShell commands.
+/// Splits on whitespace, respects `"` and `'` quotes.
+fn tokenize_powershell(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for ch in text.chars() {
+        match ch {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                // Don't include the quote character in the token
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            ' ' | '\t' if !in_single_quote && !in_double_quote => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Parse a PowerShell cmdlet and extract file modification targets.
+fn parse_powershell_command(cmd: &str, args: &[String], cwd: &Path) -> ParseResult {
+    let lower = cmd.to_ascii_lowercase();
+
+    match lower.as_str() {
+        // Destructive cmdlets
+        "remove-item" | "ri" | "del" | "erase" | "rd" | "rmdir" => {
+            extract_powershell_path_args(args, cwd)
+        }
+        "move-item" | "mi" | "move" => extract_powershell_destination_args(args, cwd),
+        "copy-item" | "ci" | "copy" => extract_powershell_destination_args(args, cwd),
+        "set-content" | "sc" => extract_powershell_path_args(args, cwd),
+        "clear-content" | "clc" => extract_powershell_path_args(args, cwd),
+
+        // Read-only cmdlets
+        "get-content" | "gc" | "cat" | "type" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+        "get-childitem" | "gci" | "ls" | "dir" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+        "get-location" | "gl" | "pwd" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+        "get-item" | "gi" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+        "test-path" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+        "select-string" | "sls" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
+
+        // Unknown PowerShell cmdlet
+        _ => ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        },
+    }
+}
+
+/// Extract -Path or -LiteralPath named parameter values, or first positional argument.
+fn extract_powershell_path_args(args: &[String], cwd: &Path) -> ParseResult {
+    let mut targets = Vec::new();
+    let mut i = 0;
+
+    // First pass: look for named -Path or -LiteralPath parameters
+    let mut found_named = false;
+    while i < args.len() {
+        let lower = args[i].to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" {
+            found_named = true;
+            if i + 1 < args.len() {
+                targets.push(resolve_path(&args[i + 1], cwd));
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // If no named parameter found, treat first positional (non-flag) argument as path
+    if !found_named {
+        for arg in args {
+            if !arg.starts_with('-') {
+                targets.push(resolve_path(arg, cwd));
+                break; // Only take the first positional for path
+            }
+        }
+    }
+
+    ParseResult {
+        targets,
+        confidence: Confidence::High,
+    }
+}
+
+/// Extract both -Path and -Destination parameter values (for Move-Item, Copy-Item).
+fn extract_powershell_destination_args(args: &[String], cwd: &Path) -> ParseResult {
+    let mut targets = Vec::new();
+    let mut i = 0;
+    let mut found_named_path = false;
+    let mut found_named_dest = false;
+
+    // Named parameter scan
+    while i < args.len() {
+        let lower = args[i].to_ascii_lowercase();
+        if lower == "-path" || lower == "-literalpath" {
+            found_named_path = true;
+            if i + 1 < args.len() {
+                targets.push(resolve_path(&args[i + 1], cwd));
+                i += 2;
+                continue;
+            }
+        } else if lower == "-destination" {
+            found_named_dest = true;
+            if i + 1 < args.len() {
+                targets.push(resolve_path(&args[i + 1], cwd));
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // Fallback to positional: first positional = source, second = destination
+    if !found_named_path && !found_named_dest {
+        let positionals: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+        for p in &positionals {
+            targets.push(resolve_path(p, cwd));
+        }
+    }
+
+    ParseResult {
+        targets,
+        confidence: Confidence::High,
+    }
 }
 
 /// Dispatch to per-command parser based on command name.
