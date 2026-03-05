@@ -13,7 +13,7 @@ Glass is built in four phases that follow a strict dependency chain. Phase 1 est
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Scaffold** - Cargo workspace, wgpu GPU surface, PTY spawn with keyboard round-trip, and all structural pitfalls addressed (completed 2026-03-05)
-- [ ] **Phase 2: Terminal Core** - Full VTE rendering pipeline producing a functional terminal (colors, keyboard, scrollback, copy/paste, resize, UTF-8)
+- [x] **Phase 2: Terminal Core** - Full VTE rendering pipeline producing a functional terminal (colors, keyboard, scrollback, copy/paste, resize, UTF-8) (completed 2026-03-05)
 - [ ] **Phase 3: Shell Integration and Block UI** - OSC 133/7 parsing, PowerShell and bash integration scripts, block-based command output, status bar
 - [ ] **Phase 4: Configuration and Performance** - TOML config file, font/shell override, cold start and latency targets confirmed
 
@@ -45,7 +45,7 @@ Plans:
   3. Pasting multi-line text (e.g., a shell script) does not execute immediately; bracketed paste mode prevents accidental execution
   4. Scrolling back through 10,000 lines of output works without blank regions or performance degradation
   5. Copying with Ctrl+Shift+C and pasting with Ctrl+Shift+V works; window resize causes terminal content to reflow correctly; non-ASCII characters (emoji, CJK, accented chars) render without mojibake
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 02-01-PLAN.md — GridSnapshot data pipeline, color resolution, glyphon initialization, workspace dependencies
@@ -93,6 +93,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Scaffold | 3/3 | Complete   | 2026-03-05 |
-| 2. Terminal Core | 2/3 | In Progress|  |
+| 2. Terminal Core | 3/3 | Complete   | 2026-03-05 |
 | 3. Shell Integration and Block UI | 0/4 | Not started | - |
 | 4. Configuration and Performance | 0/2 | Not started | - |

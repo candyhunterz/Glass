@@ -11,10 +11,10 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 - [x] **CORE-01**: User can launch Glass and get a working PowerShell prompt via ConPTY
 - [x] **CORE-02**: User can run any CLI tool with correct VT/ANSI escape sequence rendering (colors, formatting, cursor movement)
-- [ ] **CORE-03**: User can use keyboard with Ctrl, Alt, Shift modifiers correctly (vim, fzf, tmux work)
-- [ ] **CORE-04**: User can paste multi-line text safely via bracketed paste mode (no accidental execution)
+- [x] **CORE-03**: User can use keyboard with Ctrl, Alt, Shift modifiers correctly (vim, fzf, tmux work)
+- [x] **CORE-04**: User can paste multi-line text safely via bracketed paste mode (no accidental execution)
 - [x] **CORE-05**: User can scroll back through at least 10,000 lines of output (configurable)
-- [ ] **CORE-06**: User can copy text with Ctrl+Shift+C and paste with Ctrl+Shift+V
+- [x] **CORE-06**: User can copy text with Ctrl+Shift+C and paste with Ctrl+Shift+V
 - [x] **CORE-07**: User can resize the Glass window and terminal content reflows correctly
 - [x] **CORE-08**: UTF-8 text renders correctly (no mojibake from Windows code page issues)
 
@@ -111,10 +111,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | CORE-01 | Phase 1 | In progress (01-01 scaffold done) |
 | CORE-02 | Phase 2 | Complete |
-| CORE-03 | Phase 2 | Pending |
-| CORE-04 | Phase 2 | Pending |
+| CORE-03 | Phase 2 | Complete |
+| CORE-04 | Phase 2 | Complete |
 | CORE-05 | Phase 2 | Complete |
-| CORE-06 | Phase 2 | Pending |
+| CORE-06 | Phase 2 | Complete |
 | CORE-07 | Phase 2 | Complete |
 | CORE-08 | Phase 2 | Complete |
 | RNDR-01 | Phase 1 | In progress (01-01 scaffold done) |

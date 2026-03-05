@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-terminal-core 02-02-PLAN.md
-last_updated: "2026-03-05T04:32:46.069Z"
-last_activity: "2026-03-05 — Plan 02-02 complete: GPU text rendering pipeline with instanced rect renderer and glyphon text"
+stopped_at: Completed 02-terminal-core 02-03-PLAN.md
+last_updated: "2026-03-05T04:59:34.553Z"
+last_activity: "2026-03-04 — Plan 02-03 complete: keyboard encoder, clipboard, scrollback interaction — Phase 2 complete"
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
-  percent: 83
+  completed_plans: 6
+  percent: 100
 ---
 
 # Project State
@@ -21,30 +21,30 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything — surfacing intelligence only when you need it.
-**Current focus:** Phase 2 — Terminal Core
+**Current focus:** Phase 2 complete — ready for Phase 3
 
 ## Current Position
 
-Phase: 2 of 4 (Terminal Core)
-Plan: 2 of 3 in current phase (02-02 complete, ready for 02-03)
-Status: In progress
-Last activity: 2026-03-05 — Plan 02-02 complete: GPU text rendering pipeline with instanced rect renderer and glyphon text
+Phase: 2 of 4 (Terminal Core) -- COMPLETE
+Plan: 3 of 3 in current phase (all plans complete)
+Status: Phase complete
+Last activity: 2026-03-04 — Plan 02-03 complete: keyboard encoder, clipboard, scrollback interaction
 
-Progress: [████████░░] 83%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 15 min
-- Total execution time: 1.22 hours
+- Total plans completed: 6
+- Average duration: 14 min
+- Total execution time: 1.42 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-scaffold | 3 | 60 min | 20 min |
-| 02-terminal-core | 2 | 13 min | 7 min |
+| 02-terminal-core | 3 | 25 min | 8 min |
 
 **Recent Trend:**
 - Last 5 plans: 8, 5, 45, 10, 5 min
@@ -55,6 +55,7 @@ Progress: [████████░░] 83%
 | Phase 01-scaffold P03 | 45 | 4 tasks | 7 files |
 | Phase 02-terminal-core P01 | 5 | 2 tasks | 9 files |
 | Phase 02-terminal-core P02 | 8 | 3 tasks | 7 files |
+| Phase 02-terminal-core P03 | 12 | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,8 @@ Recent decisions affecting current work:
 - [02-02] Instanced WGSL quad rendering for cell backgrounds — 6 vertices per instance, no index buffer
 - [02-02] Per-line cosmic_text::Buffer with set_rich_text for per-character fg color and font weight/style
 - [02-02] Font metrics cell sizing via 'M' advance width — replaces hardcoded 8x16
+- [Phase 02-terminal-core]: encode_key returns None for Glass-handled keys (clipboard, scrollback); Ctrl+C sends 0x03 to PTY, Ctrl+Shift+C for copy
+- [Phase 02-terminal-core]: Arrow keys use SS3 in APP_CURSOR mode, CSI in normal mode; arboard crate for clipboard
 
 ### Pending Todos
 
@@ -94,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T04:32:00Z
-Stopped at: Completed 02-terminal-core 02-02-PLAN.md
+Last session: 2026-03-05T04:59:34.551Z
+Stopped at: Completed 02-terminal-core 02-03-PLAN.md
 Resume file: None
