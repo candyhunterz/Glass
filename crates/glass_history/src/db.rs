@@ -169,6 +169,15 @@ impl HistoryDb {
         Ok(count as u64)
     }
 
+    /// Update the output field on an existing command record.
+    pub fn update_output(&self, id: i64, output: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE commands SET output = ?1 WHERE id = ?2",
+            params![output, id],
+        )?;
+        Ok(())
+    }
+
     /// Get a reference to the underlying connection (for search/retention modules).
     pub fn conn(&self) -> &Connection {
         &self.conn
@@ -486,6 +495,26 @@ mod tests {
 
         let retrieved = db.get_command(id).unwrap().unwrap();
         assert_eq!(retrieved.output, None);
+    }
+
+    #[test]
+    fn test_update_output() {
+        let dir = TempDir::new().unwrap();
+        let db = HistoryDb::open(&dir.path().join("test.db")).unwrap();
+        let record = CommandRecord {
+            id: None,
+            command: "echo hello".to_string(),
+            cwd: "/tmp".to_string(),
+            exit_code: Some(0),
+            started_at: 1000,
+            finished_at: 1001,
+            duration_ms: 1000,
+            output: None,
+        };
+        let id = db.insert_command(&record).unwrap();
+        db.update_output(id, "hello\n").unwrap();
+        let fetched = db.get_command(id).unwrap().unwrap();
+        assert_eq!(fetched.output, Some("hello\n".to_string()));
     }
 
     #[test]
