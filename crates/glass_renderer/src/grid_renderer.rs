@@ -26,7 +26,7 @@ pub struct GridRenderer {
     /// Scale factor (DPI)
     pub scale_factor: f32,
     /// Font family name (stored for text area creation)
-    font_family: String,
+    pub font_family: String,
 }
 
 impl GridRenderer {

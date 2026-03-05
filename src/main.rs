@@ -175,6 +175,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     sc.width,
                     sc.height,
                     &snapshot,
+                    &[],       // blocks: wired in Plan 04
+                    None,      // status: wired in Plan 04
                 );
 
                 frame.present();
