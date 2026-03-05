@@ -71,4 +71,6 @@ arboard.workspace = true
 memory-stats.workspace = true
 clap = { workspace = true, features = ["derive"] }
 glass_history = { version = "0.1.0", path = "crates/glass_history" }
+glass_mcp = { path = "crates/glass_mcp" }
+tokio = { workspace = true }
 chrono.workspace = true
