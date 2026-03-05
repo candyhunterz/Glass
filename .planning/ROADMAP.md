@@ -49,11 +49,11 @@
   1. File contents written to the blob store are deduplicated -- storing the same file twice produces one blob on disk
   2. Snapshot metadata (command_id, timestamp, file paths, hashes) persists in snapshots.db and survives process restart
   3. Command text is extracted from the terminal grid at command start time, replacing the empty-string tech debt
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 10-01: TBD
-- [ ] 10-02: TBD
+- [ ] 10-01-PLAN.md — Build glass_snapshot crate: BlobStore (BLAKE3 CAS) + SnapshotDb (SQLite metadata) + SnapshotStore coordinator
+- [ ] 10-02-PLAN.md — Move command text extraction to CommandExecuted time + wire SnapshotStore into main binary
 
 ### Phase 11: Command Parser
 **Goal**: Glass can identify which files a command will modify before it runs
@@ -134,7 +134,7 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 7. CLI Query Interface | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 8. Search Overlay | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 9. MCP Server | v1.1 | 2/2 | Complete | 2026-03-05 |
-| 10. Content Store + DB Schema | v1.2 | 0/? | Not started | - |
+| 10. Content Store + DB Schema | v1.2 | 0/2 | Planning | - |
 | 11. Command Parser | v1.2 | 0/? | Not started | - |
 | 12. FS Watcher Engine | v1.2 | 0/? | Not started | - |
 | 13. Integration + Undo Engine | v1.2 | 0/? | Not started | - |
