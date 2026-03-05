@@ -64,10 +64,11 @@ Plans:
   2. Known destructive commands (rm, mv, sed -i, cp, chmod, git checkout) are recognized with their file arguments extracted
   3. Read-only commands (ls, cat, grep) are classified as non-modifying and produce no snapshot targets
   4. Relative paths in command arguments are resolved to absolute paths against the working directory
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 11-01: TBD
+- [ ] 11-01-PLAN.md — POSIX command parser: shlex tokenization, whitelist dispatch, per-command extractors, redirect detection, path resolution + TDD tests
+- [ ] 11-02-PLAN.md — PowerShell command parser: cmdlet detection, named parameter extraction, aliases + TDD tests
 
 ### Phase 12: FS Watcher Engine
 **Goal**: Glass records all file modifications that occur during a command's execution as ground truth
@@ -135,7 +136,7 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 8. Search Overlay | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 9. MCP Server | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 10. Content Store + DB Schema | 2/2 | Complete    | 2026-03-05 | - |
-| 11. Command Parser | v1.2 | 0/? | Not started | - |
+| 11. Command Parser | v1.2 | 0/2 | Not started | - |
 | 12. FS Watcher Engine | v1.2 | 0/? | Not started | - |
 | 13. Integration + Undo Engine | v1.2 | 0/? | Not started | - |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 0/? | Not started | - |
