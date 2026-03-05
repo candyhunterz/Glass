@@ -53,6 +53,8 @@ struct WindowContext {
     block_manager: BlockManager,
     /// Status bar state: CWD and git info.
     status: StatusState,
+    /// Whether the first-frame cold start metric has been logged.
+    first_frame_logged: bool,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -67,6 +69,8 @@ struct Processor {
     modifiers: ModifiersState,
     /// User configuration loaded from ~/.glass/config.toml at startup.
     config: GlassConfig,
+    /// Instant captured at program start for cold start measurement.
+    cold_start: std::time::Instant,
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -168,6 +172,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 default_colors,
                 block_manager: BlockManager::new(),
                 status: StatusState::default(),
+                first_frame_logged: false,
             },
         );
     }
@@ -221,6 +226,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                 );
 
                 frame.present();
+
+                if !ctx.first_frame_logged {
+                    ctx.first_frame_logged = true;
+                    tracing::info!("PERF cold_start={:?}", self.cold_start.elapsed());
+                    if let Some(usage) = memory_stats::memory_stats() {
+                        tracing::info!(
+                            "PERF memory_physical={:.1}MB",
+                            usage.physical_mem as f64 / 1_048_576.0
+                        );
+                    }
+                }
+
                 ctx.frame_renderer.trim();
             }
             WindowEvent::Resized(size) => {
@@ -302,12 +319,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     // Forward to PTY via encoder
+                    let key_start = std::time::Instant::now();
                     if let Some(bytes) =
                         encode_key(&event.logical_key, modifiers, mode)
                     {
                         let _ = ctx
                             .pty_sender
                             .send(PtyMsg::Input(Cow::Owned(bytes)));
+                        tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                     }
                 }
             }
@@ -439,6 +458,8 @@ fn clipboard_paste(sender: &PtySender, mode: TermMode) {
 }
 
 fn main() {
+    let cold_start = std::time::Instant::now();
+
     // FIRST: set UTF-8 console code page on Windows before any PTY creation (Pitfall 5)
     #[cfg(target_os = "windows")]
     unsafe {
@@ -471,6 +492,7 @@ fn main() {
         proxy,
         modifiers: ModifiersState::empty(),
         config,
+        cold_start,
     };
 
     event_loop
