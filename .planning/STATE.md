@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 ## Current Position
 
 Phase: 1 of 4 (Scaffold)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-03-04 — Roadmap created, ready to begin planning Phase 1
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-03-05 — Plan 01-01 complete: Cargo workspace scaffold with 7 crates
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 8%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: —
-- Total execution time: 0 hours
+- Total plans completed: 1
+- Average duration: 5 min
+- Total execution time: 0.08 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01-scaffold | 1 | 5 min | 5 min |
 
 **Recent Trend:**
-- Last 5 plans: —
-- Trend: —
+- Last 5 plans: 5 min
+- Trend: baseline
 
 *Updated after each plan completion*
 
@@ -46,6 +46,10 @@ Recent decisions affecting current work:
 - Windows-first: DX12 backend, ConPTY, UTF-8 code page 65001 set at startup
 - Architecture: dedicated PTY reader thread (not Tokio task), lock-minimizing GridSnapshot pattern
 - Phase 2 shell integration: needs research on PSReadLine 2.x PreExecution hook API before planning
+- [01-01] Workspace resolver = "2" (not 3) to avoid MSRV-aware dep selection surprises
+- [01-01] alacritty_terminal exact-pinned at =0.25.1 (no caret) — no semver stability guarantee
+- [01-01] error::Result uses Box<dyn Error + Send + Sync> for scaffold; thiserror for library crates later
+- [01-01] Rust 1.93.1 stable MSVC installed via rustup (was missing from system)
 
 ### Pending Todos
 
@@ -58,6 +62,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-04
-Stopped at: Roadmap created — all 4 phases written, 27/27 requirements mapped
+Last session: 2026-03-05
+Stopped at: Completed 01-01-PLAN.md — Cargo workspace scaffold with 7 crates compiling
 Resume file: None

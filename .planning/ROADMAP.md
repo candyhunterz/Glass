@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Cargo workspace with all 7 crates, glass_core types, and compiling root binary
+- [x] 01-01-PLAN.md — Cargo workspace with all 7 crates, glass_core types, and compiling root binary
 - [ ] 01-02-PLAN.md — winit window with wgpu DX12 GPU surface (clear-to-color, resize-stable)
 - [ ] 01-03-PLAN.md — ConPTY PTY spawn with dedicated reader thread and keyboard round-trip
 
@@ -92,7 +92,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scaffold | 0/3 | Planned | - |
+| 1. Scaffold | 1/3 | In progress | - |
 | 2. Terminal Core | 0/3 | Not started | - |
 | 3. Shell Integration and Block UI | 0/4 | Not started | - |
 | 4. Configuration and Performance | 0/2 | Not started | - |
