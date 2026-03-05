@@ -4,8 +4,8 @@ milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
 stopped_at: Completed 06-04 HistoryDb wiring
-last_updated: "2026-03-05T18:00:22.682Z"
-last_activity: 2026-03-05 -- Completed 06-02 PTY output capture pipeline
+last_updated: "2026-03-05T18:09:04.809Z"
+last_activity: 2026-03-05 -- Completed 06-04 HistoryDb wiring
 progress:
   total_phases: 5
   completed_phases: 2
