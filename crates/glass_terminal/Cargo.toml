@@ -1,0 +1,11 @@
+[package]
+name = "glass_terminal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glass_core = { path = "../glass_core" }
+alacritty_terminal.workspace = true
+tokio.workspace = true
+winit.workspace = true
+tracing.workspace = true
