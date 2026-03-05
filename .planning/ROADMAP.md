@@ -66,7 +66,10 @@ Plans:
   1. Running `glass history search <term>` returns matching commands from the database
   2. Filters work in combination: `--exit 1 --after "1 hour ago" --cwd /project --limit 10` narrows results correctly
   3. Results display as structured terminal output showing command text, exit code, timestamp, duration, and cwd
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 07-01-PLAN.md -- QueryFilter + filtered_query + parse_time in glass_history query module
+- [ ] 07-02-PLAN.md -- CLI subcommand expansion + display formatting in glass binary
 
 ### Phase 8: Search Overlay
 **Goal**: Users can search their entire command history from within the running terminal via a modal overlay
@@ -103,6 +106,6 @@ Plans:
 | 4. Configuration and Performance | v1.0 | 2/2 | Complete | 2026-03-05 |
 | 5. History Database Foundation | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 6. Output Capture + Writer Integration | v1.1 | 3/4 | In Progress | - |
-| 7. CLI Query Interface | v1.1 | 0/? | Not started | - |
+| 7. CLI Query Interface | v1.1 | 0/2 | Not started | - |
 | 8. Search Overlay | v1.1 | 0/? | Not started | - |
 | 9. MCP Server | v1.1 | 0/? | Not started | - |
