@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 03-shell-integration-and-block-ui 03-02-PLAN.md
-last_updated: "2026-03-05T05:41:11Z"
-last_activity: "2026-03-05 — Plan 03-02 complete: BlockRenderer and StatusBarRenderer integrated into GPU pipeline"
+stopped_at: Completed 03-shell-integration-and-block-ui 03-04-PLAN.md
+last_updated: "2026-03-05T05:50:43Z"
+last_activity: "2026-03-05 — Plan 03-04 complete: End-to-end wiring of PTY->OscScanner->BlockManager/StatusState->FrameRenderer"
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 10
-  completed_plans: 9
-  percent: 90
+  completed_plans: 10
+  percent: 100
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 ## Current Position
 
 Phase: 3 of 4 (Shell Integration and Block UI)
-Plan: 4 of 4 in current phase (03-01, 03-02, 03-03 complete)
-Status: In progress
-Last activity: 2026-03-05 — Plan 03-02 complete: BlockRenderer and StatusBarRenderer integrated into GPU pipeline
+Plan: 4 of 4 in current phase (03-01, 03-02, 03-03, 03-04 complete)
+Status: Phase 3 complete
+Last activity: 2026-03-05 — Plan 03-04 complete: End-to-end wiring of PTY->OscScanner->BlockManager/StatusState->FrameRenderer
 
-Progress: [█████████-] 90%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: [█████████-] 90%
 | Phase 03-shell-integration P03 | 2 | 2 tasks | 2 files |
 | Phase 03-shell-integration P01 | 6 | 2 tasks | 6 files |
 | Phase 03-shell-integration P02 | 4 | 2 tasks | 6 files |
+| Phase 03-shell-integration P04 | 7 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,11 @@ Recent decisions affecting current work:
 - [03-02] Two-phase overlay buffer pattern: build all Buffers (mutable) then create TextAreas (immutable) for borrow-checker safety
 - [03-02] Badge text uses ASCII OK/X (not Unicode checkmark/cross) for maximum font compatibility
 - [03-02] Status bar overlaps last terminal line; PTY resize adjustment deferred to Plan 04 wiring
+- [03-04] ShellEvent enum in glass_core mirrors OscEvent to avoid circular crate dependency
+- [03-04] Custom PTY read loop replaces alacritty PtyEventLoop for OscScanner pre-scanning
+- [03-04] PtySender wraps mpsc::Sender + polling::Poller to wake PTY thread on send
+- [03-04] Grid height reduced by 1 line for status bar; PTY resize reflects content area
+- [03-04] Git status queried on background thread with git_query_pending dedup flag
 
 ### Pending Todos
 
@@ -110,6 +116,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-05T05:41:11Z
-Stopped at: Completed 03-shell-integration-and-block-ui 03-02-PLAN.md
+Last session: 2026-03-05T05:50:43Z
+Stopped at: Completed 03-shell-integration-and-block-ui 03-04-PLAN.md
 Resume file: None
