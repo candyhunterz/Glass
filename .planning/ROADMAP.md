@@ -62,13 +62,13 @@ Plans:
   3. Each block displays the wall-clock duration of the command (e.g., "1.2s")
   4. The status bar shows the current working directory, updating when `cd` is run; it shows the git branch name and dirty file count when inside a git repository
   5. Shell integration is compatible with Oh My Posh and Starship — their prompt styling is preserved when integration scripts are installed
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
-- [ ] 03-01: OSC 133/7 parser and BlockManager state machine
-- [ ] 03-02: Block rendering in glass_renderer (separator, exit code badge, duration)
-- [ ] 03-03: PowerShell integration script (wraps existing prompt, PSReadLine hooks)
-- [ ] 03-04: Bash integration script (PROMPT_COMMAND/PS0) and status bar (CWD + async git)
+- [ ] 03-01-PLAN.md — OscScanner byte parser, BlockManager state machine, StatusState with git queries (TDD)
+- [ ] 03-02-PLAN.md — Block rendering (separators, exit code badges, duration labels) and status bar in FrameRenderer
+- [ ] 03-03-PLAN.md — PowerShell and Bash shell integration scripts emitting OSC 133/7
+- [ ] 03-04-PLAN.md — Custom PTY read loop with OscScanner, full wiring into main.rs
 
 ### Phase 4: Configuration and Performance
 **Goal**: Glass reads a TOML config file for font, font size, and shell override; and the application meets cold start, input latency, and idle memory targets that confirm it is daily-drivable
