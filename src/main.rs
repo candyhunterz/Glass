@@ -137,6 +137,12 @@ struct WindowContext {
     command_started_wall: Option<std::time::SystemTime>,
     /// Search overlay state. None when overlay is closed.
     search_overlay: Option<SearchOverlay>,
+    /// Snapshot store for content-addressed file snapshots (opened alongside history_db).
+    /// Used by future phases (11+) for pre-exec snapshots.
+    #[allow(dead_code)]
+    snapshot_store: Option<glass_snapshot::SnapshotStore>,
+    /// Command text extracted at CommandExecuted time, consumed by CommandFinished handler.
+    pending_command_text: Option<String>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -266,6 +272,23 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
         };
 
+        // Open snapshot store from initial cwd (non-fatal on failure)
+        let snapshot_store = {
+            let glass_dir = glass_snapshot::resolve_glass_dir(
+                &std::env::current_dir().unwrap_or_default(),
+            );
+            match glass_snapshot::SnapshotStore::open(&glass_dir) {
+                Ok(store) => {
+                    tracing::info!("Snapshot store opened");
+                    Some(store)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open snapshot store: {} — snapshots disabled", e);
+                    None
+                }
+            }
+        };
+
         let id = window.id();
         self.windows.insert(
             id,
@@ -283,6 +306,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 last_command_id: None,
                 command_started_wall: None,
                 search_overlay: None,
+                snapshot_store,
+                pending_command_text: None,
             },
         );
     }
@@ -602,9 +627,46 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let osc_event = shell_event_to_osc(&shell_event);
                     ctx.block_manager.handle_event(&osc_event, line);
 
-                    // Track wall-clock start time on CommandExecuted
+                    // Track wall-clock start time on CommandExecuted and extract command text
+                    // from the terminal grid NOW (before output overwrites the grid).
+                    // block_manager.handle_event() above has already set output_start_line.
                     if matches!(shell_event, ShellEvent::CommandExecuted) {
                         ctx.command_started_wall = Some(std::time::SystemTime::now());
+
+                        // Extract command text from the terminal grid using block line info.
+                        // command_start_line..output_start_line covers the input area.
+                        let command_text = {
+                            let blocks = ctx.block_manager.blocks();
+                            if let Some(block) = blocks.last() {
+                                let start = block.command_start_line;
+                                let end = block.output_start_line
+                                    .map(|o| o.max(start + 1))
+                                    .unwrap_or(start + 1);
+                                let term_guard = ctx.term.lock();
+                                let hist = term_guard.grid().history_size();
+                                let cols = term_guard.columns();
+                                let topmost = term_guard.grid().topmost_line();
+                                let bottommost = term_guard.grid().bottommost_line();
+                                let mut text = String::new();
+                                for abs_line in start..end {
+                                    let grid_line = Line(abs_line as i32 - hist as i32);
+                                    if grid_line < topmost || grid_line > bottommost {
+                                        continue;
+                                    }
+                                    let row = &term_guard.grid()[grid_line];
+                                    for col in 0..cols {
+                                        let c = row[Column(col)].c;
+                                        if c != '\0' {
+                                            text.push(c);
+                                        }
+                                    }
+                                }
+                                text.trim().to_string()
+                            } else {
+                                String::new()
+                            }
+                        };
+                        ctx.pending_command_text = Some(command_text);
                     }
 
                     // Insert CommandRecord on CommandFinished
@@ -624,41 +686,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .map(|d| d.as_millis() as i64)
                                 .unwrap_or(0);
 
-                            // Extract command text from the terminal grid using block line info.
-                            // command_start_line..output_start_line covers the input area.
-                            // Use inclusive start to handle single-line commands where both are equal.
-                            let command_text = {
-                                let blocks = ctx.block_manager.blocks();
-                                if let Some(block) = blocks.last() {
-                                    let start = block.command_start_line;
-                                    // Always read at least one line (the command line itself)
-                                    let end = block.output_start_line
-                                        .map(|o| o.max(start + 1))
-                                        .unwrap_or(start + 1);
-                                    let term_guard = ctx.term.lock();
-                                    let hist = term_guard.grid().history_size();
-                                    let cols = term_guard.columns();
-                                    let topmost = term_guard.grid().topmost_line();
-                                    let bottommost = term_guard.grid().bottommost_line();
-                                    let mut text = String::new();
-                                    for abs_line in start..end {
-                                        let grid_line = Line(abs_line as i32 - hist as i32);
-                                        if grid_line < topmost || grid_line > bottommost {
-                                            continue;
-                                        }
-                                        let row = &term_guard.grid()[grid_line];
-                                        for col in 0..cols {
-                                            let c = row[Column(col)].c;
-                                            if c != '\0' {
-                                                text.push(c);
-                                            }
-                                        }
-                                    }
-                                    text.trim().to_string()
-                                } else {
-                                    String::new()
-                                }
-                            };
+                            // Use command text extracted earlier at CommandExecuted time.
+                            // If CommandExecuted never fired (edge case), default to empty string.
+                            let command_text = ctx.pending_command_text.take().unwrap_or_default();
 
                             let record = CommandRecord {
                                 id: None,

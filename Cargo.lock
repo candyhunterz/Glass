@@ -1080,6 +1080,7 @@ dependencies = [
  "glass_history",
  "glass_mcp",
  "glass_renderer",
+ "glass_snapshot",
  "glass_terminal",
  "memory-stats",
  "pollster",
