@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: Phase 6 context gathered
-last_updated: "2026-03-05T15:31:25.924Z"
-last_activity: 2026-03-05 -- Completed 05-02 clap subcommand routing
+stopped_at: Completed 06-01 output storage foundation
+last_updated: "2026-03-05T15:55:06Z"
+last_activity: 2026-03-05 -- Completed 06-01 output storage foundation
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 20
+  total_plans: 3
+  completed_plans: 1
+  percent: 27
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 5 - History Database Foundation
+**Current focus:** Phase 6 - Output Capture + Writer Integration
 
 ## Current Position
 
 Milestone: v1.1 Structured Scrollback + MCP Server
-Phase: 5 of 9 (History Database Foundation) -- COMPLETE
-Plan: 2 of 2 in current phase (phase complete)
-Status: Executing (ready for Phase 6)
-Last activity: 2026-03-05 -- Completed 05-02 clap subcommand routing
+Phase: 6 of 9 (Output Capture + Writer Integration)
+Plan: 1 of 3 in current phase
+Status: Executing
+Last activity: 2026-03-05 -- Completed 06-01 output storage foundation
 
-Progress: [##........] 20% (v1.1: 1/5 phases, 2/2 plans in phase 5)
+Progress: [###.......] 27% (v1.1: 1/5 phases, 1/3 plans in phase 6)
 
 ## Performance Metrics
 
@@ -55,6 +55,9 @@ Recent decisions affecting v1.1:
 - MCP server as separate process (`glass mcp serve`), not embedded
 - Standard FTS5 table delete via DELETE FROM fts WHERE rowid=? (not INSERT 'delete' command)
 - FTS5 delete before commands delete in same transaction for pruning
+- Binary detection runs on raw bytes before ANSI stripping to preserve accurate non-printable ratio
+- PRAGMA user_version migration pattern for schema evolution (v0->v1 adds output column)
+- serde default function for backward-compatible TOML config parsing
 
 ### Pending Todos
 
@@ -66,6 +69,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T15:31:25.922Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-output-capture-writer-integration/06-CONTEXT.md
+Last session: 2026-03-05T15:55:06Z
+Stopped at: Completed 06-01 output storage foundation
+Resume file: .planning/phases/06-output-capture-writer-integration/06-01-SUMMARY.md
