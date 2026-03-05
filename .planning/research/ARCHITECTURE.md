@@ -1,832 +1,722 @@
-# Architecture Research: v1.1 Structured Scrollback + MCP Server
+# Architecture Patterns: v1.2 Command-Level Undo
 
-**Domain:** SQLite history DB, MCP server, search overlay, CLI query -- integrating into existing GPU-accelerated terminal emulator
+**Domain:** Command-level undo with filesystem snapshots for terminal emulator
 **Researched:** 2026-03-05
-**Confidence:** HIGH (based on direct source code analysis of existing Glass v1.0 codebase + official rusqlite/MCP docs)
+**Confidence:** HIGH (based on direct source code analysis of existing Glass v1.1 codebase, notify crate docs, BLAKE3 docs)
 
 ---
 
-## System Overview: v1.1 Additions
+## System Overview: v1.2 Additions
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Application Layer                                │
-│  glass binary (main.rs)                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────────┐    │
-│  │  Processor   │  │  WindowCtx   │  │  CLI Subcommands           │    │
-│  │  (winit loop)│  │  (per-window)│  │  (glass history search ..) │    │
-│  └──────┬───────┘  └──────┬───────┘  └────────────────────────────┘    │
-│         │                 │            NEW: CLI binary entry point      │
-├─────────┼─────────────────┼────────────────────────────────────────────┤
-│         │    Service Layer                                              │
-│  ┌──────▼──────────────┐  │  ┌──────────────┐  ┌──────────────────┐   │
-│  │  glass_terminal     │  │  │glass_renderer│  │  glass_core      │   │
-│  │  PTY + OscScanner   │  │  │ wgpu + GPU   │  │  events, config  │   │
-│  │  BlockManager ──────┼──┤  │              │  │                  │   │
-│  │  +OutputCapture NEW │  │  │ +SearchOverlay│  │  +HistoryEvent   │   │
-│  └─────────┬───────────┘  │  │  NEW         │  │  NEW             │   │
-│            │              │  └──────────────┘  └──────────────────┘   │
-│            │              │                                            │
-│  ┌─────────▼───────────┐  │  ┌──────────────────────────────────────┐  │
-│  │  glass_history NEW  │  │  │  glass_mcp NEW                      │  │
-│  │  SQLite + FTS5      │◄─┘  │  JSON-RPC stdio server              │  │
-│  │  HistoryDb          │◄────│  reads from glass_history            │  │
-│  │  RetentionPolicy    │     │  GlassHistory + GlassContext tools   │  │
-│  └─────────────────────┘     └──────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------------+
+|                        Application Layer                               |
+|  glass binary (main.rs)                                                |
+|  +----------------+  +----------------+  +--------------------------+  |
+|  |  Processor     |  |  WindowCtx     |  |  CLI Subcommands         |  |
+|  |  (winit loop)  |  |  (per-window)  |  |  glass undo <id>   NEW  |  |
+|  +-------+--------+  +-------+--------+  +--------------------------+  |
+|          |                    |                                         |
++----------+--------------------+----------------------------------------+
+|          |    Service Layer   |                                         |
+|  +-------v--------------+    |  +--------------+  +----------------+   |
+|  |  glass_terminal      |    |  |glass_renderer|  |  glass_core    |   |
+|  |  PTY + OscScanner    |    |  | wgpu + GPU   |  |  events,config |   |
+|  |  BlockManager        |    |  |              |  |                |   |
+|  |  OutputCapture       |    |  | +[undo] label|  | +SnapshotCfg  |   |
+|  +-----------------------+   |  |  NEW         |  |  NEW           |   |
+|                              |  +--------------+  +----------------+   |
+|  +-----------------------+   |                                         |
+|  |  glass_snapshot  NEW  |   |  +----------------------------------+   |
+|  |  SnapshotStore       <----+  |  glass_mcp                      |   |
+|  |  CommandParser        |   |  |  +GlassUndo tool          NEW   |   |
+|  |  FsWatcher (notify)   |   |  |  +GlassFileDiff tool      NEW  |   |
+|  |  UndoEngine           |   |  +----------------------------------+   |
+|  +-----------------------+   |                                         |
+|                              |  +----------------------------------+   |
+|  +-----------------------+   |  |  glass_history (unchanged)       |   |
+|  |  glass_config         |   +-->  SQLite + FTS5                   |   |
+|  |  (unchanged)          |      |  CommandRecord, HistoryDb        |   |
+|  +-----------------------+      +----------------------------------+   |
++------------------------------------------------------------------------+
 ```
+
+---
+
+## Existing Architecture (What We Build On)
+
+Understanding the existing data flow is critical. Here is how a command lifecycle currently works:
+
+```
+PTY Reader Thread (std::thread)         Main Thread (winit event loop)
+================================         ==============================
+
+OscScanner detects OSC 133;C
+  -> AppEvent::Shell{Executed}  -------> Processor::user_event:
+                                           block_manager.handle_event()
+                                           command_started_wall = now()
+
+... PTY output flows ...                ... output_buffer accumulates ...
+
+OscScanner detects OSC 133;D
+  -> AppEvent::Shell{Finished}  -------> Processor::user_event:
+  -> AppEvent::CommandOutput    -------> 1. Extract command text from grid
+                                         2. HistoryDb::insert_command()
+                                         3. process_output() + update_output()
+```
+
+**Key architectural facts from code analysis:**
+
+1. **PTY reader thread** runs on `std::thread` (not tokio). It holds the `Term` lock briefly, scans OSC sequences, and sends `AppEvent` variants through `EventLoopProxy<AppEvent>`.
+
+2. **Command text extraction** currently happens at `CommandFinished` time in `Processor::user_event`. It reads from the terminal grid between `block.command_start_line` and `block.output_start_line`.
+
+3. **History DB** is owned by `WindowContext` on the main thread (`history_db: Option<HistoryDb>`). Inserts happen synchronously in `user_event` -- this is fine because SQLite inserts are <1ms.
+
+4. **Block lifecycle** is tracked by `BlockManager` with states: PromptActive -> InputActive -> Executing -> Complete. Each block records line numbers and timing.
+
+5. **Keybindings** are handled in `window_event` for `KeyboardInput`. Ctrl+Shift+{C,V,F} are already intercepted. Adding Ctrl+Shift+Z follows the same pattern.
+
+6. **glass_snapshot** is currently an empty stub crate with only `//! glass_snapshot -- stub crate, filled in future phases`.
 
 ---
 
 ## New Components
 
-### 1. glass_history: SQLite History Database
+### 1. glass_snapshot::SnapshotStore
 
-**Purpose:** Persist command metadata and output text into a queryable SQLite database with FTS5 full-text indexing.
+Content-addressed file storage using BLAKE3 hashing with SQLite metadata.
 
-**Dependencies:** `rusqlite 0.38` (already in workspace with `bundled` feature), `glass_core`
-
-**Key types:**
-
-```rust
-// glass_history/src/lib.rs
-pub struct HistoryDb {
-    conn: rusqlite::Connection,
-}
-
-pub struct CommandRecord {
-    pub id: i64,
-    pub command_text: String,       // captured from OSC 133;B..133;C range
-    pub output_text: String,        // captured from OSC 133;C..133;D range
-    pub cwd: String,                // from OSC 7/9;9 at time of execution
-    pub exit_code: Option<i32>,     // from OSC 133;D
-    pub duration_ms: Option<u64>,   // computed from started_at/finished_at
-    pub started_at: i64,            // Unix timestamp (milliseconds)
-    pub finished_at: Option<i64>,   // Unix timestamp (milliseconds)
-    pub hostname: String,           // machine identifier
-    pub shell: String,              // "pwsh", "bash", etc.
-}
-
-pub struct SearchResult {
-    pub record: CommandRecord,
-    pub rank: f64,                  // BM25 relevance score from FTS5
-    pub snippet: String,            // FTS5 snippet() highlight
-}
-
-pub struct RetentionPolicy {
-    pub max_age_days: u32,          // default: 90
-    pub max_entries: u64,           // default: 50_000
-    pub max_db_size_mb: u64,        // default: 500
-}
+**Storage layout:**
+```
+.glass/
+  history.db          (existing -- glass_history)
+  snapshots.db        (NEW -- snapshot metadata)
+  blobs/
+    ab/
+      ab3f...7e.blob  (content-addressed files, 2-char directory sharding)
 ```
 
-**Schema design:**
-
+**Schema (snapshots.db, separate from history.db):**
 ```sql
--- Main table
-CREATE TABLE commands (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    command_text TEXT NOT NULL,
-    output_text TEXT NOT NULL DEFAULT '',
-    cwd TEXT NOT NULL,
-    exit_code INTEGER,
-    duration_ms INTEGER,
-    started_at INTEGER NOT NULL,      -- Unix millis
-    finished_at INTEGER,
-    hostname TEXT NOT NULL,
-    shell TEXT NOT NULL
+CREATE TABLE snapshots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id  INTEGER NOT NULL,     -- matches commands.id in history.db
+    cwd         TEXT NOT NULL,
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
+CREATE INDEX idx_snapshots_command ON snapshots(command_id);
 
--- FTS5 virtual table for full-text search over command + output
-CREATE VIRTUAL TABLE commands_fts USING fts5(
-    command_text,
-    output_text,
-    content='commands',
-    content_rowid='id',
-    tokenize='unicode61'
+CREATE TABLE snapshot_files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    file_path   TEXT NOT NULL,         -- absolute path
+    blob_hash   TEXT,                  -- BLAKE3 hash, NULL = file did not exist
+    file_size   INTEGER,              -- original file size in bytes
+    source      TEXT NOT NULL DEFAULT 'parser'  -- 'parser' or 'watcher'
 );
+CREATE INDEX idx_sf_snapshot ON snapshot_files(snapshot_id);
+CREATE INDEX idx_sf_hash ON snapshot_files(blob_hash);
 
--- Triggers to keep FTS index in sync
-CREATE TRIGGER commands_ai AFTER INSERT ON commands BEGIN
-    INSERT INTO commands_fts(rowid, command_text, output_text)
-    VALUES (new.id, new.command_text, new.output_text);
-END;
-
-CREATE TRIGGER commands_ad AFTER DELETE ON commands BEGIN
-    INSERT INTO commands_fts(commands_fts, rowid, command_text, output_text)
-    VALUES ('delete', old.id, old.command_text, old.output_text);
-END;
-
--- Indexes for common query patterns
-CREATE INDEX idx_commands_started_at ON commands(started_at DESC);
-CREATE INDEX idx_commands_cwd ON commands(cwd);
-CREATE INDEX idx_commands_exit_code ON commands(exit_code);
+CREATE TABLE fs_changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    file_path   TEXT NOT NULL,
+    change_type TEXT NOT NULL,          -- 'create', 'modify', 'delete', 'rename'
+    detected_at INTEGER NOT NULL
+);
+CREATE INDEX idx_fc_snapshot ON fs_changes(snapshot_id);
 ```
 
-**Thread safety model:** `rusqlite::Connection` is `Send` but not `Sync`. The `HistoryDb` should be owned by a single writer thread. Reads for search/MCP use a separate read-only connection opened with `SQLITE_OPEN_READ_ONLY`. SQLite WAL mode enables concurrent readers with one writer.
+**Why separate DB from history.db:**
+- glass_snapshot must NOT depend on glass_history (different crate, different concern)
+- Blob storage can grow large; separate DB allows independent vacuum/pruning
+- Schema versioning is independent (PRAGMA user_version tracks separately)
+- Follows existing pattern: both DBs resolve to the same `.glass/` directory via the same ancestor-walk logic
+
+**Content deduplication:** Files with identical BLAKE3 hashes share a single blob on disk. Before writing, check if blob exists. During pruning, delete blobs with zero remaining references.
+
+**Why BLAKE3 over SHA-256:** BLAKE3 is 5-10x faster on modern hardware, has a clean single-crate Rust implementation (`blake3` 1.6+), and provides more than sufficient collision resistance for local file deduplication (this is not cryptographic authentication).
+
+**Key struct:**
+```rust
+pub struct SnapshotStore {
+    conn: rusqlite::Connection,
+    blob_dir: PathBuf,
+}
+
+impl SnapshotStore {
+    pub fn open(glass_dir: &Path) -> Result<Self>;
+    pub fn create_snapshot(&self, command_id: i64, cwd: &str) -> Result<i64>;
+    pub fn store_file(&self, snapshot_id: i64, path: &Path, source: &str) -> Result<()>;
+    pub fn record_change(&self, snapshot_id: i64, path: &Path, change_type: &str) -> Result<()>;
+    pub fn get_snapshot_files(&self, snapshot_id: i64) -> Result<Vec<SnapshotFile>>;
+    pub fn get_changes(&self, snapshot_id: i64) -> Result<Vec<FsChange>>;
+    pub fn find_by_command(&self, command_id: i64) -> Result<Option<i64>>;
+    pub fn restore_snapshot(&self, snapshot_id: i64) -> Result<RestoreReport>;
+    pub fn prune(&self, max_age_days: u32, max_size_bytes: u64) -> Result<u64>;
+    pub fn total_blob_size(&self) -> Result<u64>;
+}
+```
+
+### 2. glass_snapshot::CommandParser
+
+Heuristic parser that extracts file/directory targets from command text. NOT a full shell parser -- handles common cases and is honest about limitations.
 
 ```rust
-impl HistoryDb {
-    /// Open or create the database at ~/.glass/history.db
-    pub fn open(path: &Path) -> Result<Self>;
-
-    /// Insert a completed command record. Called from main thread
-    /// when BlockManager transitions a block to Complete.
-    pub fn insert(&self, record: &CommandRecord) -> Result<i64>;
-
-    /// Full-text search across command text and output.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>;
-
-    /// Query by filters (cwd, exit_code, date range).
-    pub fn query(&self, filter: &QueryFilter) -> Result<Vec<CommandRecord>>;
-
-    /// Apply retention policy: delete old/excess entries.
-    pub fn enforce_retention(&self, policy: &RetentionPolicy) -> Result<usize>;
-
-    /// Open a read-only connection for concurrent access (MCP/CLI).
-    pub fn open_readonly(path: &Path) -> Result<Self>;
+pub struct ParseResult {
+    pub targets: Vec<PathBuf>,
+    pub confidence: Confidence,
+    pub watch_cwd: bool,
 }
+
+pub enum Confidence {
+    High,      // Known destructive command with clear targets (rm, mv, sed -i)
+    Low,       // Unknown command or ambiguous targets
+    ReadOnly,  // Command is read-only (ls, cat, grep) -- skip snapshot
+}
+
+pub fn parse_command(command_text: &str, cwd: &Path) -> ParseResult;
 ```
 
-### 2. glass_mcp: MCP Server
+**Known command patterns:**
 
-**Purpose:** Expose terminal history to AI assistants via the Model Context Protocol (JSON-RPC 2.0 over stdio).
+| Pattern | Confidence | Targets | watch_cwd |
+|---------|-----------|---------|-----------|
+| `rm file1 file2` | High | file1, file2 | false |
+| `mv src dst` | High | src | false |
+| `cp src dst` | High | dst (overwrite) | false |
+| `sed -i 's/a/b/' file` | High | file | false |
+| `chmod 755 file` | High | file | false |
+| `echo text > file` | High | file (redirect target) | false |
+| `cargo build` | Low | none | true |
+| `npm install` | Low | none | true |
+| `make` | Low | none | true |
+| `./script.sh` | Low | none | true |
+| Unknown command | Low | none | true |
+| `ls`, `cat`, `grep`, `git log` | ReadOnly | none | false |
 
-**Dependencies:** `glass_history`, `glass_core`, `serde`, `serde_json`, `tokio` (already in workspace)
+**Path resolution:** All relative paths are resolved against `cwd`. Glob patterns (e.g., `rm *.txt`) are expanded via `std::fs::read_dir` + pattern matching. Quoted arguments are unquoted. Flag arguments (starting with `-`) are skipped except for recognized flag-value pairs (e.g., `sed -i`).
 
-**Architecture decision: Use raw JSON-RPC, not rmcp SDK.** The MCP server for Glass is simple (2 tools, stdio transport only). The `rmcp` SDK adds significant dependency weight and complexity. Hand-rolling JSON-RPC parsing for 2 tool handlers is ~200 lines of straightforward serde code. This avoids pulling in the entire SDK for a narrow use case.
+**Why heuristic, not full parser:** Shell syntax is impossible to parse fully without executing it (aliases, variable expansion, subshells, command substitution). A heuristic parser covers ~80% of real-world destructive commands. The FS watcher catches the remaining ~20%. The UI honestly communicates limitations.
 
-**Key design:**
+### 3. glass_snapshot::FsWatcher
+
+Wraps the `notify` crate (v8.2) for command-scoped filesystem monitoring.
+
+**Platform backends (via notify::RecommendedWatcher):**
+- Windows: ReadDirectoryChangesW
+- Linux: inotify
+- macOS: FSEvents
 
 ```rust
-// glass_mcp/src/lib.rs
-pub struct McpServer {
-    history_db: HistoryDb,  // read-only connection
+pub struct CommandWatcher {
+    watcher: Option<notify::RecommendedWatcher>,
+    changes: Arc<Mutex<Vec<FsChangeEvent>>>,
+    cwd: PathBuf,
 }
 
-// Tool definitions exposed to MCP clients
-pub const TOOLS: &[ToolDefinition] = &[
-    ToolDefinition {
-        name: "GlassHistory",
-        description: "Search terminal command history with full-text search",
-        input_schema: /* JSON Schema for query, limit, cwd_filter, exit_code_filter */,
-    },
-    ToolDefinition {
-        name: "GlassContext",
-        description: "Get recent terminal context (last N commands with output)",
-        input_schema: /* JSON Schema for count, cwd */,
-    },
-];
+impl CommandWatcher {
+    pub fn start(cwd: &Path, ignore_patterns: &[String]) -> Result<Self>;
+    pub fn stop(&mut self) -> Vec<FsChangeEvent>;
+}
+
+pub struct FsChangeEvent {
+    pub path: PathBuf,
+    pub kind: ChangeKind,
+    pub timestamp: i64,
+}
+
+pub enum ChangeKind {
+    Create,
+    Modify,
+    Delete,
+    Rename { from: Option<PathBuf> },
+}
 ```
 
-**Execution model:** The MCP server runs as a separate process, NOT inside the terminal's winit event loop. It is invoked as `glass mcp serve` which:
-1. Opens `~/.glass/history.db` in read-only mode
-2. Reads JSON-RPC requests from stdin
-3. Writes JSON-RPC responses to stdout
-4. Logs to stderr (critical: stdout is the protocol channel)
+**Lifecycle:**
+1. `CommandExecuted` -> `CommandWatcher::start(cwd)` with recursive watching
+2. notify's internal thread collects events into `Arc<Mutex<Vec<FsChangeEvent>>>`
+3. `CommandFinished` -> `CommandWatcher::stop()` drains and returns all events
+4. Events are filtered, deduplicated, and recorded in SnapshotStore
 
-This matches the MCP stdio transport specification. The AI assistant (Claude, etc.) spawns `glass mcp serve` as a subprocess.
+**Noise filtering (default ignore list):**
+- `.git/` internals (index, objects, refs -- but NOT `.gitignore`)
+- `target/` (Rust build directory)
+- `node_modules/`
+- `*.tmp`, `*.swp`, `*.lock` (editor swap/lock files)
+- `.glass/` directory itself
+- Configurable via `[snapshot] ignore_dirs` in config.toml
 
-### 3. Output Capture (modification to glass_terminal)
+**Threading model:** The `notify` crate spawns its own internal OS thread for the platform backend. Events are pushed into an `Arc<Mutex<Vec>>`. The main thread drains this on `CommandFinished`. This is simple and avoids async coordination. The Mutex contention is negligible because the main thread only accesses it once (at stop time), while notify's thread appends events.
 
-**Purpose:** Capture command output text from the terminal grid for storage in the history database.
+### 4. glass_snapshot::UndoEngine
 
-**Integration point:** This is the trickiest new component because it needs to extract plain text from the `alacritty_terminal::Term` grid between specific line ranges (the block's output_start_line to output_end_line).
+Orchestrates file restoration with conflict detection.
 
 ```rust
-// glass_terminal/src/output_capture.rs (NEW)
-use alacritty_terminal::term::Term;
-use alacritty_terminal::grid::Dimensions;
+pub struct RestoreReport {
+    pub restored: Vec<PathBuf>,
+    pub created_removed: Vec<PathBuf>,  // files created by command, now deleted
+    pub skipped: Vec<(PathBuf, SkipReason)>,
+    pub errors: Vec<(PathBuf, String)>,
+}
 
-/// Extract plain text from the terminal grid between two line ranges.
-/// Used when a block transitions to Complete to capture its output.
-pub fn capture_output(
-    term: &Term<impl alacritty_terminal::event::EventListener>,
-    start_line: usize,
-    end_line: usize,
-) -> String {
-    // Walk the grid rows from start_line to end_line,
-    // extract characters, trim trailing whitespace per line
-    // This runs under the existing Term lock during the
-    // CommandFinished event processing
+pub enum SkipReason {
+    ModifiedAfterCommand,  // file changed by a later command
+    NoSnapshotData,        // watcher detected change but no pre-state
+    PermissionDenied,
+}
+
+impl UndoEngine {
+    /// Undo the most recent undoable command for the current CWD.
+    pub fn undo_latest(store: &SnapshotStore, cwd: &str) -> Result<Option<RestoreReport>>;
+
+    /// Undo a specific command by its command_id.
+    pub fn undo_command(store: &SnapshotStore, command_id: i64) -> Result<RestoreReport>;
 }
 ```
 
-**Critical constraint:** The output capture must happen while the term lock is held, during the same event processing that handles `CommandFinished`. The output lines are in the scrollback buffer, which can be overwritten if capture is deferred. This means capture MUST be synchronous with the block completion event.
+**Restore strategy:**
+1. Look up snapshot by command_id
+2. For each `snapshot_file` with `blob_hash IS NOT NULL`: copy blob -> original path
+3. For each `snapshot_file` with `blob_hash IS NULL`: the file did not exist before, so delete the current file if it exists
+4. For each `fs_change` of type 'create' NOT covered by snapshot_files: delete (file was created by command)
+5. Report results
 
-### 4. Search Overlay (modification to glass_renderer)
-
-**Purpose:** A floating search UI triggered by Ctrl+Shift+F that queries the history database and displays results over the terminal content.
-
-**New renderer component:**
-
-```rust
-// glass_renderer/src/search_overlay.rs (NEW)
-pub struct SearchOverlay {
-    visible: bool,
-    query: String,
-    results: Vec<SearchResultDisplay>,
-    selected_index: usize,
-    cursor_position: usize,
-}
-
-pub struct SearchResultDisplay {
-    pub command: String,
-    pub cwd: String,
-    pub exit_code: Option<i32>,
-    pub timestamp: String,
-    pub snippet: String,     // highlighted match from FTS5
-}
-```
-
-**Rendering approach:** The search overlay draws on top of the terminal content as a semi-transparent panel. It uses the existing `RectRenderer` for the background panel and `GlyphCache`/`TextRenderer` for the text. It renders in a separate render pass after the main terminal frame, or as the last items in the same pass with a higher z-order (since wgpu does not have z-ordering, render order determines occlusion).
-
-**Input handling:** When the overlay is visible, keyboard input is intercepted by the Processor before forwarding to the PTY. Escape closes the overlay. Enter selects a result. Arrow keys navigate results. Character keys update the search query.
-
-### 5. CLI Query Interface (modification to glass binary)
-
-**Purpose:** Allow `glass history search <query>` and similar commands from any terminal.
-
-**Design:** The `glass` binary gains a subcommand router. If invoked with arguments (e.g., `glass history search "cargo build"`), it runs the CLI path instead of launching the terminal UI.
-
-```rust
-// src/main.rs modification
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() > 1 && args[1] == "history" {
-        // CLI mode: query the database directly, print results, exit
-        cli::handle_history_command(&args[2..]);
-        return;
-    }
-
-    if args.len() > 1 && args[1] == "mcp" {
-        // MCP server mode: run JSON-RPC stdio loop
-        mcp::run_server();
-        return;
-    }
-
-    // Default: launch terminal UI (existing behavior)
-    launch_terminal();
-}
-```
-
-This avoids a separate binary. The `glass` executable serves three roles:
-1. Terminal emulator (default, no args)
-2. History CLI (`glass history ...`)
-3. MCP server (`glass mcp serve`)
+**Conflict detection:** Before restoring, compare the current file state against what we expect. If a file was modified by a SUBSEQUENT command (checked via `SELECT ... FROM snapshots WHERE command_id > ? AND snapshot_id IN (SELECT snapshot_id FROM snapshot_files WHERE file_path = ?)`), skip it and report `ModifiedAfterCommand`.
 
 ---
 
 ## Modifications to Existing Components
 
-### glass_core: New Event Variants
-
-**File:** `crates/glass_core/src/event.rs`
-
-Add a new event variant for history recording:
+### glass_core::event -- New AppEvent Variant
 
 ```rust
 pub enum AppEvent {
     // ... existing variants unchanged ...
 
-    /// A command block has completed and should be recorded to history.
-    /// Sent from main thread after output capture, received by history writer.
-    CommandCompleted {
+    /// Result of an undo operation, for UI feedback.
+    UndoComplete {
         window_id: WindowId,
         command_text: String,
-        output_text: String,
-        cwd: String,
-        exit_code: Option<i32>,
-        duration_ms: Option<u64>,
-        started_at: i64,
+        restored_count: usize,
+        error_count: usize,
     },
 }
 ```
 
-Wait -- `AppEvent` flows through the winit `EventLoopProxy`, which requires `Send`. But the history DB write should NOT happen on the main thread (it blocks). Two options:
+**Why only UndoComplete, not more:** The snapshot lifecycle (create, store files, record changes) runs synchronously on the main thread during `user_event` handling. No new AppEvent is needed for those -- they piggyback on existing `Shell { CommandExecuted }` and `Shell { CommandFinished }` handling. Only the undo result needs a separate event because it triggers UI feedback (status bar message or toast).
 
-**Option A (recommended): Direct channel to history writer thread.** Add a `mpsc::Sender<CommandRecord>` to `WindowContext`. When a block completes, capture output under the term lock, construct the record, send it through the channel. A background thread owns the `HistoryDb` and drains the channel.
+**Alternative considered:** Adding a `CommandText` event to carry command text from `CommandExecuted`. Rejected because command text extraction already works in the existing `CommandFinished` handler by reading the terminal grid. The same grid-reading technique works at `CommandExecuted` time -- the command text is still visible in the grid because the prompt line has not scrolled away yet.
 
-**Option B: Use AppEvent.** Add the variant above and handle it in `user_event()` by spawning a blocking task. This is simpler but puts DB writes on the main thread's task spawner.
-
-**Recommendation: Option A.** It keeps the main thread free from any DB I/O and matches the existing pattern of dedicated threads for blocking work (PTY reader, git query).
-
-### glass_core: Config Extension
-
-**File:** `crates/glass_core/src/config.rs`
+### glass_core::config -- SnapshotSection
 
 ```rust
+#[derive(Debug, Clone, Deserialize)]
 pub struct GlassConfig {
     // ... existing fields ...
-
-    /// History database settings
-    pub history: HistoryConfig,
+    pub snapshot: Option<SnapshotSection>,
 }
 
-pub struct HistoryConfig {
-    pub enabled: bool,              // default: true
-    pub db_path: Option<PathBuf>,   // default: ~/.glass/history.db
-    pub retention_days: u32,        // default: 90
-    pub max_entries: u64,           // default: 50_000
-    pub max_output_bytes: usize,    // default: 64KB per command (truncate long outputs)
-}
-```
-
-### glass_terminal: BlockManager Enhancement
-
-**File:** `crates/glass_terminal/src/block_manager.rs`
-
-The existing `Block` struct uses `Instant` for timing, which cannot be serialized. Add serializable timestamps:
-
-```rust
-pub struct Block {
-    // ... existing fields ...
-
-    /// Unix timestamp (millis) when command started executing.
-    /// Added for history DB recording (Instant is not serializable).
-    pub started_at_unix: Option<i64>,
-
-    /// The CWD at the time this command executed.
-    pub cwd: Option<String>,
-
-    /// The command text extracted from the input region.
-    /// Captured when CommandExecuted fires (between B and C markers).
-    pub command_text: Option<String>,
+#[derive(Debug, Clone, Deserialize)]
+pub struct SnapshotSection {
+    #[serde(default = "default_true")]
+    pub enabled: bool,                    // default: true
+    #[serde(default = "default_500")]
+    pub max_storage_mb: u32,              // default: 500
+    #[serde(default = "default_7")]
+    pub max_age_days: u32,                // default: 7
+    #[serde(default = "default_ignore")]
+    pub ignore_dirs: Vec<String>,         // default: [".git", "target", "node_modules"]
 }
 ```
 
-The `handle_event` method needs modification for `CommandExecuted` to capture:
-1. The current CWD from `StatusState`
-2. A Unix timestamp via `std::time::SystemTime::now()`
-3. The command text from the terminal grid (between `command_start_line` and the current line)
+### main.rs -- WindowContext Extensions
 
-### glass_terminal: Command Text Capture
-
-The command text (what the user typed) lives in the terminal grid between the `command_start_line` (OSC 133;B) and the current cursor line when `CommandExecuted` (OSC 133;C) fires. This text must be extracted from the `Term` grid.
-
-**Challenge:** When `CommandExecuted` fires, we are in the PTY reader thread inside `pty_read_with_scan`. The `Term` lock is already held. We can read grid cells at this point.
-
-**Solution:** Extend `pty_read_with_scan` to pass the locked terminal reference when emitting shell events, so the main thread handler (or a callback) can capture text. Alternatively, capture in the PTY thread itself before sending the event.
-
-**Recommended approach:** Capture in the PTY reader thread while the lock is held. Add a `TerminalAccessor` callback or closure that runs during event dispatch while the term is locked. This avoids a second lock acquisition on the main thread.
-
-```rust
-// In pty_read_with_scan, when OscEvent::CommandExecuted is detected:
-let command_text = capture_grid_text(
-    terminal_ref,
-    block_command_start_line,
-    current_cursor_line,
-);
-// Include command_text in the Shell event
-```
-
-**Problem:** The PTY reader thread does not currently know the `block_command_start_line`. BlockManager state is owned by the main thread. This creates a circular dependency.
-
-**Resolution:** Move the line tracking (command_start_line bookkeeping) into a lightweight struct in the PTY thread, separate from the full BlockManager. The PTY thread tracks: "the line where the last 133;B was seen" and "the line where the last 133;C was seen". It sends both the text capture and the line numbers to the main thread. The main thread's BlockManager then uses these for block tracking and UI rendering.
-
-```rust
-// In the PTY reader loop, alongside OscScanner:
-struct PtyBlockTracker {
-    last_b_line: Option<usize>,  // line where last 133;B was seen
-    last_cwd: Option<String>,    // last OSC 7/9;9 value
-}
-```
-
-### glass_renderer: Search Overlay Integration
-
-**File:** `crates/glass_renderer/src/frame.rs`
-
-The `FrameRenderer::draw_frame` method needs an additional parameter for overlay state:
-
-```rust
-pub fn draw_frame(
-    &mut self,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    view: &wgpu::TextureView,
-    width: u32,
-    height: u32,
-    snapshot: &GridSnapshot,
-    visible_blocks: &[&Block],
-    status: Option<&StatusState>,
-    search_overlay: Option<&SearchOverlay>,  // NEW
-) {
-    // ... existing rendering ...
-
-    // After status bar, render search overlay if visible
-    if let Some(overlay) = search_overlay {
-        self.search_overlay_renderer.draw(
-            device, queue, view, width, height, overlay,
-            &mut self.glyph_cache, &mut self.overlay_buffers,
-        );
-    }
-}
-```
-
-### main.rs: Wiring Changes
-
-The `Processor` struct gains:
-1. A history writer channel (`mpsc::Sender<CommandRecord>`)
-2. Search overlay state (per window, inside `WindowContext`)
-
-The `WindowContext` struct gains:
 ```rust
 struct WindowContext {
     // ... existing fields ...
 
-    /// Search overlay state
-    search_overlay: SearchOverlay,
-
-    /// Channel to send completed commands to the history writer thread
-    history_tx: mpsc::Sender<CommandRecord>,
+    /// Snapshot store for this window.
+    snapshot_store: Option<SnapshotStore>,
+    /// Active filesystem watcher during command execution. None when no command running.
+    active_watcher: Option<CommandWatcher>,
+    /// Snapshot ID being populated during current command execution.
+    active_snapshot_id: Option<i64>,
 }
 ```
 
-Keyboard handling in `window_event` gains:
-- Ctrl+Shift+F: toggle search overlay visibility
-- When overlay is visible: intercept all keyboard input for search
+### main.rs -- Event Flow Changes
 
-The `user_event` handler for `AppEvent::Shell` gains:
-- On `CommandFinished`: capture output from term grid, construct `CommandRecord`, send to `history_tx`
-
----
-
-## Data Flow: Command Lifecycle to History DB
-
-```
-User types "cargo build" + Enter
-    │
-    ├── Shell emits OSC 133;B (command input start)
-    │   └── PTY reader: PtyBlockTracker records last_b_line = cursor line
-    │
-    ├── Shell emits OSC 133;C (command executing)
-    │   └── PTY reader: captures command text from grid[last_b_line..cursor_line]
-    │       sends AppEvent::Shell { event: CommandExecuted, command_text: "cargo build" }
-    │
-    ├── Command runs, output streams to terminal
-    │   └── Normal PTY read loop, VTE parser updates grid
-    │
-    ├── Shell emits OSC 133;D;0 (command finished, exit code 0)
-    │   └── PTY reader: captures output text from grid[last_c_line..cursor_line]
-    │       sends AppEvent::Shell { event: CommandFinished { exit_code: 0 }, output_text: "..." }
-    │
-    ▼
-Main thread: user_event(AppEvent::Shell { CommandFinished })
-    │
-    ├── BlockManager.handle_event() → block transitions to Complete
-    │
-    ├── Construct CommandRecord {
-    │     command_text, output_text, cwd, exit_code,
-    │     duration_ms, started_at, hostname, shell
-    │   }
-    │
-    └── history_tx.send(record)
-         │
-         ▼
-History Writer Thread (background, owns HistoryDb)
-    │
-    ├── recv() from channel
-    ├── HistoryDb::insert(record)
-    └── Periodically: HistoryDb::enforce_retention(policy)
-```
-
-## Data Flow: Search Overlay
-
-```
-User presses Ctrl+Shift+F
-    │
-    ▼
-Processor::window_event(KeyboardInput)
-    │
-    ├── search_overlay.visible = true
-    ├── window.request_redraw()
-    │
-    ▼ (user types search query)
-    │
-Character keys → search_overlay.query.push(c)
-    │
-    ├── HistoryDb::search(query, limit: 20)  // read-only connection
-    │   └── FTS5 MATCH query with BM25 ranking
-    │
-    ├── search_overlay.results = results
-    └── window.request_redraw()
-
-    ▼ (user presses Enter on a result)
-    │
-    ├── Copy selected command to clipboard / scroll to block
-    └── search_overlay.visible = false
-```
-
-**Threading concern for search:** The search query hits SQLite, which is blocking I/O. Running it on the main thread would block rendering. Options:
-
-**Option A (simple, acceptable for v1.1):** Open a read-only SQLite connection on the main thread. FTS5 queries on a local database are typically <5ms for reasonable corpus sizes. This is within the frame budget.
-
-**Option B (future-proof):** Debounce the query (200ms after last keystroke) and run it on a background thread, sending results back via `EventLoopProxy`. More complex but prevents any stutter on large databases.
-
-**Recommendation: Start with Option A**, measure actual query latency, add debouncing if it exceeds 5ms.
-
-## Data Flow: MCP Server
-
-```
-AI Assistant (Claude Desktop, Cursor, etc.)
-    │
-    ├── Spawns: glass mcp serve (subprocess)
-    │   └── stdin/stdout = JSON-RPC 2.0 channel
-    │
-    ├── Sends: {"jsonrpc":"2.0","method":"tools/list","id":1}
-    │   └── Response: tool definitions (GlassHistory, GlassContext)
-    │
-    ├── Sends: {"jsonrpc":"2.0","method":"tools/call","params":{
-    │     "name":"GlassHistory","arguments":{"query":"cargo build error"}
-    │   },"id":2}
-    │   │
-    │   ▼
-    │   McpServer reads history.db (read-only connection)
-    │   FTS5 search → results
-    │   │
-    │   └── Response: {"jsonrpc":"2.0","result":{...matching commands...},"id":2}
-    │
-    └── AI uses results to inform its response to the user
-```
-
----
-
-## Component Responsibilities
-
-| Component | Responsibility | New/Modified | Communicates With |
-|-----------|----------------|--------------|-------------------|
-| `glass_history::HistoryDb` | SQLite connection, FTS5 schema, CRUD, retention | NEW | glass_core (config) |
-| `glass_history::RetentionPolicy` | Age/count/size limits, cleanup logic | NEW | HistoryDb |
-| `glass_mcp::McpServer` | JSON-RPC stdio loop, tool dispatch | NEW | glass_history (read-only) |
-| `glass_terminal::PtyBlockTracker` | Track B/C line positions in PTY thread | NEW | OscScanner, Term grid |
-| `glass_terminal::output_capture` | Extract text from Term grid line ranges | NEW | alacritty_terminal::Term |
-| `glass_renderer::SearchOverlay` | Search UI state and rendering | NEW | HistoryDb (read-only), FrameRenderer |
-| `glass_core::event::AppEvent` | Add command text/output to Shell events | MODIFIED | All crates |
-| `glass_core::config::GlassConfig` | Add HistoryConfig section | MODIFIED | glass_history |
-| `glass_terminal::BlockManager` | Add unix timestamps, cwd tracking | MODIFIED | glass_history (indirect) |
-| `main.rs::Processor` | Wire history channel, search overlay | MODIFIED | All crates |
-| `main.rs::WindowContext` | Add search_overlay, history_tx | MODIFIED | glass_renderer, glass_history |
-
----
-
-## Architectural Patterns
-
-### Pattern 1: Dedicated Writer Thread with Channel
-
-**What:** A single background thread owns the `HistoryDb` write connection and receives `CommandRecord` values via an `mpsc::channel`. This is the same pattern as the existing PTY reader thread.
-
-**When to use:** Whenever blocking I/O (SQLite writes) must not block the winit event loop.
-
-**Trade-offs:**
-- Pro: Zero main-thread blocking, simple ownership model, no `Sync` requirement on `rusqlite::Connection`
-- Con: Slight latency between command completion and DB persistence (typically <1ms for channel send + SQLite insert)
+**On `Shell { CommandExecuted }`** (additions to existing handler):
 
 ```rust
-fn spawn_history_writer(
-    db_path: PathBuf,
-    policy: RetentionPolicy,
-) -> mpsc::Sender<CommandRecord> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("Glass history writer".into())
-        .spawn(move || {
-            let db = HistoryDb::open(&db_path).expect("Failed to open history DB");
-            let mut insert_count = 0u64;
-            while let Ok(record) = rx.recv() {
-                if let Err(e) = db.insert(&record) {
-                    tracing::error!("History insert failed: {e}");
-                }
-                insert_count += 1;
-                // Enforce retention every 100 inserts
-                if insert_count % 100 == 0 {
-                    let _ = db.enforce_retention(&policy);
-                }
+ShellEvent::CommandExecuted => {
+    // EXISTING: block_manager.handle_event(), command_started_wall = now()
+
+    // NEW: Extract command text NOW (before command runs)
+    let command_text = extract_command_text_from_grid(&ctx.term, &ctx.block_manager);
+
+    // NEW: Parse command for file targets
+    let cwd = ctx.status.cwd().to_string();
+    let parse_result = glass_snapshot::CommandParser::parse_command(&command_text, &cwd);
+
+    if parse_result.confidence != Confidence::ReadOnly {
+        if let Some(ref store) = ctx.snapshot_store {
+            // Create snapshot record
+            let snap_id = store.create_snapshot(0, &cwd); // command_id=0, updated later
+            ctx.active_snapshot_id = snap_id.ok();
+
+            // Pre-exec snapshot of parser-identified targets
+            for target in &parse_result.targets {
+                let _ = store.store_file(snap_id, target, "parser");
             }
-        })
-        .expect("Failed to spawn history writer thread");
-    tx
-}
-```
 
-### Pattern 2: WAL Mode for Concurrent Read/Write
-
-**What:** SQLite WAL (Write-Ahead Logging) mode enables one writer and multiple concurrent readers without blocking each other.
-
-**When to use:** When the history writer thread is inserting records while the search overlay and MCP server are querying.
-
-**Trade-offs:**
-- Pro: No read blocking during writes, no write blocking during reads
-- Pro: Readers see a consistent snapshot even during writes
-- Con: WAL file grows until checkpointed (automatic, but can use disk space)
-
-```rust
-impl HistoryDb {
-    pub fn open(path: &Path) -> Result<Self> {
-        let conn = rusqlite::Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;  // safe with WAL
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        // ... create tables if not exists ...
-        Ok(Self { conn })
+            // Start FS watcher if needed
+            if parse_result.watch_cwd {
+                let ignore = config.snapshot.ignore_dirs.clone();
+                ctx.active_watcher = CommandWatcher::start(&cwd, &ignore).ok();
+            }
+        }
     }
 }
 ```
 
-### Pattern 3: Overlay Input Interception
-
-**What:** When the search overlay is visible, the Processor intercepts keyboard events before they reach the PTY encoder. This prevents search keystrokes from being sent to the shell.
-
-**When to use:** Any modal overlay (search, future command palette, etc.).
+**On `Shell { CommandFinished }`** (additions to existing handler):
 
 ```rust
-// In Processor::window_event, KeyboardInput handler:
-if ctx.search_overlay.visible {
-    match &event.logical_key {
-        Key::Named(NamedKey::Escape) => ctx.search_overlay.close(),
-        Key::Named(NamedKey::Enter) => ctx.search_overlay.select(),
-        Key::Named(NamedKey::ArrowUp) => ctx.search_overlay.move_selection(-1),
-        Key::Named(NamedKey::ArrowDown) => ctx.search_overlay.move_selection(1),
-        Key::Character(c) => ctx.search_overlay.type_char(c),
-        Key::Named(NamedKey::Backspace) => ctx.search_overlay.backspace(),
-        _ => {}
+ShellEvent::CommandFinished { exit_code } => {
+    // EXISTING: extract command text, insert HistoryDb record
+
+    // NEW: Stop watcher and record changes
+    if let Some(mut watcher) = ctx.active_watcher.take() {
+        let changes = watcher.stop();
+        if let (Some(ref store), Some(snap_id)) = (&ctx.snapshot_store, ctx.active_snapshot_id) {
+            for change in &changes {
+                let _ = store.record_change(snap_id, &change.path, &change.kind.as_str());
+            }
+            // Update snapshot's command_id now that we have it
+            if let Some(cmd_id) = ctx.last_command_id {
+                let _ = store.update_command_id(snap_id, cmd_id);
+            }
+        }
     }
-    ctx.window.request_redraw();
-    return;  // Do NOT forward to PTY
+    ctx.active_snapshot_id = None;
 }
+```
+
+**Ctrl+Shift+Z keybinding** (addition to existing keyboard handler):
+
+```rust
+// In the Ctrl+Shift section of KeyboardInput handler:
+Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
+    if let Some(ref store) = ctx.snapshot_store {
+        let cwd = ctx.status.cwd().to_string();
+        match glass_snapshot::UndoEngine::undo_latest(store, &cwd) {
+            Ok(Some(report)) => {
+                // Show result in status bar or toast
+                tracing::info!("Undo: restored {} files, {} errors",
+                    report.restored.len(), report.errors.len());
+            }
+            Ok(None) => {
+                tracing::info!("Nothing to undo");
+            }
+            Err(e) => {
+                tracing::warn!("Undo failed: {}", e);
+            }
+        }
+        ctx.window.request_redraw();
+    }
+    return;
+}
+```
+
+### glass_renderer -- [undo] Label on Blocks
+
+Extend `BlockRenderer::build_block_text` to render an "[undo]" label on blocks that have associated snapshots.
+
+```rust
+pub fn build_block_text(
+    &self,
+    blocks: &[&Block],
+    display_offset: usize,
+    screen_lines: usize,
+    viewport_width: f32,
+    undoable_epochs: &HashSet<i64>,  // NEW: started_epoch values with snapshots
+) -> Vec<BlockLabel>
+```
+
+The `undoable_epochs` set is populated by querying the snapshot store for all command_ids that have snapshots, then mapping those to block `started_epoch` values. This query runs once per frame only when blocks are visible (cheap: `SELECT DISTINCT command_id FROM snapshots`).
+
+### glass_mcp -- New Tools
+
+```rust
+#[tool(description = "Undo filesystem changes made by a specific command.")]
+async fn glass_undo(&self, params: UndoParams) -> Result<CallToolResult, McpError>;
+
+#[tool(description = "Show what files were changed by a specific command.")]
+async fn glass_file_diff(&self, params: FileDiffParams) -> Result<CallToolResult, McpError>;
+```
+
+The MCP server opens a read-only connection to snapshots.db alongside the existing read-only connection to history.db. GlassUndo calls UndoEngine directly. GlassFileDiff queries fs_changes + snapshot_files.
+
+---
+
+## Complete Data Flow: Snapshot Lifecycle
+
+```
+User types "rm important.txt" + Enter
+    |
+    +-- Shell emits OSC 133;C (command about to execute)
+    |
+    v
+PTY Reader Thread:
+    OscScanner detects CommandExecuted
+    -> AppEvent::Shell { event: CommandExecuted, line: N }
+    |
+    v
+Main Thread (Processor::user_event):
+    1. block_manager.handle_event()              [EXISTING]
+    2. command_started_wall = now()               [EXISTING]
+    3. Extract "rm important.txt" from grid       [NEW - moved earlier]
+    4. CommandParser::parse_command("rm important.txt", cwd)
+       -> ParseResult { targets: [cwd/important.txt], confidence: High, watch_cwd: false }
+    5. SnapshotStore::create_snapshot(command_id=0, cwd)
+       -> snapshot_id = 42
+    6. SnapshotStore::store_file(42, "important.txt", "parser")
+       -> reads file content, BLAKE3 hash, writes to blobs/ab/ab3f...blob
+       -> inserts snapshot_files row
+    7. active_snapshot_id = Some(42)
+    |
+    ... rm executes, file is deleted ...
+    |
+    +-- Shell emits OSC 133;D;0 (command finished, exit 0)
+    |
+    v
+PTY Reader Thread:
+    OscScanner detects CommandFinished
+    -> AppEvent::Shell { event: CommandFinished{exit_code: Some(0)}, line: M }
+    |
+    v
+Main Thread (Processor::user_event):
+    8. block_manager.handle_event()               [EXISTING]
+    9. HistoryDb::insert_command() -> cmd_id=99   [EXISTING]
+    10. store.update_command_id(42, 99)            [NEW]
+    11. active_snapshot_id = None                  [NEW]
+    |
+    ... user realizes mistake, presses Ctrl+Shift+Z ...
+    |
+    v
+Main Thread (Processor::window_event):
+    12. UndoEngine::undo_latest(store, cwd)
+    13. find_by_command(99) -> snapshot_id=42
+    14. get_snapshot_files(42) -> [{path: "important.txt", hash: "ab3f...", source: "parser"}]
+    15. Read blob from blobs/ab/ab3f...blob
+    16. Write content back to cwd/important.txt
+    17. RestoreReport { restored: ["important.txt"], skipped: [], errors: [] }
+    18. Display: "Restored 1 file"
 ```
 
 ---
 
-## Anti-Patterns
+## Crate Dependency Graph (After v1.2)
 
-### Anti-Pattern 1: SQLite on the Main Thread
+```
+glass_core (events, config, error)
+    ^           ^           ^
+    |           |           |
+glass_terminal  |     glass_snapshot [NEW]
+    ^           |       ^       ^
+    |           |       |       |
+glass_renderer  |       |   glass_mcp
+    ^           |       |       ^
+    |           |       |       |
+    +-----+-----+------+-------+
+          |
+       root binary (Processor coordinates everything)
+          |
+     glass_history
+```
 
-**What people do:** Open a SQLite connection in the Processor and do inserts/queries during `user_event()` or `window_event()`.
+**Critical dependency rule:** glass_snapshot does NOT depend on glass_history or glass_terminal. The command_id is just an `i64`. The root binary is the sole coordinator, following the exact same pattern as v1.1 where the root binary coordinates glass_history and glass_terminal without either depending on the other.
 
-**Why it's wrong:** SQLite I/O blocks the winit event loop. Even fast queries (1-5ms) steal frame budget. FTS5 index updates during inserts can take 10-50ms on large databases, causing visible frame drops.
+**New dependency for glass_snapshot:**
+```toml
+[dependencies]
+rusqlite = { workspace = true }
+blake3 = "1.6"
+notify = "8.2"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+```
 
-**Do this instead:** Dedicated writer thread for inserts. For search queries, either use a read-only connection with measured latency (acceptable if <5ms) or offload to a background thread with async result delivery.
+---
 
-### Anti-Pattern 2: Capturing Output After Block Completion
+## Patterns to Follow
 
-**What people do:** When a block transitions to Complete, schedule output capture for "later" -- e.g., on the next frame or in a background task.
+### Pattern 1: Event-Driven Coordination (Matches Existing Architecture)
 
-**Why it's wrong:** The terminal scrollback buffer has a fixed size (10,000 lines in Glass). If a subsequent command produces large output, the completed block's output lines can scroll out of the buffer before capture happens. Lost data.
+All inter-component communication goes through the `AppEvent` channel via `EventLoopProxy`, exactly like existing Shell, GitInfo, and CommandOutput events. The snapshot lifecycle piggybacks on existing `Shell { CommandExecuted }` and `Shell { CommandFinished }` events -- no new channel infrastructure needed.
 
-**Do this instead:** Capture output text synchronously when `CommandFinished` fires, while the term lock is held and the grid lines are still in the scrollback buffer.
+### Pattern 2: Non-Fatal Degradation
 
-### Anti-Pattern 3: Sharing HistoryDb Across Threads with Mutex
+Snapshot failures (disk full, permission denied, watcher failure) log warnings and continue. The terminal must remain usable when snapshotting fails. This matches the existing pattern where `history_db` failure logs a warning and sets the field to `None`.
 
-**What people do:** Wrap `HistoryDb` in `Arc<Mutex<HistoryDb>>` so multiple threads can read and write.
+```rust
+// Same pattern as existing history_db initialization:
+let snapshot_store = match SnapshotStore::open(&glass_dir) {
+    Ok(store) => {
+        tracing::info!("Snapshot store opened");
+        Some(store)
+    }
+    Err(e) => {
+        tracing::warn!("Failed to open snapshot store: {} -- undo disabled", e);
+        None
+    }
+};
+```
 
-**Why it's wrong:** The Mutex blocks one thread while another is doing I/O. SQLite already handles concurrency internally with WAL mode. Multiple connections are better than one shared connection.
+### Pattern 3: Blocking I/O on Main Thread (For Small Operations)
 
-**Do this instead:** One write connection (owned by writer thread), separate read-only connections for search overlay and MCP server. SQLite WAL mode handles the concurrency.
+Pre-exec snapshots (typically 1-10 files, <1MB each) run synchronously on the main thread during `CommandExecuted` handling. The time between OSC 133;C and actual command execution is essentially zero -- the shell has already started running the command by the time the event reaches the main thread. Snapshotting a few files (read + hash + write blob) takes <10ms. This matches the existing pattern where `HistoryDb::insert_command()` runs synchronously on the main thread.
 
-### Anti-Pattern 4: MCP Server Inside the Terminal Process
+**Exception rule:** If the parser identifies >20 targets or any file >10MB, log a warning and skip those files. The FS watcher still records what changed.
 
-**What people do:** Run the MCP JSON-RPC handler inside the terminal's winit event loop, multiplexing protocol messages with terminal events.
+### Pattern 4: Separate DB, Same Directory
 
-**Why it's wrong:** MCP stdio transport requires exclusive ownership of stdin/stdout. The terminal process already uses ConPTY for stdin/stdout. Mixing them is impossible without a separate channel mechanism.
+snapshots.db lives alongside history.db in `.glass/`, with independent schemas and PRAGMA user_version. Both resolve to the same directory via the existing `resolve_db_path` ancestor-walk logic (reuse or clone the function in glass_snapshot).
 
-**Do this instead:** MCP server runs as a separate invocation of the `glass` binary (`glass mcp serve`). It is a different process that only reads the history database, completely independent of the running terminal.
+### Pattern 5: Resolve DB Path Consistently
+
+glass_snapshot needs the same `.glass/` directory resolution as glass_history. Rather than creating a dependency, duplicate the 15-line `resolve_db_path` function (or extract it to glass_core if cleaner). The function walks up from CWD looking for `.glass/`, falling back to `~/.glass/`.
+
+---
+
+## Anti-Patterns to Avoid
+
+### Anti-Pattern 1: Snapshotting Inside the PTY Reader Thread
+
+**What:** Running file I/O (reads, hashes, blob writes) on the PTY reader thread.
+**Why bad:** The PTY reader thread is the most latency-critical code path. Any blocking I/O adds input lag. The existing architecture keeps this thread minimal: read bytes, scan OSC, feed VTE parser.
+**Instead:** Send events to the main thread; do snapshot I/O there.
+
+### Anti-Pattern 2: glass_snapshot Depending on glass_history
+
+**What:** Importing `HistoryDb` or `CommandRecord` from glass_history into glass_snapshot.
+**Why bad:** Creates coupling between unrelated concerns. The command_id is just an i64 -- no need to import the entire history module.
+**Instead:** glass_snapshot takes `command_id: i64` as a parameter. The root binary coordinates both crates.
+
+### Anti-Pattern 3: Full Shell Parsing
+
+**What:** Building or importing a complete POSIX/PowerShell parser.
+**Why bad:** Shell syntax is context-dependent (aliases, functions, variable expansion, command substitution). No parser handles `eval $(generate_commands)`. Enormous complexity for diminishing returns.
+**Instead:** Heuristic parser for known commands + FS watcher as safety net. Honest UI about limitations.
+
+### Anti-Pattern 4: Watching Entire Home Directory
+
+**What:** Recursive FS watching on `~` or `/`.
+**Why bad:** Thousands of irrelevant events, exhausts inotify watches (Linux default 8192), wastes CPU.
+**Instead:** Watch only the command's CWD recursively. Most commands operate within CWD.
+
+### Anti-Pattern 5: Storing File Contents as SQLite BLOBs
+
+**What:** Putting file binary data directly in the SQLite database.
+**Why bad:** SQLite performance degrades with large BLOBs. Vacuum becomes expensive. DB file grows unbounded.
+**Instead:** Content-addressed blob files on the filesystem, hash stored in SQLite. Enables filesystem-level dedup and efficient pruning.
+
+### Anti-Pattern 6: Starting Watcher Before Snapshot
+
+**What:** Starting the FS watcher before taking the pre-exec snapshot.
+**Why bad:** Race condition -- if the command starts modifying files before the snapshot completes, you capture a partial/corrupted pre-state.
+**Instead:** Take pre-exec snapshot FIRST (synchronous, blocking), THEN start the watcher. The ordering matters.
 
 ---
 
 ## Suggested Build Order
 
-Dependencies flow bottom-to-top. Build in this order to ensure each piece is testable before the next begins:
+### Phase 1: SnapshotStore Core (Foundation)
 
-```
-Phase 1: glass_history (SQLite + FTS5)
-    │  No dependency on terminal/renderer
-    │  Fully testable with unit tests
-    │  Schema creation, CRUD, FTS5 search, retention
-    ▼
-Phase 2: Output capture + BlockManager enhancement
-    │  Depends on: glass_terminal internals
-    │  PtyBlockTracker, output_capture module
-    │  Wire into PTY read loop and main thread
-    │  History writer thread + channel
-    ▼
-Phase 3: CLI query interface
-    │  Depends on: glass_history
-    │  Subcommand routing in main.rs
-    │  glass history search / list / stats
-    │  Testable from command line immediately
-    ▼
-Phase 4: Search overlay UI
-    │  Depends on: glass_history, glass_renderer
-    │  SearchOverlay renderer component
-    │  Input interception in Processor
-    │  Ctrl+Shift+F keybinding
-    ▼
-Phase 5: MCP server
-    │  Depends on: glass_history
-    │  JSON-RPC stdio protocol handler
-    │  GlassHistory + GlassContext tool implementations
-    │  glass mcp serve subcommand
-    ▼
-Phase 6: Retention policies + polish
-    │  Depends on: all above
-    │  Periodic retention enforcement
-    │  Config TOML extensions
-    │  Performance measurement
-```
+- glass_snapshot: `SnapshotStore::open`, `create_snapshot`, `store_file`, `get_snapshot_files`, `restore_snapshot`
+- BLAKE3 hashing with 2-char directory sharding for blobs
+- Schema creation with PRAGMA user_version migration support
+- `resolve_snapshot_db_path` (same logic as glass_history's resolve_db_path)
+- Unit tests with tempdir
 
-**Rationale for this order:**
-- **glass_history first** because everything else depends on it, and it has zero dependencies on the rest of the system. Can be developed and tested in complete isolation.
-- **Output capture second** because it is the hardest integration -- it modifies the PTY read loop, which is the most sensitive code path. Getting this wrong breaks terminal functionality. Better to tackle it early when the scope is small.
-- **CLI third** because it provides immediate validation of glass_history without requiring any renderer changes. You can verify the database is being populated correctly.
-- **Search overlay fourth** because it requires renderer modifications and input handling changes. By this point, the database is proven working.
-- **MCP server fifth** because it is the most self-contained new crate. It only reads from the database and has no interaction with the terminal's event loop. It could actually be built in parallel with phases 3-4.
-- **Retention last** because it is a correctness/polish concern, not a functionality concern. The system works without it; it just grows unbounded.
+**Why first:** Everything else depends on having a place to store and retrieve snapshots. Pure library code, zero integration dependencies.
 
----
+### Phase 2: CommandParser
 
-## Integration Points
+- `parse_command(text, cwd) -> ParseResult`
+- Pattern matching for destructive commands (rm, mv, sed -i, cp, chmod, redirect)
+- ReadOnly detection (ls, cat, grep, git status, pwd)
+- Path resolution (relative -> absolute using cwd)
+- Glob expansion for wildcard arguments
+- Comprehensive unit tests per command pattern
 
-### Internal Boundaries
+**Why second:** No dependencies on other new code. Pure functions, fully testable in isolation.
 
-| Boundary | Communication | Thread Safety | Notes |
-|----------|---------------|---------------|-------|
-| PTY thread -> History writer | `mpsc::Sender<CommandRecord>` | Channel (Send) | Non-blocking send from PTY thread |
-| Main thread -> History writer | Same channel | Channel (Send) | Alternative: main thread sends after output capture |
-| Search overlay -> HistoryDb | Direct method call (read-only conn) | Single-threaded (main thread) | Consider background thread if latency >5ms |
-| MCP server -> HistoryDb | Direct method call (read-only conn) | Single-threaded (MCP process) | Separate OS process, not shared memory |
-| CLI -> HistoryDb | Direct method call (read-only conn) | Single-threaded (CLI process) | Separate OS process |
-| main.rs -> SearchOverlay | Direct struct access in WindowContext | Main thread only | No locking needed |
+### Phase 3: FsWatcher
 
-### File System
+- `CommandWatcher::start(cwd, ignore)` / `stop() -> Vec<FsChangeEvent>`
+- notify crate integration with RecommendedWatcher
+- Noise filtering (ignore patterns for .git, target, node_modules, etc.)
+- Deduplication of rapid modify events on the same path
+- Integration tests with actual filesystem modifications
 
-| Path | Purpose | Created By |
-|------|---------|------------|
-| `~/.glass/history.db` | SQLite database | glass_history on first insert |
-| `~/.glass/history.db-wal` | WAL journal | SQLite automatically |
-| `~/.glass/history.db-shm` | Shared memory for WAL | SQLite automatically |
-| `~/.glass/config.toml` | Config with [history] section | User (existing) |
+**Why third:** Depends on SnapshotStore for recording changes. Introduces the `notify` dependency.
 
-### Cargo Dependencies
+### Phase 4: Main Thread Integration + Undo Engine
 
-```toml
-# glass_history/Cargo.toml
-[dependencies]
-glass_core = { path = "../glass_core" }
-rusqlite = { workspace = true }
-serde = { workspace = true }
-tracing = { workspace = true }
+- Extend `Processor::user_event` for CommandExecuted (pre-exec snapshot + watcher start)
+- Extend `Processor::user_event` for CommandFinished (stop watcher + record changes)
+- Move command text extraction to CommandExecuted time
+- UndoEngine with conflict detection
+- Ctrl+Shift+Z keybinding in keyboard handler
+- Config extensions (SnapshotSection)
+- Add snapshot_store and active_watcher to WindowContext
 
-# glass_mcp/Cargo.toml
-[dependencies]
-glass_history = { path = "../glass_history" }
-glass_core = { path = "../glass_core" }
-serde = { workspace = true }
-serde_json = "1"
-tokio = { workspace = true }  # for async stdin/stdout if needed
-tracing = { workspace = true }
+**Why fourth:** Requires Phases 1-3 to be complete. This is the integration phase where existing crate boundaries get extended.
 
-# Workspace Cargo.toml additions needed:
-serde_json = "1"
+### Phase 5: UI + CLI + MCP + Pruning
 
-# Root binary Cargo.toml additions:
-glass_history = { path = "crates/glass_history" }
-glass_mcp = { path = "crates/glass_mcp" }
-```
+- [undo] label on command blocks (glass_renderer extension)
+- `glass undo <command-id>` CLI subcommand
+- GlassUndo and GlassFileDiff MCP tools in glass_mcp
+- Auto-pruning on startup (max_age_days, max_storage_mb)
+- Undo result feedback (status bar message)
+- `undoable_epochs` set for renderer
+
+**Why last:** All infrastructure must exist first. These are presentation and lifecycle management features built on top of the core engine.
 
 ---
 
-## Scaling Considerations
+## Scalability Considerations
 
-| Scale | Architecture Approach |
-|-------|-----------------------|
-| 100 commands/day (typical user) | Everything works fine. DB stays <10MB for years. |
-| 1,000 commands/day (power user) | FTS5 queries still sub-millisecond. Retention policy keeps DB bounded. |
-| 50,000+ records (accumulated history) | FTS5 BM25 ranking remains fast. `LIMIT` clauses on queries. Retention enforcement matters. |
-| Long outputs (>1MB per command) | `max_output_bytes` config truncates at 64KB default. Prevents DB bloat from `cat bigfile`. |
-| Multiple Glass instances | WAL mode handles concurrent writers gracefully. Each instance writes to the same DB. |
-| MCP server under load | Read-only connections don't block the writer. SQLite handles this natively with WAL. |
-
-### First Bottleneck: Output Capture Size
-
-Long-running commands (e.g., large compilation) produce megabytes of output. Capturing all of it would bloat the database. The `max_output_bytes` config parameter truncates output, keeping the last N bytes (tail, since recent output is most useful).
-
-### Second Bottleneck: FTS5 Index Size
-
-With 50,000+ records containing output text, the FTS5 index can grow to hundreds of MB. The retention policy (max_entries, max_age_days, max_db_size_mb) prevents unbounded growth. The `enforce_retention` method deletes old records AND rebuilds the FTS index with `INSERT INTO commands_fts(commands_fts) VALUES('rebuild')`.
+| Concern | At 100 cmds/day | At 1K cmds/day | Mitigation |
+|---------|-----------------|----------------|------------|
+| Blob storage | ~50MB (small files) | ~500MB | Auto-prune by age (7d), size cap (500MB), content dedup |
+| SQLite metadata | Negligible | ~1MB | Prune alongside blobs |
+| Inotify watches (Linux) | ~100 | ~100 (1 watcher at a time) | Stop watcher on CommandFinished |
+| ReadDirectoryChangesW | Negligible | Negligible | Single recursive watch per command |
+| Pre-exec snapshot latency | <5ms (1-3 files) | <5ms | Only snapshot parser-identified targets |
+| Undo restore time | <50ms | <50ms | Direct blob-to-file copy |
+| Watcher event volume | ~10/cmd | ~10/cmd | Noise filtering, dedup |
 
 ---
 
 ## Sources
 
-- [SQLite FTS5 Extension](https://sqlite.org/fts5.html) -- official FTS5 documentation, query syntax, BM25 ranking
-- [rusqlite crate](https://docs.rs/rusqlite/0.38/rusqlite/) -- Rust SQLite bindings, version 0.38 with bundled feature
-- [MCP Official Rust SDK (rmcp)](https://github.com/modelcontextprotocol/rust-sdk) -- official SDK, evaluated but not recommended for this use case
-- [MCP Specification: stdio transport](https://modelcontextprotocol.io/docs/develop/build-server) -- JSON-RPC 2.0 over stdin/stdout
-- [How to Build a stdio MCP Server in Rust](https://www.shuttle.dev/blog/2025/07/18/how-to-build-a-stdio-mcp-server-in-rust) -- practical implementation guide
-- Glass v1.0 source code -- direct analysis of all files in the workspace
+- [notify crate v8.2](https://docs.rs/notify/8.2.0/notify/) -- Cross-platform FS notification. Uses ReadDirectoryChangesW (Windows), inotify (Linux), FSEvents (macOS). HIGH confidence.
+- [notify-rs/notify GitHub](https://github.com/notify-rs/notify) -- Official repository, confirms platform backends and API stability. HIGH confidence.
+- [BLAKE3 crate](https://crates.io/crates/blake3) -- Fast cryptographic hash, pure Rust, v1.6+. HIGH confidence.
+- [Content-Addressed Storage patterns](https://lab.abilian.com/Tech/Databases%20&%20Persistence/Content%20Addressable%20Storage%20(CAS)/) -- CAS design principles. MEDIUM confidence.
+- Glass v1.1 source code -- Direct analysis of all 9 crates (8,473 LOC). HIGH confidence.
+- [ReadDirectoryChangesW Windows API](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Storage/FileSystem/fn.ReadDirectoryChangesW.html) -- Windows FS monitoring API. HIGH confidence.
 
 ---
 
-*Architecture research for: Glass v1.1 Structured Scrollback + MCP Server*
+*Architecture research for: Glass v1.2 Command-Level Undo*
 *Researched: 2026-03-05*

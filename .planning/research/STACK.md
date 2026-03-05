@@ -1,306 +1,348 @@
-# Stack Research
+# Technology Stack
 
-**Domain:** SQLite FTS5 history database + MCP server for GPU-accelerated terminal emulator
+**Project:** Glass v1.2 -- Command-Level Undo
 **Researched:** 2026-03-05
 **Confidence:** HIGH
 
 ## Scope
 
-This document covers ONLY the new dependencies needed for v1.1 (Structured Scrollback + MCP Server). The existing v1.0 stack (wgpu 28.0, winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, serde 1.0.228, etc.) is validated and unchanged.
+This document covers ONLY the new dependencies needed for v1.2 (Command-Level Undo with filesystem snapshots). The existing stack (wgpu 28.0, winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38.0, rmcp 1.1.0, chrono 0.4, clap 4.5, etc.) is validated and unchanged.
 
 ---
 
-## New Dependencies for v1.1
+## Existing Stack (DO NOT ADD -- Already in Workspace)
 
-### Core Technologies
-
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| rusqlite | 0.38.0 | SQLite database with FTS5 full-text search | Already in workspace with `bundled` feature. The bundled build unconditionally compiles SQLite 3.51.1 with `-DSQLITE_ENABLE_FTS5` (verified in libsqlite3-sys build.rs) -- FTS5 works out of the box with zero additional feature flags. Direct SQL is the right abstraction for FTS5 virtual tables; ORMs fight FTS5's MATCH/rank syntax. |
-| rmcp | 1.1.0 | Official Rust MCP SDK for JSON-RPC server over stdio | The official Model Context Protocol SDK at github.com/modelcontextprotocol/rust-sdk. Released 2026-03-04. Provides `#[tool]` and `#[tool_box]` procedural macros for declaring MCP tools, automatic JSON Schema generation via schemars, and built-in stdio transport via `transport-io` feature. Tracks the canonical MCP spec. |
-| clap | 4.5 | CLI argument parsing for `glass history` and `glass mcp serve` | Industry standard for Rust CLIs. Derive API makes subcommand definitions declarative and type-safe. Needed to route `glass` (terminal mode), `glass history search` (query mode), and `glass mcp serve` (MCP server mode) from a single binary. |
-| schemars | 1.0 | JSON Schema generation for MCP tool parameters | Required by rmcp 1.1's `schemars` feature. The `#[tool(param)]` and `#[tool(aggr)]` macros use schemars to auto-generate parameter schemas that MCP clients (Claude, etc.) consume for tool discovery. Must be ^1.0 -- rmcp 1.1 is incompatible with schemars 0.8. |
-| chrono | 0.4 | Timestamp handling for command history records | Storing/querying command execution timestamps, duration formatting in search results, retention policy expiry calculations. rmcp brings chrono transitively, but glass_history uses it directly -- declare explicitly. Use `serde` feature for database serialization. |
-| serde_json | 1.0 | JSON serialization for MCP messages and CLI output | glass_history and glass_mcp use it directly for structured output and MCP content serialization. Already a transitive dep of rmcp and serde, but declare explicitly for direct usage. |
-
-### Supporting Libraries
-
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| uuid | 1.0 | Unique IDs for command history entries | Generate unique entry IDs for the history database. Use `v4` feature for random UUIDs. Lightweight, no external deps with `v4`. Alternative: use SQLite INTEGER PRIMARY KEY AUTOINCREMENT (simpler, avoids the dep). Prefer uuid only if entries need to be referenced across processes (e.g., MCP tool responses). |
-
-### Existing Dependencies Now Active (Already in Workspace)
-
-These were already declared in the workspace Cargo.toml but were unused stubs. They now become active:
-
-| Library | Version | Crate Using It | Notes |
-|---------|---------|----------------|-------|
-| rusqlite | 0.38.0 | glass_history | Was listed as stub dep. Now primary database layer. No version change needed. |
-| tokio | 1.50.0 | glass_history, glass_mcp | Already active in v1.0. glass_mcp uses it for async MCP transport. glass_history uses `spawn_blocking` for DB access. |
-| serde | 1.0.228 | glass_history, glass_mcp | Already active in v1.0. Now also used for history record serialization. |
-| tracing | 0.1.44 | glass_history, glass_mcp | Already active. Critical: MCP stdio servers must NEVER use println! (corrupts JSON-RPC). All output goes through tracing to stderr. |
-| anyhow | 1.0.102 | glass_history, glass_mcp | Already active. Error propagation in new crates. |
+| Technology | Version | Relevant to v1.2 Because |
+|------------|---------|--------------------------|
+| rusqlite | 0.38.0 (bundled) | Snapshot metadata tables (snapshots, snapshot_files) live in the existing history DB |
+| tokio | 1.50.0 (full) | Async integration for FS watcher event channel, async file I/O via tokio::fs |
+| chrono | 0.4 | Timestamps on snapshot records |
+| anyhow | 1.0.102 | Error handling in glass_snapshot |
+| tracing | 0.1.44 | Logging FS events, snapshot operations |
+| serde | 1.0.228 | Serialization of snapshot metadata |
+| dirs | 6 | Resolving snapshot blob storage directory |
+| clap | 4.5 | Adding `glass undo <command-id>` subcommand |
+| windows-sys | 0.59 | Already present; notify handles Windows FS APIs internally |
+| tempfile | 3 | Testing snapshot creation/restoration |
 
 ---
 
-## Installation
+## New Dependencies for v1.2
 
-### Add to `[workspace.dependencies]` in root Cargo.toml
+### Filesystem Monitoring
 
-```toml
-# v1.1: History + MCP (NEW)
-rmcp          = { version = "1.1", features = ["server", "transport-io", "macros", "schemars"] }
-clap          = { version = "4.5", features = ["derive"] }
-schemars      = "1.0"
-chrono        = { version = "0.4", features = ["serde"] }
-serde_json    = "1.0"
-```
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| notify | 8.2.0 | Cross-platform filesystem watcher | The only serious cross-platform FS watcher in Rust. Uses ReadDirectoryChangesW on Windows, inotify on Linux, FSEvents on macOS. Used by alacritty, rust-analyzer, deno, zed. 62M+ downloads. CC0 licensed. Provides `recommended_watcher()` that auto-selects the best backend per platform. |
+| notify-debouncer-full | 0.7.0 | Event debouncing with file ID tracking | Deduplicates rapid-fire FS events (editor save-rename-write cycles) into single logical events. Critically, tracks file IDs across renames -- needed to detect `mv` operations where a file is renamed rather than created+deleted. Without this, rename events appear as separate create/delete pairs. |
 
-### No Change Needed for Existing Entries
+**Confidence:** HIGH -- notify 8.x is the de facto standard. No viable alternative exists.
 
-```toml
-# Already present -- no modifications required
-rusqlite      = { version = "0.38.0", features = ["bundled"] }
-tokio         = { version = "1.50.0", features = ["full"] }
-serde         = { version = "1.0.228", features = ["derive"] }
-```
-
-The `bundled` feature already enables FTS5 at the SQLite compile level. Do NOT add `bundled-full` unless you need extra SQLite features like `serialize` or `column_decltype` -- `bundled` alone provides FTS5, WAL mode, and everything needed for a history database.
-
-### Per-Crate Dependencies
-
-**glass_history/Cargo.toml:**
-```toml
-[dependencies]
-rusqlite.workspace = true
-chrono.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-anyhow.workspace = true
-```
-
-**glass_mcp/Cargo.toml:**
-```toml
-[dependencies]
-glass_history = { path = "../glass_history" }
-rmcp.workspace = true
-schemars.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-anyhow.workspace = true
-```
-
-**Root binary (glass/Cargo.toml) additions:**
-```toml
-[dependencies]
-# Add to existing dependencies
-clap.workspace = true
-glass_history = { path = "crates/glass_history" }
-glass_mcp     = { path = "crates/glass_mcp" }
-```
-
----
-
-## Architecture Integration Notes
-
-### SQLite Threading Model
-
-rusqlite::Connection is `Send` but not `Sync`. Two viable patterns for tokio integration:
-
-**Pattern A: Dedicated thread + channel (RECOMMENDED)**
+**Integration pattern:**
 ```rust
-// Matches existing PTY reader thread architecture
-let (tx, rx) = tokio::sync::mpsc::channel(64);
+use notify_debouncer_full::{new_debouncer, DebounceEventResult};
+use std::time::Duration;
+
+// Create debouncer with 200ms window
+let (tx, rx) = std::sync::mpsc::channel();
+let mut debouncer = new_debouncer(Duration::from_millis(200), None, tx)?;
+
+// Watch the CWD reported by OSC 7
+debouncer.watcher().watch(cwd.as_ref(), RecursiveMode::Recursive)?;
+
+// Process events on dedicated thread (matches PTY reader pattern)
 std::thread::spawn(move || {
-    let conn = Connection::open("~/.glass/history.db").unwrap();
-    // Own the Connection, recv query/insert commands via channel
-    while let Some(cmd) = rx.blocking_recv() {
-        match cmd { /* execute SQL, send results back via oneshot */ }
+    while let Ok(result) = rx.recv() {
+        match result {
+            Ok(events) => { /* record file modifications */ }
+            Err(errors) => { /* log via tracing */ }
+        }
     }
 });
 ```
 
-This is preferred because it mirrors the existing dedicated PTY reader thread pattern and avoids Mutex contention between the renderer loop and history writes.
+### Content Hashing for Deduplication
 
-**Pattern B: Mutex + spawn_blocking**
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| blake3 | 1.8.3 | Content-addressed hashing for file dedup | 2-14x faster than SHA-256 on x86 via auto-detected SIMD (SSE2/AVX2/AVX-512). 256-bit output eliminates collision risk. Built-in `.to_hex()` on `Hash` type (no separate hex crate needed). Incrementally hashable -- can hash while streaming file reads. Used by IPFS, Bao, Iroh for content addressing. |
+
+**Confidence:** HIGH -- BLAKE3 is the standard choice for content-addressed storage in Rust. SHA-256 is slower with no benefit for non-cryptographic local CAS. xxhash is only 64/128-bit (unacceptable collision risk across thousands of file snapshots).
+
+**Integration pattern:**
 ```rust
-let db = Arc::new(tokio::sync::Mutex::new(conn));
-tokio::task::spawn_blocking(move || {
-    let conn = db.blocking_lock();
-    conn.execute(...);
-});
+use blake3::Hasher;
+use std::io::Read;
+
+fn hash_file(path: &Path) -> anyhow::Result<blake3::Hash> {
+    let mut hasher = Hasher::new();
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = [0u8; 16384]; // 16KB reads
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize())
+}
+
+// Store blob: {data_dir}/glass/snapshots/blobs/{hash[0:2]}/{hash}
+// The 2-char prefix directory prevents any single directory from having millions of entries
+let hex = hash.to_hex();
+let blob_dir = data_dir.join("snapshots/blobs").join(&hex.as_str()[..2]);
+std::fs::create_dir_all(&blob_dir)?;
+let blob_path = blob_dir.join(hex.as_str());
+if !blob_path.exists() {
+    std::fs::copy(source_path, &blob_path)?; // Dedup: only store if new hash
+}
 ```
 
-Simpler but risks blocking the tokio runtime if many queries queue up. Use only for the CLI query interface where there is no render loop contention.
+### Shell Command Text Parsing
 
-### MCP Server: Separate Entry Point, Same Binary
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| shlex | 1.3.0 | Parse command text into shell argument tokens | POSIX shell tokenization handling quoting (`"foo bar"`, `'hello'`), escaping (`foo\ bar`), and multi-word arguments. Needed to extract file path arguments from commands like `rm -rf "my folder"`. Lightweight, zero dependencies. Provides `Shlex` iterator for lazy tokenization (inspect first token before parsing rest). |
 
-rmcp's stdio transport reads from stdin and writes to stdout. The MCP server CANNOT run in the same process instance as the terminal emulator (which owns stdin/stdout for the PTY). The solution:
+**Confidence:** HIGH for bash/zsh. MEDIUM for PowerShell.
 
-```
-glass                      # Launch terminal emulator (default, no clap)
-glass history search "X"   # CLI query, reads DB directly, exits
-glass history list         # List recent commands, exits
-glass mcp serve            # Start MCP server on stdio, blocks until client disconnects
-```
+**PowerShell note:** shlex implements POSIX shell quoting. PowerShell uses backtick escapes and different string interpolation. For PowerShell, hand-roll a simple tokenizer (split on whitespace, handle `"` and `'` quoting). PowerShell's quoting is simple enough that a 30-line function handles it -- no crate needed.
 
-The MCP client (Claude Desktop, etc.) spawns `glass mcp serve` as a child process. The MCP server opens the same SQLite database file as the terminal emulator. SQLite's WAL mode allows concurrent readers, so the MCP server can query while the terminal writes.
-
-**rmcp server setup:**
+**Integration pattern:**
 ```rust
-use rmcp::{ServiceExt, transport::io::stdio};
+use shlex::Shlex;
 
-let service = GlassMcpServer::new(db_path);
-let transport = stdio();
-let server = service.serve(transport).await?;
-server.waiting().await?;
+fn extract_file_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
+    let mut lexer = Shlex::new(command_text);
+    let cmd = match lexer.next() {
+        Some(cmd) => cmd,
+        None => return vec![],
+    };
+    let args: Vec<String> = lexer.collect();
+
+    match cmd.as_str() {
+        "rm" | "del" => extract_rm_targets(&args, cwd),
+        "mv" | "move" => extract_mv_targets(&args, cwd),
+        "cp" | "copy" => extract_cp_targets(&args, cwd),
+        "sed" if args.contains(&"-i".to_string()) => extract_sed_targets(&args, cwd),
+        "git" if args.first().map_or(false, |a| a == "checkout") => extract_git_targets(&args, cwd),
+        "chmod" | "chown" => extract_trailing_paths(&args, cwd),
+        _ => vec![], // Unknown command -- rely on FS watcher for recording
+    }
+}
 ```
 
-**Critical: no stdout in MCP mode.** The `tracing-subscriber` must be configured to write to stderr (or a file) when running as MCP server. Any stdout output corrupts the JSON-RPC stream.
+---
 
-### FTS5 Schema Design
+## Deferred Dependencies (NOT for v1.2 MVP)
 
-FTS5 is a SQLite virtual table extension. No Rust-side feature flags needed beyond `bundled`. Usage is pure SQL:
+### Compression
 
-```sql
--- Main history table
-CREATE TABLE commands (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    command TEXT NOT NULL,
-    output TEXT,
-    cwd TEXT,
-    exit_code INTEGER,
-    duration_ms INTEGER,
-    started_at TEXT NOT NULL,  -- ISO 8601 via chrono
-    shell TEXT
-);
+| Technology | Version | Purpose | Why Defer |
+|------------|---------|---------|-----------|
+| zstd | 0.13.3 | Compress snapshot blobs | 3-5x compression on source code. But: raw blob storage is simpler for MVP. Content-addressed design means compression can be added non-breakingly later (compress before store, decompress on read; hash stays the same since it hashes original content). Add when storage pruning is implemented. |
 
--- FTS5 virtual table for full-text search
-CREATE VIRTUAL TABLE commands_fts USING fts5(
-    command,
-    output,
-    cwd,
-    content='commands',
-    content_rowid='id'
-);
+### Diff Display
 
--- Search query
-SELECT c.* FROM commands c
-JOIN commands_fts f ON c.id = f.rowid
-WHERE commands_fts MATCH ?
-ORDER BY rank
-LIMIT 50;
-```
-
-The `content=` and `content_rowid=` options create an "external content" FTS5 table that shares storage with the main table, avoiding data duplication.
-
-### SQLite WAL Mode for Concurrency
-
-WAL (Write-Ahead Logging) mode is essential because the terminal emulator writes history while the MCP server may be reading concurrently:
-
-```sql
-PRAGMA journal_mode=WAL;
-```
-
-WAL mode allows one writer + multiple concurrent readers. This is supported by SQLite 3.51.1 (bundled version). Set this once at database creation.
+| Technology | Version | Purpose | Why Defer |
+|------------|---------|---------|-----------|
+| similar | 2.x | Text diffing for GlassFileDiff MCP tool | Undo = restore full file from snapshot. Diff display is a nice-to-have for the MCP tool, not required for the core undo flow. Add when GlassFileDiff is implemented. |
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| rusqlite (direct SQL) | sqlx | Never for this project. sqlx's compile-time query checking does not support FTS5 virtual table syntax. Its async model adds unnecessary complexity for single-file embedded SQLite. |
-| rusqlite (direct SQL) | diesel | Never. Diesel's ORM layer fights FTS5 MATCH queries and rank functions. Massive compile-time cost for zero benefit on an embedded database. |
-| rusqlite (direct SQL) | sea-orm | Never. Same ORM-vs-FTS5 impedance mismatch as diesel. |
-| rmcp (official SDK) | rust-mcp-sdk | Only if you need backward compat with older MCP spec versions (2024-11-05). rmcp tracks the latest spec (2025-11-25) and has the best macro ergonomics. |
-| rmcp (official SDK) | Hand-rolled JSON-RPC | Only if you need absolute minimal dependencies. Not worth the maintenance burden of tracking MCP spec changes manually. |
-| clap (derive) | argh | Only if binary size matters. Glass is already 80MB+ with GPU drivers, so clap's ~200KB is irrelevant. clap has vastly better documentation and ecosystem. |
-| chrono | time crate | Only if you want fewer transitive dependencies. chrono is already pulled by rmcp, so adding it costs nothing. Its formatting API (`%Y-%m-%d %H:%M:%S`) is more ergonomic. |
-| Dedicated DB thread | tokio-rusqlite crate | tokio-rusqlite wraps rusqlite in spawn_blocking internally. Using it hides the threading model. The dedicated thread + channel pattern is explicit and matches the existing PTY reader architecture. |
-| SQLite INTEGER PK | uuid crate | Prefer SQLite AUTOINCREMENT for simplicity. Only add uuid if cross-process entry references become necessary (unlikely for v1.1). |
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| FS watcher | notify 8.2 | Raw platform APIs (inotify/FSEvents/RDCW) | notify abstracts all three platforms. Rolling your own is 500+ lines of unsafe platform code per platform for no benefit. |
+| FS watcher | notify 8.2 | watchexec-events | watchexec is a CLI tool wrapper, not a library. Its event types are heavier than needed. |
+| FS debouncer | notify-debouncer-full | notify-debouncer-mini | Mini does not track file IDs across renames. Miss rename detection = broken `mv` tracking. |
+| FS debouncer | notify-debouncer-full | No debouncer (raw notify) | Raw notify fires multiple events per editor save (temp write, rename, chmod). Without debouncing, snapshot logic must handle duplicate events manually. |
+| Hashing | blake3 | sha2 (SHA-256) | 2-14x slower. No benefit for local (non-cryptographic, non-interop) CAS. |
+| Hashing | blake3 | xxhash (xxh3) | Only 64/128-bit. Collision probability unacceptable for dedup across thousands of files over time. Birthday paradox at ~4B files for 64-bit. |
+| Hashing | blake3 | seahash | Only 64-bit. Same collision concern as xxhash. |
+| Shell parsing | shlex | shell-words | Both work. shlex has `Shlex` iterator for lazy tokenization -- can inspect the command name without allocating a full Vec. shell-words forces upfront full allocation. |
+| Shell parsing | shlex | tree-sitter-bash | Massive dependency for AST parsing. We need argument tokenization, not syntax trees. |
+| Shell parsing | shlex | regex-based | Breaks on quoted strings, escaped characters, nested quotes. Regex cannot correctly parse shell quoting rules. |
+| CAS storage | Custom (~50 LOC) | casq / bdstorage crates | Over-engineered. Our CAS is: hash file, check blob exists, copy if not. SQLite tracks metadata. A full CAS library adds abstraction layers we don't need. |
+| Snapshot DB | Extend glass_history DB | Separate SQLite file | Snapshots are metadata about commands. Foreign keys to the commands table require same DB. Single DB = atomic transactions (record command + snapshot together). |
+| Snapshot DB | PRAGMA user_version migrations | refinery / sqlx | Already using user_version pattern in glass_history. Consistency > novelty. |
 
 ---
 
-## What NOT to Use
+## What NOT to Add
 
-| Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| sqlx | Async SQL with compile-time checking. FTS5 virtual tables not supported by sqlx macros. Overkill for single-connection embedded SQLite. | rusqlite with direct SQL |
-| diesel | Heavy ORM. FTS5 queries require raw SQL escapes. Massive compile cost. | rusqlite with direct SQL |
-| jsonrpc crate | Low-level JSON-RPC without MCP protocol awareness. Would require reimplementing tool registration, schema generation, and protocol negotiation from scratch. | rmcp with `transport-io` |
-| r2d2 (connection pool) | SQLite is single-writer. Connection pooling adds complexity without benefit for an embedded database in one process. | Single Connection behind a channel or Mutex |
-| tokio-rusqlite | Abstracts away the threading model. Hides whether spawn_blocking or a dedicated thread is used. Prefer explicit control. | `std::thread::spawn` + channel (matches PTY reader pattern) |
-| schemars 0.8 | rmcp 1.1.0 requires schemars ^1.0. Using 0.8 causes version conflicts. | schemars 1.0 |
-| println! (in MCP server) | Writes to stdout, corrupting the JSON-RPC message stream. The single most common MCP server bug. | tracing macros with stderr subscriber |
+| Temptation | Why Not |
+|------------|---------|
+| A CAS library (casq, bdstorage) | Our CAS is ~50 lines of code. Libraries add abstraction without value for this use case. |
+| A migration framework | Already using `PRAGMA user_version` in glass_history. Extend that pattern. |
+| similar (diff library) | Not needed for v1.2 core undo. Undo restores full files, no diff required. Defer to GlassFileDiff phase. |
+| walkdir | `std::fs::read_dir` with manual recursion is sufficient for scanning known directories. walkdir adds a dependency for marginal convenience. |
+| globset / glob | File target extraction works from parsed command arguments, not glob expansion. The shell expands globs before Glass sees the command text. |
+| inotify / fsevent / windows-sys (direct) | notify wraps all three. Direct platform API usage duplicates notify's work. |
+| tokio-rusqlite | Hides threading model. Dedicated thread + channel matches existing PTY reader architecture and gives explicit control. |
+
+---
+
+## Workspace Integration Plan
+
+### Root Cargo.toml additions
+
+```toml
+[workspace.dependencies]
+# v1.2: Command-Level Undo (NEW)
+notify                = "8.2.0"
+notify-debouncer-full = "0.7.0"
+blake3                = "1.8.3"
+shlex                 = "1.3.0"
+```
+
+### glass_snapshot/Cargo.toml (fill in stub crate)
+
+```toml
+[package]
+name = "glass_snapshot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+notify = { workspace = true }
+notify-debouncer-full = { workspace = true }
+blake3 = { workspace = true }
+shlex = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+```
+
+### Root binary additions
+
+```toml
+[dependencies]
+# Add to existing:
+glass_snapshot = { path = "crates/glass_snapshot" }
+```
+
+### Crate Dependency Flow
+
+```
+glass_terminal (OSC 133 pre-exec + command-finished events)
+    |
+    v  command text + CWD via AppEvent
+glass_snapshot (ALL undo logic)
+    |-- notify + debouncer (FS monitoring)
+    |-- blake3 (content hashing)
+    |-- shlex (command text parsing)
+    |-- rusqlite (snapshot metadata in shared history DB)
+    |
+    v  snapshot/restore results via AppEvent
+glass_core (orchestrates undo: Ctrl+Shift+Z keybinding, undo button clicks)
+    |
+    v
+glass_renderer ([undo] button on command blocks, restore feedback toast)
+```
+
+### DB Integration
+
+**Extend the existing glass_history SQLite database.** Rationale:
+- Snapshots reference commands (foreign key to `commands` table)
+- Single DB = atomic operations (snapshot + command record in one transaction)
+- glass_history already handles DB path resolution, migrations (user_version), WAL mode
+- Add new tables via migration (increment user_version):
+
+```sql
+-- v2 migration
+CREATE TABLE snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id INTEGER NOT NULL REFERENCES commands(id),
+    created_at TEXT NOT NULL,
+    restored_at TEXT,  -- NULL until undo is triggered
+    cwd TEXT NOT NULL
+);
+
+CREATE TABLE snapshot_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+    file_path TEXT NOT NULL,
+    blob_hash TEXT NOT NULL,  -- BLAKE3 hex hash
+    file_size INTEGER NOT NULL,
+    file_mode INTEGER,  -- Unix permissions (NULL on Windows)
+    snapshot_type TEXT NOT NULL CHECK(snapshot_type IN ('pre_exec', 'watcher'))
+);
+
+CREATE INDEX idx_snapshot_files_hash ON snapshot_files(blob_hash);
+CREATE INDEX idx_snapshots_command ON snapshots(command_id);
+```
+
+**Blob storage** lives on the filesystem, not in SQLite:
+```
+{data_dir}/glass/snapshots/blobs/{hash[0:2]}/{hash}
+```
+
+The 2-char prefix directory prevents any single directory from having millions of entries. SQLite stores only hash references. This keeps the DB small and blob I/O fast.
+
+### glass_snapshot and glass_history Relationship
+
+Two options:
+
+**Option A (RECOMMENDED): glass_snapshot depends on glass_history**
+- glass_snapshot imports glass_history's `HistoryDb` to get the `Connection` or a handle
+- Snapshot tables are migrated by glass_history (single migration path)
+- Pro: single point of DB management
+- Con: couples the crates
+
+**Option B: glass_snapshot gets its own Connection to the same file**
+- Both crates open the same SQLite file independently
+- WAL mode allows concurrent access
+- Pro: crate independence
+- Con: migration coordination is error-prone
+
+Recommend Option A. The coupling is justified because snapshots are inherently linked to command records.
 
 ---
 
 ## Version Compatibility
 
-| Package | Compatible With | Notes |
-|---------|-----------------|-------|
-| rmcp 1.1 | tokio 1.x | Uses tokio for async transport. Compatible with workspace tokio 1.50.0. |
-| rmcp 1.1 | serde 1.x | Uses serde for JSON-RPC serialization. Compatible with workspace serde 1.0.228. |
-| rmcp 1.1 | schemars ^1.0 | Must use schemars 1.0+, not 0.8. This is a hard requirement. |
-| rmcp 1.1 | chrono 0.4.x | Transitive dependency. Compatible with explicit chrono 0.4.43. |
-| rusqlite 0.38 | SQLite 3.51.1 | Bundled version. FTS5 + WAL mode enabled at compile time. |
-| clap 4.5 | serde 1.x | Optional serde integration via `serde` feature if needed. |
-| chrono 0.4 | serde 1.x | With `serde` feature for serializable timestamps. |
+| New Package | Compatible With | Notes |
+|-------------|-----------------|-------|
+| notify 8.2 | tokio 1.x | notify itself is sync (uses std::sync::mpsc). Integration with tokio is via channel bridging. No version conflict. |
+| notify-debouncer-full 0.7 | notify 8.2 | Part of the notify-rs workspace. Version-locked to notify 8.x. |
+| blake3 1.8.3 | MSRV 1.85 | Matches workspace MSRV expectations. No async runtime dependency. Pure computation. |
+| shlex 1.3.0 | Any Rust edition | Zero dependencies. No compatibility concerns. |
 
 ---
 
-## Dependency Impact Assessment
+## Compile & Binary Size Impact
 
-### Compile Time Impact
-
-| Dependency | Estimated Impact | Mitigation |
-|------------|-----------------|------------|
-| rmcp 1.1 | MODERATE -- pulls in futures, tokio-util, schemars, chrono | Already shares tokio and serde with workspace. Incremental builds unaffected after first compile. |
-| clap 4.5 (derive) | LOW-MODERATE -- proc macro compilation | One-time cost. Derive macro runs at compile time only. |
-| schemars 1.0 | LOW | Small crate, derive macro. |
-| rusqlite 0.38 (bundled) | MODERATE -- compiles SQLite C source from scratch on first build | Already in workspace. C compilation cached by cargo. ~30s first build, then cached. |
-
-### Binary Size Impact
-
-| Dependency | Estimated Size | Notes |
-|------------|---------------|-------|
-| rusqlite + bundled SQLite | ~1.5 MB | SQLite C library statically linked. Acceptable for a desktop app. |
-| rmcp | ~500 KB | JSON-RPC protocol, tool system. |
-| clap | ~200 KB | CLI parsing. Minimal for a desktop app. |
-| Total v1.1 addition | ~2.2 MB | Negligible compared to existing ~80MB GPU driver overhead. |
-
-### Runtime Memory Impact
-
-| Component | Estimated Memory | Notes |
-|-----------|-----------------|-------|
-| SQLite connection | ~2-5 MB | Depends on page cache size. Default 2MB cache. |
-| FTS5 index | Proportional to data | ~30% of indexed text size for the FTS index. |
-| MCP server | ~1-2 MB | JSON-RPC buffers, tool registry. Only when `glass mcp serve` is running. |
-| Search overlay UI | ~1 MB | Search results buffer, rendered text. |
-
-Total estimated memory increase: ~5-10 MB on top of current ~86 MB idle. Well within the <120 MB constraint.
+| Dependency | Compile Impact | Binary Size | Notes |
+|------------|---------------|-------------|-------|
+| notify 8.2 | LOW -- mostly platform API bindings | ~100 KB | Thin wrappers around OS APIs. Windows: uses windows-sys (already in workspace). |
+| notify-debouncer-full 0.7 | MINIMAL | ~20 KB | Small event processing logic on top of notify. |
+| blake3 1.8.3 | LOW-MODERATE | ~200 KB | SIMD implementations compiled for multiple targets. Auto-detected at runtime. |
+| shlex 1.3.0 | MINIMAL | ~10 KB | Tiny crate, zero dependencies. |
+| **Total v1.2 addition** | **~330 KB** | Negligible vs existing ~80MB binary with GPU drivers. |
 
 ---
 
 ## Sources
 
-- [rusqlite GitHub](https://github.com/rusqlite/rusqlite) -- verified FTS5 enabled unconditionally in bundled build via `build.rs` (`-DSQLITE_ENABLE_FTS5`)
-- [rusqlite libsqlite3-sys build.rs](https://github.com/rusqlite/rusqlite/blob/master/libsqlite3-sys/build.rs) -- confirmed FTS5 flag is unconditional in bundled builds
-- [rusqlite feature flags](https://docs.rs/crate/rusqlite/latest/features) -- 45 feature flags, `bundled` includes `modern_sqlite`, no separate FTS5 flag exists
-- [rmcp docs.rs v1.1.0](https://docs.rs/crate/rmcp/latest) -- released 2026-03-04, features: server (default), transport-io, macros (default), schemars
-- [MCP Rust SDK GitHub](https://github.com/modelcontextprotocol/rust-sdk) -- official SDK, server + transport-io + macros pattern, schemars ^1.0 dependency
-- [rmcp tool macros guide](https://hackmd.io/@Hamze/S1tlKZP0kx) -- #[tool], #[tool_box], schemars integration, parameter schema generation
-- [MCP stdio server in Rust](https://www.shuttle.dev/blog/2025/07/18/how-to-build-a-stdio-mcp-server-in-rust) -- critical warning: never use println! in stdio MCP servers
-- [clap docs.rs v4.5.60](https://docs.rs/crate/clap/latest) -- latest stable, derive API for subcommands
-- [serde_json docs.rs v1.0.149](https://docs.rs/crate/serde_json/latest) -- latest stable
-- [chrono docs.rs v0.4.43](https://docs.rs/crate/chrono/latest) -- latest stable, released 2026-01-14
-- [SQLite FTS5 documentation](https://sqlite.org/fts5.html) -- external content tables, MATCH syntax, rank function
+- [notify crate (crates.io)](https://crates.io/crates/notify) -- v8.2.0, 62M+ downloads, CC0 license
+- [notify docs.rs](https://docs.rs/notify/latest/notify/) -- API: recommended_watcher(), RecursiveMode, Event/EventKind types
+- [notify-rs GitHub](https://github.com/notify-rs/notify) -- backends: ReadDirectoryChangesW (Windows), inotify (Linux), FSEvents (macOS)
+- [notify-debouncer-full (lib.rs)](https://lib.rs/crates/notify-debouncer-full) -- v0.7.0, file ID tracking across renames
+- [blake3 crate (crates.io)](https://crates.io/crates/blake3) -- v1.8.3
+- [blake3 docs.rs](https://docs.rs/blake3/latest/blake3/) -- Hash::to_hex(), Hasher streaming API
+- [BLAKE3 GitHub releases](https://github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.3) -- v1.8.3: Hash::as_slice, MSRV 1.85
+- [shlex docs.rs](https://docs.rs/shlex/latest/shlex/) -- v1.3.0, Shlex iterator, POSIX shell tokenization
+- [shell-words docs.rs](https://docs.rs/shell-words/latest/shell_words/) -- alternative considered, split() returns Vec<String>
+- [zstd crate (crates.io)](https://crates.io/crates/zstd) -- v0.13.3, deferred recommendation
 
 ---
-*Stack research for: Glass v1.1 Structured Scrollback + MCP Server*
+*Stack research for: Glass v1.2 Command-Level Undo*
 *Researched: 2026-03-05*
