@@ -9,11 +9,11 @@ Requirements for Structured Scrollback + MCP Server. Each maps to roadmap phases
 
 ### History Database
 
-- [ ] **HIST-01**: Every command execution is logged to a local SQLite database with metadata (command text, cwd, exit code, start/end timestamps, duration)
+- [x] **HIST-01**: Every command execution is logged to a local SQLite database with metadata (command text, cwd, exit code, start/end timestamps, duration)
 - [ ] **HIST-02**: Command output is captured and stored (truncated to configurable max, default 50KB)
-- [ ] **HIST-03**: FTS5 full-text search index on command text and output
-- [ ] **HIST-04**: Per-project database (`.glass/history.db`) with global fallback (`~/.glass/global-history.db`)
-- [ ] **HIST-05**: Retention policies: configurable max age (default 30 days) and max size (default 1GB), automatic pruning
+- [x] **HIST-03**: FTS5 full-text search index on command text and output
+- [x] **HIST-04**: Per-project database (`.glass/history.db`) with global fallback (`~/.glass/global-history.db`)
+- [x] **HIST-05**: Retention policies: configurable max age (default 30 days) and max size (default 1GB), automatic pruning
 
 ### Search Overlay
 
@@ -71,11 +71,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HIST-01 | Phase 5 | Pending |
+| HIST-01 | Phase 5 | Complete |
 | HIST-02 | Phase 6 | Pending |
-| HIST-03 | Phase 5 | Pending |
-| HIST-04 | Phase 5 | Pending |
-| HIST-05 | Phase 5 | Pending |
+| HIST-03 | Phase 5 | Complete |
+| HIST-04 | Phase 5 | Complete |
+| HIST-05 | Phase 5 | Complete |
 | SRCH-01 | Phase 8 | Pending |
 | SRCH-02 | Phase 8 | Pending |
 | SRCH-03 | Phase 8 | Pending |
