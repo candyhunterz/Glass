@@ -17,6 +17,7 @@ use winit::window::WindowId;
 
 use crate::event_proxy::EventProxy;
 use crate::osc_scanner::OscScanner;
+use crate::output_capture::OutputBuffer;
 use glass_core::event::{AppEvent, ShellEvent};
 
 /// Max bytes to read from the PTY before forced terminal synchronization.
@@ -105,6 +106,7 @@ pub fn spawn_pty(
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     window_id: WindowId,
     shell_override: Option<&str>,
+    max_output_capture_kb: u32,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
     // Use configured shell if provided, otherwise detect pwsh vs powershell
     let shell_program = if let Some(shell) = shell_override {
@@ -172,7 +174,7 @@ pub fn spawn_pty(
     std::thread::Builder::new()
         .name("Glass PTY reader".into())
         .spawn(move || {
-            glass_pty_loop(pty, term_clone, event_proxy, proxy, window_id, rx, poll);
+            glass_pty_loop(pty, term_clone, event_proxy, proxy, window_id, rx, poll, max_output_capture_kb);
         })
         .expect("Failed to spawn PTY reader thread");
 
@@ -192,6 +194,7 @@ fn glass_pty_loop(
     window_id: WindowId,
     rx: Receiver<PtyMsg>,
     poll: Arc<polling::Poller>,
+    max_output_capture_kb: u32,
 ) {
     let mut scanner = OscScanner::new();
     let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
@@ -199,6 +202,7 @@ fn glass_pty_loop(
     let mut write_list: VecDeque<Cow<'static, [u8]>> = VecDeque::new();
     let mut events = Events::with_capacity(NonZeroUsize::new(1024).unwrap());
     let mut interest = PollingEvent::readable(0);
+    let mut output_buffer = OutputBuffer::new((max_output_capture_kb as usize) * 1024);
 
     'event_loop: loop {
         // Handle synchronized update timeout.
@@ -254,6 +258,7 @@ fn glass_pty_loop(
                             &mut scanner,
                             &mut parser,
                             &mut buf,
+                            &mut output_buffer,
                         );
                         terminal.lock().exit();
                         event_proxy.send_event(Event::Wakeup);
@@ -275,6 +280,7 @@ fn glass_pty_loop(
                             &mut scanner,
                             &mut parser,
                             &mut buf,
+                            &mut output_buffer,
                         ) {
                             tracing::error!("Error reading from PTY: {err}");
                             break 'event_loop;
@@ -319,6 +325,7 @@ fn pty_read_with_scan(
     scanner: &mut OscScanner,
     parser: &mut ansi::Processor,
     buf: &mut [u8],
+    output_buffer: &mut OutputBuffer,
 ) -> io::Result<()> {
     let mut unprocessed = 0;
     let mut processed = 0;
@@ -356,18 +363,43 @@ fn pty_read_with_scan(
 
         // Pre-scan for OSC shell integration sequences before VTE parsing.
         let osc_events = scanner.scan(data);
-        for osc_event in osc_events {
+        for osc_event in &osc_events {
             // Get absolute cursor line for block tracking.
             // cursor.point.line is viewport-relative (0 = top of screen).
             // Convert to absolute: history_size + viewport_line.
             let history = terminal_ref.grid().history_size();
             let line = history + terminal_ref.grid().cursor.point.line.0 as usize;
-            let shell_event = convert_osc_to_shell(osc_event);
+            let shell_event = convert_osc_to_shell(osc_event.clone());
             let _ = app_proxy.send_event(AppEvent::Shell {
                 window_id,
                 event: shell_event,
                 line,
             });
+        }
+
+        // Output capture: accumulate bytes between CommandExecuted and CommandFinished.
+        // Check alt-screen sequences in raw bytes (avoids locking terminal for TermMode).
+        output_buffer.check_alt_screen(data);
+        output_buffer.append(data);
+
+        // Handle capture lifecycle based on shell integration events.
+        for osc_event in &osc_events {
+            match osc_event {
+                crate::osc_scanner::OscEvent::CommandExecuted => {
+                    output_buffer.start_capture();
+                }
+                crate::osc_scanner::OscEvent::CommandFinished { .. } => {
+                    if let Some(raw_bytes) = output_buffer.finish() {
+                        if !raw_bytes.is_empty() {
+                            let _ = app_proxy.send_event(AppEvent::CommandOutput {
+                                window_id,
+                                raw_output: raw_bytes,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Parse the incoming bytes through the VTE parser (updates terminal grid).

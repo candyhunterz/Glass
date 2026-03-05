@@ -34,4 +34,9 @@ pub enum AppEvent {
     Shell { window_id: winit::window::WindowId, event: ShellEvent, line: usize },
     /// Git status result from a background query thread.
     GitInfo { window_id: winit::window::WindowId, info: Option<GitStatus> },
+    /// Captured command output from the PTY reader thread.
+    /// Contains raw bytes accumulated between CommandExecuted and CommandFinished.
+    /// Processing (ANSI stripping, binary detection, truncation) happens on the
+    /// main thread to avoid glass_terminal depending on glass_history.
+    CommandOutput { window_id: winit::window::WindowId, raw_output: Vec<u8> },
 }

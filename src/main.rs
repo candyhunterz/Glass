@@ -171,11 +171,15 @@ impl ApplicationHandler<AppEvent> for Processor {
         let event_proxy = EventProxy::new(self.proxy.clone(), window.id());
 
         // Spawn shell via ConPTY with a dedicated reader thread + OscScanner
+        let max_output_kb = self.config.history.as_ref()
+            .map(|h| h.max_output_capture_kb)
+            .unwrap_or(50);
         let (pty_sender, term) = glass_terminal::spawn_pty(
             event_proxy,
             self.proxy.clone(),
             window.id(),
             self.config.shell.as_deref(),
+            max_output_kb,
         );
 
         // Send initial resize with correct font-metrics-based cell dimensions
@@ -448,6 +452,26 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Request redraw to reflect block state changes
                     ctx.window.request_redraw();
+                }
+            }
+            AppEvent::CommandOutput { window_id, raw_output } => {
+                if let Some(_ctx) = self.windows.get_mut(&window_id) {
+                    // Process raw bytes: binary detection, ANSI stripping, truncation
+                    let max_kb = self.config.history.as_ref()
+                        .map(|h| h.max_output_capture_kb)
+                        .unwrap_or(50);
+                    let processed = glass_history::output::process_output(Some(raw_output), max_kb);
+                    if let Some(output) = processed {
+                        tracing::debug!(
+                            "CommandOutput: {} bytes processed for window {:?}",
+                            output.len(),
+                            window_id,
+                        );
+                        // TODO: Store in HistoryDb once command record write path is established.
+                        // For now, the processed output is logged. The full DB wiring
+                        // (insert CommandRecord with output on CommandFinished) will be
+                        // connected when the history write path is built.
+                    }
                 }
             }
             AppEvent::GitInfo { window_id, info } => {

@@ -11,6 +11,21 @@ pub struct GlassConfig {
     pub font_family: String,
     pub font_size: f32,
     pub shell: Option<String>,
+    /// History configuration section. Optional in the TOML file;
+    /// uses defaults (max_output_capture_kb=50) when absent.
+    pub history: Option<HistorySection>,
+}
+
+/// History-related configuration in the `[history]` TOML section.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistorySection {
+    /// Maximum output capture size in kilobytes. Default 50.
+    #[serde(default = "default_max_output_capture_kb")]
+    pub max_output_capture_kb: u32,
+}
+
+fn default_max_output_capture_kb() -> u32 {
+    50
 }
 
 impl Default for GlassConfig {
@@ -19,6 +34,7 @@ impl Default for GlassConfig {
             font_family: "Consolas".into(),
             font_size: 14.0,
             shell: None,
+            history: None,
         }
     }
 }
