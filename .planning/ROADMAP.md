@@ -78,11 +78,11 @@ Plans:
   1. Starting a command triggers filesystem monitoring on the working directory, and stopping the command stops monitoring
   2. File create, modify, rename, and delete events during command execution are captured and recorded
   3. Noise directories (.git, node_modules, target) and user-defined .glassignore patterns are excluded from monitoring
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 12-01: TBD
-- [ ] 12-02: TBD
+- [ ] 12-01-PLAN.md — IgnoreRules (.glassignore pattern matching) + FsWatcher (notify-based filesystem monitoring) with TDD tests
+- [ ] 12-02-PLAN.md — Wire FsWatcher into main.rs CommandExecuted/CommandFinished lifecycle
 
 ### Phase 13: Integration + Undo Engine
 **Goal**: Users can undo the most recent file-modifying command and have their files restored to pre-command state
@@ -137,6 +137,6 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 9. MCP Server | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 10. Content Store + DB Schema | 2/2 | Complete    | 2026-03-05 | - |
 | 11. Command Parser | 2/2 | Complete    | 2026-03-05 | - |
-| 12. FS Watcher Engine | v1.2 | 0/? | Not started | - |
+| 12. FS Watcher Engine | v1.2 | 0/2 | Planned | - |
 | 13. Integration + Undo Engine | v1.2 | 0/? | Not started | - |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 0/? | Not started | - |
