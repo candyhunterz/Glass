@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use clap::{Parser, Subcommand};
@@ -446,26 +447,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Named(NamedKey::Enter) => {
-                                // Scroll-to-block: find the block matching the selected result
-                                // and scroll the terminal to show it.
+                                // Scroll-to-block: find the block whose started_epoch matches
+                                // the selected search result's started_at timestamp.
                                 if overlay.selected < overlay.results.len() {
+                                    let result_epoch = overlay.results[overlay.selected].started_at;
                                     let all_blocks = ctx.block_manager.blocks();
-                                    if !all_blocks.is_empty() {
-                                        // Results are newest-first, blocks are oldest-first.
-                                        // Map selected index to block from the end.
-                                        let block_idx = all_blocks.len().saturating_sub(overlay.selected + 1);
-                                        if block_idx < all_blocks.len() {
-                                            let target_line = all_blocks[block_idx].prompt_start_line;
-                                            let mut term = ctx.term.lock();
-                                            let history_size = term.grid().history_size();
-                                            let current_offset = term.grid().display_offset();
-                                            // display_offset = distance from bottom of history
-                                            // target display_offset to show target_line near top of viewport
-                                            let target_offset = history_size.saturating_sub(target_line);
-                                            let delta = target_offset as i32 - current_offset as i32;
-                                            if delta != 0 {
-                                                term.scroll_display(Scroll::Delta(delta));
-                                            }
+                                    let matched_block = all_blocks.iter().find(|b| {
+                                        b.started_epoch == Some(result_epoch)
+                                    });
+                                    if let Some(block) = matched_block {
+                                        let target_line = block.prompt_start_line;
+                                        let mut term = ctx.term.lock();
+                                        let history_size = term.grid().history_size();
+                                        let current_offset = term.grid().display_offset();
+                                        let target_offset = history_size.saturating_sub(target_line);
+                                        let delta = target_offset as i32 - current_offset as i32;
+                                        if delta != 0 {
+                                            term.scroll_display(Scroll::Delta(delta));
                                         }
                                     }
                                 }
@@ -626,9 +624,41 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .map(|d| d.as_millis() as i64)
                                 .unwrap_or(0);
 
-                            // Command text: empty for now. Extracting from terminal grid
-                            // requires locking and reading lines -- deferred to Phase 7.
-                            let command_text = String::new();
+                            // Extract command text from the terminal grid using block line info.
+                            // command_start_line..output_start_line covers the input area.
+                            // Use inclusive start to handle single-line commands where both are equal.
+                            let command_text = {
+                                let blocks = ctx.block_manager.blocks();
+                                if let Some(block) = blocks.last() {
+                                    let start = block.command_start_line;
+                                    // Always read at least one line (the command line itself)
+                                    let end = block.output_start_line
+                                        .map(|o| o.max(start + 1))
+                                        .unwrap_or(start + 1);
+                                    let term_guard = ctx.term.lock();
+                                    let hist = term_guard.grid().history_size();
+                                    let cols = term_guard.columns();
+                                    let topmost = term_guard.grid().topmost_line();
+                                    let bottommost = term_guard.grid().bottommost_line();
+                                    let mut text = String::new();
+                                    for abs_line in start..end {
+                                        let grid_line = Line(abs_line as i32 - hist as i32);
+                                        if grid_line < topmost || grid_line > bottommost {
+                                            continue;
+                                        }
+                                        let row = &term_guard.grid()[grid_line];
+                                        for col in 0..cols {
+                                            let c = row[Column(col)].c;
+                                            if c != '\0' {
+                                                text.push(c);
+                                            }
+                                        }
+                                    }
+                                    text.trim().to_string()
+                                } else {
+                                    String::new()
+                                }
+                            };
 
                             let record = CommandRecord {
                                 id: None,

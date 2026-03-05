@@ -37,6 +37,8 @@ pub struct Block {
     pub started_at: Option<Instant>,
     /// When command execution finished
     pub finished_at: Option<Instant>,
+    /// Wall-clock epoch seconds when command started (for matching with history DB records).
+    pub started_epoch: Option<i64>,
     /// Current lifecycle state
     pub state: BlockState,
 }
@@ -51,6 +53,7 @@ impl Block {
             exit_code: None,
             started_at: None,
             finished_at: None,
+            started_epoch: None,
             state: BlockState::PromptActive,
         }
     }
@@ -100,6 +103,10 @@ impl BlockManager {
                         block.state = BlockState::Executing;
                         block.output_start_line = Some(line);
                         block.started_at = Some(Instant::now());
+                        block.started_epoch = std::time::SystemTime::now()
+                            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_secs() as i64);
                     }
                 }
             }
