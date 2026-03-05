@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: Completed 06-04 HistoryDb wiring
-last_updated: "2026-03-05T18:09:04.809Z"
-last_activity: 2026-03-05 -- Completed 06-04 HistoryDb wiring
+stopped_at: Completed 07-01 QueryFilter module
+last_updated: "2026-03-05T18:35:31Z"
+last_activity: 2026-03-05 -- Completed 07-01 QueryFilter module
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_plans: 8
+  completed_plans: 7
+  percent: 88
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 6 - Output Capture + Writer Integration
+**Current focus:** Phase 7 - CLI Query Interface
 
 ## Current Position
 
 Milestone: v1.1 Structured Scrollback + MCP Server
-Phase: 6 of 9 (Output Capture + Writer Integration)
-Plan: 4 of 4 in current phase (phase complete)
+Phase: 7 of 9 (CLI Query Interface)
+Plan: 1 of 2 in current phase
 Status: Executing
-Last activity: 2026-03-05 -- Completed 06-04 HistoryDb wiring
+Last activity: 2026-03-05 -- Completed 07-01 QueryFilter module
 
-Progress: [##########] 100% (v1.1: 2/5 phases, 4/4 plans in phase 6)
+Progress: [=========-] 88% (v1.1: 2/5 phases, 1/2 plans in phase 7)
 
 ## Performance Metrics
 
@@ -65,6 +65,9 @@ Recent decisions affecting v1.1:
 - HistorySection as Option in GlassConfig for backward-compatible config parsing
 - [Phase 06]: Command text left empty -- metadata (cwd, exit_code, timestamps, output) is the high-value data; grid extraction deferred
 - [Phase 06]: HistoryDb::open failure is non-fatal -- history never crashes the terminal
+- [Phase 07]: Dynamic SQL with params_from_iter and Vec<Value> for QueryFilter
+- [Phase 07]: FTS5 special chars escaped via double-quoting search terms
+- [Phase 07]: CWD prefix matching via SQL LIKE with trailing %
 
 ### Pending Todos
 
@@ -76,6 +79,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T18:00:22.680Z
-Stopped at: Completed 06-04 HistoryDb wiring
-Resume file: .planning/phases/06-output-capture-writer-integration/06-04-SUMMARY.md
+Last session: 2026-03-05T18:35:31Z
+Stopped at: Completed 07-01 QueryFilter module
+Resume file: .planning/phases/07-cli-query-interface/07-01-SUMMARY.md
