@@ -1,237 +1,320 @@
-# Feature Research
+# Feature Landscape
 
-**Domain:** GPU-accelerated terminal emulator (Rust, Windows-first, block-based UI)
-**Researched:** 2026-03-04
-**Confidence:** HIGH (verified against Warp, WezTerm, Ghostty, Alacritty official docs and changelogs)
-**Milestone Scope:** Phase 0-1 — foundation terminal with block UI and shell integration
+**Domain:** Structured terminal history database, search overlay, MCP server, CLI query interface
+**Researched:** 2026-03-05
+**Milestone:** v1.1 Structured Scrollback + MCP Server
+**Confidence:** HIGH (MCP spec verified via official docs; history patterns verified via Atuin, SQLite FTS5 official docs)
 
 ---
 
-## Feature Landscape
+## Table Stakes
 
-### Table Stakes (Users Expect These)
+Features users expect from a terminal history database and search system. Missing any of these makes the feature feel incomplete or broken.
 
-Features that are invisible when present but immediately disqualifying when absent. Missing any of these means users cannot do their job.
+### History Database
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| VT/ANSI escape sequence processing | Every CLI tool — git, vim, ls, compilers — emits escape codes. Without them, output is garbage. | HIGH | alacritty_terminal handles this. Core dependency for everything else. |
-| Truecolor (24-bit RGB) support | Modern shells, neovim, bat, delta, and most CLI tools emit 24-bit color. 256-color is the floor. | MEDIUM | Must set `COLORTERM=truecolor` in env. alacritty_terminal provides this natively. |
-| Keyboard input forwarding | Ctrl+C, Ctrl+D, arrow keys, modifier combinations — any mismatch breaks vim/emacs/fzf immediately. | MEDIUM | Includes Ctrl, Alt, Shift modifiers. Kitty keyboard protocol is a plus but not required for M1. |
-| Bracketed paste mode | Without it, pasting multi-line code or scripts triggers immediate execution — data loss risk. | LOW | Protocol: `ESC[?2004h`. alacritty_terminal handles. Must be wired up in input pipeline. |
-| Scrollback buffer | Every user scrolls up to read output. Absence is the most complained-about missing feature. | MEDIUM | Need configurable line limit. 10,000 lines is a reasonable default. |
-| Copy/paste (keyboard) | Ctrl+Shift+C / Ctrl+Shift+V is universal convention on Windows. Absence is immediately felt. | LOW | Clipboard integration via winit/arboard. Primary selection not expected on Windows. |
-| Font configuration (family + size) | Monospace font preference is personal. Fixed font is a dealbreaker for most developers. | LOW | TOML config: `font.family`, `font.size`. Hot reload is a quality-of-life addition. |
-| Correct cursor rendering | Cursor must be visible, blink optional, and move correctly. Cursor bugs make editing unusable. | MEDIUM | Block, beam, underline shapes. Blink controlled by escape sequences. |
-| Window resize handling | Resizing the window must reflow terminal content — every program assumes this works. | LOW | PTY `SIGWINCH` equivalent on Windows (ConPTY handles resize notification). |
-| Working directory inheritance | Terminal must launch shell in a useful CWD (home or configurable). | LOW | Standard PTY setup, set `cwd` in spawn config. |
-| Exit code visibility | Knowing whether the last command succeeded or failed. Block UI makes this prominent. | MEDIUM | Requires OSC 133 shell integration (D sequence carries exit code). |
-| Non-broken shell launching | Shell must start, prompt must appear, typing must work. The baseline functional test. | HIGH | ConPTY + alacritty_terminal on Windows. Hardest platform-specific problem in M1. |
+| Feature | Why Expected | Complexity | Depends On |
+|---------|--------------|------------|------------|
+| Command text storage | The entire point of history -- users need to recall what they ran | Low | SQLite crate |
+| CWD at execution time | Atuin, Recent, and every modern history tool captures this; Glass already has OSC 7 CWD tracking | Low | Existing OSC 7 |
+| Exit code per command | Users filter for failed/successful commands; Glass already has OSC 133 exit codes | Low | Existing OSC 133 |
+| Duration per command | Glass already shows duration badges; storing this is expected | Low | Existing duration tracking |
+| Timestamp | Every history tool records when commands ran; needed for sorting, retention, and time-based queries | Low | None |
+| Output capture (truncated) | The differentiating value of Glass -- terminal output is ephemeral by default; capturing it turns scrollback into a database | Medium | PTY read pipeline, storage limits |
+| FTS5 full-text indexing on command text | Users expect instant substring/word search across history; FTS5 is the standard SQLite approach | Medium | SQLite FTS5 |
+| Session tracking | Users need to distinguish commands from different terminal sessions, especially when multiple Glass windows are open | Low | Session UUID generation |
+| Hostname field | Future-proofing for multi-machine use; Atuin proved this is expected metadata | Low | `gethostname` |
 
-### Differentiators (Competitive Advantage for Milestone 1)
+### Search Overlay UI
 
-Features that distinguish Glass's foundation from a bare-bones terminal. These should be buildable within M1 scope without depending on Phase 2+ features.
+| Feature | Why Expected | Complexity | Depends On |
+|---------|--------------|------------|------------|
+| Ctrl+Shift+F activation | Standard terminal search keybinding (Windows Terminal, WezTerm, VS Code terminal all use this) | Low | Existing input handling |
+| Incremental/live results | Users expect results to update as they type, not after pressing Enter; fzf set this expectation universally | Medium | FTS5 queries, UI rendering |
+| Result highlighting | Matching text must be visually highlighted in results; every search UI does this | Medium | Text attribute rendering |
+| Dismiss with Escape | Universal UI pattern for closing overlays | Low | Input handling |
+| Navigate results with arrow keys | Up/Down to move through matches; Enter to select/jump | Low | Input handling |
+| Jump to command block on select | Selecting a result should scroll the terminal to that block; this is what makes the overlay useful vs a separate tool | Medium | Block index, scroll position management |
+| Search command text by default | The primary search target; users type a command fragment and expect matches | Low | FTS5 on command column |
 
-| Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| Block-based command output | Each command's output is visually grouped with its prompt, exit code badge, and duration. Users can see at a glance what ran and whether it succeeded. Warp proved the paradigm — users say it "changes how you think about terminal history." | HIGH | Core Glass differentiator. Requires OSC 133 shell integration for semantic boundaries. Blocks are the visible payoff of shell integration work. |
-| Exit code badge per block | Red/green visual indicator directly on the block header. Removes need to `echo $?` constantly. | LOW | Dependent on: shell integration (OSC 133;D). Zero extra work once blocks work. |
-| Command duration per block | Shows wall-clock time for each command inline. Immediately useful for build times, test runs. | LOW | Dependent on: shell integration start/end events. Timestamp delta between OSC 133;C and OSC 133;D. |
-| Shell integration (OSC 133 + OSC 7) | Semantic prompt marking, command boundary detection, CWD tracking. Enables blocks, exit codes, duration, and future features. WezTerm and Warp both use this. | HIGH | Needs PowerShell integration script (custom `$PROMPT` function) and bash script (via `PROMPT_COMMAND`/`precmd`). Standard OSC 7 for CWD, OSC 133;A/B/C/D for command lifecycle. |
-| Status bar (CWD + git branch) | Always-visible context strip showing where you are and what branch you're on. Eliminates `pwd` and `git branch` invocations. Warp, iTerm2, and WezTerm all ship variants of this. | MEDIUM | CWD from OSC 7 events. Git branch via `git rev-parse` subprocess or parsing `.git/HEAD` directly. Git dirty count needs `git status --porcelain` — can be async. |
-| GPU-accelerated rendering | Visibly smoother scrolling and text under load vs. non-accelerated terminals. Performance under large output (e.g., `cargo build`) matters. Ghostty and Alacritty both demonstrate this. | HIGH | wgpu + custom glyph atlas. This is the rendering architecture, not an add-on. |
-| Collapsible blocks (deferred to M1.x) | Long outputs (test runs, build logs) become one-liner headers. Users reclaim screen real estate. | HIGH | Architecture must support it from day one — collapsing is a rendering mode change, not a rearchitect. Flag for phase-specific research. |
+### CLI Query Interface
 
-### Anti-Features (Do Not Build in Milestone 1)
+| Feature | Why Expected | Complexity | Depends On |
+|---------|--------------|------------|------------|
+| `glass history search <query>` | Primary CLI entry point; Atuin uses `atuin search`, `history` is the natural subcommand for Glass | Low | SQLite read access, CLI arg parsing |
+| Filter by exit code (`--exit`) | Atuin established this pattern; users want to find failed commands or successes | Low | SQL WHERE clause |
+| Filter by CWD (`--cwd`) | Find commands run in a specific directory; Atuin and Recent both support this | Low | SQL WHERE clause |
+| Filter by time range (`--after`, `--before`) | Find commands from a specific session or timeframe | Low | SQL WHERE clause |
+| Limit results (`--limit`) | Pagination for large history sets | Low | SQL LIMIT |
+| Human-readable output | Timestamps, durations, exit codes formatted for terminal display by default | Low | Formatting |
 
-Features that look like reasonable scope expansions but would compromise delivery or are explicitly out of scope.
+### MCP Server
 
-| Feature | Why Requested | Why Problematic in M1 | What to Do Instead |
-|---------|---------------|----------------------|-------------------|
-| Tabs and split panes | Every popular terminal has them. Users ask immediately. | Requires multiplexer architecture — non-trivial window management, layout engine, PTY-per-pane. Easily doubles M1 scope. Blocks can span the full window first. | Defer to a dedicated milestone. Users accept "use multiple windows" while blocks are novel enough to be interesting. |
-| Built-in AI features | Warp 2.0 shows AI integration. Developers associate modern terminals with AI. | Glass's value is as an MCP data source, not an AI chat interface. Premature AI locks in UI/UX patterns before the data layer (Phase 2) exists. | MCP server in Phase 2 exposes history to external AI tools. Do not embed chat. |
-| Plugin/extension system | Power users want to extend everything. | API surface before core is stable leads to breaking changes and maintaining compatibility. Core must be solid first (PROJECT.md explicitly says so). | Stabilize internals first. Plugin system is a v2+ concern. |
-| Cloud sync / remote config | Users want settings on multiple machines. | History and snapshots stay local (by design). Cloud sync requires auth, encryption, conflict resolution — massive scope. | Document config file location clearly. Manual dotfile management is acceptable for M1. |
-| cmd.exe support | Windows users expect cmd.exe to work. | ConPTY works with cmd.exe but shell integration (OSC 133) requires shell-side scripting. cmd.exe has no equivalent hook mechanism. | PowerShell and bash (WSL or Git Bash) only for M1. Explicitly documented. |
-| Font ligature support | FiraCode, Cascadia Code — ligatures are expected by many developers. | Requires grapheme-aware glyph shaping pipeline (HarfBuzz or equivalent). Alacritty famously omitted this for years due to complexity. Ghostty uses platform shaping. | Basic glyph rendering works for all code. Flag ligatures as M2+ rendering enhancement. |
-| Theme marketplace / custom color schemes | Developers love theming terminals. | Config format not stable in M1. Theming before rendering pipeline is solid adds churn. | Ship one dark theme, one light theme (PROJECT.md). Add color scheme config in M2. |
-| Ctrl+Z undo | Users will press Ctrl+Z expecting command undo (the core Glass feature). | Phase 3 feature. Undo doesn't exist yet — wiring a broken stub confuses users. | Pass Ctrl+Z through to shell normally (suspend process, standard Unix behavior). Document intentionally. |
-| Image / graphics protocol (Sixel, Kitty) | Ghostty ships with Kitty graphics. Modern TUIs render images. | Image protocol requires separate rendering layer. No CLI workflows during M1 depend on images. | VTE escape pass-through means tools won't crash, they just won't render images. Add in M2+. |
-| Search within scrollback | Finding text in long outputs is essential long-term. | Requires text indexing on the scrollback buffer, regex matching UI, and highlight rendering. Non-trivial to do well. | Command-level block structure mitigates scrollback searching — you can identify which block's output to read. Defer. |
-| Right-click context menu | GUI users expect right-click to copy/paste/open-URL. | Custom context menu requires OS integration (Windows HMENU or equivalent). Low ROI for developer audience using keyboard shortcuts. | Ctrl+Shift+C/V covers copy/paste. URL opening via Ctrl+click is acceptable M1 UX. |
+| Feature | Why Expected | Complexity | Depends On |
+|---------|--------------|------------|------------|
+| JSON-RPC 2.0 over stdio transport | MCP spec mandates JSON-RPC 2.0; stdio is the standard local transport where the host starts the server as a subprocess | Medium | JSON-RPC parsing, stdin/stdout I/O |
+| `initialize` handshake | MCP spec requires capability negotiation on connection; without it, no MCP client will proceed | Low | MCP protocol state machine |
+| `tools/list` response | MCP clients discover available tools via this method; must declare `tools` capability with tool name, description, inputSchema | Low | Tool definitions |
+| `tools/call` dispatch | MCP clients invoke tools via this method; must return `content` array with text results and `isError` flag | Medium | Tool implementations, history DB |
+| At least one search/query tool | The reason the MCP server exists -- AI assistants need to query terminal history | Medium | History database, tool input schema |
+| Tool input validation | MCP spec requires servers validate inputs against JSON Schema; LLMs regularly send malformed arguments | Low | JSON Schema validation |
+| Error responses (protocol + tool execution) | MCP distinguishes protocol errors (-32602 for unknown tools) from tool execution errors (`isError: true` in result); both must work | Low | Error handling |
+
+### Retention Policies
+
+| Feature | Why Expected | Complexity | Depends On |
+|---------|--------------|------------|------------|
+| Max age retention (e.g., keep 90 days) | Without limits, the database grows unbounded; users expect configurable limits | Low | SQL DELETE + scheduled cleanup |
+| Max database size limit | Output capture can consume significant storage; users need a ceiling | Medium | Database size monitoring, pruning strategy |
+| TOML configuration for retention settings | Glass already uses TOML config; retention settings belong there | Low | Existing config system |
+
+---
+
+## Differentiators
+
+Features that set Glass apart from both traditional shell history tools (Atuin, fzf) and other terminal emulators. Not expected by users, but create significant value.
+
+| Feature | Value Proposition | Complexity | Depends On |
+|---------|-------------------|------------|------------|
+| **FTS5 on command output** | No terminal emulator indexes command output for search. Atuin and fzf only index the command text itself. Searching output ("which command printed that error message?") is a capability that does not exist anywhere else. | Medium | Output capture, FTS5 content table design |
+| **MCP GlassContext tool** | Expose the current terminal context (recent N commands with output, CWD, git status) to AI assistants. Gives LLMs situational awareness without user copy-pasting. No terminal does this today. | Medium | Live terminal state access, MCP tool definition |
+| **MCP GlassHistory structured output** | Return history results as structured JSON with `outputSchema` defined per the MCP spec. Most MCP servers return unstructured text blobs. Structured output enables LLMs to programmatically filter and process results. | Medium | History queries, MCP `outputSchema` |
+| **Search overlay with output preview** | When navigating search results, show a preview of the command's captured output below the result list. Transforms the overlay from a command finder into a knowledge retrieval system. | High | Output storage, preview rendering in GPU pipeline |
+| **Directory-scoped search** (workspace filtering) | Atuin calls this "workspace" -- show history from any directory within the current git repository tree. Useful for project-specific recall. | Medium | Git root detection, CWD prefix matching |
+| **Pipe CLI results to stdout as JSON** | `glass history search "error" --format json` outputs structured JSON for piping into jq or feeding scripts. Makes Glass history scriptable. | Low | JSON serialization, output formatting |
+| **Per-command output size tracking** | Track byte count of output per command. Enables queries like "show commands with most output" and informs retention pruning decisions. | Low | Byte counting during PTY capture |
+
+---
+
+## Anti-Features
+
+Features to explicitly NOT build in v1.1. These are tempting but wrong for this milestone.
+
+| Anti-Feature | Why Avoid | What to Do Instead |
+|--------------|-----------|-------------------|
+| **Cloud sync of history** | PROJECT.md explicitly scopes this out ("history and snapshots stay local, no telemetry"). Cloud sync requires encryption, auth, server infrastructure. Atuin's sync is their core business -- not Glass's differentiator. | Keep history strictly local. Database at platform-appropriate data directory (e.g., `%APPDATA%/glass/history.db` on Windows). |
+| **Shell history replacement** (rebind Ctrl+R) | Glass is a terminal emulator, not a shell plugin. Rebinding Ctrl+R conflicts with PSReadLine and bash readline. Glass should provide its own search via its own keybinding, not hijack the shell's. | Use Ctrl+Shift+F for Glass search overlay. Shell Ctrl+R continues to work normally. |
+| **Import from ~/.bash_history or Atuin** | Imported entries lack output, exit codes, and CWD. Creates data quality issues and a false sense of completeness. Glass history is richer than shell history by design. | Glass history begins when Glass starts capturing. Previous commands remain in shell history files. |
+| **Interactive TUI for CLI** (full-screen search) | The CLI should be a stdout query tool, not a duplicate of the search overlay. Full-screen TUI adds complexity and duplicates the overlay's job. | `glass history search` prints results to stdout. The overlay (Ctrl+Shift+F) is the interactive experience. |
+| **MCP HTTP/SSE transport** | Glass is a local application. stdio is simpler, more secure, and appropriate for local AI assistant integration. HTTP transport adds auth, CORS, port management overhead. The MCP spec is still evolving remote transports (SEPs targeting June 2026). | Implement stdio transport only. The MCP spec's stdio transport is well-established and used by Claude Code, Cursor, and other local MCP clients. |
+| **AI-generated command suggestions** | PROJECT.md says "Glass is not an AI itself." Building suggestion UI couples Glass to specific AI providers and competes with its MCP data-source role. | Expose data via MCP tools. Let external AI assistants (Claude, GPT, etc.) provide suggestions through their own interfaces. |
+| **Regex search in overlay** | Adds mode indicators, escape character handling, and error states to the overlay UI. FTS5 word matching and substring search cover 95% of use cases. | Plain text and FTS5 word matching in the overlay. The CLI can accept more advanced query patterns if needed. |
+| **Output capture for alternate screen programs** | Programs using alternate screen (vim, htop, less, top) produce output that is not meaningful to capture or search. Capturing it wastes storage and pollutes results. | Detect alternate screen mode via alacritty_terminal VTE state. Skip output capture when alternate screen is active. Only capture primary screen output. |
+| **MCP resources capability** | The MCP `resources` capability (URI-addressable history entries, subscriptions) adds complexity without clear immediate value. The `tools` capability covers the core query use case. | Ship with `tools` capability only. Evaluate `resources` for a future milestone based on AI assistant integration feedback. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[PTY spawn / ConPTY]
-    └──required by──> [Keyboard input forwarding]
-    └──required by──> [VT/ANSI processing]
-    └──required by──> [Shell launch]
-
-[VT/ANSI processing]
-    └──required by──> [Truecolor rendering]
-    └──required by──> [Cursor rendering]
-    └──required by──> [Bracketed paste]
-    └──required by──> [Scrollback buffer]
-
-[Shell integration (OSC 133 + OSC 7)]
-    └──required by──> [Block-based command output]
-    └──required by──> [Exit code badge]
-    └──required by──> [Command duration display]
-    └──required by──> [Status bar CWD tracking]
-    └──enables (future)──> [Collapsible blocks]
-    └──enables (future)──> [Structured history DB (Phase 2)]
-    └──enables (future)──> [Command-level undo (Phase 3)]
-
-[Block-based command output]
-    └──enhances──> [Exit code badge]
-    └──enhances──> [Command duration display]
-    └──required by (future)──> [Collapsible blocks]
-
-[GPU rendering pipeline (wgpu)]
-    └──required by──> [All visual output]
-    └──required by (future)──> [Collapsible block animation]
-    └──required by (future)──> [Image protocol]
-
-[Font loading / glyph atlas]
-    └──required by──> [GPU rendering pipeline]
-    └──required by (future)──> [Font ligature support]
-
-[Status bar]
-    └──depends on──> [Shell integration (OSC 7 for CWD)]
-    └──depends on──> [Git subprocess (branch / dirty count)]
+                    SQLite Database Schema
+                         |
+              +----------+----------+
+              |          |          |
+         FTS5 Index   Metadata   Output Capture
+         (command +   Storage    (PTY read hook,
+          output)    (commands    truncation,
+              |       table)     alt-screen skip)
+              |          |          |
+              +-----+----+----+-----+
+                    |         |
+              +-----+    +---+----+
+              |          |        |
+        Search Overlay  CLI    Retention
+        (Ctrl+Shift+F)  Query  Policies
+              |         Interface  |
+              |          |    +----+
+              |          |    |
+              +----+-----+----+
+                   |
+             MCP Server
+             (stdio, JSON-RPC 2.0)
+                   |
+            +------+------+
+            |             |
+      GlassHistory   GlassContext
+      (query DB)     (live state)
 ```
 
-### Dependency Notes
+Key dependency chains:
 
-- **Shell integration must precede blocks:** There is no reliable way to detect command boundaries without shell cooperation. Regex-matching the prompt is fragile and breaks on custom prompts. OSC 133 is the right path — Warp, WezTerm, and VS Code all use it.
-- **PTY spawn is the hardest Windows-specific problem:** ConPTY is the only supported mechanism on Windows. alacritty_terminal's ConPTY support must be verified before committing to the embedding approach. This is the single highest-risk dependency in M1.
-- **Block rendering does not require collapsibility:** Block grouping (visual separation, headers, badges) can ship without collapse/expand. Collapsibility is additive — architecture just needs to not preclude it.
-- **Git status in status bar must be async:** Synchronous `git status` blocks rendering on large repos. Run as a background subprocess with a brief staleness window. WezTerm's status bar uses event-driven refresh.
+1. **SQLite database schema** must exist before anything else -- it is the foundation for all v1.1 features
+2. **FTS5 index + metadata storage** depend on the schema; FTS5 virtual table must be created alongside the commands table
+3. **Output capture** depends on hooking into the PTY read pipeline (existing `glass_terminal` crate) and writing to the database; must handle truncation and alternate screen detection
+4. **Search overlay** depends on FTS5 for queries and the existing block index for jump-to-block navigation
+5. **CLI interface** depends on the database for queries; shares query logic with the overlay (extract into a shared query module)
+6. **Retention policies** depend on the database; run as periodic cleanup (on startup + interval)
+7. **MCP server** depends on the query layer for GlassHistory and live terminal state for GlassContext; must run as a separate process or be spawnable as a subprocess
+8. **GlassContext** additionally depends on reading the current terminal session state (recent commands, CWD from OSC 7, git info from status bar)
 
----
+### Critical Architectural Note: MCP Server Process Model
 
-## MVP Definition
+The MCP server communicates via stdio (stdin/stdout). This means it **cannot** be the same process as the terminal emulator (which uses stdout for rendering). Two viable approaches:
 
-### Launch With (Milestone 1 — Daily Drivable)
+- **Separate binary** (`glass-mcp`): A standalone executable that reads the SQLite database directly. Simpler, no IPC needed for history queries. GlassContext requires either shared state or querying the DB for recent commands.
+- **Subprocess of Glass**: Glass spawns the MCP server, communicating via pipes. More complex but enables GlassContext to access live terminal state.
 
-The bar is: "Can a developer use Glass as their primary terminal while building Glass?" Every item below is required to meet that bar.
-
-- [ ] ConPTY PTY spawn with PowerShell as default shell — without this, nothing works
-- [ ] Full VT/ANSI escape processing via alacritty_terminal — required for any real CLI tool
-- [ ] Truecolor rendering — required for modern tooling (delta, bat, neovim themes)
-- [ ] Keyboard input with modifier keys — Ctrl, Alt, Shift combinations; vim/tmux/fzf require this
-- [ ] Bracketed paste mode — safe multi-line paste without accidental execution
-- [ ] Scrollback buffer — at least 10,000 lines; configurable
-- [ ] Copy/paste (Ctrl+Shift+C / Ctrl+Shift+V) — clipboard integration
-- [ ] Shell integration scripts for PowerShell and bash — OSC 133 + OSC 7
-- [ ] Block-based command output — prompt + output + exit code + duration per block
-- [ ] Status bar — CWD (from OSC 7) + git branch (async subprocess)
-- [ ] TOML config — `font.family`, `font.size`, `shell` override
-- [ ] GPU-accelerated rendering via wgpu — <5ms input latency, <200ms cold start
-- [ ] Window resize handling — PTY resize on window dimension change
-
-### Add After Validation (Milestone 1.x — Quality Polish)
-
-Once M1 is daily-drivable, these meaningfully improve the experience:
-
-- [ ] Config hot reload — saves restart cycles while tweaking config
-- [ ] Collapsible blocks — fold long output to one-line header; high UX value, architecture must support
-- [ ] URL detection and Ctrl+click to open — expected by developers; moderate complexity
-- [ ] Bash shell integration (WSL / Git Bash) — expands shell support; PowerShell is the M1 priority
-- [ ] Block keyboard navigation — jump to previous/next block with keyboard shortcut
-
-### Future Consideration (Phase 2+)
-
-Deferred by design per PROJECT.md. Do not attempt in M1.
-
-- [ ] Structured history DB (Phase 2) — queryable scrollback; requires block data pipeline first
-- [ ] MCP server (Phase 2) — exposes history to AI tools; requires history DB
-- [ ] Command-level undo (Phase 3) — Glass's flagship feature; requires filesystem snapshotting
-- [ ] Pipe visualization (Phase 4) — visual pipe debugging; requires command parser
-- [ ] Tabs and split panes — multiplexer architecture; separate milestone
-- [ ] Font ligatures — HarfBuzz shaping pipeline; rendering enhancement milestone
-- [ ] Image protocols (Kitty, Sixel) — separate rendering layer
-- [ ] Searchable scrollback UI — block structure partially mitigates this need
+Recommendation: **Separate binary** for v1.1. The database is the shared state. GlassContext can return recent commands from the DB (last N commands in current session) rather than requiring live terminal memory access.
 
 ---
 
-## Feature Prioritization Matrix
+## MVP Recommendation
 
-| Feature | User Value | Implementation Cost | Priority |
-|---------|------------|---------------------|----------|
-| PTY spawn (ConPTY) | HIGH | HIGH | P1 |
-| VT/ANSI processing (alacritty_terminal) | HIGH | MEDIUM (embedding) | P1 |
-| Keyboard input forwarding | HIGH | MEDIUM | P1 |
-| GPU rendering pipeline (wgpu) | HIGH | HIGH | P1 |
-| Shell integration (OSC 133 + OSC 7) | HIGH | HIGH | P1 |
-| Block-based command output | HIGH | HIGH | P1 |
-| Truecolor rendering | HIGH | LOW (after VT/ANSI) | P1 |
-| Scrollback buffer | HIGH | MEDIUM | P1 |
-| Copy/paste | HIGH | LOW | P1 |
-| Bracketed paste | HIGH | LOW | P1 |
-| TOML config (font, size, shell) | MEDIUM | LOW | P1 |
-| Cursor rendering | HIGH | MEDIUM | P1 |
-| Window resize | HIGH | LOW | P1 |
-| Status bar (CWD + git) | MEDIUM | MEDIUM | P1 |
-| Exit code badge | HIGH | LOW (after blocks) | P1 |
-| Command duration | MEDIUM | LOW (after blocks) | P1 |
-| Config hot reload | MEDIUM | LOW | P2 |
-| Collapsible blocks | HIGH | HIGH | P2 |
-| URL detection + Ctrl+click | MEDIUM | MEDIUM | P2 |
-| Block keyboard navigation | MEDIUM | LOW | P2 |
-| Bash shell integration | MEDIUM | MEDIUM | P2 |
-| Font ligatures | MEDIUM | HIGH | P3 |
-| Search within scrollback | MEDIUM | HIGH | P3 |
-| Tabs and splits | HIGH | HIGH | P3 (separate milestone) |
-| Image protocols | LOW | HIGH | P3 |
+### Phase 1: Database Foundation + Output Capture
 
-**Priority key:**
-- P1: Must have for Milestone 1 launch
-- P2: Should have, add after M1 core works
-- P3: Nice to have, future milestone or consideration
+1. **SQLite database with schema** -- commands table: id, timestamp, command_text, cwd, exit_code, duration_ms, session_id, hostname, output (TEXT, truncated)
+2. **FTS5 virtual table** on command_text column -- enables fast text search
+3. **Command metadata logging** -- hook into existing OSC 133 lifecycle (on command completion: write to DB)
+4. **Output capture** -- buffer primary screen output between OSC 133;C (command start) and OSC 133;D (command end); truncate at configurable limit (default: 16KB per command); skip alternate screen
+5. **Retention policy** -- max_age (default: 90 days), max_db_size (default: 500MB); cleanup on startup
+
+### Phase 2: Search Overlay + CLI
+
+6. **Search overlay** (Ctrl+Shift+F) -- text input bar, live FTS5 results, arrow key navigation, Enter to jump to block, Escape to dismiss
+7. **CLI query interface** -- `glass history search <query>` with `--exit`, `--cwd`, `--after`, `--before`, `--limit`, `--format` (text/json)
+8. **Shared query module** -- extract query building logic used by both overlay and CLI into a reusable module
+
+### Phase 3: MCP Server
+
+9. **MCP server binary** (`glass-mcp`) -- stdio transport, JSON-RPC 2.0, `initialize` handshake, `tools/list`, `tools/call`
+10. **GlassHistory tool** -- inputSchema: query (string), filters (exit_code, cwd, after, before, limit); returns structured command history results with outputSchema
+11. **GlassContext tool** -- inputSchema: count (number, default 10); returns recent N commands from current session with CWD, exit codes, output snippets
+
+### Defer to v1.2+
+
+- **FTS5 on output text**: Doubles index size. Validate storage impact of output capture first. Can add as a fast-follow once storage patterns are understood.
+- **Output preview in search overlay**: High rendering complexity. The overlay v1 shows command text + metadata; output preview is a v1.2 enhancement.
+- **Directory/workspace filtering**: Requires git root detection logic. Low user demand until project-scoped workflows are common.
+- **MCP resources capability**: Tools cover the core use case. Resources add subscription complexity without clear demand.
 
 ---
 
-## Competitor Feature Analysis
+## MCP Tool Definitions (Planned)
 
-| Feature | Alacritty | Warp | Ghostty | WezTerm | Glass M1 Approach |
-|---------|-----------|------|---------|---------|-------------------|
-| GPU rendering | YES (OpenGL) | YES (Metal/custom) | YES (Metal/OpenGL) | YES (DX12/Vulkan/Metal) | YES — wgpu auto-selects DX12/Vulkan |
-| Shell integration | NO | YES (DCS-based, proprietary) | NO | YES (OSC 7/133/1337) | YES — OSC 133 + OSC 7, standard |
-| Block-based output | NO | YES (core differentiator) | NO | NO | YES — core Glass differentiator |
-| Exit code display | NO | YES (per block) | NO | Partial (mark in scrollback) | YES — per block badge |
-| Status bar | NO | YES | NO | YES (configurable Lua) | YES — CWD + git branch |
-| Config format | TOML | GUI + YAML | Simple text | Lua | TOML (minimal) |
-| Config hot reload | YES | N/A | YES | YES | P2 (not M1 blocker) |
-| Font ligatures | NO | YES | YES | YES | NO — deferred to M2+ |
-| Tabs/splits | NO | YES | YES | YES | NO — deferred |
-| Truecolor | YES | YES | YES | YES | YES |
-| Collapsible output | NO | NO | NO | NO | PLANNED M1.x — unique |
-| URL detection | YES | YES | YES | YES | P2 |
-| Scrollback search | NO (vi mode) | YES | NO | YES | NO — deferred |
-| Windows support | YES | YES (2025) | NO (macOS/Linux) | YES | YES — first-class |
+### GlassHistory
 
-**Key takeaway:** Glass matches the performance baseline (GPU, truecolor, keyboard) while adding the block UI layer that only Warp offers — but without Warp's proprietary protocol or electron/web-tech stack. Ghostty and Alacritty prove users accept minimal config. WezTerm's shell integration approach (OSC 133/7) is the right model.
+```json
+{
+  "name": "GlassHistory",
+  "description": "Search terminal command history. Returns commands with metadata (exit code, duration, CWD, output snippet). Use to find what commands were run, what failed, or what produced specific output.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query to match against command text"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Filter to commands run in this directory"
+      },
+      "exit_code": {
+        "type": "integer",
+        "description": "Filter to commands with this exit code (0 = success)"
+      },
+      "after": {
+        "type": "string",
+        "description": "ISO 8601 timestamp. Only return commands after this time."
+      },
+      "before": {
+        "type": "string",
+        "description": "ISO 8601 timestamp. Only return commands before this time."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum results to return (default: 20)"
+      }
+    }
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "commands": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "string" },
+            "cwd": { "type": "string" },
+            "exit_code": { "type": "integer" },
+            "duration_ms": { "type": "integer" },
+            "timestamp": { "type": "string" },
+            "output_snippet": { "type": "string" }
+          }
+        }
+      },
+      "total_matches": { "type": "integer" }
+    },
+    "required": ["commands", "total_matches"]
+  }
+}
+```
+
+### GlassContext
+
+```json
+{
+  "name": "GlassContext",
+  "description": "Get current terminal session context: recent commands with output, current working directory, and session info. Use to understand what the user has been doing in their terminal.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer",
+        "description": "Number of recent commands to return (default: 10, max: 50)"
+      },
+      "include_output": {
+        "type": "boolean",
+        "description": "Include command output in results (default: true)"
+      }
+    },
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "session_id": { "type": "string" },
+      "cwd": { "type": "string" },
+      "recent_commands": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "string" },
+            "cwd": { "type": "string" },
+            "exit_code": { "type": "integer" },
+            "duration_ms": { "type": "integer" },
+            "timestamp": { "type": "string" },
+            "output": { "type": "string" }
+          }
+        }
+      }
+    },
+    "required": ["session_id", "cwd", "recent_commands"]
+  }
+}
+```
 
 ---
 
 ## Sources
 
-- [Warp Terminal — How Warp Works](https://www.warp.dev/blog/how-warp-works) — Block architecture and shell integration via DCS
-- [WezTerm Shell Integration](https://wezterm.org/shell-integration.html) — OSC 7, OSC 133, OSC 1337 implementation reference
-- [WezTerm Features](https://wezterm.org/features.html) — Feature baseline for daily-drivable terminal
-- [Ghostty Features](https://ghostty.org/docs/features) — Feature set and what ships out-of-the-box
-- [Alacritty GitHub](https://github.com/alacritty/alacritty) — Minimal terminal philosophy, what's intentionally excluded
-- [State of Terminal Emulators 2025 — Jeff Quast](https://www.jeffquast.com/post/state-of-terminal-emulation-2025/) — Compliance gaps, Unicode width issues, performance baseline
-- [Shell Integration in Windows Terminal — Microsoft](https://devblogs.microsoft.com/commandline/shell-integration-in-the-windows-terminal/) — OSC 133 + OSC 9;9 on Windows, PowerShell integration patterns
-- [OSC 133 Shell Integration — Contour Terminal](https://contour-terminal.org/vt-extensions/osc-133-shell-integration/) — Sequence specification: A/B/C/D lifecycle
-- [VS Code Terminal Shell Integration](https://code.visualstudio.com/docs/terminal/shell-integration) — Reference implementation for PowerShell and bash hooks
-- [termstandard/colors](https://github.com/termstandard/colors) — Truecolor standard, COLORTERM env variable convention
+- [Atuin - Shell History](https://github.com/atuinsh/atuin) -- Rust-based shell history with SQLite, the closest prior art for structured history
+- [Atuin Search Reference](https://docs.atuin.sh/cli/reference/search/) -- CLI flags and filter options that set user expectations
+- [Atuin Configuration](https://docs.atuin.sh/cli/configuration/config/) -- Search modes, filter modes, workspace filtering
+- [SQLite FTS5 Extension](https://sqlite.org/fts5.html) -- Official FTS5 documentation for full-text search
+- [MCP Specification - Tools](https://modelcontextprotocol.io/specification/draft/server/tools) -- Tool definition schema, inputSchema, outputSchema, error handling
+- [MCP Specification (2025-11-25)](https://modelcontextprotocol.io/specification/2025-11-25) -- Protocol overview, stdio transport
+- [MCP Transport Future](http://blog.modelcontextprotocol.io/posts/2025-12-19-mcp-transport-future/) -- Transport evolution (stdio remains standard for local)
+- [rmcp - Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk) -- Rust implementation with `#[tool]` macro
+- [MCP Tool Schema Guide](https://www.merge.dev/blog/mcp-tool-schema) -- Practical tool definition patterns
+- [WezTerm Search](https://wezterm.org/config/lua/keyassignment/Search.html) -- Terminal emulator search overlay reference
+- [fzf](https://github.com/junegunn/fzf) -- Fuzzy finder UI patterns that set user expectations for search
+- [Better Shell History Search (2025)](https://tratt.net/laurie/blog/2025/better_shell_history_search.html) -- Analysis of history search approaches
+- [Recent (bash-history-sqlite)](https://github.com/trengrj/recent) -- SQLite history with CWD, exit code, PID metadata
+- [Historian](https://github.com/jcsalterego/historian) -- Command-line utility for managing shell history in SQLite
 
 ---
 
-*Feature research for: Glass terminal emulator — Milestone 1 (Phase 0-1)*
-*Researched: 2026-03-04*
+*Feature research for: Glass terminal emulator -- v1.1 Structured Scrollback + MCP Server*
+*Researched: 2026-03-05*

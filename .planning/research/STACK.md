@@ -1,203 +1,228 @@
 # Stack Research
 
-**Domain:** Rust GPU-accelerated terminal emulator (Windows-first)
-**Researched:** 2026-03-04
-**Confidence:** HIGH (all versions verified via crates.io API; architecture patterns verified via official project sources)
+**Domain:** SQLite FTS5 history database + MCP server for GPU-accelerated terminal emulator
+**Researched:** 2026-03-05
+**Confidence:** HIGH
+
+## Scope
+
+This document covers ONLY the new dependencies needed for v1.1 (Structured Scrollback + MCP Server). The existing v1.0 stack (wgpu 28.0, winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, serde 1.0.228, etc.) is validated and unchanged.
 
 ---
 
-## Recommended Stack
+## New Dependencies for v1.1
 
 ### Core Technologies
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| `alacritty_terminal` | 0.25.1 | VTE/escape-code parsing, terminal grid, PTY event loop | Battle-tested since 2017; provides `Term<T>` + `Grid<Cell>` API that handles the entire ANSI/VTE state machine. Eliminates ~5,000 lines of escape-code parser work. Apache 2.0. ConPTY supported on Windows via `windows-sys` + `miow`. |
-| `wgpu` | 28.0.0 | GPU-accelerated rendering surface | Cross-platform WebGPU-standard API. On Windows it auto-selects DX12 (preferred) then Vulkan then OpenGL. DX12 backend has been production-stable for years. No OpenGL legacy baggage. WGSL shaders compile ahead-of-time. |
-| `winit` | 0.30.13 | Cross-platform window creation and OS event loop | Standard Rust window library. 0.30 introduced `ApplicationHandler` trait (breaking from 0.29). Used by Alacritty, wgpu examples, and nearly every Rust GPU app. Provides `raw-window-handle` 0.6 surface handles that wgpu requires. |
-| `tokio` | 1.50.0 | Async runtime for PTY I/O, shell output streaming | Industry-standard Rust async runtime. PTY reads/writes are inherently I/O-bound; tokio lets the render thread stay unblocked. `alacritty_terminal`'s EventLoop runs on a thread that feeds a channel; tokio is the right glue for the Glass event pipeline. |
-| `glyphon` | 0.10.0 | GPU font rendering via cosmic-text + wgpu | The definitive wgpu text renderer. Internally uses cosmic-text (shaping + layout) → etagere (atlas packing) → wgpu (render pass). Requires wgpu `^28.0.0` — perfect version alignment. Used by COSMIC terminal emulator in production. |
-| `cosmic-text` | 0.15.x | Text shaping, font fallback, glyph rasterization | Pulled in transitively by glyphon 0.10 (`^0.15`). Provides `FontSystem` (font discovery + fallback), `SwashCache` (rasterizer), `Buffer` (layout), and `Attrs` (text attributes). Handles emoji, ligatures, and bidirectional text. Pure Rust. |
+| rusqlite | 0.38.0 | SQLite database with FTS5 full-text search | Already in workspace with `bundled` feature. The bundled build unconditionally compiles SQLite 3.51.1 with `-DSQLITE_ENABLE_FTS5` (verified in libsqlite3-sys build.rs) -- FTS5 works out of the box with zero additional feature flags. Direct SQL is the right abstraction for FTS5 virtual tables; ORMs fight FTS5's MATCH/rank syntax. |
+| rmcp | 1.1.0 | Official Rust MCP SDK for JSON-RPC server over stdio | The official Model Context Protocol SDK at github.com/modelcontextprotocol/rust-sdk. Released 2026-03-04. Provides `#[tool]` and `#[tool_box]` procedural macros for declaring MCP tools, automatic JSON Schema generation via schemars, and built-in stdio transport via `transport-io` feature. Tracks the canonical MCP spec. |
+| clap | 4.5 | CLI argument parsing for `glass history` and `glass mcp serve` | Industry standard for Rust CLIs. Derive API makes subcommand definitions declarative and type-safe. Needed to route `glass` (terminal mode), `glass history search` (query mode), and `glass mcp serve` (MCP server mode) from a single binary. |
+| schemars | 1.0 | JSON Schema generation for MCP tool parameters | Required by rmcp 1.1's `schemars` feature. The `#[tool(param)]` and `#[tool(aggr)]` macros use schemars to auto-generate parameter schemas that MCP clients (Claude, etc.) consume for tool discovery. Must be ^1.0 -- rmcp 1.1 is incompatible with schemars 0.8. |
+| chrono | 0.4 | Timestamp handling for command history records | Storing/querying command execution timestamps, duration formatting in search results, retention policy expiry calculations. rmcp brings chrono transitively, but glass_history uses it directly -- declare explicitly. Use `serde` feature for database serialization. |
+| serde_json | 1.0 | JSON serialization for MCP messages and CLI output | glass_history and glass_mcp use it directly for structured output and MCP content serialization. Already a transitive dep of rmcp and serde, but declare explicitly for direct usage. |
 
 ### Supporting Libraries
 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
-| `pollster` | 0.4.0 | Block on async wgpu init from sync winit `resumed()` | Required: winit 0.30 event handlers are not async, but `wgpu::Instance::request_adapter()` is. Use `pollster::block_on()` inside `ApplicationHandler::resumed()` to initialize the GPU surface without spawning a separate thread. |
-| `serde` | 1.0.228 | Derive `Serialize`/`Deserialize` for config structs | TOML config deserialization. Use with `derive` feature. |
-| `toml` | 1.0.4 | Parse `glass.toml` config file | Standard Rust TOML parser; used by Cargo itself. Pair with `serde`. `1.0.4` (spec 1.1.0 compliant). |
-| `anyhow` | 1.0.102 | Error handling across crate boundaries | For `glass_core` and `main` error propagation. Avoids boilerplate `Box<dyn Error>`. Use `thiserror` inside library crates for typed errors; `anyhow` in binaries. |
-| `tracing` | 0.1.44 | Structured logging and spans for performance profiling | Prefer over `log` crate — structured fields help debug latency issues. Use `tracing-subscriber` for output. Critical for diagnosing the <5ms input latency requirement. |
-| `bytemuck` | 1.25.0 | Safe byte casting for wgpu vertex/uniform buffers | Required pattern with wgpu: GPU buffer uploads need `&[u8]`; `bytemuck::cast_slice()` provides zero-cost conversion from typed structs. Use `derive(Pod, Zeroable)` on all GPU structs. |
-| `etagere` | 0.2.15 | Glyph atlas bin-packing (used by glyphon transitively) | Pulled in by glyphon. Manages the texture atlas that holds rasterized glyphs. Do not use directly — glyphon's `TextAtlas` wraps it. |
-| `notify` | 8.2.0 | Filesystem watcher for config hot-reload | Watches `glass.toml` for changes; send event to main loop to reload config without restart. Cross-platform; uses ReadDirectoryChangesW on Windows. |
-| `rusqlite` | 0.38.0 | SQLite bindings for structured scrollback (Phase 2) | Defer to Phase 2. Listed here because the workspace should stub the `glass_history` crate now to avoid future refactoring. Bundles libsqlite3 via `bundled` feature — no system dependency required on Windows. |
+| uuid | 1.0 | Unique IDs for command history entries | Generate unique entry IDs for the history database. Use `v4` feature for random UUIDs. Lightweight, no external deps with `v4`. Alternative: use SQLite INTEGER PRIMARY KEY AUTOINCREMENT (simpler, avoids the dep). Prefer uuid only if entries need to be referenced across processes (e.g., MCP tool responses). |
 
-### Development Tools
+### Existing Dependencies Now Active (Already in Workspace)
 
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| `cargo clippy` | Lint enforcement | Run with `--all-targets --all-features -- -D warnings` in CI. Catches common Rust pitfalls early. |
-| `cargo fmt` | Code formatting | `edition = "2021"` formatting. Enforce in CI with `--check`. |
-| `cargo nextest` | Faster test runner | Parallel test execution; significantly faster than `cargo test` for workspace-wide runs. Install: `cargo install cargo-nextest`. |
-| `wgpu`'s `WGPU_BACKEND` env var | Force specific GPU backend during development | Set `WGPU_BACKEND=dx12` to force DX12, `vulkan` for Vulkan. Useful for comparing backends on Windows. |
-| `RUST_LOG=trace` / `tracing-subscriber` | Runtime log filtering | Combine with `tracing` crate. Use `EnvFilter` to scope per-crate without recompiling. |
+These were already declared in the workspace Cargo.toml but were unused stubs. They now become active:
 
----
-
-## Workspace Structure
-
-```
-glass/
-  Cargo.toml              # workspace root, resolver = "3"
-  crates/
-    glass_core/           # shared types: Event, Config, BlockId, etc.
-    glass_terminal/       # alacritty_terminal integration, PTY spawning, VTE grid
-    glass_renderer/       # wgpu surface, glyphon text, cell grid rendering
-    glass_history/        # stub — SQLite scrollback (Phase 2)
-    glass_snapshot/       # stub — filesystem snapshots (Phase 3)
-    glass_pipes/          # stub — pipe visualization (Phase 4)
-    glass_mcp/            # stub — MCP server (Phase 2)
-  src/
-    main.rs               # winit ApplicationHandler, top-level event loop
-```
-
-**Why this structure:** Dependency boundaries prevent circular imports. `glass_renderer` depends on `glass_core` but NOT `glass_terminal` — the renderer receives pre-processed cell data, not raw PTY bytes. `glass_terminal` owns the `alacritty_terminal::Term` and converts grid cells to a renderer-facing `ScreenFrame` type.
+| Library | Version | Crate Using It | Notes |
+|---------|---------|----------------|-------|
+| rusqlite | 0.38.0 | glass_history | Was listed as stub dep. Now primary database layer. No version change needed. |
+| tokio | 1.50.0 | glass_history, glass_mcp | Already active in v1.0. glass_mcp uses it for async MCP transport. glass_history uses `spawn_blocking` for DB access. |
+| serde | 1.0.228 | glass_history, glass_mcp | Already active in v1.0. Now also used for history record serialization. |
+| tracing | 0.1.44 | glass_history, glass_mcp | Already active. Critical: MCP stdio servers must NEVER use println! (corrupts JSON-RPC). All output goes through tracing to stderr. |
+| anyhow | 1.0.102 | glass_history, glass_mcp | Already active. Error propagation in new crates. |
 
 ---
 
 ## Installation
 
+### Add to `[workspace.dependencies]` in root Cargo.toml
+
 ```toml
-# Cargo.toml (workspace root)
-[workspace]
-resolver = "3"
-members = ["crates/*"]
+# v1.1: History + MCP (NEW)
+rmcp          = { version = "1.1", features = ["server", "transport-io", "macros", "schemars"] }
+clap          = { version = "4.5", features = ["derive"] }
+schemars      = "1.0"
+chrono        = { version = "0.4", features = ["serde"] }
+serde_json    = "1.0"
+```
 
-[workspace.dependencies]
-# Core rendering
-wgpu          = "28.0.0"
-winit         = "0.30.13"
-glyphon       = "0.10.0"
-bytemuck      = { version = "1.25.0", features = ["derive"] }
-pollster      = "0.4.0"
+### No Change Needed for Existing Entries
 
-# Terminal emulation
-alacritty_terminal = "0.25.1"
-tokio         = { version = "1.50.0", features = ["full"] }
-
-# Config
-serde         = { version = "1.0.228", features = ["derive"] }
-toml          = "1.0.4"
-
-# Utilities
-anyhow        = "1.0.102"
-tracing       = "0.1.44"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-notify        = "8.2.0"
-
-# Phase 2 (stub crate, add when ready)
+```toml
+# Already present -- no modifications required
 rusqlite      = { version = "0.38.0", features = ["bundled"] }
+tokio         = { version = "1.50.0", features = ["full"] }
+serde         = { version = "1.0.228", features = ["derive"] }
+```
+
+The `bundled` feature already enables FTS5 at the SQLite compile level. Do NOT add `bundled-full` unless you need extra SQLite features like `serialize` or `column_decltype` -- `bundled` alone provides FTS5, WAL mode, and everything needed for a history database.
+
+### Per-Crate Dependencies
+
+**glass_history/Cargo.toml:**
+```toml
+[dependencies]
+rusqlite.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+```
+
+**glass_mcp/Cargo.toml:**
+```toml
+[dependencies]
+glass_history = { path = "../glass_history" }
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+```
+
+**Root binary (glass/Cargo.toml) additions:**
+```toml
+[dependencies]
+# Add to existing dependencies
+clap.workspace = true
+glass_history = { path = "crates/glass_history" }
+glass_mcp     = { path = "crates/glass_mcp" }
 ```
 
 ---
 
-## Critical Integration Notes
+## Architecture Integration Notes
 
-### winit 0.30 + wgpu 28: The Async Init Pattern
+### SQLite Threading Model
 
-winit 0.30 uses a trait-based `ApplicationHandler` where event methods are synchronous. wgpu's `request_adapter()` and `request_device()` are async. The established pattern (confirmed by community consensus, 2024-2025):
+rusqlite::Connection is `Send` but not `Sync`. Two viable patterns for tokio integration:
 
+**Pattern A: Dedicated thread + channel (RECOMMENDED)**
 ```rust
-// In ApplicationHandler::resumed():
-fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-    let window = Arc::new(event_loop.create_window(WindowAttributes::default()).unwrap());
-    let state = pollster::block_on(GpuState::new(Arc::clone(&window)));
-    self.state = Some(state);
-}
+// Matches existing PTY reader thread architecture
+let (tx, rx) = tokio::sync::mpsc::channel(64);
+std::thread::spawn(move || {
+    let conn = Connection::open("~/.glass/history.db").unwrap();
+    // Own the Connection, recv query/insert commands via channel
+    while let Some(cmd) = rx.blocking_recv() {
+        match cmd { /* execute SQL, send results back via oneshot */ }
+    }
+});
 ```
 
-Do NOT attempt to make the event loop async — winit's designers have explicitly stated it will not become async. `pollster::block_on` is the correct pattern. The GPU init happens once at startup; the blocking is acceptable.
+This is preferred because it mirrors the existing dedicated PTY reader thread pattern and avoids Mutex contention between the renderer loop and history writes.
 
-### alacritty_terminal ConPTY on Windows
-
-Verified (crates.io dependency metadata for 0.25.1): `alacritty_terminal` uses `windows-sys ^0.59.0` with `Win32_System_Console` features, plus `miow ^0.6.0` for Windows pipe I/O. The `Pty` abstraction in `alacritty_terminal::tty` provides platform-specific backends — on Windows this wraps ConPTY via the Win32 Console APIs.
-
-**Important caveat:** Alacritty's ConPTY uses ConHost (not OpenConsole). This is the same ConPTY used by older Windows Terminal builds. It is functional and production-grade but may have slightly higher latency than OpenConsole's implementation. For Milestone 1 this is acceptable; revisit if input latency testing shows issues.
-
-**Spawning pattern:**
+**Pattern B: Mutex + spawn_blocking**
 ```rust
-use alacritty_terminal::tty::{self, Options as TtyOptions};
-use alacritty_terminal::event_loop::EventLoop;
-use alacritty_terminal::term::Term;
-use alacritty_terminal::sync::FairMutex;
-
-let pty_options = TtyOptions {
-    shell: Some(Program::WithArgs { program: "pwsh".into(), args: vec![] }),
-    working_directory: None,
-    hold: false,
-};
-let pty = tty::new(&pty_options, size_info, None).unwrap();
+let db = Arc::new(tokio::sync::Mutex::new(conn));
+tokio::task::spawn_blocking(move || {
+    let conn = db.blocking_lock();
+    conn.execute(...);
+});
 ```
 
-### Font Rendering Pipeline
+Simpler but risks blocking the tokio runtime if many queries queue up. Use only for the CLI query interface where there is no render loop contention.
 
-The rendering pipeline for a monospace terminal grid:
+### MCP Server: Separate Entry Point, Same Binary
+
+rmcp's stdio transport reads from stdin and writes to stdout. The MCP server CANNOT run in the same process instance as the terminal emulator (which owns stdin/stdout for the PTY). The solution:
 
 ```
-FontSystem (cosmic-text)
-    ├── Loads system fonts + any bundled fonts
-    ├── Resolves font family + fallback chain per cell character
-    └── SwashCache → rasterizes glyphs to pixel masks
-
-TextAtlas (glyphon)
-    └── Packs rasterized glyphs into a GPU texture atlas (via etagere)
-
-TextRenderer (glyphon)
-    └── Each frame: build TextArea list from terminal grid cells
-        → upload changed glyph data to atlas
-        → record render pass commands (single draw call for all text)
-
-wgpu RenderPass
-    └── Executes: background quads (cell backgrounds) + text pass (glyphon)
+glass                      # Launch terminal emulator (default, no clap)
+glass history search "X"   # CLI query, reads DB directly, exits
+glass history list         # List recent commands, exits
+glass mcp serve            # Start MCP server on stdio, blocks until client disconnects
 ```
 
-For terminal use, each cell in the `Grid<Cell>` maps to a fixed-size rect. Glyphon's `TextArea` API takes a position + `Buffer` (cosmic-text layout object). The efficient approach is to use one `Buffer` per cell character (or per line), not one giant buffer for the whole screen — this allows dirty-cell tracking to skip re-layout for unchanged cells.
+The MCP client (Claude Desktop, etc.) spawns `glass mcp serve` as a child process. The MCP server opens the same SQLite database file as the terminal emulator. SQLite's WAL mode allows concurrent readers, so the MCP server can query while the terminal writes.
 
-### Shell Integration: OSC 133 Sequences
+**rmcp server setup:**
+```rust
+use rmcp::{ServiceExt, transport::io::stdio};
 
-Verified via Microsoft Learn (Windows Terminal documentation). The standard protocol uses FTCS (Final Term Command Sequences) via OSC 133:
+let service = GlassMcpServer::new(db_path);
+let transport = stdio();
+let server = service.serve(transport).await?;
+server.waiting().await?;
+```
 
-| Sequence | Meaning | When |
-|----------|---------|------|
-| `OSC 133 ; A ST` | Prompt start | Before prompt text |
-| `OSC 133 ; B ST` | Command start | After prompt, before user types |
-| `OSC 133 ; C ST` | Command executed | After Enter, before output |
-| `OSC 133 ; D ; <exit_code> ST` | Command finished | After output, before next prompt |
-| `OSC 9 ; 9 ; "<path>" ST` | CWD notification | Inside prompt function |
+**Critical: no stdout in MCP mode.** The `tracing-subscriber` must be configured to write to stderr (or a file) when running as MCP server. Any stdout output corrupts the JSON-RPC stream.
 
-Glass must parse these sequences out of the VTE stream (they pass through `alacritty_terminal` as unrecognized OSC sequences and can be intercepted via the `EventListener` trait). The PowerShell integration requires injecting a custom `prompt` function into the user's PowerShell profile or auto-injecting via `$PROFILE` — the exact prompt code is documented in Microsoft Learn.
+### FTS5 Schema Design
 
-**PowerShell hook mechanism:** Override the `prompt {}` function. No native `preexec` exists in PowerShell; command start/end detection relies on `Get-History -Count 1` comparisons inside the prompt function. This is the same approach used by Windows Terminal, WezTerm, and Starship.
+FTS5 is a SQLite virtual table extension. No Rust-side feature flags needed beyond `bundled`. Usage is pure SQL:
 
-**Bash hook mechanism:** `PROMPT_COMMAND` + `PS0` variable (available in bash 4.4+, which covers Git Bash on Windows). `PS0` fires before command execution (gives `OSC 133;C`), `PROMPT_COMMAND` fires before each prompt render (gives `OSC 133;D` with exit code).
+```sql
+-- Main history table
+CREATE TABLE commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command TEXT NOT NULL,
+    output TEXT,
+    cwd TEXT,
+    exit_code INTEGER,
+    duration_ms INTEGER,
+    started_at TEXT NOT NULL,  -- ISO 8601 via chrono
+    shell TEXT
+);
+
+-- FTS5 virtual table for full-text search
+CREATE VIRTUAL TABLE commands_fts USING fts5(
+    command,
+    output,
+    cwd,
+    content='commands',
+    content_rowid='id'
+);
+
+-- Search query
+SELECT c.* FROM commands c
+JOIN commands_fts f ON c.id = f.rowid
+WHERE commands_fts MATCH ?
+ORDER BY rank
+LIMIT 50;
+```
+
+The `content=` and `content_rowid=` options create an "external content" FTS5 table that shares storage with the main table, avoiding data duplication.
+
+### SQLite WAL Mode for Concurrency
+
+WAL (Write-Ahead Logging) mode is essential because the terminal emulator writes history while the MCP server may be reading concurrently:
+
+```sql
+PRAGMA journal_mode=WAL;
+```
+
+WAL mode allows one writer + multiple concurrent readers. This is supported by SQLite 3.51.1 (bundled version). Set this once at database creation.
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | Why Not |
-|-------------|-------------|---------|
-| `glyphon` | `wgpu_glyph` | `wgpu_glyph` is unmaintained (last commit 2023); pinned to old wgpu versions. Do not use. |
-| `glyphon` | `fontdue` directly | fontdue only rasterizes; no shaping, no atlas management, no wgpu integration. Would require building all of glyphon from scratch. |
-| `glyphon` | `rusttype` / `glyph_brush` | Both deprecated/unmaintained. The ecosystem has moved to cosmic-text + glyphon. |
-| `alacritty_terminal` | Custom VTE parser | VTE is ~5,000 lines of state machine covering 40+ years of terminal escape codes. Do not rebuild this. |
-| `alacritty_terminal` | `vte` crate directly | The `vte` crate is the low-level parser; `alacritty_terminal` builds the full terminal state (grid, cursor, colors, modes) on top of it. Using `vte` directly means writing all of `alacritty_terminal` yourself. |
-| `winit` | `sdl2` | SDL2 requires C bindings and does not integrate with the raw-window-handle ecosystem that wgpu expects. |
-| `winit` | `tao` (Tauri's fork) | tao is maintained for Tauri's needs, not general use. winit 0.30 has caught up on most Windows-specific gaps that drove tao's creation. |
-| `tokio` | `async-std` | Tokio has won the async runtime ecosystem war. alacritty_terminal, hyper, and every major async crate assumes tokio. Use tokio. |
-| `wgpu` | Raw DX12 via `d3d12` crate | Massively more complexity, no cross-platform future, no WebGPU standard compliance. wgpu's DX12 backend is production-quality. |
-| `rusqlite` (bundled) | System libsqlite3 | On Windows, system SQLite is not guaranteed to exist. `bundled` feature statically links SQLite — zero deployment dependency. |
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| rusqlite (direct SQL) | sqlx | Never for this project. sqlx's compile-time query checking does not support FTS5 virtual table syntax. Its async model adds unnecessary complexity for single-file embedded SQLite. |
+| rusqlite (direct SQL) | diesel | Never. Diesel's ORM layer fights FTS5 MATCH queries and rank functions. Massive compile-time cost for zero benefit on an embedded database. |
+| rusqlite (direct SQL) | sea-orm | Never. Same ORM-vs-FTS5 impedance mismatch as diesel. |
+| rmcp (official SDK) | rust-mcp-sdk | Only if you need backward compat with older MCP spec versions (2024-11-05). rmcp tracks the latest spec (2025-11-25) and has the best macro ergonomics. |
+| rmcp (official SDK) | Hand-rolled JSON-RPC | Only if you need absolute minimal dependencies. Not worth the maintenance burden of tracking MCP spec changes manually. |
+| clap (derive) | argh | Only if binary size matters. Glass is already 80MB+ with GPU drivers, so clap's ~200KB is irrelevant. clap has vastly better documentation and ecosystem. |
+| chrono | time crate | Only if you want fewer transitive dependencies. chrono is already pulled by rmcp, so adding it costs nothing. Its formatting API (`%Y-%m-%d %H:%M:%S`) is more ergonomic. |
+| Dedicated DB thread | tokio-rusqlite crate | tokio-rusqlite wraps rusqlite in spawn_blocking internally. Using it hides the threading model. The dedicated thread + channel pattern is explicit and matches the existing PTY reader architecture. |
+| SQLite INTEGER PK | uuid crate | Prefer SQLite AUTOINCREMENT for simplicity. Only add uuid if cross-process entry references become necessary (unlikely for v1.1). |
 
 ---
 
@@ -205,75 +230,77 @@ Glass must parse these sequences out of the VTE stream (they pass through `alacr
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `wgpu_glyph` | Unmaintained since 2023, incompatible with wgpu 28 | `glyphon` |
-| `rusttype` | Deprecated; the maintainer recommends cosmic-text | `cosmic-text` (via glyphon) |
-| `glyph_brush` | Built on rusttype; inherits deprecation; no wgpu 28 support | `glyphon` |
-| `openssl` | Massive C dependency, painful on Windows. Not needed for a terminal. | `rustls` if TLS ever needed |
-| `winpty` | Legacy Windows PTY shim for old ConPTY-less systems. Windows 10 1809+ has native ConPTY. Do not add this dependency. | `alacritty_terminal`'s built-in ConPTY support |
-| `nix` crate | Unix-only; causes conditional compilation chaos in a Windows-first project | `windows-sys` directly (or let `alacritty_terminal` handle it) |
-| `log` crate | Fine but `tracing` is strictly better: structured fields, spans, async-aware | `tracing` |
-| `clap` (for now) | No CLI args needed for Milestone 1. Adds compile time. | Add in a future milestone if Glass gets CLI flags |
+| sqlx | Async SQL with compile-time checking. FTS5 virtual tables not supported by sqlx macros. Overkill for single-connection embedded SQLite. | rusqlite with direct SQL |
+| diesel | Heavy ORM. FTS5 queries require raw SQL escapes. Massive compile cost. | rusqlite with direct SQL |
+| jsonrpc crate | Low-level JSON-RPC without MCP protocol awareness. Would require reimplementing tool registration, schema generation, and protocol negotiation from scratch. | rmcp with `transport-io` |
+| r2d2 (connection pool) | SQLite is single-writer. Connection pooling adds complexity without benefit for an embedded database in one process. | Single Connection behind a channel or Mutex |
+| tokio-rusqlite | Abstracts away the threading model. Hides whether spawn_blocking or a dedicated thread is used. Prefer explicit control. | `std::thread::spawn` + channel (matches PTY reader pattern) |
+| schemars 0.8 | rmcp 1.1.0 requires schemars ^1.0. Using 0.8 causes version conflicts. | schemars 1.0 |
+| println! (in MCP server) | Writes to stdout, corrupting the JSON-RPC message stream. The single most common MCP server bug. | tracing macros with stderr subscriber |
 
 ---
 
-## Stack Patterns by Variant
+## Version Compatibility
 
-**If wgpu DX12 init fails at startup:**
-- wgpu automatically falls back to Vulkan, then OpenGL (via ANGLE on Windows)
-- Do not override this — let `Backends::all()` (the default) handle selection
-- Log which backend was selected via `adapter.get_info().backend`
-
-**If a user's GPU does not support wgpu at all:**
-- This is extremely rare on Windows 10/11 (requires very old or broken GPU driver)
-- Do not implement a software fallback for Milestone 1
-- Show an error dialog and exit gracefully
-
-**If ConPTY PTY spawn fails:**
-- Windows 10 builds before 1903 lack stable ConPTY. Target: Windows 10 1903+ minimum.
-- Surface the error to the user with a clear message.
-
-**If glyphon atlas overflows:**
-- `TextAtlas` can grow dynamically but has practical limits
-- For a terminal, glyph count is bounded by the character set × style combinations used
-- A typical 256-color terminal session fits comfortably in a 1024×1024 atlas
+| Package | Compatible With | Notes |
+|---------|-----------------|-------|
+| rmcp 1.1 | tokio 1.x | Uses tokio for async transport. Compatible with workspace tokio 1.50.0. |
+| rmcp 1.1 | serde 1.x | Uses serde for JSON-RPC serialization. Compatible with workspace serde 1.0.228. |
+| rmcp 1.1 | schemars ^1.0 | Must use schemars 1.0+, not 0.8. This is a hard requirement. |
+| rmcp 1.1 | chrono 0.4.x | Transitive dependency. Compatible with explicit chrono 0.4.43. |
+| rusqlite 0.38 | SQLite 3.51.1 | Bundled version. FTS5 + WAL mode enabled at compile time. |
+| clap 4.5 | serde 1.x | Optional serde integration via `serde` feature if needed. |
+| chrono 0.4 | serde 1.x | With `serde` feature for serializable timestamps. |
 
 ---
 
-## Version Compatibility Matrix
+## Dependency Impact Assessment
 
-| Package | Version | Compatible With | Notes |
-|---------|---------|-----------------|-------|
-| `glyphon` | 0.10.0 | `wgpu ^28.0.0`, `cosmic-text ^0.15` | This is the exact version alignment. Do not mix glyphon versions with different wgpu. |
-| `winit` | 0.30.13 | `wgpu 28.0.0` (via `raw-window-handle` 0.6) | wgpu 28 uses `raw-window-handle` 0.6; winit 0.30 provides it. Compatible. |
-| `wgpu` | 28.0.0 | `winit 0.30.x`, `glyphon 0.10.0`, `bytemuck 1.x` | No winit dependency in wgpu itself — integration is via `raw-window-handle` trait, not a direct dep. |
-| `alacritty_terminal` | 0.25.1 | `tokio 1.x`, `windows-sys 0.59` | No wgpu/winit dependency — it's a pure terminal state machine + PTY layer. |
-| `rusqlite` | 0.38.0 | `bundled` feature = SQLite 3.47+ | Verify bundled SQLite version is acceptable for WAL mode (Phase 2 requirement). |
-| `toml` | 1.0.4 | `serde 1.x` | Requires serde `Deserialize` derive. Both stable. |
+### Compile Time Impact
+
+| Dependency | Estimated Impact | Mitigation |
+|------------|-----------------|------------|
+| rmcp 1.1 | MODERATE -- pulls in futures, tokio-util, schemars, chrono | Already shares tokio and serde with workspace. Incremental builds unaffected after first compile. |
+| clap 4.5 (derive) | LOW-MODERATE -- proc macro compilation | One-time cost. Derive macro runs at compile time only. |
+| schemars 1.0 | LOW | Small crate, derive macro. |
+| rusqlite 0.38 (bundled) | MODERATE -- compiles SQLite C source from scratch on first build | Already in workspace. C compilation cached by cargo. ~30s first build, then cached. |
+
+### Binary Size Impact
+
+| Dependency | Estimated Size | Notes |
+|------------|---------------|-------|
+| rusqlite + bundled SQLite | ~1.5 MB | SQLite C library statically linked. Acceptable for a desktop app. |
+| rmcp | ~500 KB | JSON-RPC protocol, tool system. |
+| clap | ~200 KB | CLI parsing. Minimal for a desktop app. |
+| Total v1.1 addition | ~2.2 MB | Negligible compared to existing ~80MB GPU driver overhead. |
+
+### Runtime Memory Impact
+
+| Component | Estimated Memory | Notes |
+|-----------|-----------------|-------|
+| SQLite connection | ~2-5 MB | Depends on page cache size. Default 2MB cache. |
+| FTS5 index | Proportional to data | ~30% of indexed text size for the FTS index. |
+| MCP server | ~1-2 MB | JSON-RPC buffers, tool registry. Only when `glass mcp serve` is running. |
+| Search overlay UI | ~1 MB | Search results buffer, rendered text. |
+
+Total estimated memory increase: ~5-10 MB on top of current ~86 MB idle. Well within the <120 MB constraint.
 
 ---
 
 ## Sources
 
-- **crates.io API** — Version verification for all crates listed above (fetched 2026-03-04):
-  - `alacritty_terminal` 0.25.1: https://crates.io/api/v1/crates/alacritty_terminal
-  - `wgpu` 28.0.0: https://crates.io/api/v1/crates/wgpu
-  - `winit` 0.30.13: https://crates.io/api/v1/crates/winit
-  - `glyphon` 0.10.0: https://crates.io/api/v1/crates/glyphon
-  - `cosmic-text` 0.18.2 (crates.io), 0.15.x (glyphon-required): https://crates.io/api/v1/crates/cosmic-text
-  - `tokio` 1.50.0: https://crates.io/api/v1/crates/tokio
-  - `notify` 8.2.0: https://crates.io/api/v1/crates/notify
-  - `rusqlite` 0.38.0: https://crates.io/api/v1/crates/rusqlite
-  - `pollster` 0.4.0: https://crates.io/api/v1/crates/pollster
-  - `anyhow` 1.0.102, `tracing` 0.1.44, `bytemuck` 1.25.0, `toml` 1.0.4, `serde` 1.0.228
-- **glyphon dependency manifest** (verified): glyphon 0.10.0 requires `wgpu ^28.0.0` and `cosmic-text ^0.15` — https://crates.io/api/v1/crates/glyphon/0.10.0/dependencies
-- **alacritty_terminal Windows deps** (verified): uses `windows-sys ^0.59`, `miow ^0.6`, `Win32_System_Console` — https://crates.io/api/v1/crates/alacritty_terminal/0.25.1/dependencies
-- **glyphon GitHub**: https://github.com/grovesNL/glyphon — architecture confirmed (cosmic-text + etagere + wgpu pipeline)
-- **cosmic-term** (reference implementation using this exact stack): https://github.com/pop-os/cosmic-term
-- **winit + wgpu async init pattern** (community consensus, 2024-2025): https://users.rust-lang.org/t/how-to-integrate-winit-0-30-with-async/133747
-- **Shell integration OSC 133 sequences** (Microsoft official docs): https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration
-- **wgpu Windows backend docs**: https://docs.rs/wgpu/latest/wgpu/struct.Backends.html
-- **wgpu releases** (DX12 transparency support in v27, v28 latest): https://github.com/gfx-rs/wgpu/releases
+- [rusqlite GitHub](https://github.com/rusqlite/rusqlite) -- verified FTS5 enabled unconditionally in bundled build via `build.rs` (`-DSQLITE_ENABLE_FTS5`)
+- [rusqlite libsqlite3-sys build.rs](https://github.com/rusqlite/rusqlite/blob/master/libsqlite3-sys/build.rs) -- confirmed FTS5 flag is unconditional in bundled builds
+- [rusqlite feature flags](https://docs.rs/crate/rusqlite/latest/features) -- 45 feature flags, `bundled` includes `modern_sqlite`, no separate FTS5 flag exists
+- [rmcp docs.rs v1.1.0](https://docs.rs/crate/rmcp/latest) -- released 2026-03-04, features: server (default), transport-io, macros (default), schemars
+- [MCP Rust SDK GitHub](https://github.com/modelcontextprotocol/rust-sdk) -- official SDK, server + transport-io + macros pattern, schemars ^1.0 dependency
+- [rmcp tool macros guide](https://hackmd.io/@Hamze/S1tlKZP0kx) -- #[tool], #[tool_box], schemars integration, parameter schema generation
+- [MCP stdio server in Rust](https://www.shuttle.dev/blog/2025/07/18/how-to-build-a-stdio-mcp-server-in-rust) -- critical warning: never use println! in stdio MCP servers
+- [clap docs.rs v4.5.60](https://docs.rs/crate/clap/latest) -- latest stable, derive API for subcommands
+- [serde_json docs.rs v1.0.149](https://docs.rs/crate/serde_json/latest) -- latest stable
+- [chrono docs.rs v0.4.43](https://docs.rs/crate/chrono/latest) -- latest stable, released 2026-01-14
+- [SQLite FTS5 documentation](https://sqlite.org/fts5.html) -- external content tables, MATCH syntax, rank function
 
 ---
-*Stack research for: Glass — Rust GPU-accelerated terminal emulator (Windows-first)*
-*Researched: 2026-03-04*
+*Stack research for: Glass v1.1 Structured Scrollback + MCP Server*
+*Researched: 2026-03-05*

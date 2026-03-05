@@ -1,378 +1,311 @@
-# Pitfalls Research
+# Domain Pitfalls: v1.1 Structured Scrollback + MCP Server
 
-**Domain:** Rust GPU-accelerated terminal emulator (Windows-first, wgpu + alacritty_terminal + ConPTY)
-**Researched:** 2026-03-04
-**Confidence:** HIGH (ConPTY, wgpu resize, winit migration), MEDIUM (font rendering, shell integration), LOW (alacritty_terminal API stability guarantees)
+**Domain:** Adding SQLite history, FTS5 search, MCP server, search overlay UI, and CLI query to existing Rust GPU-accelerated terminal emulator
+**Researched:** 2026-03-05
+**Applies to:** Glass v1.1 milestone
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: ConPTY Rewrites Escape Sequences In Transit
+Mistakes that cause rewrites, data corruption, or fundamental architecture breakage.
 
-**What goes wrong:**
-ConPTY is not a transparent byte pipe. It parses incoming VT sequences, applies them to a Win32 screen buffer, then re-serializes that buffer back as VT sequences. This round-trip is lossy. Known concrete behaviors:
-- `ESC[49m` (default background) and `ESC[39m` (default foreground) get translated to `ESC[m` (full reset), blowing away other attributes.
-- Curly-underline sequences are stripped entirely.
-- Control sequences in window title OSC payloads are left unfiltered in older ConPTY versions, causing downstream parse failures.
-- Keyboard input sequences are also rewritten: `ESC[5D` (Ctrl+Left in some encodings) becomes `ESC[D` (plain left-arrow), breaking word navigation until `ENABLE_VIRTUAL_TERMINAL_INPUT` mode is activated.
-- OSC sequences from the hosted process can arrive out-of-order in third-party terminals because ConPTY injects its own OSC codes (title changes, mode changes) into the same stream.
+### Pitfall 1: SQLite Connection Sharing Across Threads Causes Deadlocks or Corruption
 
-**Why it happens:**
-ConPTY was designed as a compatibility shim for legacy Win32 console applications, not as a transparent VT proxy. The intermediate Win32 screen buffer introduces an irreversible normalization step. The rewriting is intentional for legacy compatibility, not a bug that will be fixed.
+**What goes wrong:** Sharing a single `rusqlite::Connection` across the PTY reader thread, winit main thread, MCP server thread, and CLI process. SQLite connections are not `Send` in rusqlite by default. Even with `unsafe` workarounds, concurrent writes from multiple threads on a single connection corrupt state.
 
-**How to avoid:**
-- Enable `ENABLE_VIRTUAL_TERMINAL_INPUT` on the ConPTY input side immediately after creation so keyboard sequences pass through unmodified.
-- Never assume the byte stream from ConPTY's output side is identical to what the child process wrote. Treat it as semantically equivalent but syntactically re-encoded.
-- Do not rely on distinguishing `ESC[49m` from `ESC[m` for background-color-only resets — ConPTY will collapse them.
-- For curly underlines and other modern sequences, document the limitation or route around ConPTY using WSL for those sessions.
-- Use `portable-pty` (from WezTerm) rather than hand-rolling ConPTY calls — it handles the `ENABLE_VIRTUAL_TERMINAL_INPUT` flag and process lifecycle correctly on Windows.
+**Why it happens:** Glass already has 3 threads (winit main, PTY reader, git query). Adding SQLite history writes (from PTY reader or main thread), MCP server reads (from a new thread/process), and CLI reads (from a separate process) creates 4-5 concurrent access points. Developers assume WAL mode "just works" for concurrent access without understanding the single-writer constraint.
 
-**Warning signs:**
-- Colors reset unexpectedly when only background should change.
-- Word-jump keyboard shortcuts (Ctrl+Arrow) move one character instead of one word.
-- Underline styling works on Linux/WSL but not native Windows shells.
-- Window title flickers to unrelated values mid-output.
+**Consequences:** `SQLITE_BUSY` errors silently dropping command history. Deadlocks between the PTY reader thread waiting for a DB write lock and the main thread holding a read transaction. CLI queries timing out while the terminal is running. In the worst case, database corruption from unserialized writes.
 
-**Phase to address:** Phase 0 (scaffold) — test ConPTY output passthrough with a known escape-sequence fixture before building any rendering on top of it.
+**Prevention:**
+- Use **one connection per thread**, never share a `Connection` across threads. The PTY reader thread gets a dedicated write connection. The winit main thread gets a read-only connection for search overlay queries. The MCP server and CLI each open their own read connections.
+- Enable **WAL mode** on the database at creation time: `PRAGMA journal_mode=WAL;`. WAL allows unlimited concurrent readers while one writer proceeds without blocking readers.
+- Set **`busy_timeout`** to at least 5000ms on all connections: `conn.busy_timeout(Duration::from_millis(5000))?;`. This prevents `SQLITE_BUSY` errors from killing writes when the CLI or MCP server holds a brief read lock.
+- Use **`BEGIN IMMEDIATE`** for write transactions so the writer grabs the lock upfront rather than failing mid-transaction. rusqlite's default `transaction()` uses `DEFERRED`, which can deadlock if a read transaction later tries to write.
+- The CLI binary should open its own connection to the same database file. WAL mode specifically supports this pattern -- multiple processes reading while one writes.
+
+**Detection:** Unit tests that open 3+ connections concurrently and hammer reads/writes. If any test gets `SQLITE_BUSY` with a 5-second timeout, the architecture is wrong. Log every `SQLITE_BUSY` error at WARN level in production.
+
+**Phase:** Must be addressed in the very first phase (SQLite schema + write path). Getting this wrong poisons everything built on top.
 
 ---
 
-### Pitfall 2: alacritty_terminal Has No Stable Embedding API
+### Pitfall 2: Output Capture Killing PTY Throughput
 
-**What goes wrong:**
-The `alacritty_terminal` crate is published on crates.io but is the internal library of the Alacritty binary, not a versioned public API. Breaking changes ship with every Alacritty release (the crate is at version 0.25+ and tracks Alacritty's version number). There is no semver stability promise, no deprecation cycle, and no migration guide aimed at embedders. Fields, traits, and module paths change without announcement.
+**What goes wrong:** Intercepting PTY output for SQLite storage adds latency to the PTY read loop, causing visible lag during high-throughput commands like `cat large_file`, `cargo build` (verbose), or `find /`.
 
-**Why it happens:**
-Alacritty maintainers have explicitly stated the crate exists for their own binary and not for third-party use. The project ships it on crates.io as a byproduct of workspace structure, not as a supported library.
+**Why it happens:** Glass's PTY reader thread (`glass_pty_loop` in `pty.rs`) already does OscScanner pre-scanning before feeding bytes to the VTE parser. Adding SQLite writes to this hot path -- even buffered -- introduces blocking I/O in a tight read loop that currently processes up to 1MB (`READ_BUFFER_SIZE = 0x10_0000`) per iteration.
 
-**How to avoid:**
-- Pin the exact version in `Cargo.toml` (`= "0.25.x"`) rather than using `^` or `~` range specifiers.
-- Treat `alacritty_terminal` as vendored source: read the code, do not expect API stability, and budget time for version-bump migrations.
-- Isolate all `alacritty_terminal` types behind a `glass_terminal` crate boundary. The rest of the workspace should never import `alacritty_terminal` directly — only `glass_terminal` does. This makes future migrations to a different VTE backend (e.g., raw `vte` crate) a single-crate change.
-- Monitor the `alacritty/alacritty` GitHub releases page before upgrading dependencies.
+**Consequences:** Terminal throughput drops from megabytes/second to kilobytes/second during bulk output. Users see visible pause/stutter during `git log`, build output, or any command producing >100KB of output. This is the most user-visible regression possible.
 
-**Warning signs:**
-- Cargo fails to compile after a `cargo update` due to type mismatches in `alacritty_terminal`.
-- Methods referenced in integration code disappear without explanation in changelogs.
+**Prevention:**
+- **Never write to SQLite from the PTY reader thread directly.** The PTY reader thread must remain a pure read-parse-scan loop. Instead, send output chunks to a bounded async channel (`tokio::sync::mpsc`) that a dedicated writer task drains.
+- **Buffer output aggressively.** Accumulate command output in memory (bounded at e.g. 1MB per command), and flush to SQLite only when a command completes (OSC 133;D received). This means the PTY reader only appends to an in-memory `Vec<u8>` -- zero syscalls, zero blocking.
+- **Truncate captured output.** Set a per-command output capture limit (e.g. 512KB or 1MB). Commands producing more output than the limit get the first N bytes + a truncation marker. This prevents `cat /dev/urandom | head -c 1G` from consuming all RAM.
+- **Benchmark the hot path.** Measure PTY throughput (`cat /dev/zero | head -c 100M`) before and after adding capture. Any regression >5% means the capture path is too coupled to the read loop.
 
-**Phase to address:** Phase 0 (scaffold) — establish the `glass_terminal` isolation wrapper before writing any VTE integration logic.
+**Detection:** Run `vtebench` or a simple throughput test (`time cat large_file`) and compare against v1.0 baseline. The numbers should be indistinguishable.
+
+**Phase:** Must be designed correctly in the output capture phase, before FTS5 indexing is added. The buffering strategy is the foundation.
 
 ---
 
-### Pitfall 3: wgpu Surface Resize Causes Flickering and Hangs on Windows
+### Pitfall 3: FTS5 External Content Table Sync Corruption
 
-**What goes wrong:**
-Resizing a wgpu surface on Windows with Vulkan or DX12 backends exhibits two documented failure modes:
-1. **Visual artifacts**: white rectangles appear underneath the window during drag-resize with both backends.
-2. **Application hangs**: calling `surface.configure()` during resize can block for 100–150ms on Vulkan, making the window unresponsive during fast drag operations.
+**What goes wrong:** Using FTS5 with an external content table (to avoid duplicating output text) but getting the trigger-based sync wrong, leading to stale or corrupted search indices where searches miss results or return phantom matches.
 
-**Why it happens:**
-The wgpu surface resize path calls into swapchain recreation, which synchronizes with the GPU pipeline. On Windows, the DWM compositing window manager creates an impedance mismatch: the window has already been resized by the OS before wgpu has reconfigured the swapchain, leaving a gap where the old swapchain is invalid but the new one isn't ready.
+**Why it happens:** FTS5 external content tables require precise trigger definitions. The `DELETE` operation must use the special `INSERT INTO fts_table(fts_table, rowid, ...) VALUES('delete', old.rowid, old.content)` syntax. Standard `DELETE FROM fts_table WHERE rowid = old.rowid` does not work and silently corrupts the index. Additionally, `UPDATE` triggers must perform a delete-then-insert, not just an insert.
 
-**How to avoid:**
-- Handle `wgpu::SurfaceError::Outdated` and `wgpu::SurfaceError::Lost` gracefully — these are not fatal, just signals to reconfigure.
-- Debounce resize events: do not call `surface.configure()` on every resize event during a drag; coalesce into the next frame render.
-- On Windows, prefer DX12 over Vulkan as the primary backend. DX12 has fewer resize hang incidents than Vulkan in the wgpu issue tracker. Let wgpu's default auto-selection choose DX12 first on Windows — do not force Vulkan.
-- Implement a minimum redraw interval (one frame at 60fps = ~16ms) so resize events that arrive faster than the GPU can reconfigure are dropped.
-- Keep a "last known good size" and skip rendering frames where surface configuration fails, rendering nothing rather than crashing.
+**Consequences:** Search returns results for deleted commands. Search misses recently added commands. `PRAGMA integrity_check` passes but `INSERT INTO fts_table(fts_table) VALUES('integrity-check')` fails. Requires full rebuild of the FTS index.
 
-**Warning signs:**
-- White flash during window drag-resize in development.
-- Frame time spikes to >100ms when the user resizes the window.
-- Panic at `surface.get_current_texture()` returning `SurfaceError::Lost`.
+**Prevention:**
+- **Use a content table (not external content) for the first implementation.** Let FTS5 manage its own copy of the indexed text. The storage overhead is acceptable for terminal output (typically <100MB even after months of use). External content tables are an optimization to add later if storage becomes a concern.
+- If using external content tables: write the triggers exactly per the SQLite FTS5 documentation, including the `VALUES('delete', ...)` syntax. Test with a sequence of INSERT, UPDATE, DELETE on the content table and verify the FTS index matches with `INSERT INTO fts_table(fts_table) VALUES('integrity-check')`.
+- **Run FTS integrity check on startup.** If it fails, rebuild the index (`INSERT INTO fts_table(fts_table) VALUES('rebuild')`). This self-heals from any corruption transparently.
 
-**Phase to address:** Phase 0 (scaffold) — implement resize handling correctly from the first wgpu surface creation, before any terminal content is rendered.
+**Detection:** Integration test that inserts 100 commands, deletes 50, updates 25, then runs the FTS5 integrity check. If the check fails, the trigger definitions are wrong.
+
+**Phase:** Addressed when FTS5 indexing is implemented, after the base schema.
 
 ---
 
-### Pitfall 4: winit 0.30 ApplicationHandler API Is a Complete Rewrite
+### Pitfall 4: MCP Server stdout Corruption from Logging
 
-**What goes wrong:**
-winit 0.30 replaced the closure-based `EventLoop::run(|event, target| {...})` pattern with a trait-based `ApplicationHandler` that must be implemented on application state. All tutorials, examples, and Stack Overflow answers prior to 2024 use the old API, which no longer compiles. Additionally, `WindowBuilder` is deprecated. Window creation must now happen exclusively inside `can_create_surfaces()` / `resumed()` callbacks for portability with Android — creating a window before this callback is called panics on some platforms.
+**What goes wrong:** The MCP server process writes log messages, debug output, or panic traces to stdout, corrupting the JSON-RPC message stream. The MCP client (Claude, Cursor, etc.) receives malformed JSON and disconnects.
 
-**Why it happens:**
-The API redesign (tracking issue #3367) was driven by Android lifecycle requirements, where surfaces can be created and destroyed mid-session. The new model correctly represents this lifecycle, but the migration is non-trivial and all prior examples are broken.
+**Why it happens:** Rust's default panic handler writes to stderr (safe), but `println!()` writes to stdout. The `tracing` crate defaults to stdout. Any dependency that uses `println!()` or `print!()` will corrupt the MCP protocol stream. The MCP protocol specification is strict: "the server MUST NOT write anything to stdout that is not a valid MCP message."
 
-**How to avoid:**
-- Use the winit changelog (`docs.rs/winit/latest/winit/changelog/`) as the authoritative migration reference, not tutorials.
-- Implement `ApplicationHandler` on a newtype that holds all application state (PTY handle, wgpu device, window handle, etc.).
-- Create the `wgpu::Surface` only inside `can_create_surfaces()` — not in `main()`.
-- Store `Arc<Window>` in application state to avoid lifetime fights with `wgpu::Surface<'static>`.
+**Consequences:** MCP client immediately disconnects on receiving non-JSON data. The error is intermittent (only when a log line or panic happens), making it extremely hard to debug. Users see "MCP server disconnected" with no useful error message.
 
-**Warning signs:**
-- Compile errors mentioning `EventLoop::run` signature mismatch or `WindowBuilder` deprecation.
-- Panic on startup with "window created outside of can_create_surfaces".
-- Examples from 2023 docs refuse to compile.
+**Prevention:**
+- **Route ALL logging to stderr in the MCP server binary.** Configure tracing-subscriber with `fmt().with_writer(std::io::stderr)`. This is the single most important line of code in the MCP server.
+- **Set a custom panic hook** that writes to stderr: `std::panic::set_hook(Box::new(|info| eprintln!("{info}")));`
+- **Never use `println!()` in the MCP server crate.** Add a clippy lint: `#![deny(clippy::print_stdout)]` at the crate level.
+- **Run the MCP server as a separate binary**, not embedded in the terminal process. This isolates the stdout concern -- the terminal's stdout is the PTY, while the MCP server's stdout is the JSON-RPC channel. Mixing these in a single process is asking for trouble.
+- **Test with a mock MCP client** that validates every line on stdout is valid JSON-RPC. Any non-JSON line should fail the test.
 
-**Phase to address:** Phase 0 (scaffold) — the winit initialization pattern must be correct before anything else can be built.
+**Detection:** CI test that starts the MCP server, sends a tool call, and asserts every byte on stdout parses as JSON. Fuzzing: feed malformed requests and verify stdout remains clean JSON-RPC.
+
+**Phase:** Must be enforced from the first line of MCP server code. Add the clippy lint and tracing config before writing any tool handlers.
 
 ---
 
-### Pitfall 5: PTY Reader Thread Blocking the Render Thread
+### Pitfall 5: Search Overlay Blocking the Render Loop
 
-**What goes wrong:**
-Reading from a PTY (via `portable-pty` or raw ConPTY handles) is a blocking operation. If PTY reads happen on the main/render thread, the UI freezes whenever the shell produces no output (waiting for next output) or produces a burst (processing backlog). The frame rate drops to zero during blocking reads.
+**What goes wrong:** The search overlay UI (Ctrl+Shift+F) performs SQLite FTS5 queries synchronously in the `window_event` handler or `RedrawRequested` handler, blocking the winit event loop. During a slow query (large history, complex pattern), the terminal freezes -- no input, no output, no redraw.
 
-**Why it happens:**
-Developers new to terminal architecture put PTY I/O in the event loop for simplicity. This works in demos (constant output) but fails in real usage where the shell is often idle.
+**Why it happens:** The winit event loop is single-threaded and synchronous (`ApplicationHandler` methods are not async). The natural impulse is to query SQLite directly when the user types a search term. But FTS5 queries on a large corpus (100K+ commands) can take 50-200ms, and the query runs on every keystroke.
 
-**How to avoid:**
-- Run PTY reads on a dedicated `std::thread::spawn`-ed thread (not a Tokio task — PTY reads are blocking and will stall the Tokio thread pool).
-- The PTY reader thread sends parsed terminal state updates to the render thread via a `std::sync::mpsc` channel or a lock-free ring buffer.
-- The render thread polls the channel during each frame tick and only redraws when new state is available.
-- Keep the channel bounded (e.g., 16 entries) to apply back-pressure if the renderer falls behind.
-- If using Tokio elsewhere in the codebase, use `tokio::task::spawn_blocking` for PTY reads, not `tokio::spawn`.
+**Consequences:** Terminal becomes unresponsive during search. If the user types quickly, queries queue up and the UI freezes for seconds. This is especially bad because the terminal must continue rendering PTY output (commands may still be running) while the search overlay is open.
 
-**Warning signs:**
-- UI freezes when the shell prompt is idle.
-- Frame rate drops to near zero when a command produces large output.
-- Input feels sluggish because the event loop is blocked waiting for PTY bytes.
+**Prevention:**
+- **Run search queries on a background thread/task.** When the user types a search term, debounce for 150ms, then spawn a query on a background thread. Send results back via `EventLoopProxy<AppEvent>` (the same pattern used for git status queries).
+- **Never query SQLite on the winit main thread.** The main thread should only read from an in-memory results cache that the background query thread populates.
+- **Debounce search input.** Don't query on every keystroke. Wait until the user stops typing for 150ms before issuing a query. Cancel in-flight queries when new input arrives.
+- **Limit result count.** `SELECT ... LIMIT 50`. The overlay can only display ~20 results at once; fetching 10,000 matches is wasteful.
+- **Keep a read-only SQLite connection on the search thread** (separate from the write connection on the PTY reader thread). WAL mode ensures this doesn't block writes.
 
-**Phase to address:** Phase 0 (scaffold) — establish the PTY-reader-thread + channel architecture from day one. Retrofitting threading after the render loop is built is painful.
+**Detection:** Open search overlay, type rapidly while a long-running command is producing output. If the terminal output stutters or freezes, the search is blocking the event loop.
+
+**Phase:** Addressed when the search overlay UI is implemented. The async query pattern should be designed alongside the overlay rendering.
 
 ---
 
-### Pitfall 6: Shell Integration Sequences Fragile Under Prompt Customization
+## Moderate Pitfalls
 
-**What goes wrong:**
-OSC 133 shell integration (FinalTerm marks: `A`=prompt start, `B`=command start, `C`=output start, `D`=command end + exit code) breaks when users have heavily customized prompts via Oh My Posh, Starship, or manual `$PROFILE` edits. Specific failure modes:
-- A custom `prompt` function in PowerShell overwrites the hook if integration is injected via profile rather than wrapping the existing function.
-- PSReadLine replaces the prompt machinery in PowerShell, so direct `$PROFILE` mutation races with PSReadLine's own prompt rendering.
-- `OSC 133;D` with exit code must be sent before the prompt renders, not after — getting this order wrong causes incorrect exit-code attribution.
-- Clearing the screen (`clear` / `cls`) causes marks to refer to stale positions, breaking command block detection.
+### Pitfall 6: MCP Server as Embedded Thread vs. Separate Process -- Wrong Choice
 
-**Why it happens:**
-PowerShell's prompt system (unlike bash's `PROMPT_COMMAND`) requires wrapping the `prompt` function rather than appending to a pipeline. Developers who know bash patterns apply them incorrectly to PowerShell, and the integration appears to work in simple prompts but fails with third-party prompt frameworks.
+**What goes wrong:** Embedding the MCP server as a thread inside the Glass terminal process. The MCP client launches the server via `stdio`, expecting to own stdin/stdout of the process. But Glass's main process already uses stdin/stdout for the winit event loop and PTY. There is no clean way to share stdin/stdout between winit and the MCP server in a single process.
 
-**How to avoid:**
-- In PowerShell, wrap the existing `prompt` function: save a reference to `$originalPrompt = Get-Item function:prompt`, then redefine `function prompt { <OSC 133;A>; & $originalPrompt; <OSC 133;B> }`.
-- Send `OSC 133;D;<exitcode>` in a `$PSDefaultParameterValues` or PSReadLine `PreExecution` hook, not in the prompt function itself (which runs after execution).
-- Document that Glass shell integration requires PowerShell 7+ (PSReadLine 2.x hooks are available).
-- Treat screen-clear events (detecting `clear`/`cls` commands) as requiring a full prompt-block reset.
-- Implement a fallback mode: if OSC 133 marks are not received within a timeout after shell startup, fall back to heuristic prompt detection (trailing `$`, `>`, `%` character patterns).
+**Prevention:**
+- **Run the MCP server as a separate binary** (`glass-mcp` or `glass mcp serve`). The MCP client config points to this binary. The binary opens its own SQLite read connection to the Glass history database. It communicates with the terminal (if needed for live context) via a lightweight IPC mechanism (Unix domain socket on Linux, named pipe on Windows) or simply reads from the shared SQLite database.
+- The separate binary is simpler: it only needs `rusqlite` + `rmcp` (the official Rust MCP SDK) + `tokio`. No wgpu, no winit, no alacritty_terminal dependencies. This keeps compile times low and the binary small.
+- Add the `glass-mcp` binary to the workspace `Cargo.toml` as a separate `[[bin]]` target or a dedicated crate.
 
-**Warning signs:**
-- Command blocks don't appear in a session that uses Oh My Posh.
-- Exit codes always show 0 regardless of actual command result.
-- Prompt detection stops working after the user runs `clear`.
-- Block boundaries are misaligned — one block contains output from multiple commands.
+**Detection:** If you find yourself trying to redirect stdin/stdout inside the terminal process to split between MCP and PTY, stop -- you've chosen the wrong architecture.
 
-**Phase to address:** Phase 1 (shell integration) — test against both vanilla PowerShell and Oh My Posh before declaring shell integration complete.
+**Phase:** Architecture decision needed before any MCP code is written.
 
 ---
 
-### Pitfall 7: Font Rendering Atlas Overflow and Glyph Cache Thrashing
+### Pitfall 7: display_offset Hardcoded to 0 Breaks Scrollback Search Navigation
 
-**What goes wrong:**
-GPU text renderers (glyphon, wgpu-text) use texture atlases to cache rasterized glyphs. When the atlas fills up, renderers either:
-1. Stop rendering new glyphs silently (glyphs disappear from output).
-2. Flush and rebuild the entire atlas on every frame when too many unique glyphs are needed.
+**What goes wrong:** The existing `display_offset` is hardcoded to 0 (noted as tech debt). When search finds a result in scrollback history, the UI needs to scroll to that line. But if `display_offset` doesn't work correctly, search results in scrollback are unreachable -- the user sees "3 results" but can't navigate to any of them.
 
-For terminals, this surfaces when:
-- Users paste large amounts of text containing characters outside the ASCII range.
-- The terminal scrollback contains many unique Unicode codepoints (CJK, combining marks, emoji).
-- A command outputs colored emoji in large quantity.
+**Why it happens:** This is pre-existing tech debt from v1.0. The `GridSnapshot` captures `display_offset` from `term.renderable_content().display_offset`, and `BlockManager.visible_blocks()` uses it. But the actual scroll navigation (Shift+PageUp/Down) works through `term.scroll_display()` which does update the offset internally. The "hardcoded to 0" note likely refers to block visibility calculations not accounting for scrollback properly.
 
-**Why it happens:**
-Default atlas sizes (e.g., 1024x1024) are sized for typical GUI text, not terminal scrollback that may contain thousands of unique glyphs. Terminals also render at high frequency compared to static UI, so atlas rebuilds are more costly.
+**Prevention:**
+- **Fix `display_offset` integration before building the search overlay.** The search overlay's "jump to result" feature depends entirely on being able to programmatically scroll the terminal to a specific line in history.
+- Test: scroll up 100 lines with Shift+PageUp, verify `snapshot.display_offset` is non-zero, verify `visible_blocks()` returns blocks from scrollback (not current viewport).
+- The fix likely involves `term.lock().scroll_display(Scroll::Delta(target_offset))` and verifying the snapshot reflects the new offset.
 
-**How to avoid:**
-- Configure glyphon's `TextAtlas` with a larger initial size (2048x2048 or larger) for terminal use.
-- Separate the atlas into two pools: one for monochrome glyphs (ASCII + common Unicode) and one for colored glyphs (emoji). This prevents colored glyphs from evicting monochrome text glyphs.
-- For the on-screen grid (typically 80-220 columns), pre-warm the atlas with the full printable ASCII set at startup. This covers the common case with zero runtime allocation.
-- Implement a least-recently-used eviction policy for the scrollback glyph set, not the on-screen set.
+**Detection:** Manual test: run 200 lines of output, scroll up, check if block separators render correctly in scrollback. If they don't, `display_offset` is broken.
 
-**Warning signs:**
-- Characters disappear after heavy Unicode output.
-- Frame time spikes during paste operations with non-ASCII content.
-- Emoji render as blank squares after a long session.
-
-**Phase to address:** Phase 1 (rendering pipeline) — size atlas correctly from the beginning. Growing it later requires rearchitecting the render pass.
+**Phase:** Must be fixed before or during the search overlay phase. This is a prerequisite.
 
 ---
 
-### Pitfall 8: Wide Character (CJK/Emoji) Cell Width Misalignment
+### Pitfall 8: CLI Binary Database Locking Conflicts
 
-**What goes wrong:**
-Unicode defines "wide" characters (East Asian full-width, CJK, most emoji) as occupying 2 terminal cells. If the terminal grid treats all characters as 1-cell wide:
-- CJK text overwrites adjacent characters.
-- The cursor position drifts right of the visible content.
-- Line-wrap math is wrong, causing garbage output on lines with wide chars.
-- The `unicode-width` crate (which alacritty_terminal uses internally) has its own opinionated table that disagrees with some shells' `wcwidth` implementation on "ambiguous-width" characters.
+**What goes wrong:** The `glass history` CLI binary opens the SQLite database while the terminal is running, and either: (a) the CLI gets `SQLITE_BUSY` and fails, or (b) the CLI's read transaction blocks the terminal's write transactions, causing dropped history entries.
 
-**Why it happens:**
-The terminal grid allocation uses a `columns * rows` Vec of cells. If cell allocation doesn't account for wide characters spanning 2 slots with a "continuation" placeholder in the second slot, the grid corrupts.
+**Why it happens:** Without WAL mode, SQLite uses rollback journaling where readers block writers and vice versa. Even with WAL mode, if the CLI opens a long-running read transaction (e.g., streaming results to a pager), it prevents the WAL from being checkpointed, causing the WAL file to grow unboundedly.
 
-**How to avoid:**
-- Rely on `alacritty_terminal`'s built-in wide-char handling — it implements the placeholder cell model. Do not reimplement this in the renderer.
-- In the renderer, when iterating grid cells, skip cells marked as `Flags::WIDE_CHAR_SPACER` (the second half of a wide character). Render wide chars at double the cell width.
-- Test with `echo "日本語"` and `echo "🦀"` early and verify cursor position after each.
-- Be aware that "ambiguous" Unicode characters (e.g., `★`, `©`) render as different widths in different terminal environments. Match the width used by the child shell's `wcwidth`.
+**Prevention:**
+- **WAL mode is non-negotiable.** Set `PRAGMA journal_mode=WAL` in both the terminal and the CLI.
+- **Set `busy_timeout(5000)` in the CLI** to gracefully wait for any in-progress writes.
+- **Don't hold read transactions open.** The CLI should execute its query, collect results into memory, close the transaction, then format and output. Never pipe a live SQLite cursor through a pager.
+- **Use `PRAGMA wal_checkpoint(PASSIVE)` periodically** in the terminal's write connection to prevent unbounded WAL growth. Passive checkpointing never blocks readers.
+- **Test concurrent access explicitly.** Integration test: start a write loop in one thread, start a read loop in another thread, verify zero `SQLITE_BUSY` errors over 10,000 operations.
 
-**Warning signs:**
-- Japanese/Chinese characters overwrite the character to their right.
-- The cursor appears shifted right from where typing actually inserts characters.
-- `vim` or other TUI apps display garbage when CJK characters are on screen.
+**Detection:** Run `glass history search "foo"` while the terminal is actively writing history. If it fails with a database locked error, the concurrency setup is wrong.
 
-**Phase to address:** Phase 1 (grid rendering) — add a CJK/emoji rendering test before declaring the VTE display working.
+**Phase:** Addressed when the CLI binary is implemented, but WAL mode must be set from the initial schema creation.
 
 ---
 
-### Pitfall 9: Windows Code Page Encoding Corruption
+### Pitfall 9: FTS5 Indexing Every Byte of Output Explodes Database Size
 
-**What goes wrong:**
-On Windows, the console default code page is 437 (OEM US English) or locale-specific (e.g., 932 for Japanese Windows). If Glass spawns a PowerShell or bash process via ConPTY without setting code page 65001 (UTF-8), non-ASCII output is double-encoded: the shell outputs UTF-8, ConPTY interprets it as the system code page, and the terminal displays mojibake.
+**What goes wrong:** Indexing the full raw output of every command (including ANSI escape sequences, progress bars, binary data) creates a massive FTS5 index that's mostly noise. A single `cargo build` can produce 50KB of output; indexing every byte means the FTS index grows faster than the raw data.
 
-**Why it happens:**
-ConPTY inherits the process code page of its parent. If the parent (Glass) hasn't set UTF-8 as the code page before calling ConPTY creation, the entire pipeline operates in the wrong encoding.
+**Prevention:**
+- **Strip ANSI escape sequences before indexing.** Store raw output for display, but index only the plain text content. Use a simple state machine to strip CSI/OSC sequences (the OscScanner pattern already exists in the codebase).
+- **Don't index output from commands with exit code != 0 by default**, or index only the last N lines (error summary). Failed commands often produce stack traces that pollute search results.
+- **Set a maximum indexable output size per command** (e.g., 64KB of plain text after stripping). Commands producing more output get partial indexing.
+- **Use FTS5 `detail='none'` or `detail='column'`** if you only need to know which commands match, not the exact position within the output. This dramatically reduces index size.
+- **Provide a config option** to disable output indexing entirely (index only command text, cwd, timestamps). Some users want search but don't need full-text output search.
 
-**How to avoid:**
-- Call `SetConsoleCP(65001)` and `SetConsoleOutputCP(65001)` in Glass's Windows startup code before creating any ConPTY instance. In Rust, use the `windows` crate: `unsafe { windows::Win32::System::Console::SetConsoleCP(65001); SetConsoleOutputCP(65001); }`.
-- Pass `chcp 65001` as a pre-command in the shell launch args, or set `PYTHONIOENCODING=utf-8` and similar env vars for child processes.
-- Verify with `portable-pty`'s `CommandBuilder` that the spawned process inherits the UTF-8 code page.
+**Detection:** Monitor database size growth. If the database exceeds 100MB after 1,000 commands, output indexing is too aggressive.
 
-**Warning signs:**
-- Non-ASCII filenames display as `?` or garbled bytes.
-- `git log` commit messages with accented characters show garbage.
-- Japanese or emoji output from shell commands renders incorrectly.
-
-**Phase to address:** Phase 0 (scaffold) — set code page as the first thing in `main()` before any window or PTY creation.
+**Phase:** Addressed during FTS5 indexing implementation.
 
 ---
 
-## Technical Debt Patterns
+### Pitfall 10: Search Overlay Rendering Z-Order Conflicts with GPU Pipeline
 
-| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
-|----------|-------------------|----------------|-----------------|
-| Import `alacritty_terminal` directly from multiple crates in the workspace | Faster access to terminal state | Version bump breaks all crates simultaneously; cannot swap VTE backend | Never — always isolate behind `glass_terminal` |
-| Perform PTY reads on the render thread | Simpler code, no channels needed | UI freezes on idle shell; unresponsive during output bursts | Never |
-| Skip atlas size configuration and use glyphon defaults | Works in demos | Atlas overflow silently drops glyphs in production use | Never |
-| Hard-code DX12 backend selection in wgpu `InstanceDescriptor` | Avoids Vulkan resize hangs | Fails on systems without DX12 (pre-Win10-1709) | Acceptable for Milestone 1, revisit for cross-platform |
-| Implement shell integration only for vanilla prompts | Passes basic tests | Breaks for all users with Oh My Posh / Starship | Only acceptable as Phase 1 MVP, must fix before daily-driver |
-| Pre-allocate full scrollback buffer at startup | Simple code | 191MB idle memory for 10k scrollback (documented Alacritty issue) | Never — use lazy/partial allocation |
+**What goes wrong:** The search overlay (text input, results list, highlighting) doesn't render correctly on top of the terminal grid. Results appear behind the terminal text, or the terminal grid bleeds through the overlay background.
 
----
+**Why it happens:** Glass uses a specific render pass order: background rects -> text (glyphon) -> block decorations -> status bar. Adding a search overlay requires rendering opaque background rects over the terminal content and then rendering overlay text on top. If the overlay is added in the wrong position in the render pass, it either gets overwritten by later passes or fails to cover the terminal content.
 
-## Integration Gotchas
+**Prevention:**
+- **Render the search overlay as the last element in the render pass** -- after the status bar. The overlay should render: (1) a semi-transparent or opaque background rect covering the overlay area, (2) the search input text, (3) the results list text. All using the existing `RectRenderer` and `glyphon` text pipeline.
+- **Use a separate `TextArea` for overlay text**, distinct from the terminal grid text. Glyphon supports multiple `TextArea` entries in a single draw call, but they need different positions and potentially different font sizes.
+- **Don't create a separate render pass for the overlay.** Adding a second render pass causes a GPU round-trip and adds latency. Instead, append overlay draw calls to the existing single render pass after all terminal content.
+- **Handle the overlay in `FrameRenderer::draw_frame()`** with a conditional overlay rendering step at the end.
 
-| Integration | Common Mistake | Correct Approach |
-|-------------|----------------|------------------|
-| ConPTY via `portable-pty` | Not enabling `ENABLE_VIRTUAL_TERMINAL_INPUT`, causing keyboard sequence rewrites | `portable-pty` handles this flag — verify it is set in WezTerm source before relying on it |
-| ConPTY output stream | Assuming raw output matches what the child wrote | Treat ConPTY output as re-encoded VT; test with escape sequence fixtures |
-| `alacritty_terminal` event handler | Implementing `EventListener` on a type that crosses thread boundaries without `Send` | Use `Arc<Mutex<...>>` for shared state or an `mpsc` sender in the event handler |
-| glyphon `TextAtlas` | Creating one global atlas shared across multiple render passes | Create a dedicated atlas for terminal cell text, separate from any UI overlay text |
-| winit `ApplicationHandler` | Calling `window.request_redraw()` from outside the event loop without a `EventLoopProxy` | Store an `EventLoopProxy` during `new()` and send a user event to trigger redraws from the PTY reader thread |
-| PowerShell integration | Appending to `PROMPT_COMMAND` (a bash concept) | PowerShell requires wrapping the `prompt` function and using PSReadLine hooks |
-| Windows DPI | Creating wgpu surface at logical pixels, rendering text at physical pixels | Use `window.scale_factor()` to convert logical to physical coordinates; pass physical size to `surface.configure()` |
+**Detection:** Open the search overlay on top of a terminal full of colored text. If any terminal text is visible through the overlay background, the z-order is wrong.
+
+**Phase:** Addressed when the search overlay UI is built.
 
 ---
 
-## Performance Traps
+## Minor Pitfalls
 
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| Re-shaping text on every frame | CPU pegged at high utilization during idle terminal | Only shape text when the grid cell content changes; cache shaped runs per grid line | Immediately visible with any animation or cursor blink |
-| Uploading full glyph atlas to GPU every frame | GPU memory bandwidth saturated, frame times >16ms | Only upload atlas texture regions that changed (dirty rect tracking) | During any text output or paste |
-| Scrollback grid as a `Vec<Vec<Cell>>` (row of rows) | Memory allocation on every new line; poor cache locality | Use alacritty_terminal's `Storage` type (ring buffer) — do not reimplement | At 10k+ lines of scrollback |
-| Sending full terminal state snapshot across mpsc channel | Channel congestion during large output bursts | Send a "dirty" notification only; renderer reads from shared state under a lock | When a command produces >1MB output (e.g., `cat large_file`) |
-| Re-rendering all cells every frame | Unnecessary GPU work during idle | Implement a "dirty" flag per grid row; only upload and render changed rows | At screen sizes above ~120 columns |
+### Pitfall 11: Forgetting to Enable `bundled` Feature in rusqlite (FTS5 Dependency)
 
----
+**What goes wrong:** The `bundled` feature of rusqlite compiles SQLite with FTS5 enabled, but if you later switch to system SQLite or a different feature flag, FTS5 may not be available, causing runtime SQL errors.
 
-## Security Mistakes
+**Prevention:** Pin to `rusqlite = { version = "0.38.0", features = ["bundled"] }`. The `bundled` feature automatically enables FTS5. Add an integration test that creates an FTS5 table and runs a `MATCH` query. If this test fails, the feature flag is wrong. Never use system SQLite on Windows (it may not exist or may lack FTS5).
 
-| Mistake | Risk | Prevention |
-|---------|------|------------|
-| Executing shell integration script content received via OSC sequences without sanitization | A malicious program could inject PowerShell commands via crafted OSC output | Shell integration scripts are static, loaded from Glass's own files — never execute OSC sequence payloads as code |
-| Passing unsanitized CWD from `OSC 9;9` sequence into filesystem APIs | Path traversal if the sequence contains `../` sequences | Validate CWD paths are absolute and within expected filesystem boundaries before using for display |
-| Storing command history (Phase 2) with full environment variable values | Secrets in env vars (API keys, tokens) captured in history DB | In Phase 2, implement a blocklist for env var names matching `*_TOKEN`, `*_SECRET`, `*_KEY`, `*_PASSWORD` |
+**Phase:** Set up correctly in Cargo.toml from the start.
 
 ---
 
-## UX Pitfalls
+### Pitfall 12: MCP Tool Schema Drift from Implementation
 
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| Cursor blink implemented as full-frame redraw | Excessive GPU work causing fan spin during idle | Blink only the cursor cell region; do not re-render the full grid |
-| No visual feedback during ConPTY process spawn | User thinks app is frozen during 200-500ms startup | Show a loading cursor or splash during PTY initialization |
-| Shell integration failure is silent | Block UI appears broken with no explanation | If OSC 133 marks aren't received within 5s, show a status bar indicator: "Shell integration inactive" |
-| Font fallback silently renders tofu boxes | User sees blank squares for emoji without knowing why | Log a warning when font fallback fails; show the Unicode codepoint in the missing glyph box |
-| DPI change (moving window between monitors) not handled | Text becomes blurry or oversized on the new monitor | Handle winit `ScaleFactorChanged` event; reconfigure surface and re-render at new DPI |
+**What goes wrong:** The MCP tool definitions (JSON Schema for `GlassHistory`, `GlassContext`) get out of sync with the actual query capabilities. The AI assistant requests fields that don't exist, or the tool returns fields the schema doesn't describe.
+
+**Prevention:** Derive tool schemas from Rust types using serde + `schemars` or the `rmcp` crate's `#[tool]` macro. This ensures the schema always matches the implementation. Write tests that serialize a tool response and validate it against the declared schema.
+
+**Phase:** Addressed when MCP tool definitions are implemented.
 
 ---
 
-## "Looks Done But Isn't" Checklist
+### Pitfall 13: Retention Policy Deleting Data While FTS5 Index References It
 
-- [ ] **ConPTY output passthrough**: Verify `ENABLE_VIRTUAL_TERMINAL_INPUT` is set — test that Ctrl+Left sends `ESC[1;5D` not `ESC[D` to the shell.
-- [ ] **wgpu resize**: Drag-resize the window rapidly for 5 seconds — verify no hangs, no white rectangles, and no panics.
-- [ ] **PTY thread isolation**: Idle at the shell prompt for 10 seconds — verify frame rate stays at target FPS (cursor blink should be smooth, not stuttery).
-- [ ] **Shell integration exit codes**: Run `false; true` and verify the `false` block shows a non-zero exit code and `true` shows zero.
-- [ ] **Wide character rendering**: Run `echo "日本語🦀"` and verify cursor lands in the correct column after the string.
-- [ ] **UTF-8 encoding**: Run a command that outputs a UTF-8 accented character (e.g., `Write-Output "café"` in PowerShell) — verify no mojibake.
-- [ ] **Atlas overflow**: Paste a large block of CJK text (>500 unique characters) — verify no glyphs disappear.
-- [ ] **Shell integration with Oh My Posh**: Install Oh My Posh in the test environment and verify command blocks still appear correctly.
-- [ ] **DPI handling**: Move the Glass window between a 1x and 2x DPI monitor — verify text remains sharp.
-- [ ] **Cold start time**: Measure from process launch to first rendered prompt — must be <200ms per requirements.
+**What goes wrong:** A retention policy job deletes old rows from the commands table, but the FTS5 index still references those rows. Subsequent searches return phantom results (row exists in FTS index but not in the content table), or worse, the FTS index becomes corrupted.
 
----
+**Prevention:**
+- If using a content FTS5 table (recommended), deleting from the FTS5 virtual table automatically removes the index entry. Delete from the FTS5 table, which cascades.
+- If using external content FTS5, ensure the delete trigger fires before or uses the `VALUES('delete', ...)` syntax.
+- Retention should be a single transaction: `DELETE FROM commands WHERE timestamp < ? RETURNING rowid` -> `DELETE FROM commands_fts WHERE rowid IN (...)`.
+- Run FTS5 integrity check after retention: `INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')`.
 
-## Recovery Strategies
-
-| Pitfall | Recovery Cost | Recovery Steps |
-|---------|---------------|----------------|
-| ConPTY escape sequence rewriting discovered after rendering is built | MEDIUM | Add a ConPTY output normalization layer in `glass_terminal`; re-test all color and keyboard scenarios |
-| `alacritty_terminal` API breaks on version update | MEDIUM | All breakage is contained in `glass_terminal` crate; update the crate boundary adapter only |
-| wgpu surface resize implemented incorrectly (crashing) | LOW | The resize handler is a small, isolated function; replace with debounce + error-recovery pattern |
-| winit 0.30 `ApplicationHandler` not implemented correctly | HIGH | Requires restructuring all application state ownership; do it right in Phase 0 |
-| Shell integration not working with Oh My Posh | LOW | The prompt wrapping logic is a standalone PowerShell script; iterate independently |
-| Atlas overflow causing glyph drops | MEDIUM | Rebuild atlas with larger dimensions; requires a render pipeline change but not an architecture change |
-| PTY reader on render thread (freeze bug) | HIGH | Requires introducing a dedicated thread + channel and restructuring the event loop; very disruptive post-scaffold |
+**Phase:** Addressed when retention policies are implemented.
 
 ---
 
-## Pitfall-to-Phase Mapping
+### Pitfall 14: Command Text Capture Missing Due to OSC 133 Gaps
 
-| Pitfall | Prevention Phase | Verification |
-|---------|------------------|--------------|
-| ConPTY escape sequence rewriting | Phase 0: scaffold + PTY setup | Escape sequence fixture test: send known sequences, verify received bytes match expected |
-| `alacritty_terminal` API instability | Phase 0: workspace structure | `glass_terminal` crate has zero public `alacritty_terminal` types in its API |
-| wgpu surface resize flickering/hang | Phase 0: wgpu surface initialization | Drag-resize stress test: 5 seconds of continuous resize, no freeze or panic |
-| winit 0.30 ApplicationHandler API | Phase 0: winit event loop | Compiles without deprecated API warnings; window creation inside `can_create_surfaces()` |
-| PTY reader blocking render thread | Phase 0: threading architecture | Frame rate measurement at idle shell: target FPS maintained, no stuttering |
-| Shell integration fragility | Phase 1: shell integration | Test with vanilla PowerShell 7 AND Oh My Posh; exit codes correct in both |
-| Font atlas overflow | Phase 1: rendering pipeline | Paste 1000-char CJK block; all characters visible, no glyph drops |
-| Wide character cell misalignment | Phase 1: grid rendering | `echo "日本語🦀"` cursor position verification test |
-| Windows UTF-8 code page | Phase 0: process startup | Non-ASCII output test before any other PTY work |
-| Glyph sub-pixel kerning (cosmetic) | Phase 1: font rendering | Visual inspection of rendered ASCII text at multiple font sizes |
+**What goes wrong:** The history database stores command text by capturing bytes between OSC 133;B (command start) and OSC 133;C (command executed). But some shells or shell configurations don't emit these sequences reliably, leaving the command text field empty.
+
+**Prevention:**
+- **Fall back to Get-History (PowerShell) or HISTFILE (Bash)** when OSC 133;B/C are missing. Query the shell's own history as a secondary source.
+- **Handle multi-line commands** -- the text between B and C may span multiple terminal lines. Use `\n` joining.
+- **Test with both pwsh and bash** (Glass supports both). PowerShell's PSReadLine and Bash's PS0/PROMPT_COMMAND have different timing characteristics.
+- **Accept that command text capture is best-effort.** Some commands (e.g., piped through `ssh`) will never emit OSC sequences. Log the command as "[unknown]" rather than dropping the entire history entry.
+
+**Phase:** Addressed during output capture implementation.
+
+---
+
+### Pitfall 15: tokio Runtime Conflicts with winit Event Loop
+
+**What goes wrong:** Adding tokio for the MCP server or async SQLite operations, then accidentally blocking the tokio runtime from the winit event loop or vice versa. `pollster::block_on()` inside a tokio context panics ("cannot block on a future inside a runtime").
+
+**Prevention:**
+- **Keep the winit event loop on the main thread without tokio.** The PTY reader thread is `std::thread` (already correct in v1.0). The MCP server binary runs its own tokio runtime -- it's a separate process, so no conflict.
+- **If any async work is needed in the terminal process** (e.g., async channel draining for SQLite writes), spawn a dedicated `std::thread` that runs `tokio::runtime::Runtime::new().block_on(...)`. Do not use `#[tokio::main]` in the terminal binary.
+- **The MCP server binary can use `#[tokio::main]`** freely since it's a separate process.
+
+**Phase:** Architecture decision, affects MCP server and async write path design.
+
+---
+
+## Phase-Specific Warnings
+
+| Phase Topic | Likely Pitfall | Mitigation | Severity |
+|-------------|---------------|------------|----------|
+| SQLite schema + write path | Pitfall 1 (connection sharing), Pitfall 2 (throughput) | One connection per thread, buffer writes, WAL mode | Critical |
+| Output capture | Pitfall 2 (throughput), Pitfall 14 (OSC gaps) | In-memory buffer, flush on command complete, fallback capture | Critical |
+| FTS5 indexing | Pitfall 3 (sync corruption), Pitfall 9 (size explosion) | Content table (not external), strip ANSI, size limits | Moderate |
+| Search overlay UI | Pitfall 5 (blocking render), Pitfall 7 (display_offset), Pitfall 10 (z-order) | Async queries, fix display_offset first, render last | Moderate |
+| CLI binary | Pitfall 8 (DB locking) | WAL mode, busy_timeout, short transactions | Moderate |
+| MCP server | Pitfall 4 (stdout corruption), Pitfall 6 (embedded vs. separate) | Separate binary, stderr logging, clippy lint | Critical |
+| Retention policies | Pitfall 13 (FTS5 orphans) | Single transaction delete, integrity check | Minor |
+| Tool schemas | Pitfall 12 (schema drift) | Derive from types, test serialization | Minor |
+
+---
+
+## Pre-Existing Tech Debt Impact
+
+| Debt Item | Impact on v1.1 | Required Action |
+|-----------|----------------|-----------------|
+| `display_offset` hardcoded to 0 | Search "jump to result" will not work | Fix before search overlay phase |
+| Nyquist validation partial (phases 2-4) | Performance baselines may be inaccurate for regression testing | Re-baseline PTY throughput before output capture |
+| `BlockManager` uses line numbers from cursor position | Line numbers may not match database row IDs | Use stable identifiers (timestamps + command index) for DB, not terminal line numbers |
 
 ---
 
 ## Sources
 
-- [ConPTY modifies escape sequences passed to process input — microsoft/terminal #12166](https://github.com/microsoft/terminal/issues/12166)
-- [ConPTY translating \[49m to \[m escape sequence — microsoft/terminal #362](https://github.com/microsoft/terminal/issues/362)
-- [OSC escape sequences received out-of-order in 3rd-party terminals — microsoft/terminal #17314](https://github.com/microsoft/terminal/issues/17314)
-- [Taming Windows Terminal's win32-input-mode in Go ConPTY Applications — DEV Community](https://dev.to/andylbrummer/taming-windows-terminals-win32-input-mode-in-go-conpty-applications-7gg)
-- [Windows Command-Line: Introducing the Windows Pseudo Console (ConPTY)](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/)
-- [Shell integration in the Windows Terminal — Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration)
-- [Shell integration in the Windows Terminal — Microsoft DevBlogs](https://devblogs.microsoft.com/commandline/shell-integration-in-the-windows-terminal/)
-- [Does portable-pty always utf-8? — wezterm/wezterm Discussion #2463](https://github.com/wezterm/wezterm/discussions/2463)
-- [Using portable_pty causes terminal to be cleared while trying to stream to stdout — wezterm/wezterm #4784](https://github.com/wezterm/wezterm/issues/4784)
-- [Backend selection is not always Vulkan > Metal > DX12 — gfx-rs/wgpu #1416](https://github.com/gfx-rs/wgpu/issues/1416)
-- [Window resizing lags with white rectangles on Windows — gfx-rs/wgpu #5374](https://github.com/gfx-rs/wgpu/issues/5374)
-- [Surface::configure is not in sync with window surface resizing — gfx-rs/wgpu #7447](https://github.com/gfx-rs/wgpu/issues/7447)
-- [wgpu vulkan backend hangs on resize on windows — emilk/egui #7718](https://github.com/emilk/egui/issues/7718)
-- [winit 0.30 changelog — docs.rs](https://docs.rs/winit/latest/winit/changelog/index.html)
-- [EventLoop 3.0 Changes — rust-windowing/winit #2900](https://github.com/rust-windowing/winit/issues/2900)
-- [Warp: Adventures in Text Rendering: Kerning and Glyph Atlases](https://www.warp.dev/blog/adventures-text-rendering-kerning-glyph-atlases)
-- [Incorrect glyph information for emojis on Windows 11 — pop-os/cosmic-text #210](https://github.com/pop-os/cosmic-text/issues/210)
-- [Certain double-width unicode emoji characters are treated as single-width — alacritty/alacritty #6144](https://github.com/alacritty/alacritty/issues/6144)
-- [Scrollback memory pre-allocation and optimization — alacritty/alacritty #1236](https://github.com/alacritty/alacritty/issues/1236)
-- [Ambiguous width character in CJK environment — microsoft/terminal #370](https://github.com/microsoft/terminal/issues/370)
-- [Atlas performance — microsoft/terminal Discussion #12811](https://github.com/microsoft/terminal/discussions/12811)
-- [Fixing Mojibake from UTF-8 Tools in PowerShell on Windows — hy2k.dev (2025)](https://hy2k.dev/en/blog/2025/11-20-fix-powershell-mojibake-on-windows/)
+- [SQLite WAL documentation](https://sqlite.org/wal.html) -- concurrent reader/writer guarantees
+- [SQLite threading modes](https://sqlite.org/threadsafe.html) -- serialized vs. multi-thread
+- [rusqlite multi-thread discussion](https://github.com/rusqlite/rusqlite/issues/405) -- connection-per-thread pattern
+- [SQLITE_BUSY despite timeout](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) -- BEGIN IMMEDIATE requirement
+- [SQLite connection pool write performance](https://emschwartz.me/psa-your-sqlite-connection-pool-might-be-ruining-your-write-performance/) -- single writer best practices
+- [SQLite FTS5 documentation](https://sqlite.org/fts5.html) -- external content tables, integrity check, detail options
+- [FTS5 index structure](https://darksi.de/13.sqlite-fts5-structure/) -- merge behavior, segment management
+- [FTS5 trigger corruption](https://sqlite.org/forum/info/da59bf102d7a7951740bd01c4942b1119512a86bfa1b11d4f762056c8eb7fc4e) -- incorrect trigger syntax causes corruption
+- [MCP specification - stdio transport](https://modelcontextprotocol.io/docs/develop/build-server) -- stdout purity requirement
+- [rmcp official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk) -- tool macro, stdio transport
+- [Shuttle MCP server guide](https://www.shuttle.dev/blog/2025/07/18/how-to-build-a-stdio-mcp-server-in-rust) -- stderr logging pattern
+- [rusqlite feature flags](https://docs.rs/crate/rusqlite/latest/features) -- bundled enables FTS5
+- [Alacritty vtebench](https://github.com/alacritty/vtebench) -- PTY throughput benchmarking
+- [kitty performance docs](https://sw.kovidgoyal.net/kitty/performance/) -- throughput vs. latency tradeoffs
+- [FTS5 performance tuning](https://www.slingacademy.com/article/full-text-search-performance-tuning-avoiding-pitfalls-in-sqlite/) -- indexing size management
 
 ---
-*Pitfalls research for: Rust GPU-accelerated terminal emulator (Glass), Windows-first, wgpu + alacritty_terminal + ConPTY*
-*Researched: 2026-03-04*
+*Pitfalls research for: Glass v1.1 -- Structured Scrollback + MCP Server*
+*Researched: 2026-03-05*
