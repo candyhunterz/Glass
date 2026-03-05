@@ -7,22 +7,45 @@ use alacritty_terminal::event_loop::{EventLoopSender, Msg as PtyMsg};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
+use glass_core::config::GlassConfig;
 use glass_core::event::AppEvent;
-use glass_renderer::GlassRenderer;
-use glass_terminal::EventProxy;
+use glass_renderer::{FrameRenderer, GlassRenderer};
+use glass_terminal::{DefaultColors, EventProxy, snapshot_term};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+/// Simple grid dimensions for Term::resize().
+struct TermDimensions {
+    columns: usize,
+    screen_lines: usize,
+}
+
+impl Dimensions for TermDimensions {
+    fn total_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+    fn columns(&self) -> usize {
+        self.columns
+    }
+}
+
 /// Per-window state: OS window handle, GPU renderer, and PTY connection.
 struct WindowContext {
     window: Arc<Window>,
     renderer: GlassRenderer,
+    /// GPU text rendering pipeline.
+    frame_renderer: FrameRenderer,
     /// Sender to write input to the PTY or resize it.
     pty_sender: EventLoopSender,
-    /// Shared terminal state grid (read for rendering in Phase 2).
+    /// Shared terminal state grid.
     term: Arc<FairMutex<Term<EventProxy>>>,
+    /// Default terminal colors for snapshot resolution.
+    default_colors: DefaultColors,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -55,16 +78,60 @@ impl ApplicationHandler<AppEvent> for Processor {
         // wgpu init is async; block via pollster from this sync callback
         let renderer = pollster::block_on(GlassRenderer::new(Arc::clone(&window)));
 
+        // Create FrameRenderer with font config
+        let config = GlassConfig::default();
+        let scale_factor = window.scale_factor() as f32;
+        let frame_renderer = FrameRenderer::new(
+            renderer.device(),
+            renderer.queue(),
+            renderer.surface_format(),
+            &config.font_family,
+            config.font_size,
+            scale_factor,
+        );
+
+        // Compute initial terminal size from font metrics
+        let (cell_w, cell_h) = frame_renderer.cell_size();
+        let size = window.inner_size();
+        let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+        let num_lines = (size.height as f32 / cell_h).floor().max(1.0) as u16;
+
+        tracing::info!(
+            "Font metrics: cell={}x{} grid={}x{} scale={}",
+            cell_w, cell_h, num_cols, num_lines, scale_factor
+        );
+
         // Create EventProxy using the pre-created proxy (EventLoopProxy is Clone)
         let event_proxy = EventProxy::new(self.proxy.clone(), window.id());
 
         // Spawn PowerShell via ConPTY with a dedicated reader thread
         let (pty_sender, term) = glass_terminal::spawn_pty(event_proxy);
 
+        // Send initial resize with correct font-metrics-based cell dimensions
+        let initial_size = WindowSize {
+            num_lines,
+            num_cols,
+            cell_width: cell_w as u16,
+            cell_height: cell_h as u16,
+        };
+        let _ = pty_sender.send(PtyMsg::Resize(initial_size));
+
+        // Also resize the Term grid to match
+        term.lock().resize(TermDimensions { columns: num_cols as usize, screen_lines: num_lines as usize });
+
         tracing::info!("PTY spawned — PowerShell is running");
 
+        let default_colors = DefaultColors::default();
+
         let id = window.id();
-        self.windows.insert(id, WindowContext { window, renderer, pty_sender, term });
+        self.windows.insert(id, WindowContext {
+            window,
+            renderer,
+            frame_renderer,
+            pty_sender,
+            term,
+            default_colors,
+        });
     }
 
     /// Handle per-window OS events.
@@ -84,19 +151,31 @@ impl ApplicationHandler<AppEvent> for Processor {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                ctx.renderer.draw();
-
-                // Temporary: log terminal grid dimensions to verify PTY output flows.
-                // Phase 2 will replace this with actual glyphon text rendering.
-                {
+                // Lock Term briefly for snapshot only, then release
+                let snapshot = {
                     let term = ctx.term.lock();
-                    tracing::debug!(
-                        "Terminal grid: {}x{} ({} total lines)",
-                        term.columns(),
-                        term.screen_lines(),
-                        term.total_lines(),
-                    );
-                }
+                    snapshot_term(&term, &ctx.default_colors)
+                };
+
+                // Get surface texture
+                let Some(frame) = ctx.renderer.get_current_texture() else {
+                    return;
+                };
+                let view = frame.texture.create_view(&Default::default());
+                let sc = ctx.renderer.surface_config();
+
+                // Draw frame using FrameRenderer (no Term lock held)
+                ctx.frame_renderer.draw_frame(
+                    ctx.renderer.device(),
+                    ctx.renderer.queue(),
+                    &view,
+                    sc.width,
+                    sc.height,
+                    &snapshot,
+                );
+
+                frame.present();
+                ctx.frame_renderer.trim();
             }
             WindowEvent::Resized(size) => {
                 if size.width == 0 || size.height == 0 {
@@ -104,15 +183,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
                 ctx.renderer.resize(size.width, size.height);
 
-                // Notify PTY of the new terminal size.
-                // Assume 8x16 cell size for scaffold — Phase 2 computes from font metrics.
+                // Compute terminal grid size from font metrics
+                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                let num_lines = (size.height as f32 / cell_h).floor().max(1.0) as u16;
+
+                // Notify PTY of the new terminal size with real cell dimensions
                 let new_window_size = WindowSize {
-                    num_lines: (size.height / 16).max(1) as u16,
-                    num_cols: (size.width / 8).max(1) as u16,
-                    cell_width: 8,
-                    cell_height: 16,
+                    num_lines,
+                    num_cols,
+                    cell_width: cell_w as u16,
+                    cell_height: cell_h as u16,
                 };
                 let _ = ctx.pty_sender.send(PtyMsg::Resize(new_window_size));
+
+                // Also resize the Term grid so content reflows (CORE-07)
+                ctx.term.lock().resize(TermDimensions { columns: num_cols as usize, screen_lines: num_lines as usize });
 
                 // Request a redraw after resize so the surface is repainted immediately
                 ctx.window.request_redraw();
