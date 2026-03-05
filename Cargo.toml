@@ -41,6 +41,9 @@ clap          = { version = "4.5", features = ["derive"] }
 # Time/date
 chrono        = "0.4"
 
+# Content-addressed hashing
+blake3        = "1.8.3"
+
 # Database (future phases)
 rusqlite      = { version = "0.38.0", features = ["bundled"] }
 
