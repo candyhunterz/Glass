@@ -94,7 +94,10 @@ Plans:
   2. The GlassHistory tool returns filtered command history (by text, timeframe, exit status, cwd, limit) as structured JSON
   3. The GlassContext tool returns an activity summary (command count, failure count, recent directories, time range) as structured JSON
   4. All logging goes to stderr; stdout carries only JSON-RPC messages (no corruption)
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 09-01-PLAN.md -- glass_mcp crate: GlassServer with GlassHistory + GlassContext tools, main.rs wiring
+- [ ] 09-02-PLAN.md -- Integration test for MCP handshake + end-to-end verification
 
 ## Progress
 
@@ -111,4 +114,4 @@ Plans:
 | 6. Output Capture + Writer Integration | v1.1 | 3/4 | In Progress | - |
 | 7. CLI Query Interface | v1.1 | 2/2 | Complete | 2026-03-05 |
 | 8. Search Overlay | 2/2 | Complete   | 2026-03-05 | - |
-| 9. MCP Server | v1.1 | 0/? | Not started | - |
+| 9. MCP Server | v1.1 | 0/2 | Not started | - |
