@@ -1,12 +1,13 @@
 //! glass_snapshot — Content-addressed blob storage and snapshot metadata.
 
 pub mod blob_store;
+pub mod command_parser;
 pub mod db;
 pub mod types;
 
 pub use blob_store::BlobStore;
 pub use db::SnapshotDb;
-pub use types::{SnapshotFileRecord, SnapshotRecord};
+pub use types::{Confidence, ParseResult, SnapshotFileRecord, SnapshotRecord};
 
 use std::path::{Path, PathBuf};
 

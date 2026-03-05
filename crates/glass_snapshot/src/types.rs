@@ -1,3 +1,25 @@
+use std::path::PathBuf;
+
+/// How confident the parser is in its identification of file targets.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Confidence {
+    /// Known destructive command with clear file targets identified.
+    High,
+    /// Unknown command or ambiguous targets -- rely on FS watcher.
+    Low,
+    /// Command is read-only -- no snapshot needed.
+    ReadOnly,
+}
+
+/// Result of parsing a shell command for file modification targets.
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    /// Absolute paths of files the command may modify.
+    pub targets: Vec<PathBuf>,
+    /// How confident the parser is in its target identification.
+    pub confidence: Confidence,
+}
+
 /// A snapshot metadata record from the database.
 #[derive(Debug, Clone)]
 pub struct SnapshotRecord {
