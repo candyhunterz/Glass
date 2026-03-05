@@ -1,4 +1,5 @@
 mod history;
+mod search_overlay;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -12,6 +13,7 @@ use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, ShellEvent};
 use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
+use crate::search_overlay::SearchOverlay;
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
 use glass_terminal::{
     BlockManager, DefaultColors, EventProxy, OscEvent, PtyMsg, PtySender, StatusState,
@@ -132,6 +134,8 @@ struct WindowContext {
     /// Wall-clock time when the current command started executing (set on CommandExecuted).
     /// Block.started_at is Instant (monotonic), but CommandRecord needs epoch seconds.
     command_started_wall: Option<std::time::SystemTime>,
+    /// Search overlay state. None when overlay is closed.
+    search_overlay: Option<SearchOverlay>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -277,6 +281,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 history_db,
                 last_command_id: None,
                 command_started_wall: None,
+                search_overlay: None,
             },
         );
     }
@@ -298,6 +303,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                // Execute debounced search query
+                if let Some(ref mut overlay) = ctx.search_overlay {
+                    if overlay.should_search(std::time::Duration::from_millis(150)) {
+                        overlay.mark_searched();
+                        if !overlay.query.is_empty() {
+                            let filter = glass_history::query::QueryFilter {
+                                text: Some(overlay.query.clone()),
+                                limit: 20,
+                                ..Default::default()
+                            };
+                            if let Some(ref db) = ctx.history_db {
+                                let results = db.filtered_query(&filter).unwrap_or_default();
+                                overlay.set_results(results);
+                            }
+                        } else {
+                            overlay.set_results(Vec::new());
+                        }
+                    }
+                    // Keep requesting redraws while search is pending (debounce timer not elapsed)
+                    if overlay.search_pending {
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 // Lock Term briefly for snapshot only, then release
                 let snapshot = {
                     let term = ctx.term.lock();
@@ -384,6 +413,54 @@ impl ApplicationHandler<AppEvent> for Processor {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     let modifiers = self.modifiers;
+
+                    // Search overlay input interception -- must be FIRST to prevent PTY forwarding
+                    if let Some(ref mut overlay) = ctx.search_overlay {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                ctx.search_overlay = None;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                overlay.move_up();
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                overlay.move_down();
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                // TODO: scroll-to-block navigation (Plan 02)
+                                ctx.search_overlay = None;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Backspace) => {
+                                overlay.pop_char();
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Character(c) => {
+                                // Allow Ctrl+Shift+F to toggle overlay closed even when open
+                                if modifiers.control_key()
+                                    && modifiers.shift_key()
+                                    && c.as_str().eq_ignore_ascii_case("f")
+                                {
+                                    ctx.search_overlay = None;
+                                    ctx.window.request_redraw();
+                                    return;
+                                }
+                                overlay.push_char(c.as_str());
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            _ => { return; } // Swallow all other keys while overlay is open
+                        }
+                    }
+
                     let mode = *ctx.term.lock().mode();
 
                     // Check for Glass-handled keys first
@@ -399,6 +476,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if c.as_str().eq_ignore_ascii_case("v") =>
                             {
                                 clipboard_paste(&ctx.pty_sender, mode);
+                                return;
+                            }
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("f") =>
+                            {
+                                ctx.search_overlay = Some(SearchOverlay::new());
+                                ctx.window.request_redraw();
                                 return;
                             }
                             _ => {}
