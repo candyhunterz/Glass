@@ -749,4 +749,74 @@ mod tests {
             );
         }
     }
+
+    // --- PowerShell tests ---
+
+    #[test]
+    fn test_powershell_remove_item_named() {
+        let result = parse_command("Remove-Item -Path \"file.txt\"", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert_eq!(result.targets, vec![resolved("file.txt")]);
+    }
+
+    #[test]
+    fn test_powershell_remove_item_positional() {
+        let result = parse_command("Remove-Item file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert_eq!(result.targets, vec![resolved("file.txt")]);
+    }
+
+    #[test]
+    fn test_powershell_move_item() {
+        let result = parse_command("Move-Item -Path src.txt -Destination dst.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("src.txt")));
+        assert!(result.targets.contains(&resolved("dst.txt")));
+    }
+
+    #[test]
+    fn test_powershell_copy_item() {
+        let result = parse_command("Copy-Item src.txt dst.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("dst.txt")));
+    }
+
+    #[test]
+    fn test_powershell_set_content() {
+        let result = parse_command("Set-Content -Path file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert_eq!(result.targets, vec![resolved("file.txt")]);
+    }
+
+    #[test]
+    fn test_powershell_readonly_cmdlets() {
+        for cmd in &["Get-Content file.txt", "Get-ChildItem", "Test-Path file.txt"] {
+            let result = parse_command(cmd, &cwd());
+            assert_eq!(
+                result.confidence,
+                Confidence::ReadOnly,
+                "Expected ReadOnly for '{cmd}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_powershell_aliases() {
+        // ri = Remove-Item alias
+        let result = parse_command("ri file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert_eq!(result.targets, vec![resolved("file.txt")]);
+
+        // mi = Move-Item alias (needs source and dest)
+        let result = parse_command("mi src.txt dst.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("src.txt")));
+        assert!(result.targets.contains(&resolved("dst.txt")));
+    }
+
+    #[test]
+    fn test_powershell_unknown_cmdlet() {
+        let result = parse_command("Invoke-CustomScript file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::Low);
+    }
 }
