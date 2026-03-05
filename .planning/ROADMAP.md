@@ -79,11 +79,11 @@ Plans:
   2. Cold start time (from launch to interactive prompt) is under 200ms measured on a clean launch
   3. Keypress-to-screen latency is under 5ms measured under normal shell load
   4. Idle memory usage (shell at prompt, no active process) is under 50MB
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 04-01: TOML config parsing and application (font, font size, shell override)
-- [ ] 04-02: Performance measurement and optimization pass (cold start, latency, memory)
+- [ ] 04-01-PLAN.md — TOML config loading with serde/dirs, wiring into FrameRenderer and spawn_pty
+- [ ] 04-02-PLAN.md — Performance instrumentation (cold start, input latency, idle memory) and target verification
 
 ## Progress
 
