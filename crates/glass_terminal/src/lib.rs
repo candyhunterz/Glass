@@ -6,10 +6,12 @@
 
 pub mod event_proxy;
 pub mod grid_snapshot;
+pub mod input;
 pub mod pty;
 
 pub use event_proxy::EventProxy;
 pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, snapshot_term};
+pub use input::encode_key;
 pub use pty::spawn_pty;
 
 #[cfg(test)]
