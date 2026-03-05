@@ -17,7 +17,7 @@ pub use event_proxy::EventProxy;
 pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, snapshot_term};
 pub use input::encode_key;
 pub use osc_scanner::{OscEvent, OscScanner};
-pub use pty::spawn_pty;
+pub use pty::{spawn_pty, PtyMsg, PtySender};
 pub use status::{GitInfo, StatusState, query_git_status};
 
 #[cfg(test)]

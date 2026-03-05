@@ -11,3 +11,5 @@ tokio.workspace = true
 winit.workspace = true
 tracing.workspace = true
 url.workspace = true
+polling = "3"
+vte = "0.15"

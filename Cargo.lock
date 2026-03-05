@@ -837,9 +837,11 @@ dependencies = [
  "alacritty_terminal",
  "arboard",
  "glass_core",
+ "polling",
  "tokio",
  "tracing",
  "url",
+ "vte",
  "winit",
 ]
 

@@ -3,14 +3,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
-use alacritty_terminal::event_loop::{EventLoopSender, Msg as PtyMsg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use glass_core::config::GlassConfig;
 use glass_core::event::AppEvent;
 use glass_renderer::{FrameRenderer, GlassRenderer};
-use glass_terminal::{DefaultColors, EventProxy, encode_key, snapshot_term};
+use glass_terminal::{DefaultColors, EventProxy, PtyMsg, PtySender, encode_key, snapshot_term};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -42,7 +41,7 @@ struct WindowContext {
     /// GPU text rendering pipeline.
     frame_renderer: FrameRenderer,
     /// Sender to write input to the PTY or resize it.
-    pty_sender: EventLoopSender,
+    pty_sender: PtySender,
     /// Shared terminal state grid.
     term: Arc<FairMutex<Term<EventProxy>>>,
     /// Default terminal colors for snapshot resolution.
@@ -107,8 +106,12 @@ impl ApplicationHandler<AppEvent> for Processor {
         // Create EventProxy using the pre-created proxy (EventLoopProxy is Clone)
         let event_proxy = EventProxy::new(self.proxy.clone(), window.id());
 
-        // Spawn PowerShell via ConPTY with a dedicated reader thread
-        let (pty_sender, term) = glass_terminal::spawn_pty(event_proxy);
+        // Spawn PowerShell via ConPTY with a dedicated reader thread + OscScanner
+        let (pty_sender, term) = glass_terminal::spawn_pty(
+            event_proxy,
+            self.proxy.clone(),
+            window.id(),
+        );
 
         // Send initial resize with correct font-metrics-based cell dimensions
         let initial_size = WindowSize {
@@ -303,6 +306,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Exit the event loop when the shell exits
                 event_loop.exit();
             }
+            // Shell integration events — wired fully in Task 2
+            AppEvent::Shell { .. } => {}
+            AppEvent::GitInfo { .. } => {}
         }
     }
 
@@ -322,7 +328,7 @@ fn clipboard_copy(term: &Arc<FairMutex<Term<EventProxy>>>) {
 
 /// Paste text from the system clipboard into the PTY.
 /// Wraps with bracketed paste sequences when BRACKETED_PASTE mode is active.
-fn clipboard_paste(sender: &EventLoopSender, mode: TermMode) {
+fn clipboard_paste(sender: &PtySender, mode: TermMode) {
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if let Ok(text) = clipboard.get_text() {
             let bytes = if mode.contains(TermMode::BRACKETED_PASTE) {
