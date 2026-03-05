@@ -237,9 +237,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     snapshot_term(&term, &ctx.default_colors)
                 };
 
-                // Get visible blocks for the current viewport
+                // Get visible blocks for the current viewport.
+                // Block lines are absolute (history_size + viewport_line).
+                // Viewport start in absolute coords: history_size - display_offset.
+                let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
                 let visible_blocks = ctx.block_manager.visible_blocks(
-                    snapshot.display_offset,
+                    viewport_abs_start,
                     snapshot.screen_lines,
                 );
 
@@ -376,8 +379,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 };
                 if lines != 0 {
-                    // Negative delta = scroll down (towards bottom), positive = scroll up
-                    ctx.term.lock().scroll_display(Scroll::Delta(-lines));
+                    // Positive delta = scroll up (into history), negative = scroll down
+                    ctx.term.lock().scroll_display(Scroll::Delta(lines));
                     ctx.window.request_redraw();
                 }
             }

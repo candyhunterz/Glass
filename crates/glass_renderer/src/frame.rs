@@ -111,11 +111,12 @@ impl FrameRenderer {
         let mut rect_instances = self.grid_renderer.build_rects(snapshot, self.default_bg);
 
         // 1b. Append block decoration rects (separators, badges)
+        // Block lines are absolute; convert viewport start to absolute coords.
         if !blocks.is_empty() {
-            let display_offset = snapshot.display_offset;
+            let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
             let block_rects = self.block_renderer.build_block_rects(
                 blocks,
-                display_offset,
+                viewport_abs_start,
                 snapshot.screen_lines,
                 w,
             );
@@ -166,10 +167,10 @@ impl FrameRenderer {
         // Phase A: Build all overlay buffers
         // Block label buffers
         if !blocks.is_empty() {
-            let display_offset = snapshot.display_offset;
+            let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
             let block_labels = self.block_renderer.build_block_text(
                 blocks,
-                display_offset,
+                viewport_abs_start,
                 snapshot.screen_lines,
                 w,
             );

@@ -83,12 +83,13 @@ impl GridRenderer {
     /// default background, plus a cursor rectangle based on cursor shape.
     pub fn build_rects(&self, snapshot: &GridSnapshot, default_bg: Rgb) -> Vec<RectInstance> {
         let mut rects = Vec::with_capacity(snapshot.cells.len() / 4); // estimate ~25% non-default bg
+        let line_offset = snapshot.display_offset as i32;
 
         // Cell background rects
         for cell in &snapshot.cells {
             if cell.bg != default_bg {
                 let x = cell.point.column.0 as f32 * self.cell_width;
-                let y = cell.point.line.0 as f32 * self.cell_height;
+                let y = (cell.point.line.0 + line_offset) as f32 * self.cell_height;
                 rects.push(RectInstance {
                     pos: [x, y, self.cell_width, self.cell_height],
                     color: rgb_to_color(cell.bg, 1.0),
@@ -99,7 +100,7 @@ impl GridRenderer {
         // Cursor rect
         let cursor = &snapshot.cursor;
         let cursor_x = cursor.point.column.0 as f32 * self.cell_width;
-        let cursor_y = cursor.point.line.0 as f32 * self.cell_height;
+        let cursor_y = (cursor.point.line.0 + line_offset) as f32 * self.cell_height;
         let cursor_color = [0.8, 0.8, 0.8, 0.7]; // semi-transparent light gray
 
         match cursor.shape {
@@ -170,14 +171,17 @@ impl GridRenderer {
 
         buffers.clear();
         buffers.reserve(snapshot.screen_lines);
+        let line_offset = snapshot.display_offset as i32;
 
         for line_idx in 0..snapshot.screen_lines {
             // Collect cells for this line, skip WIDE_CHAR_SPACER
+            // display_iter yields line values starting at -(display_offset),
+            // so add line_offset to convert to viewport-relative index
             let line_cells: Vec<_> = snapshot
                 .cells
                 .iter()
                 .filter(|cell| {
-                    cell.point.line.0 as usize == line_idx
+                    (cell.point.line.0 + line_offset) as usize == line_idx
                         && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
                 })
                 .collect();

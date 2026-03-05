@@ -357,8 +357,11 @@ fn pty_read_with_scan(
         // Pre-scan for OSC shell integration sequences before VTE parsing.
         let osc_events = scanner.scan(data);
         for osc_event in osc_events {
-            // Get approximate cursor line for block tracking
-            let line = terminal_ref.grid().cursor.point.line.0 as usize;
+            // Get absolute cursor line for block tracking.
+            // cursor.point.line is viewport-relative (0 = top of screen).
+            // Convert to absolute: history_size + viewport_line.
+            let history = terminal_ref.grid().history_size();
+            let line = history + terminal_ref.grid().cursor.point.line.0 as usize;
             let shell_event = convert_osc_to_shell(osc_event);
             let _ = app_proxy.send_event(AppEvent::Shell {
                 window_id,

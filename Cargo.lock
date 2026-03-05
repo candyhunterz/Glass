@@ -956,6 +956,7 @@ dependencies = [
  "serde",
  "strip-ansi-escapes",
  "tempfile",
+ "toml",
  "tracing",
 ]
 
