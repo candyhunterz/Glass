@@ -112,7 +112,7 @@ impl FrameRenderer {
 
         // 1b. Append block decoration rects (separators, badges)
         if !blocks.is_empty() {
-            let display_offset = 0; // TODO: wired in Plan 04 from scrollback offset
+            let display_offset = snapshot.display_offset;
             let block_rects = self.block_renderer.build_block_rects(
                 blocks,
                 display_offset,
@@ -166,7 +166,7 @@ impl FrameRenderer {
         // Phase A: Build all overlay buffers
         // Block label buffers
         if !blocks.is_empty() {
-            let display_offset = 0; // TODO: wired in Plan 04
+            let display_offset = snapshot.display_offset;
             let block_labels = self.block_renderer.build_block_text(
                 blocks,
                 display_offset,
