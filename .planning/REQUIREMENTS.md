@@ -30,9 +30,9 @@ Requirements for Structured Scrollback + MCP Server. Each maps to roadmap phases
 
 ### MCP Server
 
-- [ ] **MCP-01**: `glass mcp serve` runs an MCP server over stdio (JSON-RPC 2.0)
-- [ ] **MCP-02**: GlassHistory tool: query commands with filters (text, timeframe, status, cwd, limit)
-- [ ] **MCP-03**: GlassContext tool: returns high-level activity summary (command count, failures, files modified, time range)
+- [x] **MCP-01**: `glass mcp serve` runs an MCP server over stdio (JSON-RPC 2.0)
+- [x] **MCP-02**: GlassHistory tool: query commands with filters (text, timeframe, status, cwd, limit)
+- [x] **MCP-03**: GlassContext tool: returns high-level activity summary (command count, failures, files modified, time range)
 
 ### Infrastructure
 
@@ -83,9 +83,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-01 | Phase 7 | Complete |
 | CLI-02 | Phase 7 | Complete |
 | CLI-03 | Phase 7 | Complete |
-| MCP-01 | Phase 9 | Pending |
-| MCP-02 | Phase 9 | Pending |
-| MCP-03 | Phase 9 | Pending |
+| MCP-01 | Phase 9 | Complete |
+| MCP-02 | Phase 9 | Complete |
+| MCP-03 | Phase 9 | Complete |
 | INFR-01 | Phase 5 | Complete |
 | INFR-02 | Phase 6 | Complete |
 

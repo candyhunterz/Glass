@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
-status: completed
-stopped_at: Completed 08-02-PLAN.md
-last_updated: "2026-03-05T19:31:16.414Z"
-last_activity: 2026-03-05 -- Completed 08-02 search overlay rendering
+status: in-progress
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-03-05T20:20:00.000Z"
+last_activity: 2026-03-05 -- Completed 09-01 MCP server core implementation
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 10
-  completed_plans: 10
-  percent: 100
+  total_plans: 12
+  completed_plans: 11
+  percent: 92
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-04)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 8 - Search Overlay
+**Current focus:** Phase 9 - MCP Server
 
 ## Current Position
 
 Milestone: v1.1 Structured Scrollback + MCP Server
-Phase: 8 of 9 (Search Overlay)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 08 Complete
-Last activity: 2026-03-05 -- Completed 08-02 search overlay rendering
+Phase: 9 of 9 (MCP Server)
+Plan: 1 of 2 in current phase
+Status: Phase 09 in progress
+Last activity: 2026-03-05 -- Completed 09-01 MCP server core implementation
 
-Progress: [##########] 100% (v1.1: 4/5 phases, 2/2 plans in phase 8)
+Progress: [#########-] 92% (v1.1: 4/5 phases, 1/2 plans in phase 9)
 
 ## Performance Metrics
 
 **Velocity (from v1.0):**
-- Total plans completed: 12
-- Total execution time: ~4 hours
+- Total plans completed: 13
+- Total execution time: ~4.5 hours
 - Average: ~20 min/plan
 
 ## Accumulated Context
@@ -78,6 +78,10 @@ Recent decisions affecting v1.1:
 - [Phase 08]: Epoch timestamp matching for scroll-to-block instead of index-position heuristic
 - [Phase 08]: Command text extracted from terminal grid using block line ranges at finish time
 - [Phase 08]: started_epoch on Block struct for wall-clock matching with DB records
+- [Phase 09]: rmcp 1.1.0 (latest stable) instead of 0.11 from research -- API differs significantly
+- [Phase 09]: Per-branch tracing init in main.rs to prevent double-init panic (MCP needs stderr writer)
+- [Phase 09]: HistoryEntry response type separate from CommandRecord for controlled serialization
+- [Phase 09]: internal_err() helper for concise McpError conversion in tool handlers
 
 ### Pending Todos
 
@@ -89,6 +93,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T20:15:00Z
-Stopped at: Completed 08-02-PLAN.md
+Last session: 2026-03-05T20:20:00Z
+Stopped at: Completed 09-01-PLAN.md
 Resume file: None
