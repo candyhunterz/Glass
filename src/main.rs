@@ -7,9 +7,12 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use glass_core::config::GlassConfig;
-use glass_core::event::AppEvent;
+use glass_core::event::{AppEvent, GitStatus, ShellEvent};
 use glass_renderer::{FrameRenderer, GlassRenderer};
-use glass_terminal::{DefaultColors, EventProxy, PtyMsg, PtySender, encode_key, snapshot_term};
+use glass_terminal::{
+    BlockManager, DefaultColors, EventProxy, OscEvent, PtyMsg, PtySender, StatusState,
+    encode_key, query_git_status, snapshot_term,
+};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -46,6 +49,10 @@ struct WindowContext {
     term: Arc<FairMutex<Term<EventProxy>>>,
     /// Default terminal colors for snapshot resolution.
     default_colors: DefaultColors,
+    /// Block manager tracking command lifecycle via shell integration.
+    block_manager: BlockManager,
+    /// Status bar state: CWD and git info.
+    status: StatusState,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -58,6 +65,20 @@ struct Processor {
     proxy: EventLoopProxy<AppEvent>,
     /// Current keyboard modifier state, updated by ModifiersChanged events.
     modifiers: ModifiersState,
+}
+
+/// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
+/// so BlockManager.handle_event() can process it.
+fn shell_event_to_osc(event: &ShellEvent) -> OscEvent {
+    match event {
+        ShellEvent::PromptStart => OscEvent::PromptStart,
+        ShellEvent::CommandStart => OscEvent::CommandStart,
+        ShellEvent::CommandExecuted => OscEvent::CommandExecuted,
+        ShellEvent::CommandFinished { exit_code } => OscEvent::CommandFinished {
+            exit_code: *exit_code,
+        },
+        ShellEvent::CurrentDirectory(path) => OscEvent::CurrentDirectory(path.clone()),
+    }
 }
 
 impl ApplicationHandler<AppEvent> for Processor {
@@ -92,14 +113,15 @@ impl ApplicationHandler<AppEvent> for Processor {
             scale_factor,
         );
 
-        // Compute initial terminal size from font metrics
+        // Compute initial terminal size from font metrics.
+        // Subtract 1 line for the status bar so the PTY resize reflects actual content area.
         let (cell_w, cell_h) = frame_renderer.cell_size();
         let size = window.inner_size();
         let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
-        let num_lines = (size.height as f32 / cell_h).floor().max(1.0) as u16;
+        let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1);
 
         tracing::info!(
-            "Font metrics: cell={}x{} grid={}x{} scale={}",
+            "Font metrics: cell={}x{} grid={}x{} (status bar reserves 1 line) scale={}",
             cell_w, cell_h, num_cols, num_lines, scale_factor
         );
 
@@ -123,21 +145,29 @@ impl ApplicationHandler<AppEvent> for Processor {
         let _ = pty_sender.send(PtyMsg::Resize(initial_size));
 
         // Also resize the Term grid to match
-        term.lock().resize(TermDimensions { columns: num_cols as usize, screen_lines: num_lines as usize });
+        term.lock().resize(TermDimensions {
+            columns: num_cols as usize,
+            screen_lines: num_lines as usize,
+        });
 
         tracing::info!("PTY spawned — PowerShell is running");
 
         let default_colors = DefaultColors::default();
 
         let id = window.id();
-        self.windows.insert(id, WindowContext {
-            window,
-            renderer,
-            frame_renderer,
-            pty_sender,
-            term,
-            default_colors,
-        });
+        self.windows.insert(
+            id,
+            WindowContext {
+                window,
+                renderer,
+                frame_renderer,
+                pty_sender,
+                term,
+                default_colors,
+                block_manager: BlockManager::new(),
+                status: StatusState::default(),
+            },
+        );
     }
 
     /// Handle per-window OS events.
@@ -163,6 +193,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     snapshot_term(&term, &ctx.default_colors)
                 };
 
+                // Get visible blocks for the current viewport
+                let visible_blocks = ctx.block_manager.visible_blocks(
+                    snapshot.display_offset,
+                    snapshot.screen_lines,
+                );
+
                 // Get surface texture
                 let Some(frame) = ctx.renderer.get_current_texture() else {
                     return;
@@ -170,7 +206,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let view = frame.texture.create_view(&Default::default());
                 let sc = ctx.renderer.surface_config();
 
-                // Draw frame using FrameRenderer (no Term lock held)
+                // Draw frame using FrameRenderer with block decorations and status bar
                 ctx.frame_renderer.draw_frame(
                     ctx.renderer.device(),
                     ctx.renderer.queue(),
@@ -178,8 +214,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     sc.width,
                     sc.height,
                     &snapshot,
-                    &[],       // blocks: wired in Plan 04
-                    None,      // status: wired in Plan 04
+                    &visible_blocks,
+                    Some(&ctx.status),
                 );
 
                 frame.present();
@@ -191,10 +227,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
                 ctx.renderer.resize(size.width, size.height);
 
-                // Compute terminal grid size from font metrics
+                // Compute terminal grid size from font metrics.
+                // Subtract 1 line for the status bar.
                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                 let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
-                let num_lines = (size.height as f32 / cell_h).floor().max(1.0) as u16;
+                let num_lines =
+                    ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1);
 
                 // Notify PTY of the new terminal size with real cell dimensions
                 let new_window_size = WindowSize {
@@ -206,7 +244,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let _ = ctx.pty_sender.send(PtyMsg::Resize(new_window_size));
 
                 // Also resize the Term grid so content reflows (CORE-07)
-                ctx.term.lock().resize(TermDimensions { columns: num_cols as usize, screen_lines: num_lines as usize });
+                ctx.term.lock().resize(TermDimensions {
+                    columns: num_cols as usize,
+                    screen_lines: num_lines as usize,
+                });
 
                 // Request a redraw after resize so the surface is repainted immediately
                 ctx.window.request_redraw();
@@ -306,9 +347,59 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Exit the event loop when the shell exits
                 event_loop.exit();
             }
-            // Shell integration events — wired fully in Task 2
-            AppEvent::Shell { .. } => {}
-            AppEvent::GitInfo { .. } => {}
+            AppEvent::Shell {
+                window_id,
+                event: shell_event,
+                line,
+            } => {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    // Convert ShellEvent to OscEvent for BlockManager
+                    let osc_event = shell_event_to_osc(&shell_event);
+                    ctx.block_manager.handle_event(&osc_event, line);
+
+                    // On CurrentDirectory events, update status and query git info
+                    if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
+                        ctx.status.set_cwd(cwd.clone());
+
+                        // Spawn background thread for git status query
+                        // to avoid blocking the render thread
+                        if !ctx.status.git_query_pending {
+                            ctx.status.git_query_pending = true;
+                            let cwd_owned = cwd.clone();
+                            let proxy = self.proxy.clone();
+                            let wid = window_id;
+                            std::thread::Builder::new()
+                                .name("Glass git query".into())
+                                .spawn(move || {
+                                    let git_info = query_git_status(&cwd_owned);
+                                    let info = git_info.map(|gi| GitStatus {
+                                        branch: gi.branch,
+                                        dirty_count: gi.dirty_count,
+                                    });
+                                    let _ = proxy.send_event(AppEvent::GitInfo {
+                                        window_id: wid,
+                                        info,
+                                    });
+                                })
+                                .ok();
+                        }
+                    }
+
+                    // Request redraw to reflect block state changes
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::GitInfo { window_id, info } => {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    ctx.status.git_query_pending = false;
+                    let git_info = info.map(|gi| glass_terminal::GitInfo {
+                        branch: gi.branch,
+                        dirty_count: gi.dirty_count,
+                    });
+                    ctx.status.set_git_info(git_info);
+                    ctx.window.request_redraw();
+                }
+            }
         }
     }
 
