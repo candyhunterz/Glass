@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Structured Scrollback + MCP Server
 status: executing
-stopped_at: Completed 06-03 block decoration scrollback
-last_updated: "2026-03-05T17:37:45.549Z"
-last_activity: 2026-03-05 -- Completed 06-03 block decoration scrollback
+stopped_at: Completed 06-02 PTY output capture pipeline
+last_updated: "2026-03-05T17:43:53.000Z"
+last_activity: 2026-03-05 -- Completed 06-02 PTY output capture pipeline
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 5
-  completed_plans: 4
-  percent: 80
+  completed_plans: 5
+  percent: 100
 ---
 
 # Project State
@@ -29,9 +29,9 @@ Milestone: v1.1 Structured Scrollback + MCP Server
 Phase: 6 of 9 (Output Capture + Writer Integration)
 Plan: 3 of 3 in current phase (phase complete)
 Status: Executing
-Last activity: 2026-03-05 -- Completed 06-03 block decoration scrollback
+Last activity: 2026-03-05 -- Completed 06-02 PTY output capture pipeline
 
-Progress: [########..] 80% (v1.1: 1/5 phases, 3/3 plans in phase 6)
+Progress: [##########] 100% (v1.1: 1/5 phases, 3/3 plans in phase 6)
 
 ## Performance Metrics
 
@@ -60,6 +60,9 @@ Recent decisions affecting v1.1:
 - serde default function for backward-compatible TOML config parsing
 - Absolute line numbers from PTY for block tracking (not viewport-relative)
 - history_size in GridSnapshot for absolute-to-viewport coordinate conversion
+- Raw bytes via AppEvent to main thread for output processing (avoids glass_terminal -> glass_history dep)
+- Alt-screen detection via raw byte scanning (ESC[?1049h/l) instead of locking terminal TermMode
+- HistorySection as Option in GlassConfig for backward-compatible config parsing
 
 ### Pending Todos
 
@@ -71,6 +74,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T17:37:45.547Z
-Stopped at: Completed 06-03 block decoration scrollback
-Resume file: .planning/phases/06-output-capture-writer-integration/06-03-SUMMARY.md
+Last session: 2026-03-05T17:43:53Z
+Stopped at: Completed 06-02 PTY output capture pipeline
+Resume file: .planning/phases/06-output-capture-writer-integration/06-02-SUMMARY.md
