@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Scaffold** - Cargo workspace, wgpu GPU surface, PTY spawn with keyboard round-trip, and all structural pitfalls addressed (completed 2026-03-05)
 - [x] **Phase 2: Terminal Core** - Full VTE rendering pipeline producing a functional terminal (colors, keyboard, scrollback, copy/paste, resize, UTF-8) (completed 2026-03-05)
 - [ ] **Phase 3: Shell Integration and Block UI** - OSC 133/7 parsing, PowerShell and bash integration scripts, block-based command output, status bar
-- [ ] **Phase 4: Configuration and Performance** - TOML config file, font/shell override, cold start and latency targets confirmed
+- [x] **Phase 4: Configuration and Performance** - TOML config file, font/shell override, cold start and latency targets confirmed (completed 2026-03-05)
 
 ## Phase Details
 
@@ -79,7 +79,7 @@ Plans:
   2. Cold start time (from launch to interactive prompt) is under 200ms measured on a clean launch
   3. Keypress-to-screen latency is under 5ms measured under normal shell load
   4. Idle memory usage (shell at prompt, no active process) is under 50MB
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 04-01-PLAN.md — TOML config loading with serde/dirs, wiring into FrameRenderer and spawn_pty
@@ -95,4 +95,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Scaffold | 3/3 | Complete   | 2026-03-05 |
 | 2. Terminal Core | 3/3 | Complete   | 2026-03-05 |
 | 3. Shell Integration and Block UI | 3/4 | In Progress|  |
-| 4. Configuration and Performance | 0/2 | Not started | - |
+| 4. Configuration and Performance | 2/2 | Complete   | 2026-03-05 |

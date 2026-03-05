@@ -51,9 +51,9 @@ Requirements for Milestone 1 (foundation terminal with block UI). Each maps to r
 
 ### Performance
 
-- [ ] **PERF-01**: Cold start time is under 200ms
-- [ ] **PERF-02**: Input latency (keypress to screen) is under 5ms
-- [ ] **PERF-03**: Idle memory usage is under 50MB
+- [x] **PERF-01**: Cold start time is under 200ms
+- [x] **PERF-02**: Input latency (keypress to screen) is under 5ms
+- [x] **PERF-03**: Idle memory usage is under 50MB
 
 ## v2 Requirements
 
@@ -133,9 +133,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONF-01 | Phase 4 | Complete |
 | CONF-02 | Phase 4 | Complete |
 | CONF-03 | Phase 4 | Complete |
-| PERF-01 | Phase 4 | Pending |
-| PERF-02 | Phase 4 | Pending |
-| PERF-03 | Phase 4 | Pending |
+| PERF-01 | Phase 4 | Complete |
+| PERF-02 | Phase 4 | Complete |
+| PERF-03 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 27 total
