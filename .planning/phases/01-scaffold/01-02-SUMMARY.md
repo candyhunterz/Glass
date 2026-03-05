@@ -51,10 +51,10 @@ completed: 2026-03-05
 
 ## Performance
 
-- **Duration:** ~2 min
+- **Duration:** ~10 min
 - **Started:** 2026-03-05T01:31:42Z
-- **Completed:** 2026-03-05T01:34:04Z
-- **Tasks:** 1 of 2 (Task 2 is human-verify checkpoint)
+- **Completed:** 2026-03-05T01:39:41Z
+- **Tasks:** 2 of 2
 - **Files modified:** 5
 
 ## Accomplishments
@@ -68,8 +68,9 @@ completed: 2026-03-05
 Each task was committed atomically:
 
 1. **Task 1: Implement GlassRenderer with wgpu DX12 surface and winit ApplicationHandler** - `8ac66c3` (feat)
+2. **Task 2: Verify GPU window launches and resize is stable** - human-verified (no code changes — checkpoint approved)
 
-**Plan metadata:** (added after human-verify checkpoint completes)
+**Plan metadata:** (see final commit below)
 
 ## Files Created/Modified
 - `crates/glass_renderer/src/surface.rs` - GlassRenderer with async new(), draw(), resize(); wgpu DX12 surface management
@@ -131,9 +132,29 @@ Each task was committed atomically:
 None - no external service configuration required.
 
 ## Next Phase Readiness
-- GPU surface and event loop ready for Plan 03 (ConPTY PTY integration)
+- GPU surface and event loop verified working: dark gray window opens, resize is stable (no crash), close exits cleanly
 - GlassRenderer::draw() and ::resize() API stable and ready for glyphon text rendering (Phase 2)
-- Awaiting human verification (Task 2 checkpoint) to confirm DX12 backend selection and resize stability
+- DX12 backend log not visible in user's terminal but GPU functionality confirmed working
+- Ready for Plan 01-03 (ConPTY PTY integration)
+
+## Human Verification Result (Task 2)
+
+User confirmed:
+- Window appears with dark gray background
+- Resize works without crash (held and dragged for duration)
+- Close exits cleanly
+- GPU backend log (DX12) not visible in terminal, but GPU rendering functionality confirmed working
+
+## Self-Check: PASSED
+
+- FOUND: crates/glass_renderer/src/surface.rs
+- FOUND: crates/glass_renderer/src/lib.rs
+- FOUND: src/main.rs
+- FOUND: .planning/phases/01-scaffold/01-02-SUMMARY.md
+- FOUND commit: 8ac66c3 (feat: Task 1)
+- FOUND commit: dca185c (docs: metadata)
+- `cargo build --workspace` exits 0
+- Human verification: APPROVED
 
 ---
 *Phase: 01-scaffold*
