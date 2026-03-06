@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use crate::osc_scanner::OscEvent;
+use glass_pipes::CapturedStage;
 
 /// State of a command block in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +44,10 @@ pub struct Block {
     pub state: BlockState,
     /// Whether a pre-exec snapshot exists for this command (enables [undo] label).
     pub has_snapshot: bool,
+    /// Captured pipeline stages (empty for non-pipeline commands).
+    pub pipeline_stages: Vec<CapturedStage>,
+    /// Expected number of pipeline stages (from OSC 133;S).
+    pub pipeline_stage_count: Option<usize>,
 }
 
 impl Block {
@@ -58,6 +63,8 @@ impl Block {
             started_epoch: None,
             state: BlockState::PromptActive,
             has_snapshot: false,
+            pipeline_stages: Vec::new(),
+            pipeline_stage_count: None,
         }
     }
 
@@ -125,8 +132,26 @@ impl BlockManager {
             }
             // CurrentDirectory events are handled by StatusState, not BlockManager
             OscEvent::CurrentDirectory(_) => {}
-            // Pipeline events are handled by pipeline capture, not BlockManager
-            OscEvent::PipelineStart { .. } | OscEvent::PipelineStage { .. } => {}
+            OscEvent::PipelineStart { stage_count } => {
+                if let Some(idx) = self.current {
+                    if let Some(block) = self.blocks.get_mut(idx) {
+                        block.pipeline_stage_count = Some(*stage_count);
+                        block.pipeline_stages = Vec::with_capacity(*stage_count);
+                    }
+                }
+            }
+            OscEvent::PipelineStage { index, total_bytes, temp_path } => {
+                if let Some(idx) = self.current {
+                    if let Some(block) = self.blocks.get_mut(idx) {
+                        block.pipeline_stages.push(CapturedStage {
+                            index: *index,
+                            total_bytes: *total_bytes,
+                            data: glass_pipes::FinalizedBuffer::Complete(Vec::new()),
+                            temp_path: Some(temp_path.clone()),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -353,5 +378,95 @@ mod tests {
             format_duration(Duration::from_secs_f64(0.0005)),
             "<1ms"
         );
+    }
+
+    // -- Pipeline stage tests --
+
+    #[test]
+    fn block_new_has_empty_pipeline_stages() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        assert!(bm.blocks()[0].pipeline_stages.is_empty());
+        assert_eq!(bm.blocks()[0].pipeline_stage_count, None);
+    }
+
+    #[test]
+    fn pipeline_start_sets_stage_count() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 3 }, 1);
+        assert_eq!(bm.blocks()[0].pipeline_stage_count, Some(3));
+    }
+
+    #[test]
+    fn pipeline_stage_adds_entry() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 1);
+        bm.handle_event(&OscEvent::PipelineStage {
+            index: 0,
+            total_bytes: 1024,
+            temp_path: "/tmp/glass/stage_0".to_string(),
+        }, 2);
+        assert_eq!(bm.blocks()[0].pipeline_stages.len(), 1);
+        assert_eq!(bm.blocks()[0].pipeline_stages[0].index, 0);
+        assert_eq!(bm.blocks()[0].pipeline_stages[0].total_bytes, 1024);
+        assert_eq!(bm.blocks()[0].pipeline_stages[0].temp_path, Some("/tmp/glass/stage_0".to_string()));
+    }
+
+    #[test]
+    fn multiple_pipeline_stages_accumulate() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 3 }, 1);
+        for i in 0..3 {
+            bm.handle_event(&OscEvent::PipelineStage {
+                index: i,
+                total_bytes: 100 * (i + 1),
+                temp_path: format!("/tmp/glass/stage_{}", i),
+            }, 2);
+        }
+        assert_eq!(bm.blocks()[0].pipeline_stages.len(), 3);
+        assert_eq!(bm.blocks()[0].pipeline_stages[2].index, 2);
+        assert_eq!(bm.blocks()[0].pipeline_stages[2].total_bytes, 300);
+    }
+
+    #[test]
+    fn pipeline_events_without_current_block_ignored() {
+        let mut bm = BlockManager::new();
+        // No PromptStart -- no current block
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 0);
+        bm.handle_event(&OscEvent::PipelineStage {
+            index: 0,
+            total_bytes: 512,
+            temp_path: "/tmp/glass/stage_0".to_string(),
+        }, 1);
+        assert!(bm.blocks().is_empty());
+    }
+
+    #[test]
+    fn new_prompt_resets_pipeline_state() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 1);
+        bm.handle_event(&OscEvent::PipelineStage {
+            index: 0,
+            total_bytes: 100,
+            temp_path: "/tmp/glass/stage_0".to_string(),
+        }, 2);
+        // New prompt creates fresh block
+        bm.handle_event(&OscEvent::PromptStart, 10);
+        assert!(bm.blocks()[1].pipeline_stages.is_empty());
+        assert_eq!(bm.blocks()[1].pipeline_stage_count, None);
+        // First block still has its pipeline data
+        assert_eq!(bm.blocks()[0].pipeline_stages.len(), 1);
     }
 }

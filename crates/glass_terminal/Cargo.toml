@@ -13,3 +13,4 @@ tracing.workspace = true
 url.workspace = true
 polling = "3"
 vte = "0.15"
+glass_pipes = { path = "../glass_pipes" }
