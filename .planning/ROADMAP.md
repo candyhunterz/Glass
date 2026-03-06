@@ -6,6 +6,7 @@
 - [x] **v1.1 Structured Scrollback + MCP Server** -- Phases 5-9 (shipped 2026-03-05)
 - [x] **v1.2 Command-Level Undo** -- Phases 10-14 (shipped 2026-03-06)
 - [x] **v1.3 Pipe Visualization** -- Phases 15-20 (shipped 2026-03-06)
+- [ ] **v2.0 Cross-Platform & Tabs** -- Phases 21-24
 
 ## Phases
 
@@ -53,6 +54,20 @@
 
 </details>
 
+### v2.0 Cross-Platform & Tabs (Phases 21-24)
+
+- [ ] Phase 21: Session Extraction & Platform Foundation (3 plans)
+  **Goal:** Extract session state from WindowContext into SessionMux, add SessionId routing, platform cfg gates, and shell integration for zsh.
+  **Requirements:** [P21-01, P21-02, P21-03, P21-04, P21-05, P21-06, P21-07, P21-08, P21-09, P21-10]
+  **Plans:** 3 plans
+  Plans:
+  - [ ] 21-01-PLAN.md -- Create glass_mux crate with Session, SessionMux, types, and platform helpers
+  - [ ] 21-02-PLAN.md -- Add SessionId to AppEvent/EventProxy and create zsh shell integration
+  - [ ] 21-03-PLAN.md -- Refactor WindowContext to use SessionMux, verify zero regression
+- [ ] Phase 22: Cross-Platform Validation -- not started
+- [ ] Phase 23: Tabs -- not started
+- [ ] Phase 24: Split Panes -- not started
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -77,3 +92,7 @@
 | 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
+| 21. Session Extraction & Platform Foundation | v2.0 | 0/3 | Planned | -- |
+| 22. Cross-Platform Validation | v2.0 | 0/? | Not Started | -- |
+| 23. Tabs | v2.0 | 0/? | Not Started | -- |
+| 24. Split Panes | v2.0 | 0/? | Not Started | -- |
