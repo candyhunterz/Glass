@@ -64,7 +64,13 @@
   - [ ] 21-01-PLAN.md -- Create glass_mux crate with Session, SessionMux, types, and platform helpers
   - [x] 21-02-PLAN.md -- Add SessionId to AppEvent/EventProxy and create zsh shell integration
   - [ ] 21-03-PLAN.md -- Refactor WindowContext to use SessionMux, verify zero regression
-- [ ] Phase 22: Cross-Platform Validation -- not started
+- [ ] Phase 22: Cross-Platform Validation (2 plans)
+  **Goal:** Fix cross-platform compilation blockers, add platform-aware defaults, surface format logging, ScaleFactorChanged handling, and establish CI pipeline.
+  **Requirements:** [P22-01, P22-02, P22-03, P22-04, P22-05, P22-06, P22-07, P22-09, P22-10]
+  **Plans:** 2 plans
+  Plans:
+  - [ ] 22-01-PLAN.md -- Platform compilation fixes (windows-sys gating, spawn_pty shell detection, shell integration injection, font defaults)
+  - [ ] 22-02-PLAN.md -- Surface format logging, ScaleFactorChanged handler, CI workflow, cross-compilation validation
 - [ ] Phase 23: Tabs -- not started
 - [ ] Phase 24: Split Panes -- not started
 
@@ -92,7 +98,7 @@
 | 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
-| 21. Session Extraction & Platform Foundation | 3/3 | Complete    | 2026-03-06 | -- |
-| 22. Cross-Platform Validation | v2.0 | 0/? | Not Started | -- |
+| 21. Session Extraction & Platform Foundation | v2.0 | 3/3 | Complete | 2026-03-06 |
+| 22. Cross-Platform Validation | v2.0 | 0/2 | Not Started | -- |
 | 23. Tabs | v2.0 | 0/? | Not Started | -- |
 | 24. Split Panes | v2.0 | 0/? | Not Started | -- |
