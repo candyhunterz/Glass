@@ -101,9 +101,11 @@ Plans:
 **Requirements**: STOR-01, STOR-02
 **Success Criteria** (what must be TRUE):
   1. Pipe stage output is stored in a `pipe_stages` table linked to the parent command_id in history.db
-  2. Schema migration from v2 to v3 creates the pipe_stages table without data loss
+  2. Schema migration from v1 to v2 creates the pipe_stages table without data loss
   3. Retention pruning (age and count policies) cascades to pipe_stages when parent commands are pruned
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 18-01-PLAN.md -- Schema migration, DB methods, retention cascade, and main.rs wiring
 
 ### Phase 19: MCP + Config + Polish
 **Goal**: AI assistants can inspect pipeline stages, and users can configure pipe visualization behavior
@@ -139,6 +141,6 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
 | 15. Pipe Parsing Core | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 16. Shell Capture + Terminal Transport | v1.3 | 3/3 | Complete | 2026-03-06 |
-| 17. Pipeline UI | 2/2 | Complete   | 2026-03-06 | - |
-| 18. Storage + Retention | v1.3 | 0/? | Not started | - |
+| 17. Pipeline UI | v1.3 | 2/2 | Complete | 2026-03-06 |
+| 18. Storage + Retention | v1.3 | 0/1 | Not started | - |
 | 19. MCP + Config + Polish | v1.3 | 0/? | Not started | - |
