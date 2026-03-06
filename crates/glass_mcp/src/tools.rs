@@ -1,10 +1,11 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with four tools:
+//! Defines `GlassServer` with five tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
 //! - `glass_file_diff`: Inspect pre-command file contents for a given command
+//! - `glass_pipe_inspect`: Inspect intermediate output from a pipeline stage
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -74,6 +75,17 @@ pub struct FileDiffParams {
     pub command_id: i64,
 }
 
+/// Parameters for the glass_pipe_inspect tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PipeInspectParams {
+    /// The command ID to inspect pipe stages for.
+    #[schemars(description = "The command ID to inspect pipe stages for")]
+    pub command_id: i64,
+    /// Optional 0-based stage index. If omitted, returns all stages.
+    #[schemars(description = "Optional stage index (0-based). If omitted, returns all stages")]
+    pub stage: Option<i64>,
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -88,6 +100,17 @@ pub struct HistoryEntry {
     pub finished_at: i64,
     pub duration_ms: i64,
     pub output_preview: Option<String>,
+}
+
+/// A single pipeline stage entry returned by the glass_pipe_inspect tool.
+#[derive(Debug, Serialize)]
+pub struct PipeStageEntry {
+    pub stage_index: i64,
+    pub command: String,
+    pub output: Option<String>,
+    pub total_bytes: i64,
+    pub is_binary: bool,
+    pub is_sampled: bool,
 }
 
 impl From<CommandRecord> for HistoryEntry {
@@ -327,6 +350,58 @@ impl GlassServer {
             Ok(CallToolResult::success(vec![content]))
         }
     }
+
+    /// Inspect intermediate output from a pipeline stage.
+    /// Returns captured output for each pipe stage of a command.
+    #[tool(description = "Inspect intermediate output from a pipeline stage. Returns captured output for each pipe stage of a command.")]
+    async fn glass_pipe_inspect(
+        &self,
+        Parameters(params): Parameters<PipeInspectParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db_path = self.db_path.clone();
+        let stage_filter = params.stage;
+
+        let stages = tokio::task::spawn_blocking(move || {
+            let db = HistoryDb::open(&db_path).map_err(internal_err)?;
+            db.get_pipe_stages(params.command_id).map_err(internal_err)
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let entries: Vec<PipeStageEntry> = stages
+            .into_iter()
+            .map(|row| PipeStageEntry {
+                stage_index: row.stage_index,
+                command: row.command,
+                output: row.output,
+                total_bytes: row.total_bytes,
+                is_binary: row.is_binary,
+                is_sampled: row.is_sampled,
+            })
+            .collect();
+
+        let response = if let Some(idx) = stage_filter {
+            let stage = entries.into_iter().find(|e| e.stage_index == idx);
+            match stage {
+                Some(s) => serde_json::json!({
+                    "command_id": params.command_id,
+                    "stage": s,
+                }),
+                None => serde_json::json!({
+                    "command_id": params.command_id,
+                    "stages": Vec::<PipeStageEntry>::new(),
+                }),
+            }
+        } else {
+            serde_json::json!({
+                "command_id": params.command_id,
+                "stages": entries,
+            })
+        };
+
+        let content = Content::json(&response)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
 }
 
 #[tool_handler]
@@ -335,9 +410,10 @@ impl ServerHandler for GlassServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("glass-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Glass terminal history, context, undo, and file diff server. \
+                "Glass terminal history, context, undo, file diff, and pipe inspect server. \
                  Use glass_history to search commands, glass_context for activity overview, \
-                 glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents.",
+                 glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents, \
+                 glass_pipe_inspect to inspect intermediate pipeline stage output.",
             )
     }
 }
