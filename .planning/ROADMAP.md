@@ -90,7 +90,7 @@ Plans:
   2. Pipeline blocks with >2 stages or a failed exit code auto-expand; simple successful pipelines auto-collapse
   3. User can click or use keyboard to expand any individual stage and view its full intermediate output
   4. User can collapse/expand the entire pipeline block
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 17-01-PLAN.md -- Block data model extensions, auto-expand logic, and pipeline stage rendering
 - [ ] 17-02-PLAN.md -- Command text wiring, mouse click handling, keyboard shortcut, and visual verification
@@ -139,6 +139,6 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
 | 15. Pipe Parsing Core | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 16. Shell Capture + Terminal Transport | v1.3 | 3/3 | Complete | 2026-03-06 |
-| 17. Pipeline UI | v1.3 | 0/2 | Not started | - |
+| 17. Pipeline UI | 1/2 | In Progress|  | - |
 | 18. Storage + Retention | v1.3 | 0/? | Not started | - |
 | 19. MCP + Config + Polish | v1.3 | 0/? | Not started | - |

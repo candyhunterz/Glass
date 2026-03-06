@@ -22,9 +22,9 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 ### Pipeline UI
 
-- [ ] **UI-01**: Piped commands render as multi-row pipeline blocks showing each stage with line/byte count
-- [ ] **UI-02**: Pipeline blocks auto-expand on failure or >2 stages, collapse for simple success
-- [ ] **UI-03**: User can expand any stage to view its full intermediate output
+- [x] **UI-01**: Piped commands render as multi-row pipeline blocks showing each stage with line/byte count
+- [x] **UI-02**: Pipeline blocks auto-expand on failure or >2 stages, collapse for simple success
+- [x] **UI-03**: User can expand any stage to view its full intermediate output
 - [ ] **UI-04**: User can collapse/expand pipeline blocks with click or keyboard
 
 ### Storage & History
@@ -75,9 +75,9 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 | CAPT-02 | Phase 16 | Complete |
 | CAPT-03 | Phase 15 | Complete |
 | CAPT-04 | Phase 15 | Complete |
-| UI-01 | Phase 17 | Pending |
-| UI-02 | Phase 17 | Pending |
-| UI-03 | Phase 17 | Pending |
+| UI-01 | Phase 17 | Complete |
+| UI-02 | Phase 17 | Complete |
+| UI-03 | Phase 17 | Complete |
 | UI-04 | Phase 17 | Pending |
 | STOR-01 | Phase 18 | Pending |
 | STOR-02 | Phase 18 | Pending |
