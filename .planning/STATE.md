@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
-status: executing
-stopped_at: Completed 21-01-PLAN.md
-last_updated: "2026-03-06T22:38:10.259Z"
-last_activity: 2026-03-06 -- Completed 21-02 (Event SessionId + Zsh Shell Integration)
+status: completed
+stopped_at: Completed 21-03-PLAN.md (Phase 21 complete)
+last_updated: "2026-03-06T22:56:16.121Z"
+last_activity: 2026-03-06 -- Completed 21-03 (WindowContext SessionMux Integration)
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 21 -- Session Extraction & Platform Foundation
+**Current focus:** Phase 21 complete -- ready for Phase 22
 
 ## Current Position
 
-Phase: 21 of 24 -- Session Extraction & Platform Foundation
-Plan: 2 of 3
-Status: Executing
-Last activity: 2026-03-06 -- Completed 21-02 (Event SessionId + Zsh Shell Integration)
+Phase: 21 of 24 -- Session Extraction & Platform Foundation (COMPLETE)
+Plan: 3 of 3
+Status: Phase Complete
+Last activity: 2026-03-06 -- Completed 21-03 (WindowContext SessionMux Integration)
 
 ## Performance Metrics
 
@@ -49,6 +49,9 @@ See PROJECT.md Key Decisions table for full history.
 - [21-01] Platform helpers use cfg-gated function definitions per OS
 - [21-02] SessionId defined in glass_core::event (not glass_mux) to avoid circular crate dependency
 - [21-02] TerminalDirty excluded from session_id (any dirty triggers full redraw)
+- [21-03] glass_mux re-exports glass_core::event::SessionId (unified type, no duplication)
+- [21-03] Clone visible blocks and StatusState in render path for borrow-checker compliance
+- [21-03] OverlayAction enum pattern for search overlay key handling
 
 ### Pending Todos
 
@@ -63,6 +66,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T22:38:10.257Z
-Stopped at: Completed 21-01-PLAN.md
+Last session: 2026-03-06T22:56:16.119Z
+Stopped at: Completed 21-03-PLAN.md (Phase 21 complete)
 Resume file: None

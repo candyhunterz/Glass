@@ -56,7 +56,7 @@
 
 ### v2.0 Cross-Platform & Tabs (Phases 21-24)
 
-- [ ] Phase 21: Session Extraction & Platform Foundation (3 plans)
+- [x] Phase 21: Session Extraction & Platform Foundation (3 plans) (completed 2026-03-06)
   **Goal:** Extract session state from WindowContext into SessionMux, add SessionId routing, platform cfg gates, and shell integration for zsh.
   **Requirements:** [P21-01, P21-02, P21-03, P21-04, P21-05, P21-06, P21-07, P21-08, P21-09, P21-10]
   **Plans:** 3 plans
@@ -92,7 +92,7 @@
 | 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
-| 21. Session Extraction & Platform Foundation | 2/3 | In Progress|  | -- |
+| 21. Session Extraction & Platform Foundation | 3/3 | Complete   | 2026-03-06 | -- |
 | 22. Cross-Platform Validation | v2.0 | 0/? | Not Started | -- |
 | 23. Tabs | v2.0 | 0/? | Not Started | -- |
 | 24. Split Panes | v2.0 | 0/? | Not Started | -- |
