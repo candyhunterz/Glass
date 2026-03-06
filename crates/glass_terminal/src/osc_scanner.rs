@@ -39,6 +39,14 @@ pub enum OscEvent {
     CommandFinished { exit_code: Option<i32> },
     /// OSC 7 or OSC 9;9 - Current working directory changed
     CurrentDirectory(String),
+    /// OSC 133;S;{stage_count} - Pipeline with N stages detected
+    PipelineStart { stage_count: usize },
+    /// OSC 133;P;{index};{total_bytes};{temp_path} - Stage data available in temp file
+    PipelineStage {
+        index: usize,
+        total_bytes: usize,
+        temp_path: String,
+    },
 }
 
 /// Internal state of the byte-level scanner.
@@ -319,6 +327,32 @@ mod tests {
             events,
             vec![OscEvent::PromptStart, OscEvent::CommandStart]
         );
+    }
+
+    #[test]
+    fn pipeline_start_variant_exists() {
+        let event = OscEvent::PipelineStart { stage_count: 3 };
+        match event {
+            OscEvent::PipelineStart { stage_count } => assert_eq!(stage_count, 3),
+            _ => panic!("Expected PipelineStart"),
+        }
+    }
+
+    #[test]
+    fn pipeline_stage_variant_exists() {
+        let event = OscEvent::PipelineStage {
+            index: 0,
+            total_bytes: 1024,
+            temp_path: "/tmp/glass/stage_0".into(),
+        };
+        match event {
+            OscEvent::PipelineStage { index, total_bytes, temp_path } => {
+                assert_eq!(index, 0);
+                assert_eq!(total_bytes, 1024);
+                assert_eq!(temp_path, "/tmp/glass/stage_0");
+            }
+            _ => panic!("Expected PipelineStage"),
+        }
     }
 
     #[test]

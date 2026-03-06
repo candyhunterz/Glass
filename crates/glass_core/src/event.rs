@@ -14,6 +14,14 @@ pub enum ShellEvent {
     CommandFinished { exit_code: Option<i32> },
     /// OSC 7 or OSC 9;9 - Current working directory changed
     CurrentDirectory(String),
+    /// OSC 133;S - Pipeline capture started
+    PipelineStart { stage_count: usize },
+    /// OSC 133;P - Pipeline stage data available
+    PipelineStage {
+        index: usize,
+        total_bytes: usize,
+        temp_path: String,
+    },
 }
 
 /// Git repository information for the status bar.
@@ -39,4 +47,35 @@ pub enum AppEvent {
     /// Processing (ANSI stripping, binary detection, truncation) happens on the
     /// main thread to avoid glass_terminal depending on glass_history.
     CommandOutput { window_id: winit::window::WindowId, raw_output: Vec<u8> },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_event_pipeline_start_variant() {
+        let event = ShellEvent::PipelineStart { stage_count: 5 };
+        match event {
+            ShellEvent::PipelineStart { stage_count } => assert_eq!(stage_count, 5),
+            _ => panic!("Expected PipelineStart"),
+        }
+    }
+
+    #[test]
+    fn shell_event_pipeline_stage_variant() {
+        let event = ShellEvent::PipelineStage {
+            index: 1,
+            total_bytes: 2048,
+            temp_path: "/tmp/glass/stage_1".into(),
+        };
+        match event {
+            ShellEvent::PipelineStage { index, total_bytes, temp_path } => {
+                assert_eq!(index, 1);
+                assert_eq!(total_bytes, 2048);
+                assert_eq!(temp_path, "/tmp/glass/stage_1");
+            }
+            _ => panic!("Expected PipelineStage"),
+        }
+    }
 }

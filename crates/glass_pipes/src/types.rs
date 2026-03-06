@@ -177,6 +177,19 @@ impl StageBuffer {
     }
 }
 
+/// Captured data for a single pipeline stage, received from shell integration.
+#[derive(Debug, Clone)]
+pub struct CapturedStage {
+    /// Stage index (0-based)
+    pub index: usize,
+    /// Total bytes the stage produced (before any buffering)
+    pub total_bytes: usize,
+    /// Finalized buffer data (read from temp file, processed through StageBuffer)
+    pub data: FinalizedBuffer,
+    /// Path to temp file containing raw stage output (if not yet read)
+    pub temp_path: Option<String>,
+}
+
 /// Result of finalizing a stage buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FinalizedBuffer {
@@ -391,5 +404,31 @@ mod tests {
     #[test]
     fn test_is_binary_data_empty() {
         assert!(!is_binary_data(b""));
+    }
+
+    #[test]
+    fn test_captured_stage_fields() {
+        let stage = CapturedStage {
+            index: 2,
+            total_bytes: 4096,
+            data: FinalizedBuffer::Complete(vec![0x41; 100]),
+            temp_path: Some("/tmp/glass/stage_2".to_string()),
+        };
+        assert_eq!(stage.index, 2);
+        assert_eq!(stage.total_bytes, 4096);
+        assert!(matches!(stage.data, FinalizedBuffer::Complete(_)));
+        assert_eq!(stage.temp_path, Some("/tmp/glass/stage_2".to_string()));
+    }
+
+    #[test]
+    fn test_captured_stage_no_temp_path() {
+        let stage = CapturedStage {
+            index: 0,
+            total_bytes: 1024,
+            data: FinalizedBuffer::Binary { size: 1024 },
+            temp_path: None,
+        };
+        assert_eq!(stage.index, 0);
+        assert!(stage.temp_path.is_none());
     }
 }
