@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// How confident the parser is in its identification of file targets.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,4 +48,70 @@ pub struct SnapshotFileRecord {
     pub file_size: Option<u64>,
     /// How this file entry was recorded (e.g., "parser", "watcher").
     pub source: String,
+}
+
+// ---------------------------------------------------------------------------
+// Watcher event types
+// ---------------------------------------------------------------------------
+
+/// A filesystem event detected by the watcher.
+#[derive(Debug, Clone)]
+pub struct WatcherEvent {
+    /// Path of the affected file.
+    pub path: PathBuf,
+    /// What kind of change occurred.
+    pub kind: WatcherEventKind,
+}
+
+/// The kind of filesystem change.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WatcherEventKind {
+    /// File was created.
+    Create,
+    /// File content was modified.
+    Modify,
+    /// File was deleted.
+    Delete,
+    /// File was renamed (contains the new path).
+    Rename { to: PathBuf },
+}
+
+impl WatcherEvent {
+    /// Convert a `notify::Event` into a `WatcherEvent` for a specific path.
+    ///
+    /// Returns `None` for events that do not represent content modifications
+    /// (e.g., access, metadata-only changes).
+    pub fn from_notify(event: &notify::Event, path: &Path) -> Option<Self> {
+        use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
+        use notify::EventKind;
+
+        let kind = match &event.kind {
+            EventKind::Create(CreateKind::File)
+            | EventKind::Create(CreateKind::Any) => WatcherEventKind::Create,
+
+            EventKind::Modify(ModifyKind::Data(_))
+            | EventKind::Modify(ModifyKind::Any) => WatcherEventKind::Modify,
+
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+                // For rename events, notify puts [from, to] in event.paths
+                let to = event
+                    .paths
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| path.to_path_buf());
+                WatcherEventKind::Rename { to }
+            }
+
+            EventKind::Remove(RemoveKind::File)
+            | EventKind::Remove(RemoveKind::Any) => WatcherEventKind::Delete,
+
+            // Ignore Access, Metadata-only, Other
+            _ => return None,
+        };
+
+        Some(Self {
+            path: path.to_path_buf(),
+            kind,
+        })
+    }
 }
