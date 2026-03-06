@@ -49,7 +49,17 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-(No active milestone -- define next with `/gsd:new-milestone`)
+## Current Milestone: v1.3 Pipe Visualization
+
+**Goal:** Visual pipe debugging with inspectable intermediate stages across all platforms.
+
+**Target features:**
+- Pipe detection, parsing, and transparent capture (tee-based for bash/zsh, post-hoc for PowerShell)
+- Multi-row pipeline UI blocks with auto-expand/collapse and expandable stage output
+- TTY-sensitive command detection and opt-out flag
+- Pipe stage storage in history DB with retention policies
+- GlassPipeInspect MCP tool for AI integration
+- Config section for pipe visualization settings
 
 #### Future
 
@@ -136,4 +146,4 @@ Known tech debt:
 | GlassServer stores glass_dir not open store | Per-request store opening in spawn_blocking for thread safety | ✓ Good -- SnapshotStore is !Send |
 
 ---
-*Last updated: 2026-03-06 after v1.2 milestone*
+*Last updated: 2026-03-05 after v1.3 milestone started*
