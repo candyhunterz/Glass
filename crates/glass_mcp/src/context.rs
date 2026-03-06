@@ -175,4 +175,92 @@ mod tests {
         assert_eq!(summary.recent_directories[0], "/dir/11");
         assert_eq!(summary.recent_directories[1], "/dir/10");
     }
+
+    #[test]
+    fn test_pipeline_stats_empty_db() {
+        let (db, _dir) = test_db();
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.pipeline_count, 0);
+        assert_eq!(summary.avg_pipeline_stages, 0.0);
+        assert_eq!(summary.pipeline_failure_rate, 0.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_with_data() {
+        use glass_history::PipeStageRow;
+        let (db, _dir) = test_db();
+        // Command 1: success, 3 pipe stages
+        let id1 = {
+            insert(&db, "cat | grep | wc", "/tmp", Some(0), 1700000000);
+            1 // first inserted gets id 1
+        };
+        db.insert_pipe_stages(id1, &[
+            PipeStageRow { stage_index: 0, command: "cat".into(), output: Some("a".into()), total_bytes: 1, is_binary: false, is_sampled: false },
+            PipeStageRow { stage_index: 1, command: "grep".into(), output: Some("b".into()), total_bytes: 1, is_binary: false, is_sampled: false },
+            PipeStageRow { stage_index: 2, command: "wc".into(), output: Some("1".into()), total_bytes: 1, is_binary: false, is_sampled: false },
+        ]).unwrap();
+
+        // Command 2: failure, 2 pipe stages
+        let id2 = {
+            insert(&db, "echo | sort", "/tmp", Some(1), 1700000010);
+            2
+        };
+        db.insert_pipe_stages(id2, &[
+            PipeStageRow { stage_index: 0, command: "echo".into(), output: Some("x".into()), total_bytes: 1, is_binary: false, is_sampled: false },
+            PipeStageRow { stage_index: 1, command: "sort".into(), output: Some("x".into()), total_bytes: 1, is_binary: false, is_sampled: false },
+        ]).unwrap();
+
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.pipeline_count, 2);
+        assert!((summary.avg_pipeline_stages - 2.5).abs() < 0.001);
+        assert!((summary.pipeline_failure_rate - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pipeline_stats_with_time_filter() {
+        use glass_history::PipeStageRow;
+        let (db, _dir) = test_db();
+        // Old command with pipes (before filter)
+        let id1 = {
+            insert(&db, "cat | grep", "/tmp", Some(0), 1700000000);
+            1
+        };
+        db.insert_pipe_stages(id1, &[
+            PipeStageRow { stage_index: 0, command: "cat".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
+            PipeStageRow { stage_index: 1, command: "grep".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
+        ]).unwrap();
+
+        // New command with pipes (after filter)
+        let id2 = {
+            insert(&db, "echo | wc", "/tmp", Some(0), 1700000100);
+            2
+        };
+        db.insert_pipe_stages(id2, &[
+            PipeStageRow { stage_index: 0, command: "echo".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
+            PipeStageRow { stage_index: 1, command: "wc".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
+            PipeStageRow { stage_index: 2, command: "head".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
+        ]).unwrap();
+
+        // Filter: only after epoch 1700000050
+        let summary = build_context_summary(db.conn(), Some(1700000050)).unwrap();
+        assert_eq!(summary.pipeline_count, 1);
+        assert!((summary.avg_pipeline_stages - 3.0).abs() < 0.001);
+        assert_eq!(summary.pipeline_failure_rate, 0.0);
+    }
+
+    #[test]
+    fn test_pipeline_stats_division_by_zero() {
+        let (db, _dir) = test_db();
+        // Insert commands but no pipe stages
+        insert(&db, "ls", "/tmp", Some(0), 1700000000);
+        insert(&db, "pwd", "/tmp", Some(0), 1700000010);
+
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.pipeline_count, 0);
+        assert_eq!(summary.avg_pipeline_stages, 0.0);
+        assert_eq!(summary.pipeline_failure_rate, 0.0);
+        // Ensure no NaN or Infinity
+        assert!(summary.avg_pipeline_stages.is_finite());
+        assert!(summary.pipeline_failure_rate.is_finite());
+    }
 }
