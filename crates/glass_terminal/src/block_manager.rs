@@ -48,6 +48,12 @@ pub struct Block {
     pub pipeline_stages: Vec<CapturedStage>,
     /// Expected number of pipeline stages (from OSC 133;S).
     pub pipeline_stage_count: Option<usize>,
+    /// Whether the pipeline block is expanded (showing stage rows).
+    pub pipeline_expanded: bool,
+    /// Per-stage command text (parallel to pipeline_stages).
+    pub pipeline_stage_commands: Vec<String>,
+    /// Which single stage is showing full captured output (None = all collapsed).
+    pub expanded_stage_index: Option<usize>,
 }
 
 impl Block {
@@ -65,6 +71,9 @@ impl Block {
             has_snapshot: false,
             pipeline_stages: Vec::new(),
             pipeline_stage_count: None,
+            pipeline_expanded: false,
+            pipeline_stage_commands: Vec::new(),
+            expanded_stage_index: None,
         }
     }
 
@@ -74,6 +83,29 @@ impl Block {
             (Some(start), Some(end)) => Some(end.duration_since(start)),
             _ => None,
         }
+    }
+
+    /// Toggle the pipeline expand/collapse state.
+    /// Clears expanded_stage_index when collapsing.
+    pub fn toggle_pipeline_expanded(&mut self) {
+        self.pipeline_expanded = !self.pipeline_expanded;
+        if !self.pipeline_expanded {
+            self.expanded_stage_index = None;
+        }
+    }
+
+    /// Set which stage is showing full captured output, or None to collapse all.
+    pub fn set_expanded_stage(&mut self, index: Option<usize>) {
+        self.expanded_stage_index = index;
+    }
+
+    /// Number of overlay rows this pipeline uses.
+    /// 0 if collapsed or non-pipeline, stage_count if expanded.
+    pub fn pipeline_row_count(&self) -> usize {
+        if !self.pipeline_expanded || self.pipeline_stages.is_empty() {
+            return 0;
+        }
+        self.pipeline_stages.len()
     }
 }
 
@@ -127,6 +159,13 @@ impl BlockManager {
                         block.exit_code = *exit_code;
                         block.output_end_line = Some(line);
                         block.finished_at = Some(Instant::now());
+
+                        // Auto-expand pipeline blocks on failure or >2 stages
+                        if block.pipeline_stage_count.unwrap_or(0) > 0 {
+                            let stage_count = block.pipeline_stage_count.unwrap_or(0);
+                            let failed = block.exit_code.map_or(false, |c| c != 0);
+                            block.pipeline_expanded = failed || stage_count > 2;
+                        }
                     }
                 }
             }
@@ -448,6 +487,106 @@ mod tests {
             temp_path: "/tmp/glass/stage_0".to_string(),
         }, 1);
         assert!(bm.blocks().is_empty());
+    }
+
+    // -- Pipeline UI state tests (Phase 17) --
+
+    #[test]
+    fn pipeline_auto_expand_on_failure() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 1);
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(1) }, 5);
+        assert!(bm.blocks()[0].pipeline_expanded);
+    }
+
+    #[test]
+    fn pipeline_auto_expand_on_many_stages() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 3 }, 1);
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
+        assert!(bm.blocks()[0].pipeline_expanded);
+    }
+
+    #[test]
+    fn pipeline_auto_collapse_simple_success() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 1);
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
+        assert!(!bm.blocks()[0].pipeline_expanded);
+    }
+
+    #[test]
+    fn pipeline_non_pipeline_stays_collapsed() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        // No PipelineStart event -- pipeline_stage_count stays None
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
+        assert!(!bm.blocks()[0].pipeline_expanded);
+    }
+
+    #[test]
+    fn pipeline_stage_commands_stored() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        // Simulate external population of pipeline_stage_commands
+        bm.current_block_mut().unwrap().pipeline_stage_commands =
+            vec!["grep foo".to_string(), "wc -l".to_string()];
+        assert_eq!(bm.blocks()[0].pipeline_stage_commands.len(), 2);
+        assert_eq!(bm.blocks()[0].pipeline_stage_commands[0], "grep foo");
+    }
+
+    #[test]
+    fn expanded_stage_index_defaults_none() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        assert_eq!(bm.blocks()[0].expanded_stage_index, None);
+    }
+
+    #[test]
+    fn toggle_pipeline_expanded_flips() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        assert!(!bm.blocks()[0].pipeline_expanded);
+        bm.current_block_mut().unwrap().toggle_pipeline_expanded();
+        assert!(bm.blocks()[0].pipeline_expanded);
+        bm.current_block_mut().unwrap().toggle_pipeline_expanded();
+        assert!(!bm.blocks()[0].pipeline_expanded);
+    }
+
+    #[test]
+    fn toggle_pipeline_expanded_clears_expanded_stage() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        let block = bm.current_block_mut().unwrap();
+        block.pipeline_expanded = true;
+        block.expanded_stage_index = Some(1);
+        block.toggle_pipeline_expanded(); // collapse
+        assert!(!block.pipeline_expanded);
+        assert_eq!(block.expanded_stage_index, None);
+    }
+
+    #[test]
+    fn set_expanded_stage_sets_and_clears() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        let block = bm.current_block_mut().unwrap();
+        block.set_expanded_stage(Some(2));
+        assert_eq!(block.expanded_stage_index, Some(2));
+        block.set_expanded_stage(None);
+        assert_eq!(block.expanded_stage_index, None);
     }
 
     #[test]
