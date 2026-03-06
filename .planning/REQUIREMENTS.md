@@ -21,7 +21,7 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 - [ ] **UNDO-01**: User can undo the most recent file-modifying command via Ctrl+Shift+Z
 - [ ] **UNDO-02**: Undo restores snapshotted file contents to their pre-command state
 - [ ] **UNDO-03**: Conflict detection warns if a file has been modified since the tracked command ran
-- [ ] **UNDO-04**: Each command displays its undo confidence level (pre-exec snapshot vs watcher-only)
+- [x] **UNDO-04**: Each command displays its undo confidence level (pre-exec snapshot vs watcher-only)
 
 ### User Interface
 
@@ -33,7 +33,7 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 
 - [ ] **STOR-01**: Storage pruning enforces configurable max age and max size limits with automatic cleanup
 - [x] **STOR-02**: `.glassignore` patterns exclude directories from snapshot tracking (node_modules, target, .git)
-- [ ] **STOR-03**: Snapshot configuration section in config.toml (enabled, max_count, max_size_mb, retention_days)
+- [x] **STOR-03**: Snapshot configuration section in config.toml (enabled, max_count, max_size_mb, retention_days)
 
 ### AI Integration
 
@@ -79,13 +79,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UNDO-01 | Phase 13 | Pending |
 | UNDO-02 | Phase 13 | Pending |
 | UNDO-03 | Phase 13 | Pending |
-| UNDO-04 | Phase 13 | Pending |
+| UNDO-04 | Phase 13 | Complete |
 | UI-01 | Phase 14 | Pending |
 | UI-02 | Phase 14 | Pending |
 | UI-03 | Phase 14 | Pending |
 | STOR-01 | Phase 14 | Pending |
 | STOR-02 | Phase 12 | Complete |
-| STOR-03 | Phase 13 | Pending |
+| STOR-03 | Phase 13 | Complete |
 | MCP-01 | Phase 14 | Pending |
 | MCP-02 | Phase 14 | Pending |
 
