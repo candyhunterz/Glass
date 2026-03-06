@@ -7,11 +7,11 @@ stopped_at: null
 last_updated: "2026-03-06"
 last_activity: 2026-03-06 -- Milestone v2.0 started
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 3
+  completed_plans: 1
+  percent: 33
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Defining requirements for v2.0
+**Current focus:** Phase 21 -- Session Extraction & Platform Foundation
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: --
-Status: Defining requirements
-Last activity: 2026-03-06 -- Milestone v2.0 started
+Phase: 21 of 24 -- Session Extraction & Platform Foundation
+Plan: 2 of 3
+Status: Executing
+Last activity: 2026-03-06 -- Completed 21-02 (Event SessionId + Zsh Shell Integration)
 
 ## Performance Metrics
 
@@ -45,6 +45,9 @@ Last activity: 2026-03-06 -- Milestone v2.0 started
 
 See PROJECT.md Key Decisions table for full history.
 
+- [21-02] SessionId defined in glass_core::event (not glass_mux) to avoid circular crate dependency
+- [21-02] TerminalDirty excluded from session_id (any dirty triggers full redraw)
+
 ### Pending Todos
 
 None.
@@ -59,5 +62,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-06
-Stopped at: Milestone v1.3 archived
+Stopped at: Completed 21-02-PLAN.md
 Resume file: None

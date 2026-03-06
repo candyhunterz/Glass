@@ -62,7 +62,7 @@
   **Plans:** 3 plans
   Plans:
   - [ ] 21-01-PLAN.md -- Create glass_mux crate with Session, SessionMux, types, and platform helpers
-  - [ ] 21-02-PLAN.md -- Add SessionId to AppEvent/EventProxy and create zsh shell integration
+  - [x] 21-02-PLAN.md -- Add SessionId to AppEvent/EventProxy and create zsh shell integration
   - [ ] 21-03-PLAN.md -- Refactor WindowContext to use SessionMux, verify zero regression
 - [ ] Phase 22: Cross-Platform Validation -- not started
 - [ ] Phase 23: Tabs -- not started
@@ -92,7 +92,7 @@
 | 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
-| 21. Session Extraction & Platform Foundation | v2.0 | 0/3 | Planned | -- |
+| 21. Session Extraction & Platform Foundation | v2.0 | 1/3 | Active | -- |
 | 22. Cross-Platform Validation | v2.0 | 0/? | Not Started | -- |
 | 23. Tabs | v2.0 | 0/? | Not Started | -- |
 | 24. Split Panes | v2.0 | 0/? | Not Started | -- |
