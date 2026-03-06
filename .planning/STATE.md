@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
-status: executing
-stopped_at: Completed 20-02-PLAN.md
-last_updated: "2026-03-06T19:09:10.059Z"
-last_activity: 2026-03-06 -- Completed 20-02 dead classify module removal
+status: completed
+stopped_at: Completed 20-01-PLAN.md (20-02 also complete)
+last_updated: "2026-03-06T19:08:47Z"
+last_activity: 2026-03-06 -- Completed 20-01 config gate (three-layer pipes.enabled gating)
 progress:
   total_phases: 6
   completed_phases: 6
   total_plans: 11
   completed_plans: 11
-  percent: 91
+  percent: 100
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 20 (gap closure)
-Plan: 2 of 2 in current phase (20-02 complete)
-Status: In Progress
-Last activity: 2026-03-06 -- Completed 20-02 dead classify module removal
+Plan: 2 of 2 in current phase (20-01, 20-02 complete)
+Status: Complete
+Last activity: 2026-03-06 -- Completed 20-01 config gate (three-layer pipes.enabled gating)
 
-Progress: [█████████░] 91%
+Progress: [██████████] 100% (Phase 20 COMPLETE)
 
 ## Performance Metrics
 
@@ -74,6 +74,9 @@ Recent decisions affecting current work:
 - [Phase 19-01]: auto_expand override in main.rs after handle_event keeps BlockManager config-agnostic
 - [Phase 19-01]: pipes.enabled=false skips temp file reading only (shell scripts still emit OSC)
 - [Phase 19]: PipeStageEntry local struct in tools.rs for Serialize (avoids glass_history coupling)
+- [Phase 20-01]: GLASS_PIPES_DISABLED=1 env var as IPC mechanism between terminal and shell (shells cannot read TOML)
+- [Phase 20-01]: Gate at __glass_accept_line entry in bash (single chokepoint covers all pipeline rewriting)
+- [Phase 20-01]: Pipeline events skipped before block_manager.handle_event to prevent empty stage accumulation
 - [Phase 20]: Removed parse_pipeline_default_classification test alongside PipelineClassification (tested dead code defaults)
 
 ### Pending Todos
@@ -88,6 +91,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T19:09:10.057Z
-Stopped at: Completed 20-02-PLAN.md
+Last session: 2026-03-06T19:08:47Z
+Stopped at: Completed 20-01-PLAN.md (phase 20 fully complete)
 Resume file: None
