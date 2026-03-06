@@ -112,12 +112,12 @@ Plans:
   3. User can undo a specific command by running `glass undo <command-id>` from the CLI
   4. AI assistants can trigger undo and inspect file diffs through GlassUndo and GlassFileDiff MCP tools
   5. Snapshot storage is automatically pruned on startup based on configured max age and max size limits
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 14-01: TBD
-- [ ] 14-02: TBD
-- [ ] 14-03: TBD
+- [ ] 14-01-PLAN.md — Storage pruning module + UndoEngine undo_command refactor (shared foundation)
+- [ ] 14-02-PLAN.md — [undo] block label, CLI undo subcommand, visual feedback, startup pruning wiring
+- [ ] 14-03-PLAN.md — GlassUndo and GlassFileDiff MCP tools for AI assistant integration
 
 ## Progress
 
@@ -140,4 +140,4 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 11. Command Parser | 2/2 | Complete    | 2026-03-05 | - |
 | 12. FS Watcher Engine | 2/2 | Complete    | 2026-03-06 | - |
 | 13. Integration + Undo Engine | 4/4 | Complete    | 2026-03-06 | - |
-| 14. UI + CLI + MCP + Pruning | v1.2 | 0/? | Not started | - |
+| 14. UI + CLI + MCP + Pruning | v1.2 | 0/3 | Not started | - |
