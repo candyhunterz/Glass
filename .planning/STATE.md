@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
 status: in-progress
-stopped_at: Completed 12-01-PLAN.md
-last_updated: "2026-03-06T01:13:25.000Z"
-last_activity: 2026-03-06 -- Completed 12-01-PLAN.md (FS watcher library)
+stopped_at: Completed 12-02-PLAN.md
+last_updated: "2026-03-06T01:18:40.000Z"
+last_activity: 2026-03-06 -- Completed 12-02-PLAN.md (FS watcher integration)
 progress:
   total_phases: 5
   completed_phases: 2
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 12 (3 of 5 in v1.2)
-Plan: 1 of 2 in current phase
-Status: Phase 12 in progress, Plan 01 complete
-Last activity: 2026-03-06 -- Completed 12-01-PLAN.md (FS watcher library)
+Plan: 2 of 2 in current phase
+Status: Phase 12 complete, all plans done
+Last activity: 2026-03-06 -- Completed 12-02-PLAN.md (FS watcher integration)
 
 Progress: [██████████] 100% (v1.2)
 
@@ -69,6 +69,9 @@ Recent decisions affecting current work:
 - [12-01]: Used ignore crate's gitignore module for .glassignore matching (battle-tested, handles negation and directory patterns)
 - [12-01]: matched_path_or_any_parents for subdirectory matching of ignored directories
 - [12-01]: HashMap deduplication keeps last event per path in drain_events()
+- [12-02]: Watcher drain placed after history record insert so last_command_id is available for snapshot
+- [12-02]: Rename events store both source and destination paths via store_file
+- [12-02]: Watcher creation failure is non-fatal (warns and continues without monitoring)
 
 ### Pending Todos
 
@@ -82,6 +85,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T01:13:25.000Z
-Stopped at: Completed 12-01-PLAN.md
+Last session: 2026-03-06T01:18:40.000Z
+Stopped at: Completed 12-02-PLAN.md
 Resume file: None
