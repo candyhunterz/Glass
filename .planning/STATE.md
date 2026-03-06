@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
-status: defining_requirements
+status: ready_to_plan
 stopped_at: null
 last_updated: "2026-03-05T00:00:00Z"
-last_activity: 2026-03-05 -- Milestone v1.3 started
+last_activity: 2026-03-05 -- v1.3 roadmap created
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,14 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** v1.3 Pipe Visualization
+**Current focus:** Phase 15 - Pipe Parsing Core
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: --
-Status: Defining requirements
-Last activity: 2026-03-05 -- Milestone v1.3 started
+Phase: 15 (1 of 5 in v1.3)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-03-05 -- v1.3 roadmap created
+
+Progress: [░░░░░░░░░░] 0% (v1.3)
 
 ## Performance Metrics
 
@@ -43,6 +45,10 @@ Last activity: 2026-03-05 -- Milestone v1.3 started
 ### Decisions
 
 See PROJECT.md Key Decisions table for full history.
+Recent decisions affecting current work:
+
+- [v1.2]: shlex for POSIX, custom for PowerShell -- relevant for pipe parsing tokenization
+- [v1.2]: Separate snapshots.db from history.db -- pipe_stages goes in history.db
 
 ### Pending Todos
 
@@ -50,10 +56,12 @@ None.
 
 ### Blockers/Concerns
 
-None.
+- Research flag: Bash DEBUG trap reliability across bash versions needs testing (Phase 16)
+- Research flag: Expanded stage output for long captures may need virtual scrolling (Phase 17)
+- Known tech debt: pruner.rs max_size_mb not enforced
 
 ## Session Continuity
 
-Last session: 2026-03-06
-Stopped at: Milestone v1.2 complete
+Last session: 2026-03-05
+Stopped at: v1.3 roadmap created, ready to plan Phase 15
 Resume file: None

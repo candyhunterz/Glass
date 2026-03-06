@@ -68,13 +68,28 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated during roadmap creation) | | |
+| PIPE-01 | Phase 15 | Pending |
+| PIPE-02 | Phase 15 | Pending |
+| PIPE-03 | Phase 15 | Pending |
+| CAPT-01 | Phase 16 | Pending |
+| CAPT-02 | Phase 16 | Pending |
+| CAPT-03 | Phase 15 | Pending |
+| CAPT-04 | Phase 15 | Pending |
+| UI-01 | Phase 17 | Pending |
+| UI-02 | Phase 17 | Pending |
+| UI-03 | Phase 17 | Pending |
+| UI-04 | Phase 17 | Pending |
+| STOR-01 | Phase 18 | Pending |
+| STOR-02 | Phase 18 | Pending |
+| MCP-01 | Phase 19 | Pending |
+| MCP-02 | Phase 19 | Pending |
+| CONF-01 | Phase 19 | Pending |
 
 **Coverage:**
 - v1.3 requirements: 16 total
-- Mapped to phases: 0
-- Unmapped: 16
+- Mapped to phases: 16
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-05*
-*Last updated: 2026-03-05 after initial definition*
+*Last updated: 2026-03-05 after roadmap creation*

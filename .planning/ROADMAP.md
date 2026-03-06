@@ -5,6 +5,7 @@
 - [x] **v1.0 MVP** -- Phases 1-4 (shipped 2026-03-05)
 - [x] **v1.1 Structured Scrollback + MCP Server** -- Phases 5-9 (shipped 2026-03-05)
 - [x] **v1.2 Command-Level Undo** -- Phases 10-14 (shipped 2026-03-06)
+- [ ] **v1.3 Pipe Visualization** -- Phases 15-19 (in progress)
 
 ## Phases
 
@@ -40,7 +41,75 @@
 
 </details>
 
+### v1.3 Pipe Visualization (In Progress)
+
+- [ ] **Phase 15: Pipe Parsing Core** - glass_pipes crate with pipe splitter, TTY detection, buffer policies, and data types
+- [ ] **Phase 16: Shell Capture + Terminal Transport** - Shell integration rewriting (bash tee, PowerShell Tee-Object), OSC 133;S/P protocol, OscScanner extension, and event wiring
+- [ ] **Phase 17: Pipeline UI** - Multi-row pipeline blocks with expand/collapse, stage output display, and auto-expand logic
+- [ ] **Phase 18: Storage + Retention** - pipe_stages DB table, schema migration, and retention policy integration
+- [ ] **Phase 19: MCP + Config + Polish** - GlassPipeInspect tool, GlassContext pipeline stats, and [pipes] config section
+
+## Phase Details
+
+### Phase 15: Pipe Parsing Core
+**Goal**: Users' piped commands are correctly detected, parsed, and classified with appropriate exclusions
+**Depends on**: Phase 14 (v1.2 complete)
+**Requirements**: PIPE-01, PIPE-02, PIPE-03, CAPT-03, CAPT-04
+**Success Criteria** (what must be TRUE):
+  1. A command like `cat file | grep foo | wc -l` is parsed into 3 distinct stages with correct command text per stage
+  2. Pipe characters inside quotes or escaped are not treated as pipe boundaries
+  3. Commands containing TTY-sensitive programs (less, vim, fzf, git log) are flagged for exclusion from capture
+  4. A `--no-glass` flag on any command opts it out of pipe interception
+  5. Stage buffers exceeding 10MB are sampled (head + tail) rather than truncated, and binary data is detected and labeled
+**Plans**: TBD
+
+### Phase 16: Shell Capture + Terminal Transport
+**Goal**: Pipe stage intermediate output is captured by the shell and delivered to the terminal via OSC sequences
+**Depends on**: Phase 15
+**Requirements**: CAPT-01, CAPT-02
+**Success Criteria** (what must be TRUE):
+  1. In bash/zsh, running a piped command produces tee-captured intermediate output for each stage, stored in temp files and emitted as OSC 133;P sequences
+  2. In PowerShell, running a piped command captures per-stage text representation via Tee-Object and emits OSC 133;P sequences
+  3. Exit codes are preserved correctly through tee-rewritten pipelines (PIPESTATUS captured)
+  4. The terminal's OscScanner parses OSC 133;S and 133;P sequences into ShellEvent variants, and Block structs gain pipeline_stages fields
+**Plans**: TBD
+
+### Phase 17: Pipeline UI
+**Goal**: Users see piped commands rendered as multi-row pipeline blocks with inspectable stage output
+**Depends on**: Phase 16
+**Requirements**: UI-01, UI-02, UI-03, UI-04
+**Success Criteria** (what must be TRUE):
+  1. A piped command renders as a multi-row block showing each stage with its command text, line count, and byte count
+  2. Pipeline blocks with >2 stages or a failed exit code auto-expand; simple successful pipelines auto-collapse
+  3. User can click or use keyboard to expand any individual stage and view its full intermediate output
+  4. User can collapse/expand the entire pipeline block
+**Plans**: TBD
+
+### Phase 18: Storage + Retention
+**Goal**: Pipeline stage data persists in the history database with proper lifecycle management
+**Depends on**: Phase 16
+**Requirements**: STOR-01, STOR-02
+**Success Criteria** (what must be TRUE):
+  1. Pipe stage output is stored in a `pipe_stages` table linked to the parent command_id in history.db
+  2. Schema migration from v2 to v3 creates the pipe_stages table without data loss
+  3. Retention pruning (age and count policies) cascades to pipe_stages when parent commands are pruned
+**Plans**: TBD
+
+### Phase 19: MCP + Config + Polish
+**Goal**: AI assistants can inspect pipeline stages, and users can configure pipe visualization behavior
+**Depends on**: Phase 17, Phase 18
+**Requirements**: MCP-01, MCP-02, CONF-01
+**Success Criteria** (what must be TRUE):
+  1. `GlassPipeInspect(command_id, stage)` returns the intermediate output for a specific pipeline stage via MCP
+  2. `GlassContext` activity summaries include pipeline statistics (pipe count, avg stages, failure rate)
+  3. `[pipes]` section in config.toml controls enabled/disabled, max_capture_mb, and auto_expand behavior
+**Plans**: TBD
+
 ## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 15 -> 16 -> 17 -> 18 -> 19
+Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in parallel. Phase 19 depends on both.
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -58,3 +127,8 @@
 | 12. FS Watcher Engine | v1.2 | 2/2 | Complete | 2026-03-06 |
 | 13. Integration + Undo Engine | v1.2 | 4/4 | Complete | 2026-03-06 |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
+| 15. Pipe Parsing Core | v1.3 | 0/? | Not started | - |
+| 16. Shell Capture + Terminal Transport | v1.3 | 0/? | Not started | - |
+| 17. Pipeline UI | v1.3 | 0/? | Not started | - |
+| 18. Storage + Retention | v1.3 | 0/? | Not started | - |
+| 19. MCP + Config + Polish | v1.3 | 0/? | Not started | - |
