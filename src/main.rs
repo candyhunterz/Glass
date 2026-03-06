@@ -668,6 +668,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         };
                         ctx.pending_command_text = Some(command_text);
+
+                        // Start filesystem watcher for this command's CWD
+                        let cwd_path = std::path::Path::new(ctx.status.cwd());
+                        let ignore = glass_snapshot::IgnoreRules::load(cwd_path);
+                        ctx.active_watcher = match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
+                            Ok(w) => {
+                                tracing::debug!("FS watcher started for {}", cwd_path.display());
+                                Some(w)
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to start FS watcher: {}", e);
+                                None
+                            }
+                        };
                     }
 
                     // Insert CommandRecord on CommandFinished
@@ -715,6 +729,37 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         // Clear wall-clock tracker
                         ctx.command_started_wall = None;
+
+                        // Drain filesystem watcher events and store modified files
+                        if let Some(watcher) = ctx.active_watcher.take() {
+                            let events = watcher.drain_events();
+                            if !events.is_empty() {
+                                tracing::debug!("FS watcher captured {} events", events.len());
+                                if let Some(ref store) = ctx.snapshot_store {
+                                    let command_id = ctx.last_command_id.unwrap_or(0);
+                                    let cwd = ctx.status.cwd().to_string();
+                                    match store.create_snapshot(command_id, &cwd) {
+                                        Ok(snapshot_id) => {
+                                            for event in &events {
+                                                if let Err(e) = store.store_file(snapshot_id, &event.path, "watcher") {
+                                                    tracing::warn!("Failed to store watcher file {}: {}", event.path.display(), e);
+                                                }
+                                                // For Rename events, also store the destination path
+                                                if let glass_snapshot::WatcherEventKind::Rename { ref to } = event.kind {
+                                                    if let Err(e) = store.store_file(snapshot_id, to, "watcher") {
+                                                        tracing::warn!("Failed to store watcher rename target {}: {}", to.display(), e);
+                                                    }
+                                                }
+                                            }
+                                            tracing::debug!("Stored {} watcher files in snapshot {}", events.len(), snapshot_id);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Failed to create watcher snapshot: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // On CurrentDirectory events, update status and query git info
