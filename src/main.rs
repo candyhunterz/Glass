@@ -550,6 +550,49 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                                 return;
                             }
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("z") =>
+                            {
+                                if let Some(ref store) = ctx.snapshot_store {
+                                    let engine = glass_snapshot::UndoEngine::new(store);
+                                    match engine.undo_latest() {
+                                        Ok(Some(result)) => {
+                                            tracing::info!(
+                                                "Undo complete: {} files processed for command {}",
+                                                result.files.len(), result.command_id,
+                                            );
+                                            for (path, outcome) in &result.files {
+                                                match outcome {
+                                                    glass_snapshot::FileOutcome::Restored => {
+                                                        tracing::info!("  restored: {}", path.display());
+                                                    }
+                                                    glass_snapshot::FileOutcome::Deleted => {
+                                                        tracing::info!("  deleted: {}", path.display());
+                                                    }
+                                                    glass_snapshot::FileOutcome::Conflict { .. } => {
+                                                        tracing::warn!("  CONFLICT: {} (modified since command ran)", path.display());
+                                                    }
+                                                    glass_snapshot::FileOutcome::Error(e) => {
+                                                        tracing::error!("  error: {}: {}", path.display(), e);
+                                                    }
+                                                    glass_snapshot::FileOutcome::Skipped => {
+                                                        tracing::debug!("  skipped: {}", path.display());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            tracing::info!("Nothing to undo -- no file-modifying commands found");
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Undo failed: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    tracing::debug!("Undo unavailable -- no snapshot store");
+                                }
+                                return;
+                            }
                             _ => {}
                         }
                     }
