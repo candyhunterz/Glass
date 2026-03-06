@@ -48,6 +48,7 @@
 - [x] **Phase 17: Pipeline UI** - Multi-row pipeline blocks with expand/collapse, stage output display, and auto-expand logic (completed 2026-03-06)
 - [x] **Phase 18: Storage + Retention** - pipe_stages DB table, schema migration, and retention policy integration (completed 2026-03-06)
 - [x] **Phase 19: MCP + Config + Polish** - GlassPipeInspect tool, GlassContext pipeline stats, and [pipes] config section (completed 2026-03-06)
+- [ ] **Phase 20: Config Gate + Dead Code Cleanup** - Full pipes.enabled gating across shell/BlockManager/DB, and remove orphaned glass_pipes Rust exports
 
 ## Phase Details
 
@@ -119,11 +120,24 @@ Plans:
 Plans:
 - [ ] 19-01-PLAN.md -- GlassPipeInspect MCP tool, GlassContext pipeline stats, and [pipes] config section with main.rs wiring
 
+### Phase 20: Config Gate + Dead Code Cleanup
+**Goal**: pipes.enabled=false fully gates all pipe capture behavior, and orphaned Rust exports are removed
+**Depends on**: Phase 19
+**Requirements**: CONF-01 (integration fix), PIPE-02 (dead code)
+**Gap Closure:** Closes integration gaps from v1.3 audit
+**Success Criteria** (what must be TRUE):
+  1. Setting `pipes.enabled=false` prevents shell scripts from rewriting pipelines (env var gate)
+  2. BlockManager/main.rs skips PipelineStart/PipelineStage processing when pipes disabled
+  3. `insert_pipe_stages` is skipped when pipes disabled (no empty rows persisted)
+  4. `classify_pipeline()`, `has_opt_out()`, and `PipelineClassification` type removed from glass_pipes crate
+  5. All existing tests still pass after dead code removal
+**Plans:** 0/0 plans (not yet planned)
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 15 -> 16 -> 17 -> 18 -> 19
-Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in parallel. Phase 19 depends on both.
+Phases execute in numeric order: 15 -> 16 -> 17 -> 18 -> 19 -> 20
+Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in parallel. Phase 19 depends on both. Phase 20 closes audit gaps.
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -145,4 +159,5 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 16. Shell Capture + Terminal Transport | v1.3 | 3/3 | Complete | 2026-03-06 |
 | 17. Pipeline UI | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
-| 19. MCP + Config + Polish | 1/1 | Complete    | 2026-03-06 | - |
+| 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
+| 20. Config Gate + Dead Code Cleanup | v1.3 | 0/0 | Pending | - |
