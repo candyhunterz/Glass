@@ -109,6 +109,7 @@ pub fn spawn_pty(
     window_id: WindowId,
     shell_override: Option<&str>,
     max_output_capture_kb: u32,
+    pipes_enabled: bool,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
     // Use configured shell if provided, otherwise detect pwsh vs powershell
     let shell_program = if let Some(shell) = shell_override {
@@ -124,10 +125,16 @@ pub fn spawn_pty(
         working_directory: None,
         drain_on_exit: true,
         escape_args: false,
-        env: std::collections::HashMap::from([
-            ("TERM".to_owned(), "xterm-256color".to_owned()),
-            ("COLORTERM".to_owned(), "truecolor".to_owned()),
-        ]),
+        env: {
+            let mut env = std::collections::HashMap::from([
+                ("TERM".to_owned(), "xterm-256color".to_owned()),
+                ("COLORTERM".to_owned(), "truecolor".to_owned()),
+            ]);
+            if !pipes_enabled {
+                env.insert("GLASS_PIPES_DISABLED".to_owned(), "1".to_owned());
+            }
+            env
+        },
     };
 
     // Default 80x24 terminal size — will be resized by main.rs after font metrics are computed

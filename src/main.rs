@@ -250,12 +250,16 @@ impl ApplicationHandler<AppEvent> for Processor {
         let max_output_kb = self.config.history.as_ref()
             .map(|h| h.max_output_capture_kb)
             .unwrap_or(50);
+        let pipes_enabled = self.config.pipes.as_ref()
+            .map(|p| p.enabled)
+            .unwrap_or(true);
         let (pty_sender, term) = glass_terminal::spawn_pty(
             event_proxy,
             self.proxy.clone(),
             window.id(),
             self.config.shell.as_deref(),
             max_output_kb,
+            pipes_enabled,
         );
 
         // Send initial resize with correct font-metrics-based cell dimensions
@@ -803,6 +807,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                 line,
             } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    // Skip pipeline events entirely when pipes are disabled
+                    let pipes_enabled = self.config.pipes.as_ref()
+                        .map(|p| p.enabled)
+                        .unwrap_or(true);
+                    if !pipes_enabled {
+                        if matches!(shell_event, ShellEvent::PipelineStart { .. } | ShellEvent::PipelineStage { .. }) {
+                            return;
+                        }
+                    }
+
                     // Convert ShellEvent to OscEvent for BlockManager
                     let osc_event = shell_event_to_osc(&shell_event);
                     ctx.block_manager.handle_event(&osc_event, line);
