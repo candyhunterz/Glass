@@ -5,12 +5,14 @@ pub mod command_parser;
 pub mod db;
 pub mod ignore_rules;
 pub mod types;
+pub mod undo;
 pub mod watcher;
 
 pub use blob_store::BlobStore;
 pub use db::SnapshotDb;
 pub use ignore_rules::IgnoreRules;
 pub use types::{Confidence, FileOutcome, ParseResult, SnapshotFileRecord, SnapshotRecord, UndoResult, WatcherEvent, WatcherEventKind};
+pub use undo::UndoEngine;
 pub use watcher::FsWatcher;
 
 use std::path::{Path, PathBuf};
