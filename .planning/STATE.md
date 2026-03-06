@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
-status: completed
-stopped_at: Completed 11-02-PLAN.md
-last_updated: "2026-03-05T22:55:01.683Z"
-last_activity: 2026-03-05 -- Completed 11-02-PLAN.md (PowerShell command parser)
+status: in-progress
+stopped_at: Completed 12-01-PLAN.md
+last_updated: "2026-03-06T01:13:25.000Z"
+last_activity: 2026-03-06 -- Completed 12-01-PLAN.md (FS watcher library)
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 4
-  completed_plans: 4
+  completed_plans: 5
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 11 - Command Parser
+**Current focus:** Phase 12 - FS Watcher Engine
 
 ## Current Position
 
-Phase: 11 (2 of 5 in v1.2)
-Plan: 2 of 2 in current phase (all complete)
-Status: Phase 11 complete, ready for Phase 12
-Last activity: 2026-03-05 -- Completed 11-02-PLAN.md (PowerShell command parser)
+Phase: 12 (3 of 5 in v1.2)
+Plan: 1 of 2 in current phase
+Status: Phase 12 in progress, Plan 01 complete
+Last activity: 2026-03-06 -- Completed 12-01-PLAN.md (FS watcher library)
 
 Progress: [██████████] 100% (v1.2)
 
@@ -66,6 +66,9 @@ Recent decisions affecting current work:
 - [11-02]: tokenize_powershell uses simple quote-aware splitter (PS uses backtick, not backslash)
 - [11-02]: Unknown Verb-Noun cmdlets return Low confidence
 - [Phase 11-02]: PowerShell aliases routed to PS parser, Verb-Noun heuristic for cmdlet detection, tokenize_powershell without backslash escaping
+- [12-01]: Used ignore crate's gitignore module for .glassignore matching (battle-tested, handles negation and directory patterns)
+- [12-01]: matched_path_or_any_parents for subdirectory matching of ignored directories
+- [12-01]: HashMap deduplication keeps last event per path in drain_events()
 
 ### Pending Todos
 
@@ -79,6 +82,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-05T22:52:41.058Z
-Stopped at: Completed 11-02-PLAN.md
+Last session: 2026-03-06T01:13:25.000Z
+Stopped at: Completed 12-01-PLAN.md
 Resume file: None

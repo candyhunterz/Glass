@@ -12,7 +12,7 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 - [ ] **SNAP-01**: Glass automatically snapshots target files before a command executes, triggered by OSC 133;C
 - [x] **SNAP-02**: File contents are stored in a content-addressed blob store using BLAKE3 hashing with deduplication
 - [x] **SNAP-03**: Command text is parsed to identify file targets for pre-exec snapshot (rm, mv, sed -i, cp, chmod, git checkout, etc.)
-- [ ] **SNAP-04**: FS watcher monitors CWD during command execution and records all file modifications as ground truth
+- [x] **SNAP-04**: FS watcher monitors CWD during command execution and records all file modifications as ground truth
 - [x] **SNAP-05**: Command text is extracted from the terminal grid at command start (fixes empty-string tech debt)
 - [x] **SNAP-06**: Snapshot metadata is stored in a separate snapshots.db with command_id linking to history.db
 
@@ -32,7 +32,7 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 ### Storage & Lifecycle
 
 - [ ] **STOR-01**: Storage pruning enforces configurable max age and max size limits with automatic cleanup
-- [ ] **STOR-02**: `.glassignore` patterns exclude directories from snapshot tracking (node_modules, target, .git)
+- [x] **STOR-02**: `.glassignore` patterns exclude directories from snapshot tracking (node_modules, target, .git)
 - [ ] **STOR-03**: Snapshot configuration section in config.toml (enabled, max_count, max_size_mb, retention_days)
 
 ### AI Integration
@@ -73,7 +73,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SNAP-01 | Phase 13 | Pending |
 | SNAP-02 | Phase 10 | Complete |
 | SNAP-03 | Phase 11 | Complete |
-| SNAP-04 | Phase 12 | Pending |
+| SNAP-04 | Phase 12 | Complete |
 | SNAP-05 | Phase 10 | Complete |
 | SNAP-06 | Phase 10 | Complete |
 | UNDO-01 | Phase 13 | Pending |
@@ -84,7 +84,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UI-02 | Phase 14 | Pending |
 | UI-03 | Phase 14 | Pending |
 | STOR-01 | Phase 14 | Pending |
-| STOR-02 | Phase 12 | Pending |
+| STOR-02 | Phase 12 | Complete |
 | STOR-03 | Phase 13 | Pending |
 | MCP-01 | Phase 14 | Pending |
 | MCP-02 | Phase 14 | Pending |
