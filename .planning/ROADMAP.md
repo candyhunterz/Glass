@@ -130,7 +130,7 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 12. FS Watcher Engine | v1.2 | 2/2 | Complete | 2026-03-06 |
 | 13. Integration + Undo Engine | v1.2 | 4/4 | Complete | 2026-03-06 |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
-| 15. Pipe Parsing Core | 2/2 | Complete   | 2026-03-06 | - |
+| 15. Pipe Parsing Core | 2/2 | Complete    | 2026-03-06 | - |
 | 16. Shell Capture + Terminal Transport | v1.3 | 0/? | Not started | - |
 | 17. Pipeline UI | v1.3 | 0/? | Not started | - |
 | 18. Storage + Retention | v1.3 | 0/? | Not started | - |
