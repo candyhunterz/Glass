@@ -36,7 +36,7 @@
 - [x] **Phase 10: Content Store + DB Schema** - Content-addressed blob storage and snapshot database foundation (completed 2026-03-05)
 - [x] **Phase 11: Command Parser** - Heuristic command text parsing to identify file targets for pre-exec snapshot (completed 2026-03-05)
 - [x] **Phase 12: FS Watcher Engine** - Filesystem monitoring during command execution with ignore patterns (completed 2026-03-06)
-- [ ] **Phase 13: Integration + Undo Engine** - Main-thread snapshot lifecycle and file restoration with conflict detection
+- [x] **Phase 13: Integration + Undo Engine** - Main-thread snapshot lifecycle and file restoration with conflict detection (completed 2026-03-06)
 - [ ] **Phase 14: UI + CLI + MCP + Pruning** - Undo button, CLI command, MCP tools, and storage lifecycle management
 
 ## Phase Details
@@ -138,5 +138,5 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 10. Content Store + DB Schema | 2/2 | Complete    | 2026-03-05 | - |
 | 11. Command Parser | 2/2 | Complete    | 2026-03-05 | - |
 | 12. FS Watcher Engine | 2/2 | Complete    | 2026-03-06 | - |
-| 13. Integration + Undo Engine | 2/3 | In Progress|  | - |
+| 13. Integration + Undo Engine | 3/3 | Complete   | 2026-03-06 | - |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 0/? | Not started | - |

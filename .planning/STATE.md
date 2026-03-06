@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
 status: completed
-stopped_at: Completed 13-02-PLAN.md
-last_updated: "2026-03-06T01:56:28.726Z"
-last_activity: 2026-03-06 -- Completed 13-02-PLAN.md (UndoEngine with conflict detection)
+stopped_at: Completed 13-03-PLAN.md
+last_updated: "2026-03-06T02:22:08.717Z"
+last_activity: 2026-03-06 -- Completed 13-03-PLAN.md (Pre-exec snapshot + Ctrl+Shift+Z undo)
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 9
-  completed_plans: 8
-  percent: 89
+  completed_plans: 9
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 13 - Integration & Undo Engine
+**Current focus:** Phase 14 - UI + CLI + MCP + Pruning
 
 ## Current Position
 
-Phase: 13 (4 of 5 in v1.2)
-Plan: 2 of 3 in current phase
-Status: Plan 13-02 complete, 1 plan remaining
-Last activity: 2026-03-06 -- Completed 13-02-PLAN.md (UndoEngine with conflict detection)
+Phase: 13 (4 of 5 in v1.2) -- COMPLETE
+Plan: 3 of 3 in current phase
+Status: Phase 13 complete, moving to Phase 14
+Last activity: 2026-03-06 -- Completed 13-03-PLAN.md (Pre-exec snapshot + Ctrl+Shift+Z undo)
 
-Progress: [█████████░] 89% (v1.2)
+Progress: [██████████] 100% (v1.2)
 
 ## Performance Metrics
 
@@ -77,6 +77,8 @@ Recent decisions affecting current work:
 - [13-02]: Optimistic conflict resolution: no watcher data for a file means no conflict
 - [13-02]: check_conflict returns Option tuple for direct Conflict variant population
 - [13-02]: Confidence::High hardcoded for V1 since get_latest_parser_snapshot only returns parser-sourced snapshots
+- [Phase 13]: Pre-exec snapshot uses local command_text variable before pending_command_text is set
+- [Phase 13]: Ctrl+Shift+Z follows identical pattern to Ctrl+Shift+C/V/F: match character, perform action, return early
 
 ### Pending Todos
 
@@ -90,6 +92,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T01:56:28.724Z
-Stopped at: Completed 13-02-PLAN.md
+Last session: 2026-03-06T02:22:08.715Z
+Stopped at: Completed 13-03-PLAN.md
 Resume file: None
