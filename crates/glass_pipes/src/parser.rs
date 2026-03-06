@@ -2,19 +2,142 @@ use crate::types::{Pipeline, PipeStage, PipelineClassification};
 
 /// Split a command string into pipe stages.
 ///
-/// Respects single quotes, double quotes, backslash escapes, backtick escapes,
-/// parenthesis depth, and distinguishes `|` (pipe) from `||` (logical OR).
+/// Byte-level state machine that scans for unquoted, unescaped `|` characters
+/// at parenthesis depth 0. Respects single quotes, double quotes, backslash
+/// escapes (POSIX), backtick escapes (PowerShell), and parenthesized subshells
+/// including `$(...)` command substitution.
+///
+/// Distinguishes `|` (pipe) from `||` (logical OR).
 /// Returns trimmed slices for each stage.
-pub fn split_pipes(_command: &str) -> Vec<&str> {
-    todo!("Implemented in GREEN phase")
+pub fn split_pipes(command: &str) -> Vec<&str> {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut stages = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+    let mut paren_depth: usize = 0;
+
+    while i < len {
+        let b = bytes[i];
+
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        match b {
+            // Backslash escape (not inside single quotes)
+            b'\\' if !in_single_quote => {
+                escaped = true;
+                i += 1;
+                continue;
+            }
+            // Backtick escape (PowerShell -- not inside quotes)
+            b'`' if !in_single_quote && !in_double_quote => {
+                escaped = true;
+                i += 1;
+                continue;
+            }
+            // Single quote toggle (not inside double quotes)
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            // Double quote toggle (not inside single quotes)
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            // Open paren (not inside quotes) -- increases depth
+            b'(' if !in_single_quote && !in_double_quote => {
+                paren_depth += 1;
+            }
+            // Close paren (not inside quotes) -- decreases depth
+            b')' if !in_single_quote && !in_double_quote => {
+                paren_depth = paren_depth.saturating_sub(1);
+            }
+            // Pipe character -- only split at depth 0, not in quotes
+            b'|' if !in_single_quote && !in_double_quote && paren_depth == 0 => {
+                // Check for || (logical OR) -- peek at next byte
+                if i + 1 < len && bytes[i + 1] == b'|' {
+                    // Skip both characters of ||
+                    i += 2;
+                    continue;
+                }
+                // It's a real pipe boundary
+                stages.push(command[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Push the final stage
+    stages.push(command[start..].trim());
+    stages
+}
+
+/// Extract the program name from a command string.
+///
+/// Takes the first whitespace-delimited token and strips any path prefix
+/// (both Unix `/` and Windows `\` separators). Uses raw whitespace splitting
+/// rather than shlex for program extraction because shlex interprets
+/// backslashes as escape characters, which mangles Windows paths like
+/// `C:\Windows\System32\cmd.exe`.
+fn extract_program(stage_command: &str) -> String {
+    let trimmed = stage_command.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Use raw whitespace split to get the first token (preserves backslashes)
+    if let Some(first) = trimmed.split_whitespace().next() {
+        return strip_path(first);
+    }
+
+    String::new()
+}
+
+/// Strip directory path from a program name.
+/// Handles both Unix (`/`) and Windows (`\`) path separators.
+fn strip_path(program: &str) -> String {
+    program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_string()
 }
 
 /// Parse a command string into a Pipeline with typed stages.
 ///
-/// Calls split_pipes to find stage boundaries, then tokenizes each stage
+/// Calls `split_pipes` to find stage boundaries, then tokenizes each stage
 /// with shlex to extract the program name (first token, path-stripped).
-pub fn parse_pipeline(_command: &str) -> Pipeline {
-    todo!("Implemented in GREEN phase")
+/// Returns a Pipeline with default classification (not yet classified).
+pub fn parse_pipeline(command: &str) -> Pipeline {
+    let raw_stages = split_pipes(command);
+
+    let stages: Vec<PipeStage> = raw_stages
+        .iter()
+        .enumerate()
+        .map(|(index, &stage_text)| {
+            let program = extract_program(stage_text);
+            PipeStage {
+                command: stage_text.to_string(),
+                index,
+                program,
+                is_tty: false,
+            }
+        })
+        .collect();
+
+    Pipeline {
+        raw_command: command.to_string(),
+        stages,
+        classification: PipelineClassification::default(),
+    }
 }
 
 #[cfg(test)]
