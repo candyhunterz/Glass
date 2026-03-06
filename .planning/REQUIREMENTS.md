@@ -15,8 +15,8 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 ### Capture Engine
 
-- [ ] **CAPT-01**: Byte-stream capture points inserted between bash/zsh pipe stages via tee-based rewriting
-- [ ] **CAPT-02**: PowerShell pipe stages captured via post-hoc string representation after pipeline completes
+- [x] **CAPT-01**: Byte-stream capture points inserted between bash/zsh pipe stages via tee-based rewriting
+- [x] **CAPT-02**: PowerShell pipe stages captured via post-hoc string representation after pipeline completes
 - [x] **CAPT-03**: Per-stage buffer capped at 10MB with head/tail sampling for overflow
 - [x] **CAPT-04**: Binary data in pipe stages detected and shown as `[binary: <size>]`
 
@@ -71,8 +71,8 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 | PIPE-01 | Phase 15 | Complete |
 | PIPE-02 | Phase 15 | Complete |
 | PIPE-03 | Phase 15 | Complete |
-| CAPT-01 | Phase 16 | Pending |
-| CAPT-02 | Phase 16 | Pending |
+| CAPT-01 | Phase 16 | Complete |
+| CAPT-02 | Phase 16 | Complete |
 | CAPT-03 | Phase 15 | Complete |
 | CAPT-04 | Phase 15 | Complete |
 | UI-01 | Phase 17 | Pending |
