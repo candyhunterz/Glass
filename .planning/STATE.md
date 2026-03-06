@@ -4,7 +4,7 @@ milestone: v1.2
 milestone_name: Command-Level Undo
 status: completed
 stopped_at: Completed 14-02-SUMMARY.md (retroactive)
-last_updated: "2026-03-06T03:15:21.729Z"
+last_updated: "2026-03-06T03:17:59.535Z"
 last_activity: 2026-03-06 -- Completed 14-03-PLAN.md (MCP undo + file diff tools)
 progress:
   total_phases: 5
