@@ -3,10 +3,12 @@
 pub mod blob_store;
 pub mod command_parser;
 pub mod db;
+pub mod ignore_rules;
 pub mod types;
 
 pub use blob_store::BlobStore;
 pub use db::SnapshotDb;
+pub use ignore_rules::IgnoreRules;
 pub use types::{Confidence, ParseResult, SnapshotFileRecord, SnapshotRecord};
 
 use std::path::{Path, PathBuf};
