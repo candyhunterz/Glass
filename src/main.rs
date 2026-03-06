@@ -558,8 +558,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     match engine.undo_latest() {
                                         Ok(Some(result)) => {
                                             tracing::info!(
-                                                "Undo complete: {} files processed for command {}",
-                                                result.files.len(), result.command_id,
+                                                "Undo complete (confidence: {:?}): {} files processed for command {}",
+                                                result.confidence, result.files.len(), result.command_id,
                                             );
                                             for (path, outcome) in &result.files {
                                                 match outcome {
@@ -733,8 +733,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
                                             }
                                         }
-                                        tracing::debug!(
-                                            "Pre-exec snapshot {} with {} targets (confidence={:?})",
+                                        tracing::info!(
+                                            "Pre-exec snapshot {} with {} targets (confidence: {:?})",
                                             sid, parse_result.targets.len(), parse_result.confidence,
                                         );
                                         ctx.pending_snapshot_id = Some(sid);
