@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
 status: completed
-stopped_at: Completed 13-03-PLAN.md
-last_updated: "2026-03-06T02:22:08.717Z"
+stopped_at: Completed 13-04-PLAN.md
+last_updated: "2026-03-06T02:34:19.206Z"
 last_activity: 2026-03-06 -- Completed 13-03-PLAN.md (Pre-exec snapshot + Ctrl+Shift+Z undo)
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 10
+  completed_plans: 10
   percent: 100
 ---
 
@@ -79,6 +79,8 @@ Recent decisions affecting current work:
 - [13-02]: Confidence::High hardcoded for V1 since get_latest_parser_snapshot only returns parser-sourced snapshots
 - [Phase 13]: Pre-exec snapshot uses local command_text variable before pending_command_text is set
 - [Phase 13]: Ctrl+Shift+Z follows identical pattern to Ctrl+Shift+C/V/F: match character, perform action, return early
+- [Phase 13]: Config absent (None) defaults to enabled=true for backward compatibility
+- [Phase 13]: Only pre-exec snapshot creation gated by config; undo handler and FS watcher remain ungated
 
 ### Pending Todos
 
@@ -92,6 +94,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T02:22:08.715Z
-Stopped at: Completed 13-03-PLAN.md
+Last session: 2026-03-06T02:34:19.204Z
+Stopped at: Completed 13-04-PLAN.md
 Resume file: None
