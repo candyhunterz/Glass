@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
-status: in-progress
-stopped_at: Completed 14-03-PLAN.md
-last_updated: "2026-03-06T03:04:19Z"
+status: completed
+stopped_at: Completed 14-02-SUMMARY.md (retroactive)
+last_updated: "2026-03-06T03:15:21.729Z"
 last_activity: 2026-03-06 -- Completed 14-03-PLAN.md (MCP undo + file diff tools)
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 13
   completed_plans: 13
   percent: 100
@@ -87,6 +87,7 @@ Recent decisions affecting current work:
 - [14-01]: Shared restore_snapshot private method in UndoEngine for all undo operations
 - [14-03]: GlassServer stores glass_dir PathBuf (not open SnapshotStore) for per-request store opening in spawn_blocking
 - [14-03]: glass_file_diff filters to parser-sourced files only, excluding watcher files from output
+- [Phase 14-02]: Visual feedback V1: [undo] label disappearance IS the confirmation; per-file outcomes logged via tracing
 
 ### Pending Todos
 
@@ -100,6 +101,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T03:04:19Z
-Stopped at: Completed 14-03-PLAN.md
+Last session: 2026-03-06T03:15:21.727Z
+Stopped at: Completed 14-02-SUMMARY.md (retroactive)
 Resume file: None

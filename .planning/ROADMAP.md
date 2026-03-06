@@ -37,7 +37,7 @@
 - [x] **Phase 11: Command Parser** - Heuristic command text parsing to identify file targets for pre-exec snapshot (completed 2026-03-05)
 - [x] **Phase 12: FS Watcher Engine** - Filesystem monitoring during command execution with ignore patterns (completed 2026-03-06)
 - [x] **Phase 13: Integration + Undo Engine** - Main-thread snapshot lifecycle and file restoration with conflict detection (completed 2026-03-06)
-- [ ] **Phase 14: UI + CLI + MCP + Pruning** - Undo button, CLI command, MCP tools, and storage lifecycle management
+- [x] **Phase 14: UI + CLI + MCP + Pruning** - Undo button, CLI command, MCP tools, and storage lifecycle management (completed 2026-03-06)
 
 ## Phase Details
 
@@ -140,4 +140,4 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 11. Command Parser | 2/2 | Complete    | 2026-03-05 | - |
 | 12. FS Watcher Engine | 2/2 | Complete    | 2026-03-06 | - |
 | 13. Integration + Undo Engine | 4/4 | Complete    | 2026-03-06 | - |
-| 14. UI + CLI + MCP + Pruning | 2/3 | In Progress|  | - |
+| 14. UI + CLI + MCP + Pruning | 3/3 | Complete   | 2026-03-06 | - |

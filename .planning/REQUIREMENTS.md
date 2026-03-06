@@ -25,8 +25,8 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 
 ### User Interface
 
-- [ ] **UI-01**: File-modifying command blocks display an [undo] label
-- [ ] **UI-02**: After undo, visual confirmation shows which files were restored, skipped, or errored
+- [x] **UI-01**: File-modifying command blocks display an [undo] label
+- [x] **UI-02**: After undo, visual confirmation shows which files were restored, skipped, or errored
 - [x] **UI-03**: User can undo a specific command via `glass undo <command-id>` CLI
 
 ### Storage & Lifecycle
@@ -80,8 +80,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UNDO-02 | Phase 13 | Complete |
 | UNDO-03 | Phase 13 | Complete |
 | UNDO-04 | Phase 13 | Complete |
-| UI-01 | Phase 14 | Pending |
-| UI-02 | Phase 14 | Pending |
+| UI-01 | Phase 14 | Complete |
+| UI-02 | Phase 14 | Complete |
 | UI-03 | Phase 14 | Complete |
 | STOR-01 | Phase 14 | Complete |
 | STOR-02 | Phase 12 | Complete |
