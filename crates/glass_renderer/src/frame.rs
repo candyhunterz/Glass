@@ -134,6 +134,15 @@ impl FrameRenderer {
                 w,
             );
             rect_instances.extend(block_rects);
+
+            // Pipeline stage row background rects
+            let pipeline_rects = self.block_renderer.build_pipeline_rects(
+                blocks,
+                viewport_abs_start,
+                snapshot.screen_lines,
+                w,
+            );
+            rect_instances.extend(pipeline_rects);
         }
 
         // 1c. Append status bar background rect
@@ -199,6 +208,38 @@ impl FrameRenderer {
                 w,
             );
             for label in &block_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+
+            // Pipeline stage label buffers
+            let pipeline_labels = self.block_renderer.build_pipeline_text(
+                blocks,
+                viewport_abs_start,
+                snapshot.screen_lines,
+                w,
+            );
+            for label in &pipeline_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,

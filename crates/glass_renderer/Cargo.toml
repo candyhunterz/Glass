@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 glass_core = { path = "../glass_core" }
 glass_terminal = { path = "../glass_terminal" }
+glass_pipes = { path = "../glass_pipes" }
 alacritty_terminal.workspace = true
 glyphon.workspace = true
 wgpu.workspace = true
