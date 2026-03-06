@@ -41,6 +41,8 @@ pub struct Block {
     pub started_epoch: Option<i64>,
     /// Current lifecycle state
     pub state: BlockState,
+    /// Whether a pre-exec snapshot exists for this command (enables [undo] label).
+    pub has_snapshot: bool,
 }
 
 impl Block {
@@ -55,6 +57,7 @@ impl Block {
             finished_at: None,
             started_epoch: None,
             state: BlockState::PromptActive,
+            has_snapshot: false,
         }
     }
 
@@ -152,6 +155,16 @@ impl BlockManager {
     /// Get all blocks.
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
+    }
+
+    /// Get a mutable reference to the current (most recent) block.
+    pub fn current_block_mut(&mut self) -> Option<&mut Block> {
+        self.current.and_then(|idx| self.blocks.get_mut(idx))
+    }
+
+    /// Find a block by its started_epoch and return a mutable reference.
+    pub fn find_block_by_epoch_mut(&mut self, epoch: i64) -> Option<&mut Block> {
+        self.blocks.iter_mut().rev().find(|b| b.started_epoch == Some(epoch))
     }
 }
 

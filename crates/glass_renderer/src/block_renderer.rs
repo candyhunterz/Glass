@@ -5,7 +5,7 @@
 
 use alacritty_terminal::vte::ansi::Rgb;
 
-use glass_terminal::Block;
+use glass_terminal::{Block, BlockState};
 
 use crate::rect_renderer::RectInstance;
 
@@ -133,11 +133,13 @@ impl BlockRenderer {
             }
 
             // Duration text (right-aligned, next to badge area)
+            let mut duration_x = None;
             if let Some(duration) = block.duration() {
                 let duration_text = glass_terminal::format_duration(duration);
                 let duration_width = duration_text.len() as f32 * self.cell_width;
                 let badge_width = self.cell_width * 3.0;
                 let x = viewport_width - badge_width - duration_width - self.cell_width;
+                duration_x = Some(x);
                 labels.push(BlockLabel {
                     x,
                     y,
@@ -146,6 +148,30 @@ impl BlockRenderer {
                         r: 140,
                         g: 140,
                         b: 140,
+                    },
+                });
+            }
+
+            // [undo] label for blocks with snapshots (UI-01)
+            if block.has_snapshot && block.state == BlockState::Complete {
+                let undo_text = "[undo]";
+                let undo_width = undo_text.len() as f32 * self.cell_width;
+                let badge_width = self.cell_width * 3.0;
+                let undo_x = if let Some(dx) = duration_x {
+                    // Position to the left of the duration text
+                    dx - undo_width - self.cell_width
+                } else {
+                    // No duration text, position relative to badge
+                    viewport_width - badge_width - undo_width - self.cell_width
+                };
+                labels.push(BlockLabel {
+                    x: undo_x,
+                    y,
+                    text: undo_text.to_string(),
+                    color: Rgb {
+                        r: 100,
+                        g: 160,
+                        b: 220,
                     },
                 });
             }

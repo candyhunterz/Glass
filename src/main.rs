@@ -49,6 +49,11 @@ enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Undo a specific command's file changes
+    Undo {
+        /// The command ID to undo
+        command_id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -292,6 +297,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
             }
         };
+
+        // Startup pruning: spawn background thread to clean old snapshots (STOR-01)
+        if snapshot_store.is_some() {
+            let glass_dir = glass_snapshot::resolve_glass_dir(
+                &std::env::current_dir().unwrap_or_default(),
+            );
+            let snap_config = self.config.snapshot.clone();
+            std::thread::Builder::new()
+                .name("Glass pruning".into())
+                .spawn(move || {
+                    let store = match glass_snapshot::SnapshotStore::open(&glass_dir) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!("Pruning: failed to open store: {}", e);
+                            return;
+                        }
+                    };
+                    let (retention_days, max_count, max_size_mb) = match snap_config {
+                        Some(ref cfg) => (cfg.retention_days, cfg.max_count, cfg.max_size_mb),
+                        None => (30, 1000, 500), // defaults matching SnapshotSection
+                    };
+                    let pruner = glass_snapshot::Pruner::new(&store, retention_days, max_count, max_size_mb);
+                    match pruner.prune() {
+                        Ok(result) => tracing::info!(
+                            "Pruning complete: {} snapshots, {} blobs removed",
+                            result.snapshots_deleted, result.blobs_deleted,
+                        ),
+                        Err(e) => tracing::warn!("Pruning failed: {}", e),
+                    }
+                })
+                .ok();
+        }
 
         let id = window.id();
         self.windows.insert(
@@ -557,27 +594,45 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let engine = glass_snapshot::UndoEngine::new(store);
                                     match engine.undo_latest() {
                                         Ok(Some(result)) => {
-                                            tracing::info!(
-                                                "Undo complete (confidence: {:?}): {} files processed for command {}",
-                                                result.confidence, result.files.len(), result.command_id,
-                                            );
+                                            // Count outcomes for summary line
+                                            let (mut restored, mut deleted, mut skipped, mut conflicts, mut errors) = (0u32, 0u32, 0u32, 0u32, 0u32);
                                             for (path, outcome) in &result.files {
                                                 match outcome {
                                                     glass_snapshot::FileOutcome::Restored => {
-                                                        tracing::info!("  restored: {}", path.display());
+                                                        restored += 1;
+                                                        tracing::info!("Undo: restored {}", path.display());
                                                     }
                                                     glass_snapshot::FileOutcome::Deleted => {
-                                                        tracing::info!("  deleted: {}", path.display());
+                                                        deleted += 1;
+                                                        tracing::info!("Undo: deleted {}", path.display());
                                                     }
                                                     glass_snapshot::FileOutcome::Conflict { .. } => {
-                                                        tracing::warn!("  CONFLICT: {} (modified since command ran)", path.display());
+                                                        conflicts += 1;
+                                                        tracing::warn!("Undo: CONFLICT {}", path.display());
                                                     }
                                                     glass_snapshot::FileOutcome::Error(e) => {
-                                                        tracing::error!("  error: {}: {}", path.display(), e);
+                                                        errors += 1;
+                                                        tracing::error!("Undo: error {}: {}", path.display(), e);
                                                     }
                                                     glass_snapshot::FileOutcome::Skipped => {
-                                                        tracing::debug!("  skipped: {}", path.display());
+                                                        skipped += 1;
+                                                        tracing::info!("Undo: skipped {}", path.display());
                                                     }
+                                                }
+                                            }
+                                            tracing::info!(
+                                                "Undo complete: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
+                                                restored, deleted, skipped, conflicts, errors,
+                                            );
+                                            // Remove [undo] label from the undone block (visual feedback).
+                                            // Find the most recent block with has_snapshot=true
+                                            // (undo_latest operates on latest snapshot) and clear it.
+                                            let epoch_to_clear = ctx.block_manager.blocks().iter().rev()
+                                                .find(|b| b.has_snapshot)
+                                                .and_then(|b| b.started_epoch);
+                                            if let Some(ep) = epoch_to_clear {
+                                                if let Some(b) = ctx.block_manager.find_block_by_epoch_mut(ep) {
+                                                    b.has_snapshot = false;
                                                 }
                                             }
                                         }
@@ -591,6 +646,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     tracing::debug!("Undo unavailable -- no snapshot store");
                                 }
+                                ctx.window.request_redraw();
                                 return;
                             }
                             _ => {}
@@ -743,6 +799,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             );
                                             ctx.pending_snapshot_id = Some(sid);
                                             ctx.pending_parse_confidence = Some(parse_result.confidence);
+                                            // Mark current block as having a snapshot for [undo] label
+                                            if let Some(block) = ctx.block_manager.current_block_mut() {
+                                                block.has_snapshot = true;
+                                            }
                                         }
                                         Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
                                     }
@@ -1017,6 +1077,50 @@ fn main() {
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
                 .init();
             history::run_history(action);
+        }
+        Some(Commands::Undo { command_id }) => {
+            // Initialize structured logging for CLI mode (stdout)
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .init();
+
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let glass_dir = glass_snapshot::resolve_glass_dir(&cwd);
+            match glass_snapshot::SnapshotStore::open(&glass_dir) {
+                Ok(store) => {
+                    let engine = glass_snapshot::UndoEngine::new(&store);
+                    match engine.undo_command(command_id) {
+                        Ok(Some(result)) => {
+                            println!("Undo complete for command {} ({:?} confidence):", command_id, result.confidence);
+                            for (path, outcome) in &result.files {
+                                let status = match outcome {
+                                    glass_snapshot::FileOutcome::Restored => "restored",
+                                    glass_snapshot::FileOutcome::Deleted => "deleted",
+                                    glass_snapshot::FileOutcome::Skipped => "skipped",
+                                    glass_snapshot::FileOutcome::Conflict { .. } => "CONFLICT",
+                                    glass_snapshot::FileOutcome::Error(e) => {
+                                        eprintln!("  error {}: {}", path.display(), e);
+                                        continue;
+                                    }
+                                };
+                                println!("  {} {}", status, path.display());
+                            }
+                        }
+                        Ok(None) => {
+                            eprintln!("No snapshot found for command {}", command_id);
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Undo failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to open snapshot store: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         Some(Commands::Mcp { action: McpAction::Serve }) => {
             // MCP server mode: logging goes to stderr, stdout is reserved for JSON-RPC
