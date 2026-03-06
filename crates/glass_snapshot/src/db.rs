@@ -274,6 +274,35 @@ impl SnapshotDb {
         Ok(())
     }
 
+    /// Get a parser snapshot by command_id (newest if multiple exist).
+    /// Only returns snapshots that have at least one parser-sourced file.
+    pub fn get_parser_snapshot_by_command(&self, command_id: i64) -> Result<Option<SnapshotRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.command_id, s.cwd, s.created_at
+             FROM snapshots s
+             WHERE s.command_id = ?1
+               AND EXISTS (
+                   SELECT 1 FROM snapshot_files sf
+                   WHERE sf.snapshot_id = s.id AND sf.source = 'parser'
+               )
+             ORDER BY s.created_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![command_id], |row| {
+            Ok(SnapshotRecord {
+                id: row.get(0)?,
+                command_id: row.get(1)?,
+                cwd: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(record)) => Ok(Some(record)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
     /// Update the command_id on an existing snapshot.
     pub fn update_command_id(&self, snapshot_id: i64, command_id: i64) -> Result<()> {
         self.conn.execute(

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::types::{Confidence, FileOutcome, SnapshotFileRecord, UndoResult};
+use crate::types::{Confidence, FileOutcome, SnapshotFileRecord, SnapshotRecord, UndoResult};
 use crate::SnapshotStore;
 
 /// Engine that performs undo operations by restoring snapshotted files.
@@ -22,12 +22,36 @@ impl<'a> UndoEngine<'a> {
     ///
     /// Returns `Ok(None)` if there are no parser snapshots to undo.
     /// Returns `Ok(Some(UndoResult))` with per-file outcomes otherwise.
+    /// Deletes the snapshot after successful undo (one-shot).
     pub fn undo_latest(&self) -> Result<Option<UndoResult>> {
         let snapshot = match self.store.db().get_latest_parser_snapshot()? {
             Some(s) => s,
             None => return Ok(None),
         };
 
+        let result = self.restore_snapshot(&snapshot)?;
+        self.store.db().delete_snapshot(snapshot.id)?;
+        Ok(Some(result))
+    }
+
+    /// Undo a specific command by its command_id.
+    ///
+    /// Returns `Ok(None)` if no parser snapshot exists for the given command.
+    /// Returns `Ok(Some(UndoResult))` with per-file outcomes otherwise.
+    /// Deletes the snapshot after successful undo (one-shot).
+    pub fn undo_command(&self, command_id: i64) -> Result<Option<UndoResult>> {
+        let snapshot = match self.store.db().get_parser_snapshot_by_command(command_id)? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let result = self.restore_snapshot(&snapshot)?;
+        self.store.db().delete_snapshot(snapshot.id)?;
+        Ok(Some(result))
+    }
+
+    /// Shared logic: restore files from a snapshot record.
+    fn restore_snapshot(&self, snapshot: &SnapshotRecord) -> Result<UndoResult> {
         let files = self.store.db().get_snapshot_files(snapshot.id)?;
         let mut outcomes = Vec::new();
 
@@ -39,12 +63,12 @@ impl<'a> UndoEngine<'a> {
             outcomes.push(self.restore_file(file_rec, snapshot.command_id));
         }
 
-        Ok(Some(UndoResult {
+        Ok(UndoResult {
             snapshot_id: snapshot.id,
             command_id: snapshot.command_id,
             confidence: Confidence::High,
             files: outcomes,
-        }))
+        })
     }
 
     /// Check whether a file has been modified since the command ran.
@@ -329,5 +353,106 @@ mod tests {
         // Parser file restored, watcher file unchanged
         assert_eq!(std::fs::read_to_string(&parser_file).unwrap(), "parser original");
         assert_eq!(std::fs::read_to_string(&watcher_file).unwrap(), "watcher modified");
+    }
+
+    #[test]
+    fn test_undo_command_valid_id() {
+        let (store, dir) = setup();
+        let engine = UndoEngine::new(&store);
+
+        let file_path = dir.path().join("cmd_target.txt");
+        std::fs::write(&file_path, b"original").unwrap();
+
+        // Create a parser snapshot for command_id=42
+        let sid = store.create_snapshot(42, dir.path().to_str().unwrap()).unwrap();
+        store.store_file(sid, &file_path, "parser").unwrap();
+
+        // Simulate command modifying file
+        std::fs::write(&file_path, b"modified").unwrap();
+
+        let result = engine.undo_command(42).unwrap().expect("should have result");
+        assert_eq!(result.command_id, 42);
+        assert_eq!(result.files.len(), 1);
+        assert!(matches!(result.files[0].1, FileOutcome::Restored));
+
+        // Verify file restored
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "original");
+    }
+
+    #[test]
+    fn test_undo_command_nonexistent_id() {
+        let (store, _dir) = setup();
+        let engine = UndoEngine::new(&store);
+        let result = engine.undo_command(999).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_undo_command_only_restores_parser_files() {
+        let (store, dir) = setup();
+        let engine = UndoEngine::new(&store);
+
+        let parser_file = dir.path().join("p.txt");
+        let watcher_file = dir.path().join("w.txt");
+        std::fs::write(&parser_file, b"parser orig").unwrap();
+        std::fs::write(&watcher_file, b"watcher orig").unwrap();
+
+        let sid = store.create_snapshot(10, dir.path().to_str().unwrap()).unwrap();
+        store.store_file(sid, &parser_file, "parser").unwrap();
+        store.store_file(sid, &watcher_file, "watcher").unwrap();
+
+        std::fs::write(&parser_file, b"parser mod").unwrap();
+        std::fs::write(&watcher_file, b"watcher mod").unwrap();
+
+        let result = engine.undo_command(10).unwrap().expect("should have result");
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].0, parser_file);
+        assert_eq!(std::fs::read_to_string(&parser_file).unwrap(), "parser orig");
+        assert_eq!(std::fs::read_to_string(&watcher_file).unwrap(), "watcher mod");
+    }
+
+    #[test]
+    fn test_undo_command_deletes_snapshot() {
+        let (store, dir) = setup();
+        let engine = UndoEngine::new(&store);
+
+        let file_path = dir.path().join("del_test.txt");
+        std::fs::write(&file_path, b"content").unwrap();
+
+        let sid = store.create_snapshot(77, dir.path().to_str().unwrap()).unwrap();
+        store.store_file(sid, &file_path, "parser").unwrap();
+
+        std::fs::write(&file_path, b"changed").unwrap();
+
+        let result = engine.undo_command(77).unwrap().expect("should have result");
+        assert_eq!(result.snapshot_id, sid);
+
+        // Snapshot should be deleted after successful undo
+        assert!(store.db().get_snapshot(sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_undo_latest_still_works_after_refactor() {
+        // Re-verify undo_latest with the same pattern as test_undo_latest_restores_file
+        // but also check snapshot deletion
+        let (store, dir) = setup();
+        let engine = UndoEngine::new(&store);
+
+        let file_path = dir.path().join("latest.txt");
+        std::fs::write(&file_path, b"orig").unwrap();
+
+        let sid = store.create_snapshot(5, dir.path().to_str().unwrap()).unwrap();
+        store.store_file(sid, &file_path, "parser").unwrap();
+
+        std::fs::write(&file_path, b"mod").unwrap();
+
+        let result = engine.undo_latest().unwrap().expect("should have result");
+        assert_eq!(result.snapshot_id, sid);
+        assert!(matches!(result.files[0].1, FileOutcome::Restored));
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "orig");
+
+        // Snapshot should be deleted after successful undo
+        assert!(store.db().get_snapshot(sid).unwrap().is_none());
     }
 }
