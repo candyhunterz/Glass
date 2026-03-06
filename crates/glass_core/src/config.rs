@@ -17,6 +17,9 @@ pub struct GlassConfig {
     /// Snapshot configuration section. Optional in the TOML file;
     /// uses defaults when present without explicit field values.
     pub snapshot: Option<SnapshotSection>,
+    /// Pipe visualization configuration section. Optional in the TOML file;
+    /// uses defaults when present without explicit field values.
+    pub pipes: Option<PipesSection>,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -61,6 +64,30 @@ fn default_retention_days() -> u32 {
     30
 }
 
+/// Pipe visualization configuration in the `[pipes]` TOML section.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipesSection {
+    /// Whether pipe stage capture is enabled. Default true.
+    #[serde(default = "default_pipes_enabled")]
+    pub enabled: bool,
+    /// Maximum capture size per stage in megabytes. Default 10.
+    #[serde(default = "default_max_capture_mb")]
+    pub max_capture_mb: u32,
+    /// Whether to auto-expand pipeline blocks on failure or many stages. Default true.
+    #[serde(default = "default_auto_expand")]
+    pub auto_expand: bool,
+}
+
+fn default_pipes_enabled() -> bool {
+    true
+}
+fn default_max_capture_mb() -> u32 {
+    10
+}
+fn default_auto_expand() -> bool {
+    true
+}
+
 impl Default for GlassConfig {
     fn default() -> Self {
         Self {
@@ -69,6 +96,7 @@ impl Default for GlassConfig {
             shell: None,
             history: None,
             snapshot: None,
+            pipes: None,
         }
     }
 }
