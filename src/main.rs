@@ -143,6 +143,10 @@ struct WindowContext {
     pending_command_text: Option<String>,
     /// Active filesystem watcher during command execution. Created on CommandExecuted, drained on CommandFinished.
     active_watcher: Option<glass_snapshot::FsWatcher>,
+    /// Snapshot ID created at CommandExecuted time (pre-exec), updated to real command_id at CommandFinished.
+    pending_snapshot_id: Option<i64>,
+    /// Parser confidence for the pending pre-exec snapshot (for UNDO-04 tracking).
+    pending_parse_confidence: Option<glass_snapshot::Confidence>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -309,6 +313,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 snapshot_store,
                 pending_command_text: None,
                 active_watcher: None,
+                pending_snapshot_id: None,
+                pending_parse_confidence: None,
             },
         );
     }
@@ -667,6 +673,35 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 String::new()
                             }
                         };
+                        // Pre-exec snapshot: parse command, snapshot identified targets
+                        if let Some(ref store) = ctx.snapshot_store {
+                            let cwd_path_snap = std::path::Path::new(ctx.status.cwd());
+                            let parse_result = glass_snapshot::command_parser::parse_command(
+                                &command_text, cwd_path_snap,
+                            );
+
+                            if parse_result.confidence != glass_snapshot::Confidence::ReadOnly
+                                && !parse_result.targets.is_empty()
+                            {
+                                match store.create_snapshot(0, ctx.status.cwd()) {
+                                    Ok(sid) => {
+                                        for target in &parse_result.targets {
+                                            if let Err(e) = store.store_file(sid, target, "parser") {
+                                                tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
+                                            }
+                                        }
+                                        tracing::debug!(
+                                            "Pre-exec snapshot {} with {} targets (confidence={:?})",
+                                            sid, parse_result.targets.len(), parse_result.confidence,
+                                        );
+                                        ctx.pending_snapshot_id = Some(sid);
+                                        ctx.pending_parse_confidence = Some(parse_result.confidence);
+                                    }
+                                    Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
+                                }
+                            }
+                        }
+
                         ctx.pending_command_text = Some(command_text);
 
                         // Start filesystem watcher for this command's CWD
@@ -729,6 +764,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         // Clear wall-clock tracker
                         ctx.command_started_wall = None;
+
+                        // Update pre-exec snapshot with real command_id
+                        if let (Some(sid), Some(ref store)) = (ctx.pending_snapshot_id.take(), &ctx.snapshot_store) {
+                            let command_id = ctx.last_command_id.unwrap_or(0);
+                            if let Err(e) = store.update_command_id(sid, command_id) {
+                                tracing::warn!("Failed to update snapshot {} command_id: {}", sid, e);
+                            }
+                        }
+                        ctx.pending_parse_confidence = None;
 
                         // Drain filesystem watcher events and store modified files
                         if let Some(watcher) = ctx.active_watcher.take() {
