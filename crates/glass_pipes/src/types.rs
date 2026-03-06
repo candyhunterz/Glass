@@ -91,6 +91,22 @@ pub struct StageBuffer {
     pub overflow: bool,
 }
 
+/// Detect whether the given bytes are likely binary content.
+///
+/// Samples the first 8KB and returns true if more than 30% of bytes
+/// are non-text control characters (excluding tab, newline, carriage return).
+fn is_binary_data(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+    let sample = &data[..data.len().min(8192)];
+    let non_text = sample
+        .iter()
+        .filter(|&&b| b < 0x08 || (b >= 0x0E && b <= 0x1F))
+        .count();
+    non_text as f64 / sample.len() as f64 > 0.30
+}
+
 impl StageBuffer {
     pub fn new(policy: BufferPolicy) -> Self {
         Self {
@@ -104,19 +120,60 @@ impl StageBuffer {
 
     /// Append data to the buffer.
     ///
-    /// Stub: just extends head with data (no overflow logic yet).
-    /// Full implementation in Plan 02 Task 2.
+    /// Accumulates into `head` until `max_bytes` is exceeded, then switches
+    /// to overflow mode: head is truncated to `sample_size` and tail becomes
+    /// a rolling window of the latest `sample_size` bytes.
     pub fn append(&mut self, data: &[u8]) {
         self.total_bytes += data.len();
-        self.head.extend_from_slice(data);
+
+        if !self.overflow {
+            self.head.extend_from_slice(data);
+            if self.head.len() > self.policy.max_bytes {
+                // Transition to overflow mode
+                self.overflow = true;
+                // Keep the tail from the overflow data
+                let all_data_len = self.head.len();
+                if all_data_len > self.policy.sample_size {
+                    let tail_start = all_data_len.saturating_sub(self.policy.sample_size);
+                    self.tail = self.head[tail_start..].to_vec();
+                }
+                // Truncate head to sample_size
+                self.head.truncate(self.policy.sample_size);
+            }
+        } else {
+            // In overflow mode: extend tail, then trim front if too large
+            self.tail.extend_from_slice(data);
+            if self.tail.len() > self.policy.sample_size {
+                let excess = self.tail.len() - self.policy.sample_size;
+                self.tail.drain(..excess);
+            }
+        }
     }
 
     /// Finalize the buffer into a FinalizedBuffer.
     ///
-    /// Stub: always returns Complete (no overflow/binary detection yet).
-    /// Full implementation in Plan 02 Task 2.
+    /// Checks for binary data first, then returns the appropriate variant
+    /// based on whether overflow occurred.
     pub fn finalize(self) -> FinalizedBuffer {
-        FinalizedBuffer::Complete(self.head)
+        // Check binary on head (first bytes of data)
+        if is_binary_data(&self.head) {
+            return FinalizedBuffer::Binary { size: self.total_bytes };
+        }
+
+        if self.overflow {
+            FinalizedBuffer::Sampled {
+                head: self.head,
+                tail: self.tail,
+                total_bytes: self.total_bytes,
+            }
+        } else {
+            FinalizedBuffer::Complete(self.head)
+        }
+    }
+
+    /// Get total bytes seen across all append calls.
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
     }
 }
 
@@ -135,4 +192,204 @@ pub enum FinalizedBuffer {
     Binary {
         size: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_policy() -> BufferPolicy {
+        BufferPolicy::new(1024, 256) // Small sizes for testing
+    }
+
+    #[test]
+    fn test_buffer_small_complete() {
+        let mut buf = StageBuffer::new(test_policy());
+        buf.append(&[0x41; 100]); // 100 bytes of 'A'
+        let result = buf.finalize();
+        assert_eq!(result, FinalizedBuffer::Complete(vec![0x41; 100]));
+    }
+
+    #[test]
+    fn test_buffer_exact_limit_complete() {
+        let mut buf = StageBuffer::new(test_policy());
+        buf.append(&[0x41; 1024]); // Exactly max_bytes
+        let result = buf.finalize();
+        assert_eq!(result, FinalizedBuffer::Complete(vec![0x41; 1024]));
+    }
+
+    #[test]
+    fn test_buffer_overflow_sampled() {
+        let mut buf = StageBuffer::new(test_policy());
+        // Append 1500 bytes (exceeds 1024 max), using distinct patterns
+        let mut data = Vec::new();
+        for i in 0u8..150 {
+            data.extend_from_slice(&[i + 0x20; 10]); // 10 bytes each, printable
+        }
+        buf.append(&data); // 1500 bytes total
+        assert_eq!(buf.total_bytes(), 1500);
+        let result = buf.finalize();
+        match result {
+            FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+                assert_eq!(head.len(), 256); // sample_size
+                assert_eq!(tail.len(), 256); // sample_size
+                assert_eq!(total_bytes, 1500);
+                // Head should be first 256 bytes
+                assert_eq!(head, data[..256]);
+                // Tail should be last 256 bytes
+                assert_eq!(tail, data[data.len() - 256..]);
+            }
+            other => panic!("Expected Sampled, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buffer_overflow_multiple_appends() {
+        let mut buf = StageBuffer::new(test_policy());
+        // First append: 800 bytes (under limit)
+        buf.append(&[0x41; 800]);
+        // Second append: 400 bytes (pushes over 1024 limit)
+        buf.append(&[0x42; 400]);
+        // Third append: 300 bytes (already in overflow, extends tail)
+        buf.append(&[0x43; 300]);
+
+        assert_eq!(buf.total_bytes(), 1500);
+        let result = buf.finalize();
+        match result {
+            FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+                assert_eq!(head.len(), 256);
+                assert_eq!(total_bytes, 1500);
+                // Head should be first 256 bytes (all 'A')
+                assert!(head.iter().all(|&b| b == 0x41));
+                // Tail should be last 256 bytes -- the rolling window
+                // After second append triggers overflow, tail gets last 256 of 1200 bytes
+                // Then third append adds 300, tail grows to 556, drains to 256
+                // So tail should be the last 256 bytes of the third chunk
+                assert_eq!(tail.len(), 256);
+            }
+            other => panic!("Expected Sampled, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buffer_sampled_head_is_first_bytes() {
+        let mut buf = StageBuffer::new(test_policy());
+        let mut data = vec![0x61; 256]; // 'a' for first 256
+        data.extend_from_slice(&[0x62; 1244]); // 'b' for rest (total 1500)
+        buf.append(&data);
+        let result = buf.finalize();
+        match result {
+            FinalizedBuffer::Sampled { head, .. } => {
+                assert!(head.iter().all(|&b| b == 0x61)); // First 256 = all 'a'
+            }
+            other => panic!("Expected Sampled, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buffer_sampled_tail_is_last_bytes() {
+        let mut buf = StageBuffer::new(test_policy());
+        let mut data = vec![0x61; 1244]; // 'a' for first part
+        data.extend_from_slice(&[0x62; 256]); // 'b' for last 256 (total 1500)
+        buf.append(&data);
+        let result = buf.finalize();
+        match result {
+            FinalizedBuffer::Sampled { tail, .. } => {
+                assert!(tail.iter().all(|&b| b == 0x62)); // Last 256 = all 'b'
+            }
+            other => panic!("Expected Sampled, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buffer_binary_detection() {
+        let mut buf = StageBuffer::new(test_policy());
+        // >30% non-text bytes (control chars in 0x01..0x07 range)
+        let mut data = vec![0x01; 50]; // 50 non-text bytes
+        data.extend_from_slice(&[0x41; 50]); // 50 printable bytes
+        // 50% non-text -> binary
+        buf.append(&data);
+        let result = buf.finalize();
+        assert_eq!(result, FinalizedBuffer::Binary { size: 100 });
+    }
+
+    #[test]
+    fn test_buffer_binary_check_uses_8kb_sample() {
+        let mut buf = StageBuffer::new(BufferPolicy::new(100_000, 256));
+        // First 8KB is text, rest is binary-like
+        let mut data = vec![0x41; 9000]; // 'A' text
+        data.extend_from_slice(&[0x01; 9000]); // binary
+        buf.append(&data);
+        let result = buf.finalize();
+        // is_binary_data only samples first 8192 bytes, which are all text
+        match result {
+            FinalizedBuffer::Complete(_) => {} // Expected: text detected
+            other => panic!("Expected Complete (text first 8KB), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buffer_empty_complete() {
+        let buf = StageBuffer::new(test_policy());
+        let result = buf.finalize();
+        assert_eq!(result, FinalizedBuffer::Complete(vec![]));
+    }
+
+    #[test]
+    fn test_buffer_multiple_small_appends() {
+        let mut buf = StageBuffer::new(test_policy());
+        buf.append(&[0x41; 50]);
+        buf.append(&[0x42; 50]);
+        buf.append(&[0x43; 50]);
+        assert_eq!(buf.total_bytes(), 150);
+        let result = buf.finalize();
+        match result {
+            FinalizedBuffer::Complete(data) => {
+                assert_eq!(data.len(), 150);
+                assert_eq!(&data[..50], &[0x41; 50]);
+                assert_eq!(&data[50..100], &[0x42; 50]);
+                assert_eq!(&data[100..], &[0x43; 50]);
+            }
+            other => panic!("Expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_buffer_tail_rolling_window() {
+        let mut buf = StageBuffer::new(test_policy());
+        // Push over the limit
+        buf.append(&[0x41; 1100]); // Triggers overflow
+        // Now in overflow mode, append several chunks
+        buf.append(&[0x42; 200]); // tail grows
+        buf.append(&[0x43; 200]); // tail should roll, keeping latest 256
+
+        let result = buf.finalize();
+        match result {
+            FinalizedBuffer::Sampled { tail, .. } => {
+                assert_eq!(tail.len(), 256);
+                // Last 200 bytes should be 0x43, preceding should be 0x42
+                assert!(tail[56..].iter().all(|&b| b == 0x43));
+                assert!(tail[..56].iter().all(|&b| b == 0x42));
+            }
+            other => panic!("Expected Sampled, got {:?}", other),
+        }
+    }
+
+    // -- is_binary_data unit tests --
+
+    #[test]
+    fn test_is_binary_data_text() {
+        assert!(!is_binary_data(b"hello world\n\ttab"));
+    }
+
+    #[test]
+    fn test_is_binary_data_binary() {
+        let data: Vec<u8> = (0..100).map(|i| if i < 40 { 0x01 } else { 0x41 }).collect();
+        assert!(is_binary_data(&data)); // 40% non-text
+    }
+
+    #[test]
+    fn test_is_binary_data_empty() {
+        assert!(!is_binary_data(b""));
+    }
 }
