@@ -14,6 +14,9 @@ pub struct GlassConfig {
     /// History configuration section. Optional in the TOML file;
     /// uses defaults (max_output_capture_kb=50) when absent.
     pub history: Option<HistorySection>,
+    /// Snapshot configuration section. Optional in the TOML file;
+    /// uses defaults when present without explicit field values.
+    pub snapshot: Option<SnapshotSection>,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -28,6 +31,36 @@ fn default_max_output_capture_kb() -> u32 {
     50
 }
 
+/// Snapshot-related configuration in the `[snapshot]` TOML section.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SnapshotSection {
+    /// Whether snapshot capture is enabled. Default true.
+    #[serde(default = "default_snapshot_enabled")]
+    pub enabled: bool,
+    /// Maximum number of snapshots to retain. Default 1000.
+    #[serde(default = "default_max_count")]
+    pub max_count: u32,
+    /// Maximum total blob storage size in megabytes. Default 500.
+    #[serde(default = "default_max_size_mb")]
+    pub max_size_mb: u32,
+    /// Number of days to retain snapshots. Default 30.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_snapshot_enabled() -> bool {
+    true
+}
+fn default_max_count() -> u32 {
+    1000
+}
+fn default_max_size_mb() -> u32 {
+    500
+}
+fn default_retention_days() -> u32 {
+    30
+}
+
 impl Default for GlassConfig {
     fn default() -> Self {
         Self {
@@ -35,6 +68,7 @@ impl Default for GlassConfig {
             font_size: 14.0,
             shell: None,
             history: None,
+            snapshot: None,
         }
     }
 }

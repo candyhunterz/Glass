@@ -84,6 +84,41 @@ pub struct SnapshotFileRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Undo result types
+// ---------------------------------------------------------------------------
+
+/// Outcome for a single file during an undo operation.
+#[derive(Debug, Clone)]
+pub enum FileOutcome {
+    /// File was successfully restored to its pre-command state.
+    Restored,
+    /// File was deleted (it did not exist before the command).
+    Deleted,
+    /// File was skipped (no action needed).
+    Skipped,
+    /// Conflict detected: the file has been modified since the snapshot.
+    Conflict {
+        current_hash: String,
+        expected_hash: Option<String>,
+    },
+    /// An error occurred while processing this file.
+    Error(String),
+}
+
+/// Result of an undo operation on a snapshot.
+#[derive(Debug, Clone)]
+pub struct UndoResult {
+    /// The snapshot that was undone.
+    pub snapshot_id: i64,
+    /// The command that was undone.
+    pub command_id: i64,
+    /// How confident the parser was in the original snapshot.
+    pub confidence: Confidence,
+    /// Per-file outcomes.
+    pub files: Vec<(PathBuf, FileOutcome)>,
+}
+
+// ---------------------------------------------------------------------------
 // Watcher event types
 // ---------------------------------------------------------------------------
 
