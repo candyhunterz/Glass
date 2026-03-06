@@ -115,7 +115,9 @@ Plans:
   1. `GlassPipeInspect(command_id, stage)` returns the intermediate output for a specific pipeline stage via MCP
   2. `GlassContext` activity summaries include pipeline statistics (pipe count, avg stages, failure rate)
   3. `[pipes]` section in config.toml controls enabled/disabled, max_capture_mb, and auto_expand behavior
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 19-01-PLAN.md -- GlassPipeInspect MCP tool, GlassContext pipeline stats, and [pipes] config section with main.rs wiring
 
 ## Progress
 
@@ -142,5 +144,5 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 15. Pipe Parsing Core | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 16. Shell Capture + Terminal Transport | v1.3 | 3/3 | Complete | 2026-03-06 |
 | 17. Pipeline UI | v1.3 | 2/2 | Complete | 2026-03-06 |
-| 18. Storage + Retention | 1/1 | Complete    | 2026-03-06 | - |
-| 19. MCP + Config + Polish | v1.3 | 0/? | Not started | - |
+| 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
+| 19. MCP + Config + Polish | v1.3 | 0/1 | Not started | - |
