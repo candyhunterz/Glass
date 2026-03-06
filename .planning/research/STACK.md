@@ -1,151 +1,303 @@
-# Technology Stack
+# Stack Research: Pipe Visualization
 
-**Project:** Glass v1.2 -- Command-Level Undo
+**Project:** Glass v1.3 -- Pipe Visualization
 **Researched:** 2026-03-05
-**Confidence:** HIGH
+**Confidence:** HIGH (approach is custom code on existing crates, not new heavy dependencies)
 
 ## Scope
 
-This document covers ONLY the new dependencies needed for v1.2 (Command-Level Undo with filesystem snapshots). The existing stack (wgpu 28.0, winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38.0, rmcp 1.1.0, chrono 0.4, clap 4.5, etc.) is validated and unchanged.
+This document covers ONLY what is needed for v1.3 (pipe visualization: tee-based capture for bash/zsh, post-hoc capture for PowerShell, pipeline UI blocks, MCP tool). The existing validated stack is unchanged. v1.2 dependencies (notify, blake3, shlex) are already in the workspace.
 
 ---
 
-## Existing Stack (DO NOT ADD -- Already in Workspace)
+## Key Finding: No New Heavy Dependencies Needed
 
-| Technology | Version | Relevant to v1.2 Because |
-|------------|---------|--------------------------|
-| rusqlite | 0.38.0 (bundled) | Snapshot metadata tables (snapshots, snapshot_files) live in the existing history DB |
-| tokio | 1.50.0 (full) | Async integration for FS watcher event channel, async file I/O via tokio::fs |
-| chrono | 0.4 | Timestamps on snapshot records |
-| anyhow | 1.0.102 | Error handling in glass_snapshot |
-| tracing | 0.1.44 | Logging FS events, snapshot operations |
-| serde | 1.0.228 | Serialization of snapshot metadata |
-| dirs | 6 | Resolving snapshot blob storage directory |
-| clap | 4.5 | Adding `glass undo <command-id>` subcommand |
-| windows-sys | 0.59 | Already present; notify handles Windows FS APIs internally |
-| tempfile | 3 | Testing snapshot creation/restoration |
+Pipe visualization is primarily a **feature built on existing infrastructure**, not a dependency-heavy addition. The core work is:
+
+1. Shell command rewriting (bash/zsh): string manipulation using existing `shlex` crate
+2. PowerShell post-hoc capture: shell integration script changes (PowerShell code, not Rust)
+3. Binary detection in pipe stages: already implemented in `glass_history::output::is_binary()`
+4. Pipe stage storage: extend existing SQLite schema (existing `rusqlite`)
+5. Pipeline UI blocks: extend existing renderer (existing `wgpu`/`glyphon`)
+6. MCP tool: extend existing MCP server (existing `rmcp`)
 
 ---
 
-## New Dependencies for v1.2
+## Existing Stack (Already in Workspace -- Reuse for v1.3)
 
-### Filesystem Monitoring
+| Technology | Version | How v1.3 Uses It |
+|------------|---------|------------------|
+| shlex | 1.3.0 | Split pipe commands at `|` boundaries, tokenize each stage for tee insertion |
+| rusqlite | 0.38.0 | New `pipe_stages` table for intermediate output storage |
+| blake3 | 1.8.3 | Hash pipe stage output for dedup in blob store (reuse CAS from v1.2) |
+| strip-ansi-escapes | 0.2.1 | Strip ANSI from captured pipe stage output before storage |
+| chrono | 0.4 | Timestamps on pipe stage records |
+| tokio | 1.50.0 | Async temp file cleanup, MCP tool handlers |
+| tempfile | 3.26.0 | Temp files for tee capture targets (already a dev-dep, promote to regular dep for glass_pipes) |
+| rmcp | 1.1.0 | GlassPipeInspect MCP tool |
+| serde | 1.0.228 | Serialize pipe stage data for MCP responses |
+| clap | 4.5 | No new subcommands needed (pipe inspection is via MCP and UI) |
+
+---
+
+## New Dependencies for v1.3
+
+### Required: Promote tempfile to Regular Dependency
 
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| notify | 8.2.0 | Cross-platform filesystem watcher | The only serious cross-platform FS watcher in Rust. Uses ReadDirectoryChangesW on Windows, inotify on Linux, FSEvents on macOS. Used by alacritty, rust-analyzer, deno, zed. 62M+ downloads. CC0 licensed. Provides `recommended_watcher()` that auto-selects the best backend per platform. |
-| notify-debouncer-full | 0.7.0 | Event debouncing with file ID tracking | Deduplicates rapid-fire FS events (editor save-rename-write cycles) into single logical events. Critically, tracks file IDs across renames -- needed to detect `mv` operations where a file is renamed rather than created+deleted. Without this, rename events appear as separate create/delete pairs. |
+| tempfile | 3.26.0 | Named temp files for tee capture targets | Tee-based capture writes intermediate pipe stage output to temp files. `tempfile::NamedTempFile` provides auto-cleanup on drop, unique names (no collision between concurrent commands), and is already in the workspace as a dev-dep. Promote to regular dep in glass_pipes. |
 
-**Confidence:** HIGH -- notify 8.x is the de facto standard. No viable alternative exists.
+**Confidence:** HIGH -- tempfile is the standard Rust crate for temp files. 400M+ downloads. Already in the workspace.
 
-**Integration pattern:**
+### No Other New Crates Needed
+
+The v1.3 feature set does not require any crate not already in the workspace. This is deliberate -- pipe visualization is a feature layer built on top of existing infrastructure.
+
+---
+
+## Approach by Shell: How Pipe Capture Works
+
+### Bash/Zsh: Tee-Based Transparent Capture
+
+**Mechanism:** Rewrite the user's piped command before execution by inserting `tee <tmpfile>` between each pipe stage.
+
+**Example rewrite:**
+```
+Original:  cat data.csv | grep ERROR | sort | head -5
+Rewritten: cat data.csv | tee /tmp/glass_pipe_abc123_s0 | grep ERROR | tee /tmp/glass_pipe_abc123_s1 | sort | tee /tmp/glass_pipe_abc123_s2 | head -5
+```
+
+**Implementation (in glass.bash shell integration):**
+
+The shell integration script hooks into bash's `PS0` (pre-execution). When a pipe is detected in the command text:
+1. Parse command at `|` boundaries (quote-aware splitting)
+2. Generate temp file paths via a naming convention (not Rust tempfile -- this is in bash)
+3. Insert `tee <tmpfile>` after each stage except the last
+4. Emit a custom OSC sequence with the temp file paths so Glass can collect them after command completion
+5. On `PROMPT_COMMAND` (post-execution), Glass reads the temp files and stores stage output
+
+**Why tee, not process substitution:**
+- `tee` is POSIX, works in bash and zsh identically
+- Process substitution (`>(...)`) is bash-specific, not available in sh
+- `tee` preserves the pipeline exit code chain correctly
+- `tee` is a separate process -- it does not buffer the entire stage output in memory
+
+**Temp file naming convention (in bash, not Rust):**
+```bash
+# Pattern: /tmp/glass_pipe_{command_epoch}_{stage_index}
+__glass_pipe_dir="/tmp/glass_pipes_$$"
+mkdir -p "$__glass_pipe_dir"
+```
+
+**How Glass reads the captures:** After command completion (OSC 133;D), Glass reads the temp files listed in the pre-exec OSC metadata, processes them through the existing output pipeline (binary detection, ANSI stripping, truncation), stores to pipe_stages table, and cleans up temp files.
+
+**shlex for pipe splitting in Rust (validation/fallback):**
 ```rust
-use notify_debouncer_full::{new_debouncer, DebounceEventResult};
-use std::time::Duration;
+/// Split a command string at unquoted pipe characters.
+/// Uses shlex for quote awareness, custom logic for pipe detection.
+fn split_pipes(command: &str) -> Vec<String> {
+    let mut stages = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = command.as_bytes();
+    let mut i = 0;
 
-// Create debouncer with 200ms window
-let (tx, rx) = std::sync::mpsc::channel();
-let mut debouncer = new_debouncer(Duration::from_millis(200), None, tx)?;
-
-// Watch the CWD reported by OSC 7
-debouncer.watcher().watch(cwd.as_ref(), RecursiveMode::Recursive)?;
-
-// Process events on dedicated thread (matches PTY reader pattern)
-std::thread::spawn(move || {
-    while let Ok(result) = rx.recv() {
-        match result {
-            Ok(events) => { /* record file modifications */ }
-            Err(errors) => { /* log via tracing */ }
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => { in_single = !in_single; current.push('\''); }
+            b'"' if !in_single => { in_double = !in_double; current.push('"'); }
+            b'|' if !in_single && !in_double => {
+                // Check for || (logical OR) -- not a pipe
+                if i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+                    current.push_str("||");
+                    i += 2;
+                    continue;
+                }
+                stages.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(bytes[i] as char),
         }
+        i += 1;
     }
-});
-```
-
-### Content Hashing for Deduplication
-
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| blake3 | 1.8.3 | Content-addressed hashing for file dedup | 2-14x faster than SHA-256 on x86 via auto-detected SIMD (SSE2/AVX2/AVX-512). 256-bit output eliminates collision risk. Built-in `.to_hex()` on `Hash` type (no separate hex crate needed). Incrementally hashable -- can hash while streaming file reads. Used by IPFS, Bao, Iroh for content addressing. |
-
-**Confidence:** HIGH -- BLAKE3 is the standard choice for content-addressed storage in Rust. SHA-256 is slower with no benefit for non-cryptographic local CAS. xxhash is only 64/128-bit (unacceptable collision risk across thousands of file snapshots).
-
-**Integration pattern:**
-```rust
-use blake3::Hasher;
-use std::io::Read;
-
-fn hash_file(path: &Path) -> anyhow::Result<blake3::Hash> {
-    let mut hasher = Hasher::new();
-    let mut file = std::fs::File::open(path)?;
-    let mut buf = [0u8; 16384]; // 16KB reads
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 { break; }
-        hasher.update(&buf[..n]);
+    if !current.trim().is_empty() {
+        stages.push(current.trim().to_string());
     }
-    Ok(hasher.finalize())
-}
-
-// Store blob: {data_dir}/glass/snapshots/blobs/{hash[0:2]}/{hash}
-// The 2-char prefix directory prevents any single directory from having millions of entries
-let hex = hash.to_hex();
-let blob_dir = data_dir.join("snapshots/blobs").join(&hex.as_str()[..2]);
-std::fs::create_dir_all(&blob_dir)?;
-let blob_path = blob_dir.join(hex.as_str());
-if !blob_path.exists() {
-    std::fs::copy(source_path, &blob_path)?; // Dedup: only store if new hash
+    stages
 }
 ```
 
-### Shell Command Text Parsing
+### PowerShell: Post-Hoc Variable Capture
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| shlex | 1.3.0 | Parse command text into shell argument tokens | POSIX shell tokenization handling quoting (`"foo bar"`, `'hello'`), escaping (`foo\ bar`), and multi-word arguments. Needed to extract file path arguments from commands like `rm -rf "my folder"`. Lightweight, zero dependencies. Provides `Shlex` iterator for lazy tokenization (inspect first token before parsing rest). |
+**Mechanism:** PowerShell pipelines pass .NET objects, not byte streams. Tee insertion would change behavior (objects get serialized to text). Instead, use `Tee-Object -Variable` to capture each stage into a PowerShell variable, then emit the captured data via a custom OSC sequence after command completion.
 
-**Confidence:** HIGH for bash/zsh. MEDIUM for PowerShell.
+**Example rewrite:**
+```powershell
+# Original:
+Get-Process | Where-Object { $_.CPU -gt 100 } | Sort-Object CPU
 
-**PowerShell note:** shlex implements POSIX shell quoting. PowerShell uses backtick escapes and different string interpolation. For PowerShell, hand-roll a simple tokenizer (split on whitespace, handle `"` and `'` quoting). PowerShell's quoting is simple enough that a 30-line function handles it -- no crate needed.
+# Rewritten (transparent):
+Get-Process | Tee-Object -Variable __glass_s0 | Where-Object { $_.CPU -gt 100 } | Tee-Object -Variable __glass_s1 | Sort-Object CPU
+# Post-execution: emit captured variables via OSC
+```
 
-**Integration pattern:**
-```rust
-use shlex::Shlex;
+**Key difference from bash:** PowerShell pipelines pass objects. `Tee-Object -Variable` captures the object array at each stage. For Glass display, we call `.ToString()` or `Out-String` on captured variables to get text representation.
 
-fn extract_file_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
-    let mut lexer = Shlex::new(command_text);
-    let cmd = match lexer.next() {
-        Some(cmd) => cmd,
-        None => return vec![],
-    };
-    let args: Vec<String> = lexer.collect();
+**Implementation (in glass.ps1 shell integration):**
 
-    match cmd.as_str() {
-        "rm" | "del" => extract_rm_targets(&args, cwd),
-        "mv" | "move" => extract_mv_targets(&args, cwd),
-        "cp" | "copy" => extract_cp_targets(&args, cwd),
-        "sed" if args.contains(&"-i".to_string()) => extract_sed_targets(&args, cwd),
-        "git" if args.first().map_or(false, |a| a == "checkout") => extract_git_targets(&args, cwd),
-        "chmod" | "chown" => extract_trailing_paths(&args, cwd),
-        _ => vec![], // Unknown command -- rely on FS watcher for recording
-    }
+The PSReadLine Enter handler detects pipes, rewrites with `Tee-Object -Variable`, and after execution, the prompt function reads the variables and emits them via OSC or writes to temp files.
+
+**Why post-hoc, not pre-exec temp files:**
+- PowerShell objects lose fidelity when serialized to files mid-pipeline
+- `Tee-Object -Variable` preserves the object pipeline exactly
+- Variable capture adds negligible overhead
+- The variable contents are serialized to text only at collection time (in the prompt function)
+
+### TTY-Sensitive Command Detection
+
+**Commands that break when tee is inserted:**
+- Interactive editors: `vim`, `nano`, `emacs`, `vi`
+- Pagers: `less`, `more`, `bat` (when interactive)
+- Terminal UIs: `htop`, `top`, `ncdu`, `fzf`
+- Password prompts: `sudo`, `ssh`, `passwd`
+- REPLs: `python`, `node`, `irb` (when interactive)
+
+**Detection approach:** Maintain a hardcoded denylist in the shell integration script. Before rewriting, check if any pipe stage contains a denylisted command. If so, skip tee insertion entirely for that pipeline.
+
+```bash
+__GLASS_TTY_COMMANDS="vim|vi|nano|emacs|less|more|bat|htop|top|ncdu|fzf|sudo|ssh|passwd"
+
+__glass_has_tty_command() {
+    local cmd="$1"
+    echo "$cmd" | grep -qE "(^|\|)\s*($__GLASS_TTY_COMMANDS)(\s|$)"
 }
 ```
+
+**Opt-out flag:** Allow users to prefix with `# nopipe` or set a shell variable to disable pipe capture for a specific command.
 
 ---
 
-## Deferred Dependencies (NOT for v1.2 MVP)
+## Binary Detection in Pipe Stage Output
 
-### Compression
+**Already implemented:** `glass_history::output::is_binary()` samples the first 8KB and checks if >30% of bytes are non-printable (excluding `\n`, `\r`, `\t`). This is sufficient for pipe stage output.
 
-| Technology | Version | Purpose | Why Defer |
-|------------|---------|---------|-----------|
-| zstd | 0.13.3 | Compress snapshot blobs | 3-5x compression on source code. But: raw blob storage is simpler for MVP. Content-addressed design means compression can be added non-breakingly later (compress before store, decompress on read; hash stays the same since it hashes original content). Add when storage pruning is implemented. |
+**Enhancement for v1.3:** The existing 30% threshold is conservative. For pipe stages, the same function works because:
+- Text pipelines (grep, awk, sed, sort) produce text output
+- Binary pipelines (tar, gzip, openssl) produce binary output
+- Mixed pipelines (strings on binary) produce text from binary input
 
-### Diff Display
+**content_inspector crate (NOT recommended):**
+- v0.2.4, last updated 7+ years ago
+- Uses NULL-byte detection only (checks first 1024 bytes)
+- Glass's existing `is_binary()` is actually more sophisticated (30% threshold on 8KB sample vs NULL scan on 1KB)
+- Adding a dependency for a simpler algorithm would be a downgrade
 
-| Technology | Version | Purpose | Why Defer |
-|------------|---------|---------|-----------|
-| similar | 2.x | Text diffing for GlassFileDiff MCP tool | Undo = restore full file from snapshot. Diff display is a nice-to-have for the MCP tool, not required for the core undo flow. Add when GlassFileDiff is implemented. |
+**Recommendation:** Reuse `glass_history::output::is_binary()` directly. Extract it to a shared utility if glass_pipes needs it without depending on glass_history.
+
+---
+
+## DB Schema Extension
+
+Extend the existing history database with a new migration (v2 -> v3):
+
+```sql
+-- v3 migration: pipe stage storage
+CREATE TABLE pipe_stages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+    stage_index INTEGER NOT NULL,       -- 0-based position in pipeline
+    stage_command TEXT NOT NULL,         -- the command text for this stage
+    output TEXT,                         -- captured text output (NULL if binary/unavailable)
+    output_bytes INTEGER,               -- original byte count before truncation
+    is_binary INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(command_id, stage_index)
+);
+
+CREATE INDEX idx_pipe_stages_command ON pipe_stages(command_id);
+```
+
+**Why not store in blob store:** Pipe stage output is ephemeral display data, not file content for restoration. It belongs in SQLite directly (simpler queries, automatic cleanup via CASCADE delete, retention policy integration).
+
+**Size management:** Reuse the existing `process_output()` function with the same `max_kb` truncation. Each stage output is capped at the configured limit (default 50KB). Total per-pipeline cap = stages * 50KB.
+
+---
+
+## Crate Architecture for glass_pipes
+
+### glass_pipes/Cargo.toml
+
+```toml
+[package]
+name = "glass_pipes"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+```
+
+### Crate Responsibility
+
+```
+glass_terminal (detects pipe in command text via OSC 133;C pre-exec)
+    |
+    v  command text + metadata via AppEvent::PipelineDetected
+glass_pipes (pipe parsing, stage management, DB storage)
+    |-- pipe_parser.rs    -- split_pipes(), is_tty_sensitive(), generate_rewrite()
+    |-- stage_store.rs    -- SQLite storage for pipe_stages table
+    |-- capture.rs        -- read temp files, process output, store stages
+    |
+    v  pipe stage data via query API
+glass_mcp (GlassPipeInspect tool)
+glass_renderer (pipeline UI blocks)
+```
+
+### Shared Utilities
+
+The `is_binary()` and `process_output()` functions in `glass_history::output` are needed by glass_pipes. Two options:
+
+**Option A (RECOMMENDED): glass_pipes depends on glass_history**
+- Import `glass_history::output::{is_binary, process_output, strip_ansi}`
+- Matches the v1.2 pattern where glass_snapshot depends on glass_history
+- These functions are pure (no DB access), so the coupling is minimal
+
+**Option B: Extract to a shared glass_common crate**
+- Move output processing to `glass_common::output`
+- Both glass_history and glass_pipes depend on glass_common
+- Cleaner but adds a new crate for 3 functions
+- Defer this refactor unless the dependency graph becomes unwieldy
+
+---
+
+## Workspace Changes
+
+### Root Cargo.toml
+
+```toml
+[workspace.dependencies]
+# v1.3: Promote tempfile from dev-only to regular dependency
+tempfile = "3"
+# All other deps already in workspace -- no additions needed
+```
+
+### Root binary Cargo.toml
+
+```toml
+[dependencies]
+# Add to existing:
+glass_pipes = { path = "crates/glass_pipes" }
+```
 
 ---
 
@@ -153,19 +305,19 @@ fn extract_file_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
 
 | Category | Recommended | Alternative | Why Not |
 |----------|-------------|-------------|---------|
-| FS watcher | notify 8.2 | Raw platform APIs (inotify/FSEvents/RDCW) | notify abstracts all three platforms. Rolling your own is 500+ lines of unsafe platform code per platform for no benefit. |
-| FS watcher | notify 8.2 | watchexec-events | watchexec is a CLI tool wrapper, not a library. Its event types are heavier than needed. |
-| FS debouncer | notify-debouncer-full | notify-debouncer-mini | Mini does not track file IDs across renames. Miss rename detection = broken `mv` tracking. |
-| FS debouncer | notify-debouncer-full | No debouncer (raw notify) | Raw notify fires multiple events per editor save (temp write, rename, chmod). Without debouncing, snapshot logic must handle duplicate events manually. |
-| Hashing | blake3 | sha2 (SHA-256) | 2-14x slower. No benefit for local (non-cryptographic, non-interop) CAS. |
-| Hashing | blake3 | xxhash (xxh3) | Only 64/128-bit. Collision probability unacceptable for dedup across thousands of files over time. Birthday paradox at ~4B files for 64-bit. |
-| Hashing | blake3 | seahash | Only 64-bit. Same collision concern as xxhash. |
-| Shell parsing | shlex | shell-words | Both work. shlex has `Shlex` iterator for lazy tokenization -- can inspect the command name without allocating a full Vec. shell-words forces upfront full allocation. |
-| Shell parsing | shlex | tree-sitter-bash | Massive dependency for AST parsing. We need argument tokenization, not syntax trees. |
-| Shell parsing | shlex | regex-based | Breaks on quoted strings, escaped characters, nested quotes. Regex cannot correctly parse shell quoting rules. |
-| CAS storage | Custom (~50 LOC) | casq / bdstorage crates | Over-engineered. Our CAS is: hash file, check blob exists, copy if not. SQLite tracks metadata. A full CAS library adds abstraction layers we don't need. |
-| Snapshot DB | Extend glass_history DB | Separate SQLite file | Snapshots are metadata about commands. Foreign keys to the commands table require same DB. Single DB = atomic transactions (record command + snapshot together). |
-| Snapshot DB | PRAGMA user_version migrations | refinery / sqlx | Already using user_version pattern in glass_history. Consistency > novelty. |
+| Pipe splitting | Custom quote-aware splitter (~40 LOC) | shlex + post-process | shlex does not expose pipe boundaries. It treats `|` as a regular character. Custom splitter is simple and correct. |
+| Pipe splitting | Custom splitter | tree-sitter-bash | Massive dependency. We need to find `|` outside quotes, not build an AST. |
+| Pipe splitting | Custom splitter | regex `\|` | Breaks on pipes inside quoted strings: `echo "a|b" | grep a`. Must be quote-aware. |
+| Bash capture | tee insertion | Process substitution `>(cat > file)` | Bash-specific (not POSIX), more complex rewrite, same result. |
+| Bash capture | tee to temp files | Named pipes (mkfifo) | Race conditions if consumer is slower than producer. Temp files are simpler and sufficient. |
+| Bash capture | Shell-side rewrite | Rust-side PTY interception | Would require spawning sub-PTYs for each pipe stage. Enormously complex, fragile, and not portable. Shell-side tee insertion is the standard approach used by pipe debuggers. |
+| PowerShell capture | Tee-Object -Variable | Trace-Command PipelineExecution | Trace-Command output is engine debug text, not the actual pipeline data. Unparseable for display. |
+| PowerShell capture | Tee-Object -Variable | Out-File per stage | Serializes objects to text mid-pipeline, changing behavior (Format-Table vs raw objects). |
+| PowerShell capture | Post-hoc variable read | Real-time streaming | PowerShell variables are available only after pipeline completion. Real-time would require custom cmdlets. Not worth the complexity. |
+| Binary detection | Existing is_binary() (8KB, 30%) | content_inspector crate (v0.2.4) | 7+ years unmaintained. NULL-byte only detection on 1KB. Our existing implementation is better. |
+| Stage storage | SQLite pipe_stages table | Blob store (files) | Pipe output is small, ephemeral, query-friendly. SQLite is the right tool. Blob store is for large file snapshots. |
+| Temp file management | tempfile crate | Manual /tmp files | tempfile handles unique naming, auto-cleanup, and cross-platform temp dirs. Already in workspace. |
+| Temp file management | tempfile crate | In-memory buffers | Pipe stages can be arbitrarily large. Temp files avoid memory pressure. |
 
 ---
 
@@ -173,176 +325,116 @@ fn extract_file_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
 
 | Temptation | Why Not |
 |------------|---------|
-| A CAS library (casq, bdstorage) | Our CAS is ~50 lines of code. Libraries add abstraction without value for this use case. |
-| A migration framework | Already using `PRAGMA user_version` in glass_history. Extend that pattern. |
-| similar (diff library) | Not needed for v1.2 core undo. Undo restores full files, no diff required. Defer to GlassFileDiff phase. |
-| walkdir | `std::fs::read_dir` with manual recursion is sufficient for scanning known directories. walkdir adds a dependency for marginal convenience. |
-| globset / glob | File target extraction works from parsed command arguments, not glob expansion. The shell expands globs before Glass sees the command text. |
-| inotify / fsevent / windows-sys (direct) | notify wraps all three. Direct platform API usage duplicates notify's work. |
-| tokio-rusqlite | Hides threading model. Dedicated thread + channel matches existing PTY reader architecture and gives explicit control. |
-
----
-
-## Workspace Integration Plan
-
-### Root Cargo.toml additions
-
-```toml
-[workspace.dependencies]
-# v1.2: Command-Level Undo (NEW)
-notify                = "8.2.0"
-notify-debouncer-full = "0.7.0"
-blake3                = "1.8.3"
-shlex                 = "1.3.0"
-```
-
-### glass_snapshot/Cargo.toml (fill in stub crate)
-
-```toml
-[package]
-name = "glass_snapshot"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-notify = { workspace = true }
-notify-debouncer-full = { workspace = true }
-blake3 = { workspace = true }
-shlex = { workspace = true }
-rusqlite = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
-tracing = { workspace = true }
-chrono = { workspace = true }
-dirs = { workspace = true }
-serde = { workspace = true }
-
-[dev-dependencies]
-tempfile = "3"
-```
-
-### Root binary additions
-
-```toml
-[dependencies]
-# Add to existing:
-glass_snapshot = { path = "crates/glass_snapshot" }
-```
-
-### Crate Dependency Flow
-
-```
-glass_terminal (OSC 133 pre-exec + command-finished events)
-    |
-    v  command text + CWD via AppEvent
-glass_snapshot (ALL undo logic)
-    |-- notify + debouncer (FS monitoring)
-    |-- blake3 (content hashing)
-    |-- shlex (command text parsing)
-    |-- rusqlite (snapshot metadata in shared history DB)
-    |
-    v  snapshot/restore results via AppEvent
-glass_core (orchestrates undo: Ctrl+Shift+Z keybinding, undo button clicks)
-    |
-    v
-glass_renderer ([undo] button on command blocks, restore feedback toast)
-```
-
-### DB Integration
-
-**Extend the existing glass_history SQLite database.** Rationale:
-- Snapshots reference commands (foreign key to `commands` table)
-- Single DB = atomic operations (snapshot + command record in one transaction)
-- glass_history already handles DB path resolution, migrations (user_version), WAL mode
-- Add new tables via migration (increment user_version):
-
-```sql
--- v2 migration
-CREATE TABLE snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    command_id INTEGER NOT NULL REFERENCES commands(id),
-    created_at TEXT NOT NULL,
-    restored_at TEXT,  -- NULL until undo is triggered
-    cwd TEXT NOT NULL
-);
-
-CREATE TABLE snapshot_files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
-    file_path TEXT NOT NULL,
-    blob_hash TEXT NOT NULL,  -- BLAKE3 hex hash
-    file_size INTEGER NOT NULL,
-    file_mode INTEGER,  -- Unix permissions (NULL on Windows)
-    snapshot_type TEXT NOT NULL CHECK(snapshot_type IN ('pre_exec', 'watcher'))
-);
-
-CREATE INDEX idx_snapshot_files_hash ON snapshot_files(blob_hash);
-CREATE INDEX idx_snapshots_command ON snapshots(command_id);
-```
-
-**Blob storage** lives on the filesystem, not in SQLite:
-```
-{data_dir}/glass/snapshots/blobs/{hash[0:2]}/{hash}
-```
-
-The 2-char prefix directory prevents any single directory from having millions of entries. SQLite stores only hash references. This keeps the DB small and blob I/O fast.
-
-### glass_snapshot and glass_history Relationship
-
-Two options:
-
-**Option A (RECOMMENDED): glass_snapshot depends on glass_history**
-- glass_snapshot imports glass_history's `HistoryDb` to get the `Connection` or a handle
-- Snapshot tables are migrated by glass_history (single migration path)
-- Pro: single point of DB management
-- Con: couples the crates
-
-**Option B: glass_snapshot gets its own Connection to the same file**
-- Both crates open the same SQLite file independently
-- WAL mode allows concurrent access
-- Pro: crate independence
-- Con: migration coordination is error-prone
-
-Recommend Option A. The coupling is justified because snapshots are inherently linked to command records.
+| content_inspector | Existing `is_binary()` is more sophisticated. Adding a dependency for a downgrade. |
+| shell-words (for pipe parsing) | Same limitation as shlex -- neither understands pipe operators. Custom splitter needed regardless. |
+| nix crate (for mkfifo/named pipes) | Named pipes are unnecessary. Temp files are simpler and sufficient for batch capture. |
+| pty-process or portable-pty | Sub-PTY spawning for each pipe stage would be the "correct" Unix approach but is massively over-engineered for this use case. |
+| serde_json (for MCP pipe data) | Already available transitively through rmcp. No direct dependency needed in glass_pipes. |
+| tree-sitter-bash | AST parsing for pipe detection is like using a chainsaw to cut butter. |
+| A PowerShell module (.psm1) | Keep all PowerShell integration in the single glass.ps1 script for simplicity. |
+| async-tempfile | Temp files are written by the shell (tee), read once by Glass, then deleted. No async needed. |
 
 ---
 
 ## Version Compatibility
 
-| New Package | Compatible With | Notes |
-|-------------|-----------------|-------|
-| notify 8.2 | tokio 1.x | notify itself is sync (uses std::sync::mpsc). Integration with tokio is via channel bridging. No version conflict. |
-| notify-debouncer-full 0.7 | notify 8.2 | Part of the notify-rs workspace. Version-locked to notify 8.x. |
-| blake3 1.8.3 | MSRV 1.85 | Matches workspace MSRV expectations. No async runtime dependency. Pure computation. |
-| shlex 1.3.0 | Any Rust edition | Zero dependencies. No compatibility concerns. |
+| Package | Compatible With | Notes |
+|---------|-----------------|-------|
+| tempfile 3.26.0 | tokio 1.x, rusqlite 0.38.0 | No conflicts. Pure std::fs operations. |
+| All existing workspace deps | Unchanged | No version bumps needed for v1.3. |
 
 ---
 
 ## Compile & Binary Size Impact
 
-| Dependency | Compile Impact | Binary Size | Notes |
-|------------|---------------|-------------|-------|
-| notify 8.2 | LOW -- mostly platform API bindings | ~100 KB | Thin wrappers around OS APIs. Windows: uses windows-sys (already in workspace). |
-| notify-debouncer-full 0.7 | MINIMAL | ~20 KB | Small event processing logic on top of notify. |
-| blake3 1.8.3 | LOW-MODERATE | ~200 KB | SIMD implementations compiled for multiple targets. Auto-detected at runtime. |
-| shlex 1.3.0 | MINIMAL | ~10 KB | Tiny crate, zero dependencies. |
-| **Total v1.2 addition** | **~330 KB** | Negligible vs existing ~80MB binary with GPU drivers. |
+| Change | Compile Impact | Binary Size | Notes |
+|--------|---------------|-------------|-------|
+| glass_pipes crate (new code) | MODERATE (new crate) | ~50 KB | Pure Rust logic: pipe parsing, DB queries, file I/O |
+| tempfile promotion | NONE | Already compiled | Already in workspace as dev-dep; same binary |
+| **Total v1.3 addition** | **~50 KB new code** | Negligible. No new external dependencies. |
+
+---
+
+## Shell Integration Script Changes
+
+### glass.bash additions
+
+```bash
+# Pipe detection and tee insertion
+__glass_rewrite_pipes() {
+    local cmd="$1"
+    # Skip if no pipes or TTY-sensitive command
+    [[ "$cmd" != *"|"* ]] && return 1
+    __glass_has_tty_command "$cmd" && return 1
+
+    # Create capture directory for this command
+    local epoch=$(date +%s%N)
+    __glass_pipe_dir="/tmp/glass_pipes_${epoch}"
+    mkdir -p "$__glass_pipe_dir"
+
+    # Split on unquoted pipes, insert tee
+    # (simplified -- real implementation needs quote awareness)
+    local IFS='|'
+    local -a stages=($cmd)
+    local rewritten=""
+    local i=0
+    local last=$((${#stages[@]} - 1))
+
+    for stage in "${stages[@]}"; do
+        if [[ $i -lt $last ]]; then
+            rewritten+="$stage | tee ${__glass_pipe_dir}/stage_${i} |"
+        else
+            rewritten+="$stage"
+        fi
+        ((i++))
+    done
+
+    # Emit OSC with pipe metadata
+    printf '\e]133;P;dir=%s;stages=%d\e\\' "$__glass_pipe_dir" "${#stages[@]}"
+
+    echo "$rewritten"
+}
+```
+
+### glass.ps1 additions
+
+```powershell
+# Pipe detection and Tee-Object insertion
+function __Glass-Rewrite-Pipes {
+    param([string]$CommandLine)
+
+    if ($CommandLine -notmatch '\|') { return $null }
+
+    # Split on unquoted pipes
+    $stages = $CommandLine -split '\s*\|\s*'
+    $rewritten = @()
+    $Global:__GlassPipeVars = @()
+
+    for ($i = 0; $i -lt $stages.Count; $i++) {
+        $rewritten += $stages[$i]
+        if ($i -lt $stages.Count - 1) {
+            $varName = "__glass_ps_$i"
+            $rewritten += "| Tee-Object -Variable $varName |"
+            $Global:__GlassPipeVars += $varName
+        }
+    }
+
+    return ($rewritten -join ' ')
+}
+```
 
 ---
 
 ## Sources
 
-- [notify crate (crates.io)](https://crates.io/crates/notify) -- v8.2.0, 62M+ downloads, CC0 license
-- [notify docs.rs](https://docs.rs/notify/latest/notify/) -- API: recommended_watcher(), RecursiveMode, Event/EventKind types
-- [notify-rs GitHub](https://github.com/notify-rs/notify) -- backends: ReadDirectoryChangesW (Windows), inotify (Linux), FSEvents (macOS)
-- [notify-debouncer-full (lib.rs)](https://lib.rs/crates/notify-debouncer-full) -- v0.7.0, file ID tracking across renames
-- [blake3 crate (crates.io)](https://crates.io/crates/blake3) -- v1.8.3
-- [blake3 docs.rs](https://docs.rs/blake3/latest/blake3/) -- Hash::to_hex(), Hasher streaming API
-- [BLAKE3 GitHub releases](https://github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.3) -- v1.8.3: Hash::as_slice, MSRV 1.85
-- [shlex docs.rs](https://docs.rs/shlex/latest/shlex/) -- v1.3.0, Shlex iterator, POSIX shell tokenization
-- [shell-words docs.rs](https://docs.rs/shell-words/latest/shell_words/) -- alternative considered, split() returns Vec<String>
-- [zstd crate (crates.io)](https://crates.io/crates/zstd) -- v0.13.3, deferred recommendation
+- [shlex 1.3.0 (docs.rs)](https://docs.rs/shlex/latest/shlex/) -- POSIX shell tokenization, already in workspace
+- [content_inspector 0.2.4 (docs.rs)](https://docs.rs/content_inspector/latest/content_inspector/) -- considered and rejected; existing is_binary() is better
+- [tempfile (crates.io)](https://crates.io/crates/tempfile) -- v3.26.0, 400M+ downloads, already in workspace
+- [tee command (GNU Coreutils)](https://www.gnu.org/software/coreutils/tee) -- POSIX standard pipe splitter
+- [PowerShell Tee-Object (Microsoft Learn)](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/tee-object?view=powershell-7.5) -- Variable capture in PowerShell pipelines
+- [Trace-Command (Microsoft Learn)](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/trace-command?view=powershell-7.4) -- considered and rejected for pipe capture
+- [strip-ansi-escapes 0.2.1 (crates.io)](https://crates.io/crates/strip-ansi-escapes) -- already in workspace via glass_history
 
 ---
-*Stack research for: Glass v1.2 Command-Level Undo*
+*Stack research for: Glass v1.3 Pipe Visualization*
 *Researched: 2026-03-05*

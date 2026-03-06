@@ -1,141 +1,196 @@
-# Feature Landscape
+# Feature Research
 
-**Domain:** Command-level undo with filesystem snapshots for terminal emulator
+**Domain:** Pipe visualization and pipeline debugging for terminal emulator
 **Researched:** 2026-03-05
-**Milestone:** v1.2 Command-Level Undo
-**Confidence:** MEDIUM -- no direct precedent for command-level undo in terminal emulators; recommendations synthesized from adjacent domains (version control, filesystem snapshots, editor undo, backup tools)
+**Milestone:** v1.3 Pipe Visualization
+**Confidence:** MEDIUM -- no terminal emulator has pipe-stage visualization; recommendations synthesized from shell debugging patterns (tee, pv, Tee-Object), structured-data shells (Nushell), and block-based terminals (Warp). Novel territory.
 
 ---
 
-## Table Stakes
+## Feature Landscape
 
-If Glass advertises "command-level undo," users will expect these features to work reliably or will consider the feature broken.
+### Table Stakes (Users Expect These)
 
-| Feature | Why Expected | Complexity | Depends On |
-|---------|--------------|------------|------------|
-| Automatic pre-command file snapshots | The whole value proposition -- if users must opt in, they will not | HIGH | OSC 133;C pre-exec timing (exists), command text parsing (new) |
-| Single-keystroke undo (Ctrl+Shift+Z) | Every undo UX uses a single gesture | LOW | winit input handling (exists) |
-| Undo button on command blocks | Block UI already has exit code/duration badges -- [undo] is the natural extension | LOW | Block decoration rendering (exists) |
-| Visual confirmation of undo result | Users must see what was reverted -- "undo succeeded" with no details is anxiety-inducing | MEDIUM | Block UI / toast rendering |
-| Safe restore with conflict detection | Must not silently destroy post-command changes -- warn if file changed since command | MEDIUM | Content-addressed blob store (new) |
-| Storage pruning and limits | Snapshots consume disk -- must not fill drive silently | MEDIUM | Existing retention policy pattern in glass_history |
-| CLI undo (`glass undo <id>`) | Glass pattern: features accessible via both UI and CLI | LOW | Clap routing (exists) |
-| Scope limited to file content | Users expect file content to revert, NOT process state, env vars, or network effects | LOW | Design constraint, communicated in UI |
-| Cross-platform file operations | Windows + Linux + macOS file copy/restore | MEDIUM | std::fs + notify (cross-platform) |
+If Glass advertises "pipe visualization," these must work or the feature feels broken.
 
----
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| Pipe detection in command text | Must identify `cmd1 | cmd2 | cmd3` automatically -- users will not annotate their commands | LOW | Parse `|` from command text already captured by OSC 133. Handle quoted/escaped pipes. Depends on: command text extraction (exists from v1.2) |
+| Per-stage output capture | The entire value prop -- show what data looked like between each pipe stage | HIGH | Bash/Zsh: rewrite `a | b | c` to `a | tee /tmp/g1 | b | tee /tmp/g2 | c`. PowerShell: post-hoc via `Tee-Object` or capture after execution. Must not break command semantics. |
+| Multi-row pipeline UI | Each stage rendered as a sub-block within the parent command block | MEDIUM | Extend existing Block struct with stages. Show command label per stage, expandable output. Depends on: block_manager.rs Block struct, block_renderer.rs |
+| Expand/collapse stage output | Pipelines can produce huge intermediate output -- collapsed by default with click-to-expand | MEDIUM | Collapsed shows first N lines or byte count summary. Expand shows full captured output. Depends on: renderer click handling (partially exists via search overlay) |
+| Correct exit code preservation | Inserting tee must not mask real exit codes from user's pipeline | MEDIUM | Bash: use `set -o pipefail` + `PIPESTATUS` array. Zsh: `pipestatus` array. PowerShell: object pipeline handles this natively. |
+| Opt-out / disable flag | Some commands are TTY-sensitive (vim, htop, less) or performance-critical -- pipe rewriting must not break them | LOW | Config toggle + per-command opt-out (e.g., prefix or annotation). Auto-detect TTY-sensitive commands from a known list. |
+| Pipe stage storage in history DB | Captured stage output must persist across sessions for later inspection | MEDIUM | New `pipe_stages` table linked to command_id. Retention policy consistent with existing history pruning. Depends on: glass_history schema (exists) |
 
-## Differentiators
+### Differentiators (Competitive Advantage)
 
-No terminal emulator offers command-level undo. The feature itself is a differentiator.
+No terminal emulator visualizes pipe stages. The feature itself is the differentiator. These push further.
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Content-addressed deduplication | BLAKE3 hash file contents; store blob once, reference by hash. Makes aggressive snapshotting practical. | MEDIUM | ~50 LOC for CAS, massive storage savings |
-| Command-aware file targeting | Parse command text to identify affected files. Snapshot only those -- far more efficient than watching entire CWD. | HIGH | Heuristic for rm, mv, cp, sed, git checkout, etc. |
-| FS watcher post-exec recording | Record what files actually changed during command execution. Ground truth. | HIGH | notify crate, CWD-scoped watching |
-| MCP tools (GlassUndo, GlassFileDiff) | AI assistants can inspect changes and trigger undo programmatically. Unique to Glass. | MEDIUM | Extend existing glass_mcp |
-| Per-file partial undo | Undo specific files from multi-file command, not all-or-nothing. Architecturally natural with per-file blobs. | MEDIUM | CAS blob store |
-| Honest limitation reporting | Tell user when undo is incomplete (script ran, targets unknown). Differentiate pre_exec vs watcher-only. | LOW | snapshot_type field |
-| File modification timeline | History DB tracks which files each command touched. Valuable for "what changed my config?" | MEDIUM | glass_history DB schema extension |
+| Visual pipeline flow diagram | Show data flow as a horizontal/vertical stage diagram with arrows, not just stacked text blocks. At-a-glance understanding of pipeline shape. | MEDIUM | Render stage boxes with `-->` arrows in the block decoration area. Label each with command name + byte count. |
+| Stage output diff | Compare output between adjacent stages -- see exactly what each command filtered, transformed, or added | HIGH | Text diff between stage N and stage N+1 output. Only meaningful for text pipelines. Use similar diff engine as GlassFileDiff from v1.2. |
+| GlassPipeInspect MCP tool | AI assistants can query intermediate pipeline data to debug user's pipelines. "Why did grep drop these lines?" | MEDIUM | Extend glass_mcp with tool that returns stage outputs for a command_id. Depends on: pipe_stages DB table, glass_mcp (exists) |
+| Smart TTY detection | Automatically skip pipe rewriting for interactive/TTY commands (vim, less, top, ssh, docker exec -it) without user configuration | LOW | Maintain a curated list of known TTY commands. Check for `-t`, `-it`, `--interactive` flags. |
+| Pipeline error highlighting | When a middle stage fails (non-zero exit), highlight that specific stage in red and show its stderr | MEDIUM | Capture per-stage exit codes via PIPESTATUS. Render failed stage with error badge like existing exit code display. |
+| Streaming stage capture | Show intermediate outputs updating in real-time as the pipeline executes, not just after completion | HIGH | Would require named pipes or process substitution with async reads. Significant complexity. Defer to v1.x. |
+| PowerShell object-aware capture | PowerShell pipes objects, not text. Capture with `Format-List` or `ConvertTo-Json` to show structured intermediate data | MEDIUM | PowerShell-specific: inject `Tee-Object -Variable` or post-hoc `Trace-Command`. Show object properties in a table layout. |
 
----
+### Anti-Features (Commonly Requested, Often Problematic)
 
-## Anti-Features
-
-Features to explicitly NOT build.
-
-| Anti-Feature | Why Avoid | What to Do Instead |
-|--------------|-----------|-------------------|
-| Full directory tree snapshots | Storage explosion (node_modules = 500MB+). Prohibitively slow. | Target specific files via command parsing + FS watcher. Add `.glassignore` for exclusions. |
-| Process state undo | Impossible. Killed processes, env changes, network effects are irreversible. | Scope to filesystem changes only. Document honestly. |
-| Undo for sudo/elevated commands | Security implications of silently writing to system paths. | Record change but require explicit `glass undo --sudo` with elevation prompt. |
-| Continuous real-time backup | Glass is a terminal, not a backup tool. Battery drain, disk I/O noise. | Snapshot only at command boundaries (pre-exec to post-exec). |
-| VSS/APFS snapshot integration | Volume-level only (not per-file), requires admin privileges, not portable. | User-space file copying with content-addressed dedup. |
-| Binary file diff display | Binary diffs meaningless to humans. | Show metadata (size change, hash change) for binary files. Diff only text. |
-| Full shell command parser | Shell syntax is Turing-complete. Variable expansion, subshells, aliases make perfect parsing impossible. | Heuristic parser for common destructive patterns. Accept fallback to FS watcher. |
-| Undo across sessions without warning | File state may have diverged significantly over hours/days. | Allow via CLI with mandatory diff display and staleness warning. |
-| Automatic undo of failed commands | "Failed" commands may have partial effects the user wants to keep. | Offer undo button, never auto-trigger. |
-| Multi-command batch undo | Complex state machine, confusing UX. | Undo one command at a time. Sequential undo for multiple. |
-
----
+| Feature | Why Requested | Why Problematic | Alternative |
+|---------|---------------|-----------------|-------------|
+| Always-on pipe rewriting | "Just capture everything" | Breaks TTY programs, adds latency to every command, temp file pollution, changes command semantics for edge cases | Opt-in by default with smart auto-detection. Capture only when safe. |
+| Real-time streaming visualization | "Show data flowing through pipes live" | Extreme complexity: async named pipe orchestration, real-time rendering updates, buffering semantics change pipeline behavior | Capture after completion. Show final stage outputs. Stream visualization is a v2+ feature. |
+| Pipe stage editing/replay | "Let me edit stage 2 and re-run from there" | Requires reproducing exact shell state, env vars, CWD. Side effects of stage 1 may be non-reproducible. | Show captured outputs for inspection only. User re-runs manually. |
+| Automatic pipeline optimization | "Suggest faster pipe chains" | Shell command semantics are subtle. `sort | uniq` vs `sort -u` have different behavior with `-c`. Wrong suggestions erode trust. | Show byte counts per stage so users can spot bottlenecks themselves. |
+| Binary pipe visualization | "Show hex dump of binary pipe data" | Binary intermediate data is unreadable. Hex dumps of megabytes are useless. | Show byte count and content-type heuristic (text/binary). Only render text stages. |
+| Nested subshell pipe capture | "Capture pipes inside $() and backticks" | Requires full shell AST parsing. Subshells run in child processes with no hook access. Turing-complete problem. | Capture top-level pipe stages only. Document limitation. |
+| Cross-command pipe chains | "Track data from `cmd > file` then `cat file | ...`" | Requires understanding file-based data flow across commands. Impossible to do reliably. | Each pipeline is independent. Use history search to find related commands. |
 
 ## Feature Dependencies
 
 ```
-[OSC 133;C Pre-Exec] (EXISTING) ──────> [Command Text Extraction]
-                                              │
-                                              v
-                                    [shlex Argument Parsing]
-                                              │
-                                              v
-[OSC 7 CWD Tracking] (EXISTING) ──> [File Target Identification]
-        │                                     │
-        v                                     v
-[notify FS Watcher Setup] ──────> [Pre-Exec File Snapshot]
-        │                                     │
-        v                                     v
-[Post-Exec Change Recording] ──> [Content-Addressed Blob Store (BLAKE3)]
-                                              │
-                                              v
-                                    [Snapshot Metadata in SQLite]
-                                              │
-                   ┌──────────────────────────┼──────────────────────┐
-                   v                          v                      v
-            [Ctrl+Shift+Z]           [Block [undo] Button]   [`glass undo`]
-                   │                          │                      │
-                   └──────────────────────────┼──────────────────────┘
-                                              v
-                                    [File Restoration Engine]
-                                              │
-                                              v
-                                    [UI Feedback (toast/overlay)]
-                                              │
-                                              v
-                                    [Storage Pruning (ref-counted blobs)]
+[Command Text Extraction] (EXISTING v1.2)
+    |
+    v
+[Pipe Detection & Parsing]
+    |
+    +---> [TTY-Sensitive Command Detection]
+    |         |
+    |         v
+    |     [Opt-Out Decision]
+    |
+    v
+[Command Rewriting Engine]
+    |
+    +---> [Bash/Zsh: tee injection]
+    |         |
+    |         v
+    |     [Temp file management]
+    |         |
+    |         v
+    |     [PIPESTATUS capture]
+    |
+    +---> [PowerShell: post-hoc capture]
+              |
+              v
+          [Tee-Object / output variable capture]
+    |
+    v
+[Stage Output Collection]
+    |
+    v
+[pipe_stages DB Table] ---------> [Retention Policy]
+    |
+    +---> [Pipeline UI Rendering]
+    |         |
+    |         +---> [Multi-row stage blocks]
+    |         |
+    |         +---> [Expand/collapse]
+    |         |
+    |         +---> [Error highlighting]
+    |
+    +---> [GlassPipeInspect MCP Tool]
 ```
 
-### Critical Tech Debt Blocker
+### Dependency Notes
 
-**Command text is currently stored as empty string.** The v1.1 history DB records commands but the actual command text extraction from the terminal grid was deferred. For v1.2 undo, command text is essential for the file target parser. Must be fixed first.
+- **Pipe Detection requires Command Text Extraction:** Already built in v1.2 for the undo command parser. Reuse the same text capture path.
+- **Command Rewriting requires Pipe Detection:** Must parse the pipe structure before injecting tee.
+- **Stage Output Collection requires Command Rewriting (Bash/Zsh):** Tee files must exist before we can read them.
+- **Pipeline UI requires Stage Output Collection:** Nothing to render without captured data.
+- **DB storage requires Stage Output Collection:** Must have data before persisting.
+- **MCP tool requires DB storage:** Queries the pipe_stages table.
+- **TTY Detection conflicts with Command Rewriting:** If command is TTY-sensitive, skip rewriting entirely.
 
----
+## MVP Definition
 
-## MVP Recommendation
+### Launch With (v1.3)
 
-### Phase 1: Foundation (Content Store + DB Schema)
-1. Content-addressed blob store (BLAKE3 hashing, dedup, file CAS)
-2. Snapshot metadata tables in history DB (migration v1 -> v2)
-3. Command text extraction fix (tech debt resolution)
+Minimum viable pipe visualization -- capture and display works for common cases.
 
-### Phase 2: Snapshot Engine
-1. shlex command text parsing + file target identification
-2. Pre-exec snapshot engine (on OSC 133;C, parse command, snapshot targets)
-3. FS watcher integration (notify crate watching CWD, record changes)
+- [ ] Pipe detection from command text (split on unquoted `|`) -- foundation for everything
+- [ ] Bash/Zsh tee-based command rewriting with temp file capture -- covers the primary use case
+- [ ] PIPESTATUS/pipestatus exit code preservation -- correctness is non-negotiable
+- [ ] TTY-sensitive command detection with opt-out -- prevents breakage
+- [ ] Multi-row pipeline UI with stage labels and collapsed output -- the visual payoff
+- [ ] Click-to-expand stage output -- handles large intermediate data
+- [ ] pipe_stages table in history DB with retention -- persistence across sessions
+- [ ] Config section for pipe visualization on/off and settings -- user control
 
-### Phase 3: Undo + UI
-1. File restoration engine with conflict detection
-2. Ctrl+Shift+Z keystroke handler
-3. [undo] button on command blocks
-4. Visual feedback (which files restored)
-5. `glass undo <id>` CLI
+### Add After Validation (v1.x)
 
-### Phase 4: Integration + Polish
-1. Storage pruning (age + size limits, ref-counted blob cleanup)
-2. GlassUndo + GlassFileDiff MCP tools
-3. `.glassignore` exclusions
+Features to add once core pipe visualization is proven reliable.
 
-**Defer:** Compression (zstd), diff view before undo, per-file partial undo, undo/redo chain, file modification timeline queries.
+- [ ] PowerShell Tee-Object integration -- different pipe semantics, needs separate implementation path
+- [ ] GlassPipeInspect MCP tool -- valuable but not blocking core UX
+- [ ] Stage output diff view -- powerful but complex, depends on diff engine
+- [ ] Pipeline error highlighting per stage -- nice UX polish
+- [ ] Visual flow diagram with arrows -- cosmetic enhancement over stacked blocks
 
----
+### Future Consideration (v2+)
+
+- [ ] Real-time streaming stage capture -- extreme complexity, marginal benefit over post-completion
+- [ ] PowerShell object-aware visualization -- requires deep PS integration
+- [ ] Nested subshell pipe capture -- Turing-complete parsing problem
+
+## Feature Prioritization Matrix
+
+| Feature | User Value | Implementation Cost | Priority |
+|---------|------------|---------------------|----------|
+| Pipe detection & parsing | HIGH | LOW | P1 |
+| Bash/Zsh tee injection capture | HIGH | HIGH | P1 |
+| Exit code preservation (PIPESTATUS) | HIGH | MEDIUM | P1 |
+| TTY command detection + opt-out | HIGH | LOW | P1 |
+| Multi-row pipeline UI blocks | HIGH | MEDIUM | P1 |
+| Expand/collapse stage output | MEDIUM | MEDIUM | P1 |
+| pipe_stages DB + retention | MEDIUM | MEDIUM | P1 |
+| Config section | MEDIUM | LOW | P1 |
+| PowerShell post-hoc capture | MEDIUM | MEDIUM | P2 |
+| GlassPipeInspect MCP tool | MEDIUM | LOW | P2 |
+| Pipeline error highlighting | MEDIUM | LOW | P2 |
+| Visual flow diagram | LOW | MEDIUM | P2 |
+| Stage output diff | MEDIUM | HIGH | P3 |
+| Streaming capture | LOW | HIGH | P3 |
+
+**Priority key:**
+- P1: Must have for v1.3 launch
+- P2: Should have, add in follow-up
+- P3: Nice to have, future consideration
+
+## Competitor Feature Analysis
+
+| Feature | Warp Terminal | Nushell | Traditional (tee/pv) | Glass v1.3 Plan |
+|---------|--------------|---------|----------------------|-----------------|
+| Command blocks | Yes -- groups cmd+output | N/A (shell, not emulator) | No | Yes (existing) |
+| Pipe detection | No | Built-in (structured data) | No | Yes (new) |
+| Intermediate output capture | No | Manual (`| inspect`) | Manual (`| tee file`) | Automatic |
+| Per-stage visualization | No | No (shows final only) | No | Yes (new -- unique) |
+| TTY-safe pipe handling | N/A | N/A | User responsibility | Auto-detection |
+| Pipeline progress | No | No | pv (byte throughput) | Stage completion status |
+| Exit code per stage | No | Yes (structured errors) | PIPESTATUS (manual) | Automatic per-stage display |
+| Pipeline history/storage | No | No | No | Yes (DB persistence) |
+| AI integration for pipes | No | No | No | GlassPipeInspect MCP |
+
+**Key insight:** No existing tool combines automatic capture with visual per-stage display. Nushell has the richest pipeline model but is a shell, not an emulator. Warp has blocks but no pipe awareness. Traditional tools (tee, pv) require manual setup per use. Glass would be the first to automate capture and visualize stages within the terminal emulator itself.
 
 ## Sources
 
-- Glass PROJECT.md -- existing OSC 133/7 hooks, command lifecycle, block UI
-- [notify-rs/notify](https://github.com/notify-rs/notify) -- cross-platform FS watcher, 62M+ downloads
-- [openSUSE/snapper](https://github.com/openSUSE/snapper) -- closest prior art for "undo system modifications"
-- Content-addressed storage patterns from git, IPFS, Bao
+- [Pipe Viewer (pv)](https://www.ivarch.com/programs/pv.shtml) -- throughput monitoring for pipe stages
+- [pipeview (Rust)](https://github.com/mihaigalos/pipeview) -- Rust pipe inspection utility
+- [Nushell Pipelines](https://www.nushell.sh/book/pipelines.html) -- structured data pipeline model
+- [Nushell Pipeline Processing](https://deepwiki.com/nushell/nushell/5.3-pipeline-processing) -- pipeline data flow internals
+- [Warp Blocks](https://docs.warp.dev/terminal/blocks) -- command+output grouping in block-based terminal
+- [PowerShell Tee-Object](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/tee-object?view=powershell-7.5) -- pipeline inspection without disrupting flow
+- [PowerShell Out-GridView](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/out-gridview?view=powershell-7.5) -- visual pipeline data inspection
+- [PowerShell Trace-Command](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/trace-command?view=powershell-7.5) -- pipeline execution tracing
+- [Pipe Debugging (softpanorama)](https://softpanorama.org/Scripting/Piporama/debugging.shtml) -- traditional pipe debugging techniques
+- [strace across pipes](https://github.com/nh2/strace-pipes-presentation) -- system-level pipe debugging
+- [Debugging with pipes (gllghr.com)](https://gllghr.com/blog/debugging-with-pipes) -- incremental pipeline building pattern
+- Glass PROJECT.md -- existing Block struct, OSC 133 lifecycle, command text extraction, history DB
 
 ---
-*Feature research for: Glass v1.2 Command-Level Undo*
+*Feature research for: Glass v1.3 Pipe Visualization*
 *Researched: 2026-03-05*

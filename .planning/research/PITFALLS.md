@@ -1,357 +1,323 @@
-# Domain Pitfalls: v1.2 Command-Level Undo with Filesystem Snapshots
+# Pitfalls Research
 
-**Domain:** Adding filesystem monitoring, snapshot storage, and undo capabilities to an existing Rust GPU-accelerated terminal emulator
+**Domain:** Pipe visualization for terminal emulator (adding to existing Glass v1.3)
 **Researched:** 2026-03-05
-**Applies to:** Glass v1.2 milestone
-
----
+**Confidence:** HIGH (most pitfalls verified through official docs, codebase analysis, and multiple sources)
 
 ## Critical Pitfalls
 
-Mistakes that cause rewrites, data loss, or fundamental architecture breakage.
+### Pitfall 1: TTY Detection Changes Command Output (isatty Behavioral Shift)
 
-### Pitfall 1: Race Between OSC 133;C and Pre-Exec Snapshot
+**What goes wrong:**
+When Glass inserts `tee` (or any pipe-based capture mechanism) between pipe stages, commands detect that stdout is no longer a TTY via `isatty(1)`. This causes `ls` to switch from multi-column to single-column output, `git` to disable colors, `grep --color=auto` to emit plain text, and programs like `less`/`more` to behave as `cat`. The user sees different output than they would without pipe visualization enabled, breaking Glass's core value: "looks and feels normal."
 
-**What goes wrong:** The snapshot must complete before the command starts modifying files, but OSC 133;C fires when the shell hands control to the command -- not before it. On fast commands (`rm file.txt`, `mv a b`), the file may already be deleted or moved by the time the snapshot logic receives the event, parses file targets from command text, and copies file contents.
+**Why it happens:**
+Most CLI tools call `isatty()` on their stdout file descriptor. When stdout points to a pipe (from tee insertion) instead of the PTY, `isatty()` returns false. This is fundamental POSIX behavior. Commands with `--color=auto` (the default for git, ls, grep on most systems) disable color. Commands like `ls` switch to one-entry-per-line format. Interactive pagers refuse to paginate.
 
-**Why it happens:** The PTY reader thread receives OSC 133;C and sends a `ShellEvent::CommandExecuted` via the winit `EventLoopProxy`. The winit event loop processes this on the main thread asynchronously. Meanwhile, the command is already running in the PTY. The current `user_event` handler for `ShellEvent::CommandExecuted` only records `command_started_wall` -- there is no mechanism to pause command execution while snapshotting.
+**How to avoid:**
+1. Do NOT insert tee between pipe stages for bash/zsh. Instead, capture output at the PTY reader level, where Glass already sees all bytes via `OutputBuffer`. The challenge is attributing bytes to specific pipe stages, not capturing them.
+2. For per-stage capture in bash/zsh, the practical approach is post-hoc: parse the combined PTY output to reconstruct what each stage produced, using shell integration markers or heuristic splitting.
+3. For PowerShell, use `Tee-Object` which preserves object types natively.
+4. If tee insertion is truly unavoidable for a subset of scenarios, force `--color=always` on known commands -- but this is a maintenance nightmare and breaks unknown commands. Avoid this path.
 
-**Consequences:** Missing snapshots for the fastest destructive commands -- the exact commands where undo is most valuable (`rm`, `mv`, overwrite redirects). Undo silently fails or restores nothing. User trusts the undo button but it does not work when it matters most.
+**Warning signs:**
+- `ls` output appears as one file per line when pipe visualization is active
+- Colors disappear from git/grep output in visualized pipes
+- Users report "my terminal looks different with pipe viz enabled"
 
-**Prevention:**
-- Accept this as a fundamental, unsolvable limitation of the OSC 133 protocol and document it honestly. There is no way to pause the PTY between 133;C emission and command execution.
-- Design the FS watcher as the primary detection mechanism, not the pre-exec snapshot. The watcher should already be running on the CWD before 133;C fires, so it captures file deletions/modifications as they happen.
-- For the pre-exec snapshot path, execute it synchronously in the `ShellEvent::CommandExecuted` handler -- parse command text and read files before processing any other events. This minimizes but does not eliminate the race window.
-- Track whether pre-exec snapshot succeeded per command. Display different undo confidence in the UI: "Full undo" (snapshot exists) vs "Partial undo" (watcher-only, files were already gone when snapshot attempted).
-
-**Detection:** Test with `rm largefile.txt` -- the file should be snapshotted before deletion. Test with `rm tinyfile.txt` -- accept that this may fail. Measure the time between 133;C emission and snapshot completion.
-
-**Phase relevance:** Must be addressed in the very first phase (FS watcher + snapshot engine design). The entire undo reliability depends on getting this architecture right.
-
----
-
-### Pitfall 2: FS Watcher Buffer Overflow Silently Drops Events on Windows
-
-**What goes wrong:** On Windows, `ReadDirectoryChangesW` uses a fixed-size kernel buffer. When a command generates rapid filesystem changes (e.g., `cargo build`, `npm install`, `git clone`), the buffer overflows. The API returns `TRUE` but sets `lpBytesReturned` to zero, meaning ALL buffered events are silently discarded -- not just the overflow, but the entire buffer contents.
-
-**Why it happens:** The buffer cannot be resized after the directory handle is created. Network drives have a hard 64KB cap. Build tools and package managers generate thousands of file operations in milliseconds. The `notify` crate wraps this API but cannot work around the kernel-level limitation.
-
-**Consequences:** The watcher reports zero modifications for a command that created/modified hundreds of files. Undo either does nothing (data loss for user) or produces an incomplete revert leaving the filesystem in a state worse than either before or after (inconsistent state). The failure is completely silent -- no error, no warning, just missing events.
-
-**Prevention:**
-- Use a large buffer (32KB-64KB) in the `ReadDirectoryChangesW` configuration. Verify the `notify` crate's Windows backend default buffer size and increase if needed.
-- Detect zero-byte returns as buffer overflow events and flag the command as "undo coverage incomplete" in the snapshot metadata.
-- After buffer overflow detection, fall back to directory enumeration: compare current directory state against the pre-exec snapshot to reconstruct what changed. This is expensive but correct.
-- For commands identified as build tools by the command parser (`cargo`, `npm`, `make`, `msbuild`), proactively set undo coverage to "partial" rather than discovering it after the fact.
-- Consider double-buffering: issue two overlapping `ReadDirectoryChangesW` calls so one is always pending while the other is being processed.
-
-**Detection:** Stress test with `cargo build` on a project with 500+ source files. Count watcher events vs actual filesystem changes. If the counts diverge, buffer overflow is occurring.
-
-**Phase relevance:** FS watcher implementation phase. The overflow detection and fallback strategy must be designed upfront, not bolted on later.
+**Phase to address:**
+Phase 1 (Pipe detection and capture architecture) -- this is the foundational decision. Getting capture wrong here poisons everything downstream.
 
 ---
 
-### Pitfall 3: Snapshot Storage Grows Unbounded and Kills Performance
+### Pitfall 2: Exit Code Swallowing When Inserting Tee
 
-**What goes wrong:** Content-addressed dedup helps with identical files, but modified files (the common case for snapshots) are all unique. A user running build commands or editing files accumulates gigabytes of snapshot data in days. SQLite performance degrades with large BLOBs, and the database file becomes unwieldy for backup/deletion.
+**What goes wrong:**
+In bash, `$?` returns the exit code of the LAST command in a pipeline. If Glass rewrites `cmd1 | cmd2` to `cmd1 | tee /tmp/cap1 | cmd2 | tee /tmp/cap2`, then `$?` reflects tee's exit code (almost always 0), not cmd2's. The exit code displayed in Glass's block decoration becomes meaningless. Glass uses OSC 133;D exit codes from `glass.ps1` -- the reported exit code would be tee's, not the user's actual pipeline result.
 
-**Why it happens:** Each command potentially snapshots multiple files. Binary files (compiled outputs, images, `node_modules` contents) are large and rarely deduplicate across snapshots. SQLite stores BLOBs inline in its B-tree pages, causing page fragmentation for BLOBs >page_size. Per SQLite documentation, BLOBs >100KB are faster to read from separate files than from SQLite.
+**Why it happens:**
+Bash default: `$?` = exit code of last pipeline component. Even with `set -o pipefail`, the behavior is "rightmost non-zero exit code" -- tee's success (0) masks failures in earlier stages. `PIPESTATUS` array helps but is bash-only (not available in zsh by default or PowerShell).
 
-**Consequences:** Disk space exhaustion. Database queries slow down because metadata queries must scan past BLOB pages. Terminal startup increases as the DB grows. Users lose trust in the tool and disable snapshots entirely.
+**How to avoid:**
+1. Prefer PTY-level capture over command rewriting entirely. Glass already captures output in `OutputBuffer` -- extend this rather than rewriting commands.
+2. If command rewriting is unavoidable, never let the tee process be the last command in the pipeline visible to the shell. Use process substitution: `cmd1 | tee >(cat > /tmp/cap1) | cmd2` -- tee feeds the capture via a subshell but cmd2 remains the last pipeline element.
+3. Run `echo ${PIPESTATUS[@]}` or equivalent after each pipeline to collect per-stage exit codes.
 
-**Prevention:**
-- Store snapshot BLOBs in a separate location from snapshot metadata:
-  - Option A: Separate SQLite database (`snapshots.db`) with just hash + content, keeping metadata in the history DB. Pruning is `DELETE` + `VACUUM`.
-  - Option B: Filesystem content-addressed store (`~/.glass/blobs/ab/cd1234...`) for files >100KB, with only the hash stored in SQLite. SQLite handles <100KB blobs well; larger ones go to filesystem. This is the recommended approach based on SQLite's own benchmark data.
-- Implement retention from day one: prune snapshots older than N days, cap total snapshot storage at configurable size (e.g., 500MB default). The existing history DB has `prune()` that is never auto-triggered -- do not repeat this tech debt.
-- Use BLAKE3 for hashing (5x faster than SHA-256 on modern CPUs, same 32-byte output). The `blake3` crate is well-maintained and supports SIMD acceleration.
-- Skip snapshotting compiled output directories (`target/`, `node_modules/`, `build/`, `.git/objects/`). These are reproducible and waste storage.
-- Place BLOB columns last in table definitions, or better, in a separate table. SQLite must scan through BLOBs to access columns after them.
+**Warning signs:**
+- All piped commands show exit code 0 regardless of actual failures
+- `set -e` scripts break when pipe visualization is enabled
+- CI/CD workflows behave differently under Glass
 
-**Detection:** Monitor `~/.glass/` directory size growth over a week of daily-driver usage. Alert if growth exceeds 100MB/day. CI test: insert 1000 snapshots of 50KB files, verify metadata query latency stays under 50ms.
-
-**Phase relevance:** Storage engine design phase. The blob storage strategy (SQLite vs filesystem, single vs separate DB) and retention policy must be decided before implementing the snapshot engine.
-
----
-
-### Pitfall 4: TOCTOU Race in Snapshot Read-Then-Store
-
-**What goes wrong:** The snapshot engine reads a file's content to hash and store it, but between the read and the store (or between checking "does this hash already exist?" and skipping the read), the file is modified by the concurrently running command. The stored snapshot contains partial content -- half old data, half new data -- a state the file never actually had.
-
-**Why it happens:** File I/O is not atomic at the application level. The command runs in the PTY concurrently. There is no filesystem-level snapshot mechanism being used (no VSS, no btrfs snapshots, no APFS clonefile) -- just userspace `std::fs::read`.
-
-**Consequences:** Corrupted snapshots. Undo restores a file to a state it never actually existed in. Worse than not having undo, because the user believes the restoration is correct and may not verify.
-
-**Prevention:**
-- Read the entire file into memory in one `std::fs::read()` call before hashing. Do not stream-hash then re-read for storage. One read, one hash, one store.
-- For large files, accept that the read itself is not atomic. The OS may give you data from mid-write if another process is writing. Mitigate by recording the file size and mtime before and after the read -- if they differ, the snapshot is suspect.
-- The pre-exec snapshot (taken at OSC 133;C before the command modifies files) is inherently more reliable than watcher-triggered snapshots (taken while the command is running). This is why both mechanisms are needed.
-- On undo, verify the file's current content hash matches the "after" state recorded by the watcher before reverting. If it does not match (file modified since the tracked command ran), warn the user and require confirmation.
-
-**Detection:** Unit test: spawn a thread writing 10MB to a file in a loop while another thread snapshots it repeatedly. Verify each snapshot is internally consistent (e.g., if writing sequential numbers, verify no gaps or overlaps).
-
-**Phase relevance:** Snapshot engine implementation phase.
+**Phase to address:**
+Phase 1 (Capture architecture) -- must be resolved before any shell-level command rewriting is considered.
 
 ---
 
-### Pitfall 5: Command Text Parsing Scope Creep
+### Pitfall 3: Shell Quoting/Escaping Corruption in Command Rewriting
 
-**What goes wrong:** Attempting to parse arbitrary shell command text to extract file targets leads to an ever-growing parser that never handles all cases. Shell syntax is Turing-complete. Variable expansion (`$var`), globs (`*.txt`), command substitution (`$(find ...)`), heredocs, aliases, functions, pipelines, and shell-specific syntax (PowerShell `-Path` vs Bash positional args) make reliable general-purpose parsing impossible.
+**What goes wrong:**
+If Glass rewrites `grep "hello world" file.txt | wc -l` by parsing and reconstructing it, incorrect re-quoting produces `grep hello world file.txt | wc -l` (argument split) or double-escaping produces `grep \"hello world\" file.txt | wc -l`. Commands with nested quotes, backticks, `$()` substitutions, heredocs, or brace expansion become mangled. The existing `command_parser.rs` already flags pipes (`" | "`) as `Confidence::Low` / unparseable syntax via `contains_unparseable_syntax()` -- this is correct and must be respected.
 
-**Why it happens:** The temptation: `rm foo.txt` -> snapshot `foo.txt`, `cp a b` -> snapshot `b`, `mv x y` -> snapshot both. Then reality: `rm $(find . -name "*.tmp")`, `cat file | tee output`, `cmd1 && cmd2`, `for f in *.log; do rm "$f"; done`, PowerShell's `Remove-Item -Path $items -Recurse -Force`.
+**Why it happens:**
+Shell syntax is Turing-complete (PROJECT.md explicitly notes: "Full shell command parser -- shell syntax is Turing-complete; heuristic whitelist instead"). Reconstructing a command after parsing inevitably loses quoting information. Problem cases include:
+- Nested single/double quotes: `echo "it's a 'test'" | wc`
+- Dollar-sign expansion: `echo "$HOME" | grep user`
+- Backtick substitution: `` echo `date` | tee log ``
+- Here-strings: `grep pattern <<< "$variable" | wc`
+- Brace expansion: `echo {a,b,c} | tr ' ' '\n'`
 
-**Consequences:** Months spent on an increasingly complex parser that still misses cases. False sense of security: parser finds some targets, misses others, undo partially reverts. Different shell languages (PowerShell, Bash, Zsh, Fish) each need entirely different parsers.
+**How to avoid:**
+1. Never parse-and-reconstruct shell commands for rewriting. This is the single most important rule.
+2. If modification is needed, use string-level insertion at pipe boundaries (`|` characters outside quotes) rather than full AST parsing. Insert `tee /tmp/capN |` at known safe positions without touching the rest of the command string.
+3. Glass already uses `shlex` for POSIX tokenization -- but shlex handles ARGUMENT splitting, not full shell syntax. Do not extend it to handle command rewriting.
+4. For PowerShell: use `Tee-Object` insertion which operates on the object pipeline and avoids string escaping entirely.
 
-**Prevention:**
-- Keep the command parser deliberately simple and limited. Handle only the top 10-15 most common destructive commands with literal arguments:
-  - Bash/Zsh: `rm`, `mv`, `cp`, `chmod`, `chown`, `sed -i`, `truncate`, `> file` (redirect)
-  - PowerShell: `Remove-Item`, `Move-Item`, `Copy-Item`, `Set-Content`, `Clear-Content`
-- The parser's job is to provide "bonus" pre-exec snapshots for obvious cases. The FS watcher is the primary detection mechanism.
-- Use a whitelist approach (known commands with known arg patterns) rather than general shell parsing. If you cannot identify file targets with high confidence, skip pre-exec snapshot and rely on the watcher.
-- Never claim 100% coverage. The UI should clearly indicate undo confidence level per command.
-- PowerShell and Bash need separate matchers. Do not try to unify parsing -- the syntaxes are fundamentally different (named parameters vs positional arguments).
-- Set a hard rule: the parser code must not exceed ~300 lines per shell. If it does, you are over-engineering it.
+**Warning signs:**
+- Commands with special characters produce different results with pipe visualization
+- Users see "command not found" or syntax errors they didn't type
+- Tests pass with simple commands but fail with real-world complex pipelines
 
-**Detection:** Maintain a test suite of 50+ command strings across both shells. Track hit rate (% of commands where file targets are correctly identified). Accept diminishing returns past ~60-70% coverage of common destructive patterns.
-
-**Phase relevance:** Command parsing phase. Scope the parser tightly at design time. Resist scope creep during implementation.
-
----
-
-## Moderate Pitfalls
-
-### Pitfall 6: FS Watcher Event Flood Overwhelming the Winit Event Loop
-
-**What goes wrong:** The existing architecture routes all cross-thread communication through `EventLoopProxy<AppEvent>` (PTY events, shell events, git status, command output). Adding per-file FS watcher events to this same channel during a `cargo build` (thousands of file events per second) starves the main thread -- it spends all time processing watcher events instead of rendering or handling keyboard input.
-
-**Why it happens:** The winit event loop is single-threaded and processes `user_event()` calls sequentially. The current event types (TerminalDirty, Shell, CommandOutput, GitInfo) are low-frequency. FS watcher events during a build are high-frequency.
-
-**Prevention:**
-- Do NOT route individual FS events through the winit event loop. The watcher thread should accumulate events in its own thread-local storage (`Arc<Mutex<Vec<FsChange>>>` or a lock-free queue).
-- The main thread queries the accumulated changes only at two points: (1) when a command finishes (OSC 133;D), to build the complete modification record, and (2) when the user presses Ctrl+Shift+Z, to show what would be undone.
-- If a summary notification is needed (e.g., to update a "files changed" counter in the UI), send at most one `AppEvent::FsActivity` per 200ms, not per file.
-- Consider a dedicated snapshot coordinator thread that receives watcher events and manages the snapshot store, communicating with the main thread only via high-level summaries.
-
-**Phase relevance:** FS watcher integration phase. Architecture decision about event flow between watcher, snapshot engine, and UI.
+**Phase to address:**
+Phase 1 (Capture architecture) -- the decision to avoid command rewriting must be made upfront.
 
 ---
 
-### Pitfall 7: Cross-Platform FS Watcher Behavioral Differences
+### Pitfall 4: PowerShell Object Pipeline is Not a Byte Stream
 
-**What goes wrong:** The three platform FS notification APIs have fundamentally different semantics that the `notify` crate abstracts but cannot fully hide:
+**What goes wrong:**
+PowerShell passes .NET objects between pipeline stages, not text bytes. Attempting to capture PowerShell pipe stages with the same mechanism used for bash (byte-stream tee) destroys object fidelity. `Get-Process | Where-Object { $_.CPU -gt 10 }` passes Process objects, not text. If Glass serializes these to text for capture, the captured "stage output" is a Format-Table rendering that loses property types, methods, hidden properties, and the ability to re-pipe.
 
-| Behavior | Windows (ReadDirectoryChangesW) | Linux (inotify) | macOS (FSEvents) |
-|----------|------|-------|-------|
-| Granularity | Per-file events | Per-file events | Per-directory events (coalesced) |
-| Recursive watching | Native, single handle | Must add watch per subdirectory manually | Native, single stream |
-| Event latency | Near-realtime (~ms) | Near-realtime (~ms) | Configurable, default ~1s coalescing |
-| Rename tracking | Paired events with cookie | Paired events with cookie | No rename tracking (reports "modified") |
-| New subdirectory race | None (recursive is atomic) | Race between mkdir and adding watch -- events in new dir can be missed | None (recursive is atomic) |
-| Watch limits | Per-handle, generous | System-wide limit (default ~8K-128K watches) | Per-process, generous |
-| Buffer overflow | Silent (zero-byte return) | Queue overflow (IN_Q_OVERFLOW event) | No overflow (kernel coalesces) |
+Additional PowerShell-specific traps:
+- Format-Table truncates columns based on terminal width (evaluated from first 300ms of data)
+- The FIRST object's properties determine column headers -- heterogeneous pipelines silently drop properties from later objects
+- `$FormatEnumerationLimit` defaults to 4, truncating arrays silently
+- PowerShell 5.1 vs 7+ handle byte-stream piping differently (`PSNativeCommandPreserveBytePipe` in 7.4+ preserves raw bytes between native executables)
 
-**Consequences:** Code working perfectly on Windows fails on macOS (events arrive 1s late, rename info lost) or Linux (watch limit exhaustion on large monorepos, missed events from race in new directories). Tests pass on CI (one platform), fail in production (another platform).
+**Why it happens:**
+PowerShell's pipeline is fundamentally different from POSIX. POSIX pipes are kernel file descriptors carrying byte streams. PowerShell pipes are in-process .NET object transfers. There is no "wire format" to intercept -- objects exist only in memory. `Tee-Object` works because it copies object references, not bytes.
 
-**Prevention:**
-- Use the `notify` crate (v7.x) which abstracts these differences. But understand the abstraction is leaky -- different platforms will produce different event sequences for the same filesystem operations.
-- On macOS, set FSEvents latency to 0 or 10ms (not the default ~1s). Accept higher CPU usage for responsiveness. Use `kqueue` as an alternative for single-file watches.
-- On Linux, handle inotify watch limit exhaustion gracefully: catch `ENOSPC`, fall back to polling for that subtree, and warn the user. Consider `fanotify` (Linux 5.1+) for true recursive watching without per-directory watches.
-- Since macOS and Linux are "Future" scope in the project, design the watcher abstraction trait now but only implement Windows first. Do not design data structures or event types that encode Windows-specific assumptions (e.g., don't assume rename events always come in pairs).
-- Test on all target platforms. The behavioral differences are not edge cases.
+**How to avoid:**
+1. Accept that PowerShell pipe stage capture is inherently lossy -- capture the text RENDERING of each stage, not the objects themselves. This is what the user sees anyway.
+2. Use `Tee-Object -Variable` to capture objects into PowerShell variables, then serialize post-hoc with `ConvertTo-Json` or `Out-String -Width 9999` for storage.
+3. For display, show the `Out-String -Stream` rendering at each stage.
+4. Do NOT attempt to intercept the .NET object pipeline at the CLR level -- unbounded complexity.
+5. Set `$FormatEnumerationLimit = -1` in capture context to avoid array truncation.
+6. This must be a separate code path from bash/zsh capture, not a shared abstraction.
 
-**Phase relevance:** FS watcher design phase. The trait/interface must accommodate platform differences even if only Windows is implemented initially.
+**Warning signs:**
+- PowerShell pipe stage output shows `System.Object[]` instead of actual data
+- Truncated columns with `...` ellipsis at end of values
+- Properties silently missing when pipeline has mixed object types
+- Different behavior between PowerShell 5.1 and 7+
 
----
-
-### Pitfall 8: Non-Atomic Undo of Directory Operations
-
-**What goes wrong:** Undoing `rm -rf directory/` requires recreating the directory structure and restoring all files within it. If this fails partway through (disk full, permission denied on one file, path too long, file locked by another process), the filesystem is left in a partially restored state -- worse than either the "before" or "after" state.
-
-**Why it happens:** There is no transactional filesystem API on any mainstream OS. Each file restoration is an independent write. Errors accumulate and interact. A partially restored directory may confuse tools that expected either the full directory or no directory.
-
-**Prevention:**
-- Implement undo as a two-phase operation where possible: (1) create all restored files in a temporary staging directory (`~/.glass/tmp/undo-{id}/`), (2) move them into place. If step 1 fails, clean up the staging dir and report failure without touching the target.
-- For scattered file modifications (not a single directory), restore files one at a time but track progress. On any failure, offer the user three options: continue with remaining files, undo the partial restoration, or leave as-is.
-- Verify available disk space before starting undo. Snapshotted content requires at least as much space as the original files.
-- Report partial undo results clearly: "Restored 47/50 files. 3 files failed: [list with paths and error reasons]."
-- Never silently succeed on partial undo. The user must know if restoration was incomplete.
-
-**Phase relevance:** Undo execution phase. Error handling and partial-failure UX design.
+**Phase to address:**
+Phase 1 (Architecture decision) for fundamental approach; Phase 2 (Implementation) for PowerShell-specific capture logic.
 
 ---
 
-### Pitfall 9: Schema Migration Breaking Existing History Database
+### Pitfall 5: Buffer Explosion from Large Pipe Stage Output
 
-**What goes wrong:** v1.2 snapshot features require new tables and columns in the SQLite database. The existing database is at schema version 1 (added in v1.1 for the output column). A botched migration corrupts command history, fails on databases created by v1.1, or creates forward-compatibility issues where v1.1 binaries cannot open v1.2 databases.
+**What goes wrong:**
+A pipeline like `find / -type f | grep pattern | head -5` produces potentially gigabytes from `find` even though the final output is 5 lines. If Glass captures each stage's output, stage 1 capture grows unbounded. Per-STAGE buffers multiply memory: a 5-stage pipeline needs 5x the memory. Worse, if capture happens at the PTY level, all bytes still flow through the PTY reader thread's `buf` (1MB `READ_BUFFER_SIZE` in `pty.rs`), and any additional processing in the hot path directly impacts throughput.
 
-**Why it happens:** The existing migration system uses `PRAGMA user_version` with a linear version check. Adding snapshot tables (file_snapshots, snapshot_blobs, command_file_changes) and foreign keys to an existing database with real user data requires careful transaction handling. Particularly, FTS5 virtual tables cannot participate in normal transaction rollback.
+**Why it happens:**
+Pipes are designed for streaming -- data flows through and is discarded. Capture turns streaming into accumulation. Unix pipes have ~64KB kernel buffers (Linux default). When capture accumulates beyond this, either memory grows unbounded or backpressure introduces latency. The PTY reader thread in Glass is a single `std::thread` doing blocking I/O -- it is the performance bottleneck for all terminal rendering.
 
-**Prevention:**
-- **Recommended: Use a separate SQLite database file for snapshot data.** Store snapshot metadata and blobs in `~/.glass/{project}/snapshots.db`, keeping command history in the existing `history.db`. Benefits:
-  - Isolation: snapshot DB corruption does not affect history.
-  - Independent retention: delete the entire snapshot DB to reclaim space without touching history.
-  - No migration risk to existing data.
-  - Simpler schema: no foreign keys spanning databases.
-- If using the same database: wrap all schema changes in a single transaction. Test migration from v1 -> v2 with databases containing 10K+ records. Never drop or rename existing columns/tables. Verify that v1.1 binaries opening a v2 database gracefully ignore unknown tables (SQLite does this naturally).
-- Link command records to snapshots via `command_id` (the integer primary key), not by timestamp or command text.
+**How to avoid:**
+1. Apply per-stage byte caps identical to the existing `OutputBuffer.max_bytes` pattern. Default to the same limit as `max_output_capture_kb` per stage.
+2. Track `total_seen` per stage (Glass already does this pattern) so the UI can show "captured 50KB of 2.3MB" rather than silently truncating.
+3. For the PTY reader thread: do NOT add per-stage parsing in the hot path (`pty_read_with_scan`). Accumulate raw bytes and do stage attribution asynchronously or lazily.
+4. Consider ring-buffer semantics: keep the LAST N bytes rather than the FIRST N bytes, since tail output is often more diagnostic.
+5. Add a config option to disable per-stage capture for performance-sensitive users while still showing the pipe structure UI.
 
-**Phase relevance:** Storage engine design phase. Database architecture decision must be made before any snapshot code is written.
+**Warning signs:**
+- Memory usage spikes when running pipelines with large intermediate data
+- PTY reader thread latency increases (measurable via key echo delay exceeding 5ms target)
+- Glass becomes sluggish during long-running pipelines
 
----
-
-### Pitfall 10: Symlink and Junction Point Following During Snapshot/Restore
-
-**What goes wrong:** On Windows, directory junctions and symlinks can point outside the CWD to system directories, other drives, or network shares. If the snapshot engine follows symlinks:
-1. Snapshots system files (wasting space, reading sensitive data).
-2. Follows circular symlinks and loops indefinitely.
-3. Triggers network I/O for remote targets, causing multi-second hangs.
-4. On restore, recreating symlinks vs recreating target content is ambiguous.
-
-**Why it happens:** `std::fs::read()` and `std::fs::read_dir()` follow symlinks by default. Rust's own stdlib had a TOCTOU vulnerability in `remove_dir_all` (CVE-2022-21658) from this exact class of bug -- checking if something is a symlink then operating on it, with a race window where an attacker swaps a directory for a symlink.
-
-**Prevention:**
-- Use `std::fs::symlink_metadata()` (lstat equivalent) instead of `std::fs::metadata()` to detect symlinks before reading content.
-- Never follow symlinks during snapshot operations. Store the symlink target path as metadata, not the pointed-to content.
-- Set a maximum directory depth for recursive operations (e.g., 10 levels).
-- Set a maximum total snapshot size per command (e.g., 50MB) to bound resource usage regardless of symlink resolution.
-- On restore, recreate the symlink itself (pointing to the same target), not the content of the target.
-- Exclude well-known junction points on Windows: `AppData\Local\Application Data` (circular junction in user profiles).
-
-**Phase relevance:** Snapshot engine implementation phase.
+**Phase to address:**
+Phase 1 (Capture architecture) for buffer design; Phase 3 (Storage) for database schema and retention.
 
 ---
 
-### Pitfall 11: Watcher Scope -- CWD-Only Misses Cross-Directory Modifications
+### Pitfall 6: Pipe Detection Fails for Non-Obvious Pipe Syntax
 
-**What goes wrong:** Watching only the CWD misses commands that modify files outside it: `rm /tmp/scratch.txt`, `cp file.txt ~/backup/`, `mv report.pdf ../archive/`. The watcher sees nothing, the undo system has no record, the user believes the operation is covered.
+**What goes wrong:**
+Glass's existing `contains_unparseable_syntax()` checks for `" | "` (pipe with spaces around it). But real-world pipe syntax includes: `cmd|cmd` (no spaces), `cmd |& cmd` (bash 4+ stderr pipe), `cmd 2>&1 | cmd` (redirect then pipe), multiline pipes with `\` continuation, and `|` characters inside string arguments (e.g., `grep "a|b" file | wc`). The pipe detector either misses pipes (no visualization offered) or incorrectly splits at `|` inside regex/string arguments.
 
-**Why it happens:** Recursive directory watching is scoped to a single root. Watching `/` or `C:\` generates millions of irrelevant events, exceeds watch limits, and burns CPU. There is no practical "watch everything" solution.
+**Why it happens:**
+The `|` character appears in multiple contexts: pipe operator, regex alternation inside arguments, PowerShell `-match` patterns, heredoc content, and string literals. Naive string splitting on `|` is unreliable. The existing `command_parser.rs` correctly avoids this problem by treating pipes as unparseable.
 
-**Prevention:**
-- Watch the CWD as the primary scope. This covers 80-90% of normal terminal usage.
-- When the command parser identifies file targets outside the CWD (absolute paths, `../` relative paths), create temporary targeted watches or perform direct pre-exec snapshots of those specific files. Single-file watches are cheap on all platforms.
-- Do not attempt whole-filesystem watching. It is impractical and generates overwhelming noise.
-- Clearly indicate in the UI when undo coverage is CWD-scoped: "Changes outside [cwd] are not tracked."
-- When CWD changes (OSC 7 event), stop the old watcher and start a new one on the new CWD. Handle the transition atomically to avoid missing events during the switch.
+**How to avoid:**
+1. Use quote-aware pipe splitting: track single/double quote state (as `strip_redirects()` already does in `command_parser.rs`) and only recognize `|` as a pipe operator when outside quotes.
+2. For regex-heavy commands (grep, sed, awk), the `|` inside a regex argument is protected by quotes in well-formed commands. Handle the unquoted case as best-effort.
+3. Handle `|&` (bash stderr pipe) explicitly as a pipe variant.
+4. For multiline commands (continuation with `\`): accumulate the full command text from OSC 133;B to 133;C before pipe detection.
+5. Do NOT try to handle `$(cmd | cmd)` nesting -- mark as unparseable, consistent with existing approach.
+6. PowerShell: watch for `|` inside `-match` patterns and scriptblocks `{ }`.
 
-**Phase relevance:** FS watcher design phase.
+**Warning signs:**
+- Pipes not detected in commands with no spaces around `|`
+- False pipe detection inside grep/sed regex patterns
+- Multiline piped commands show as separate non-piped commands
 
----
-
-## Minor Pitfalls
-
-### Pitfall 12: Ctrl+Shift+Z Keybinding Conflicts with Terminal Applications
-
-**What goes wrong:** `Ctrl+Shift+Z` is the standard "Redo" keybinding in many applications running inside the terminal (text editors, IDEs, etc.). If Glass intercepts this globally, users cannot use Redo in their terminal apps.
-
-**Prevention:**
-- Only intercept `Ctrl+Shift+Z` when the shell is at a prompt -- between OSC 133;A (prompt start) and OSC 133;C (command executed). When a command is running or the terminal is in alt-screen mode (vim, less, nano, tmux), pass the keypress through to the PTY.
-- The existing codebase already has the pattern for this: `TermMode` is checked for bracketed paste, and `BlockManager` tracks command lifecycle state. Use the same pattern.
-- Also check `display_offset`: if the user is scrolled into history, they may be reviewing output rather than at a prompt. Still allow undo in this case (they might be looking at the command they want to undo).
-- Consider making the keybinding configurable in `config.toml` for users who prefer a different binding.
-
-**Phase relevance:** Keybinding/UI integration phase.
+**Phase to address:**
+Phase 1 (Pipe detection) -- this is the first thing that must work before any visualization.
 
 ---
 
-### Pitfall 13: File Permission and Metadata Loss on Restore
+### Pitfall 7: Command Rewriting Creates Security Vulnerabilities
 
-**What goes wrong:** Snapshotting only file content loses metadata: permissions (chmod bits, Windows ACLs), timestamps (mtime/atime), read-only flags, hidden attribute (Windows). Restoring a file with default permissions can break executables (lost +x bit), expose sensitive files (lost restrictive permissions), or confuse build tools (wrong mtime triggers unnecessary rebuilds).
+**What goes wrong:**
+If Glass rewrites shell commands (inserting tee, process substitution, etc.), a crafted filename like `file$(rm -rf /)` or a git branch name containing shell metacharacters could be injected into the rewritten command if Glass doesn't properly escape inserted paths. Even without malicious intent, `tee /tmp/glass_capture_XXXX` creates world-readable temp files containing potentially sensitive pipe data (passwords, API keys, database query outputs).
 
-**Prevention:**
-- Store essential file metadata alongside content in the snapshot: file mode bits (Unix), read-only attribute (Windows), file size, mtime.
-- On restore, set permissions after writing content. Use `std::fs::set_permissions()` for basic permission restoration.
-- Do not attempt to restore ownership (uid/gid on Unix, owner SID on Windows) -- requires elevated privileges and is rarely needed for undo.
-- Do not restore timestamps by default -- the restored file should have a new mtime to signal that it was modified. But store original timestamps in snapshot metadata for user inspection.
-- Document what is and is not restored in the undo operation.
+**Why it happens:**
+Shell command construction via string concatenation is the root cause of command injection vulnerabilities. If Glass constructs `cmd1 | tee /tmp/glass_capture | cmd2` by string interpolation, any part Glass didn't sanitize can break out. Temp files in `/tmp` are accessible to all users. Named pipes (FIFOs) have similar permission issues.
 
-**Phase relevance:** Snapshot engine implementation phase.
+**How to avoid:**
+1. Strongly prefer PTY-level capture (no command rewriting = no injection surface). This eliminates the entire vulnerability class.
+2. If temp files are needed, use `mktemp` with restrictive permissions (0600), place them in a Glass-owned directory under the user's Glass data directory, and clean them up immediately after capture.
+3. Never concatenate user-visible command text into a rewritten command string.
+4. For PowerShell `Tee-Object`: use `-Variable` (in-memory) instead of `-FilePath` to avoid temp file creation.
 
----
+**Warning signs:**
+- Temp files left behind after pipe visualization
+- Sensitive data visible in capture files
+- Command rewriting logic uses string formatting with user input
 
-### Pitfall 14: Hash Algorithm Choice Affects Performance Budget
-
-**What goes wrong:** Using SHA-256 for content-addressed hashing is safe but slow. Hashing a 10MB file with SHA-256 takes ~30ms on modern hardware. If a command touches 50 files averaging 5MB each, hashing alone takes 750ms -- noticeable latency before the command even starts.
-
-**Prevention:**
-- Use BLAKE3 instead of SHA-256. BLAKE3 is ~5x faster on x86-64 (SIMD-accelerated), produces the same 32-byte hash, and is purpose-built for content addressing. The `blake3` Rust crate is well-maintained and widely used.
-- Store hashes as 32-byte BLOBs in SQLite, not 64-character hex strings. Saves 50% storage per hash and makes index lookups faster.
-- For large files (>1MB), consider hashing only the first and last 64KB plus the file size and mtime as a fast "change detection" hash, with full content hash computed lazily when dedup is actually needed.
-
-**Phase relevance:** Storage engine design phase.
+**Phase to address:**
+Phase 1 (Architecture) -- choosing PTY-level capture eliminates this class. If command rewriting is used, mandatory security review before Phase 2.
 
 ---
 
-### Pitfall 15: Background Process Modifications After Command Completion
+## Technical Debt Patterns
 
-**What goes wrong:** Commands like `npm start`, `cargo watch`, `docker compose up`, or anything that forks daemons continue modifying files after OSC 133;D (command finished) fires. The watcher stops associating changes with that command, but the spawned processes keep writing. Undoing the "finished" command reverts its initial changes while the background process continues creating new files, resulting in a confused filesystem state.
+| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
+|----------|-------------------|----------------|-----------------|
+| Capture only whole-pipeline output (no per-stage) | Reuses existing `OutputBuffer`, no new capture mechanism | Users can't see intermediate stage data -- the core value prop of pipe viz | MVP only -- must add per-stage in follow-up |
+| Text-only PowerShell capture | Avoids .NET object complexity entirely | Loses object properties, truncated columns | Acceptable permanently -- object capture impractical outside PS runtime |
+| Fixed per-stage buffer cap (no config) | Simpler implementation | Power users can't tune for their workflows | Never -- Glass already makes `OutputBuffer` cap configurable |
+| Synchronous stage attribution in PTY reader thread | Simpler data flow, single-threaded reasoning | Degrades PTY throughput for ALL commands, not just piped ones | Never -- must be zero-cost when pipes are not detected |
+| Storing pipe stages as separate DB rows with FK | Clean relational schema | JOIN latency on every history lookup, even non-piped commands | Acceptable with LEFT JOIN or lazy-load pattern |
+| Detecting pipes only with spaces (` | `) | Trivial regex, matches most typed commands | Misses programmatic/script pipes like `cmd|cmd` | MVP only -- must handle no-space pipes quickly |
 
-**Prevention:**
-- Undo reverts to the pre-command snapshot state. It cannot and should not try to account for ongoing background processes.
-- Warn the user if the undo target is a recent command (within last 30 seconds) and the watcher is still detecting filesystem activity in the CWD. Display: "Warning: files are still being modified. Undo may be incomplete."
-- Do not attempt to kill background processes spawned by the undone command. That is out of scope and dangerous.
-- This is fundamentally a documentation/UX limitation, not a solvable technical problem. Be honest about it in the UI and docs.
+## Integration Gotchas
 
-**Phase relevance:** Undo execution phase (UX design).
+Mistakes when integrating pipe visualization with existing Glass systems.
 
----
+| Integration | Common Mistake | Correct Approach |
+|-------------|----------------|------------------|
+| OutputBuffer (capture) | Running two capture systems (OutputBuffer for whole command + new per-stage capture) that conflict or double-count bytes | Extend `OutputBuffer` with stage awareness OR replace it for piped commands. One system, not two. |
+| BlockManager (lifecycle) | Treating a pipeline as multiple blocks, or trying to add sub-blocks to Block struct -- confusing rendering logic | A pipeline IS one block in `BlockManager`. Pipe stages are a NESTED concept within the block, managed by a new `PipeStageManager` or similar in `glass_pipes`. |
+| OSC 133 shell integration | Trying to emit per-stage OSC markers from `glass.ps1` -- adds complexity to shell scripts and relies on shell cooperation | Pipe detection and stage attribution should happen in Glass (Rust side), not in shell integration scripts. The shell emits existing 133;B/C/D; Glass does the rest. |
+| Command parser (glass_snapshot) | Extending `command_parser.rs` to handle pipes -- it already explicitly marks them as unparseable for file target extraction | Create a separate `pipe_parser` module in `glass_pipes` crate. Do not modify `command_parser.rs`'s pipe-rejection logic -- it is correct for its purpose. |
+| History DB schema | Adding pipe columns to the existing `commands` table | Add a new `pipe_stages` table with FK to `commands.id`. Don't modify existing schema -- migration risk. |
+| MCP server | Returning pipe stage data in the existing `GlassHistory` tool response | Add a new `GlassPipeInspect` tool (as planned in PROJECT.md). Keep `GlassHistory` unchanged. |
+| PTY reader thread (`pty_read_with_scan`) | Adding pipe-stage parsing logic to the hot read loop | Pipe stage attribution must happen OUTSIDE the PTY reader thread, or be gated by a fast "is this a piped command?" check before any processing. |
 
-### Pitfall 16: SQLite WAL Checkpoint Interaction with Snapshot DB
+## Performance Traps
 
-**What goes wrong:** If snapshots are stored in the same SQLite database as history, the WAL file grows large during bulk snapshot writes (e.g., snapshotting 100 files before a build command). The MCP server or CLI, holding read transactions open, prevents WAL checkpointing. The WAL file grows to hundreds of MB, effectively doubling database disk usage.
+| Trap | Symptoms | Prevention | When It Breaks |
+|------|----------|------------|----------------|
+| Per-byte pipe-char scanning in PTY reader | Key echo latency >5ms, visible lag during fast output | Scan for `|` only in command text (at `CommandStart`), not during output streaming | Any pipeline producing >100KB/sec output |
+| Storing full stage output in SQLite BLOBs | History DB grows 5-10x faster, query latency increases | Use blob store (like `glass_snapshot`'s filesystem store) for stage output above threshold | After ~1000 piped commands with medium output |
+| Re-rendering pipe stage UI on every PTY read | GPU frame rate drops, wgpu pipeline stalls | Only update pipe stage UI on buffer threshold changes or explicit expand/collapse | Pipelines with continuous output (tail -f \| grep) |
+| Parsing pipe structure on every command | CPU spike on `CommandExecuted` even for non-piped commands | Fast-path check: scan for unquoted `|` first, full parsing only if found | High command frequency (scripted loops) |
+| Keeping all stage buffers live in memory | RAM grows proportional to (stages x cap x active_commands) | Drop stage buffers to disk/DB when command completes; keep only summary in memory | Sessions with hundreds of completed piped commands |
 
-**Prevention:**
-- Use a separate database file for snapshots (see Pitfall 9), which isolates WAL growth.
-- If using a single DB, run `PRAGMA wal_checkpoint(PASSIVE)` periodically in the write connection. PASSIVE checkpointing never blocks readers but will skip pages that are locked by readers.
-- Keep read transactions short in the CLI and MCP server -- query, collect results to memory, close transaction. Never hold a read transaction open while piping output to a pager.
-- The existing history DB already sets `PRAGMA synchronous = NORMAL` and `PRAGMA busy_timeout = 5000` -- maintain these settings for the snapshot DB as well.
+## Security Mistakes
 
-**Phase relevance:** Storage engine design phase.
+| Mistake | Risk | Prevention |
+|---------|------|------------|
+| Temp files for tee capture in world-readable /tmp | Other users/processes read sensitive piped data (DB queries, API keys, credentials) | Use in-memory capture via PTY-level interception. If files needed, user-private dir with 0600 permissions. |
+| Command rewriting with string concatenation | Shell injection via crafted filenames, branch names, or prompt content | Avoid command rewriting entirely. If unavoidable, use only Glass-controlled constants. |
+| Capturing pipe output containing secrets | Secrets persisted in Glass history DB or blob store indefinitely | Apply existing retention policies to pipe stage data. Add per-command opt-out. Document this risk. |
+| MCP GlassPipeInspect exposing internal pipeline data | AI assistants could access sensitive intermediate data from pipelines | Apply same access controls as existing MCP tools. Respect per-command opt-out flags. |
+| Shell integration script modifications for pipe capture | Modified glass.ps1 could be targeted for prompt injection | Keep pipe logic in Rust side. Shell scripts should remain minimal (current 123 lines is good). |
 
----
+## UX Pitfalls
 
-## Phase-Specific Warnings
+| Pitfall | User Impact | Better Approach |
+|---------|-------------|-----------------|
+| Showing pipe visualization for EVERY piped command | Visual noise -- most pipes are simple (`ls \| head`). Clutters the block view. | Default to collapsed/minimal view. Only auto-expand for failed pipelines (non-zero exit) or user click. |
+| Pipe stage output shown with raw ANSI escape codes | `\x1b[31m` text in stage preview is unreadable | Strip ANSI codes for stage preview (Glass already does this for output capture). Preserve in full/expanded view. |
+| No way to disable pipe visualization | Power users who don't want overhead or visual clutter are stuck | Config option: `[pipes] enabled = true/false`. Respect it globally. |
+| Pipe stages shown inline, expanding block height dramatically | A 5-stage pipeline with expanded output dominates scrollback, pushing other blocks offscreen | Use overlay/popup for expanded stage output, or horizontal tab-style layout within the block. |
+| Different pipe visualization for bash vs PowerShell without indication | User confusion when switching shells | Clear shell indicator on pipe blocks. Document behavioral differences (object vs byte capture). |
+| TTY-sensitive commands showing degraded output in visualization | User sees plain `ls` output in pipe stage preview while the actual terminal showed colored columns | Detect TTY-sensitive commands (ls, git, grep) and add UI note: "output may differ from terminal display due to pipe detection" |
 
-| Phase Topic | Likely Pitfall | Mitigation |
-|-------------|---------------|------------|
-| FS Watcher Engine | Buffer overflow silently drops events on Windows (Pitfall 2) | Detect zero-byte returns, implement fallback directory enumeration |
-| FS Watcher Engine | Event flood overwhelming winit main thread (Pitfall 6) | Batch events in watcher thread, query only at command completion |
-| FS Watcher Engine | Cross-platform behavioral differences (Pitfall 7) | Design abstract trait; implement Windows first; do not encode platform assumptions |
-| FS Watcher Engine | CWD-only scope misses cross-directory ops (Pitfall 11) | Targeted watches for parser-identified out-of-CWD targets |
-| Pre-exec Snapshot | Race with command execution timing (Pitfall 1) | Accept best-effort; watcher is primary mechanism; synchronous snapshot in event handler |
-| Pre-exec Snapshot | TOCTOU during file read (Pitfall 4) | Single read() call; verify size/mtime before and after |
-| Pre-exec Snapshot | Symlink following danger (Pitfall 10) | Use lstat; never follow symlinks; depth and size limits |
-| Command Parser | Scope creep from trying to parse all shell syntax (Pitfall 5) | Whitelist top 15 commands per shell; cap parser at 300 lines |
-| Snapshot Storage | Unbounded growth (Pitfall 3) | Retention from day one; BLAKE3 hashing; separate blob storage for >100KB |
-| Snapshot Storage | Schema migration risk to existing DB (Pitfall 9) | Separate SQLite database for snapshots |
-| Snapshot Storage | BLOB performance degradation (Pitfall 3) | Filesystem storage for >100KB, BLOBs in separate table for <100KB |
-| Snapshot Storage | WAL growth during bulk writes (Pitfall 16) | Separate DB; periodic PASSIVE checkpoint |
-| Snapshot Storage | Hash algorithm performance (Pitfall 14) | BLAKE3, not SHA-256; BLOB storage not hex |
-| Undo Execution | Non-atomic directory restoration (Pitfall 8) | Two-phase staging; report partial results; verify disk space |
-| Undo Execution | Metadata loss on restore (Pitfall 13) | Store permissions + size + mtime in snapshot metadata |
-| Undo Execution | Background processes still modifying files (Pitfall 15) | Warn user; do not attempt to kill processes |
-| Keybinding/UI | Ctrl+Shift+Z conflicts with terminal apps (Pitfall 12) | Only intercept at shell prompt; check alt-screen mode |
+## "Looks Done But Isn't" Checklist
 
----
+- [ ] **Pipe detection:** Works with `cmd|cmd` (no spaces) not just `cmd | cmd` -- verify spacing variants
+- [ ] **Pipe detection:** Works with `cmd |& cmd` (bash stderr pipe) -- verify bash 4+ syntax
+- [ ] **Pipe detection:** Does NOT false-trigger on `grep "a|b" file` (pipe inside quotes) -- verify quote awareness
+- [ ] **Pipe detection:** Handles multiline commands with `\` continuation -- verify accumulation works
+- [ ] **Stage capture:** Handles binary output (images, compressed data) without corruption -- verify with `cat image.png | head -c 100`
+- [ ] **Stage capture:** Works with empty stages (e.g., `grep nomatch file | wc -l` where grep produces nothing) -- verify zero-byte stage display
+- [ ] **Exit codes:** Pipeline exit code in block decoration matches behavior WITHOUT pipe visualization -- verify with `false | true` and `true | false`
+- [ ] **PowerShell:** `Get-Process | Select-Object Name` shows process names, not `System.Diagnostics.Process` -- verify object rendering
+- [ ] **Performance:** Key echo latency unchanged (<5ms) when pipe visualization is enabled -- benchmark before/after
+- [ ] **Performance:** Memory stays bounded during `find / -type f 2>/dev/null | head -1` -- verify per-stage cap
+- [ ] **Storage:** Pipe stage data respects retention policies and gets pruned -- verify after configured retention period
+- [ ] **Collapse/expand:** Collapsed pipe blocks show correct summary (stage count, overall exit code) -- verify against actual data
+- [ ] **Opt-out:** `[pipes] enabled = false` completely disables all pipe-related processing including detection -- verify zero overhead when disabled
+- [ ] **Integration:** Existing `OutputBuffer` whole-command capture still works correctly for piped commands -- verify no regression
+
+## Recovery Strategies
+
+| Pitfall | Recovery Cost | Recovery Steps |
+|---------|---------------|----------------|
+| TTY detection breaking command output | LOW | Add config flag to disable pipe-level capture, falling back to whole-command capture. No data migration needed. |
+| Exit code corruption | MEDIUM | Fix the capture mechanism. Old commands with wrong exit codes in history DB cannot be retroactively corrected. |
+| Shell quoting corruption | HIGH | If commands were executed with corrupted arguments, data loss or unintended effects already occurred. This is why command rewriting should be avoided. |
+| Buffer explosion (OOM) | LOW | Kill Glass, reduce per-stage cap in config, restart. No persistent damage. |
+| PowerShell object loss | LOW | Accept text-only capture. No recovery possible for lost object data -- design limitation, not bug. |
+| Security (temp file exposure) | HIGH | Delete exposed temp files, rotate any credentials visible in captured output, switch to in-memory capture. |
+| Pipe detection false positive | LOW | Disable pipe viz for affected command pattern. Add pattern to exclusion list. No data corruption. |
+
+## Pitfall-to-Phase Mapping
+
+| Pitfall | Prevention Phase | Verification |
+|---------|------------------|--------------|
+| TTY detection changes output (P1) | Phase 1: Capture Architecture | Run `ls`, `git status`, `grep --color=auto` through pipe with viz enabled; compare to non-visualized |
+| Exit code swallowing (P2) | Phase 1: Capture Architecture | `false \| true` and `true \| false` -- exit codes must match expected values |
+| Shell quoting corruption (P3) | Phase 1: Architecture (by avoiding rewriting) | Commands with nested quotes, `$()`, backticks through pipe viz; verify identical execution |
+| PowerShell object pipeline (P4) | Phase 1: Architecture + Phase 2: PS capture | `Get-Process \| Where-Object CPU -gt 0 \| Select-Object Name,CPU` -- stage output readable |
+| Buffer explosion (P5) | Phase 1: Buffer design | `find / -type f 2>/dev/null \| head -5` -- monitor memory; verify cap respected |
+| Pipe detection edge cases (P6) | Phase 1: Pipe parser | Test suite: no spaces, `\|&`, quoted pipes, multiline, nested `$()` |
+| Security from rewriting (P7) | Phase 1: Architecture (by choosing PTY-level capture) | Audit: no string concatenation with user input in any shell command construction |
+| Per-stage capture performance | Phase 2: Implementation | Benchmark PTY reader throughput with/without pipe viz; verify <5% overhead |
+| Storage growth | Phase 3: DB schema + retention | Run 1000 piped commands, measure DB growth, verify pruning |
+| UI clutter | Phase 4: Pipeline UI | User testing with mixed piped/non-piped sessions; verify collapsed default works |
 
 ## Sources
 
-- [ReadDirectoryChangesW documentation (Microsoft)](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw) -- buffer overflow behavior, network drive limitations
-- [Understanding ReadDirectoryChangesW Part 2 (Jim Beveridge)](https://qualapps.blogspot.com/2010/05/understanding-readdirectorychangesw_19.html) -- race conditions between calls, FILE_SHARE_DELETE pitfall
-- [Using ReadDirectoryChangesW (Tresorit Engineering)](https://medium.com/tresorit-engineering/how-to-get-notifications-about-file-system-changes-on-windows-519dd8c4fb01) -- practical implementation guidance
-- [ReadDirectoryChangesW stops working on large file counts (Microsoft Q&A)](https://learn.microsoft.com/en-us/answers/questions/1428660/readdirectorychangesw-stops-working-on-large-amoun) -- real-world buffer overflow reports
-- [inotify(7) Linux manual page](https://man7.org/linux/man-pages/man7/inotify.7.html) -- recursive watch limitations, rename event pairing, queue overflow
-- [Correct or inotify: pick one (wingolog)](https://wingolog.org/archives/2018/05/21/correct-or-inotify-pick-one) -- fundamental correctness limitations of inotify
-- [inotify limitations (Boutnaru)](https://medium.com/@boutnaru/the-linux-concept-journey-inofity-inode-notification-limitations-c05de30d14fb) -- watch limits, pseudo-filesystem exclusions
-- [FSEvents Programming Guide (Apple)](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html) -- latency parameter, coalescing behavior
-- [Mac FSEvents limitations (Watchexec docs)](https://watchexec.github.io/docs/macos-fsevents.html) -- per-directory granularity, coalescing pitfalls
-- [SQLite Internal vs External BLOBs](https://sqlite.org/intern-v-extern-blob.html) -- 100KB threshold for inline vs filesystem BLOBs
-- [SQLite faster than filesystem (for small blobs)](https://sqlite.org/fasterthanfs.html) -- 35% faster for thumbnails
-- [notify-rs/notify GitHub](https://github.com/notify-rs/notify) -- cross-platform FS watcher crate for Rust
-- [notify-rs panic with Rust 1.81.0 (issue #636)](https://github.com/notify-rs/notify/issues/636) -- debouncer sorting bug
-- [Race condition in std::fs::remove_dir_all (CVE-2022-21658)](https://github.com/rust-lang/rust/security/advisories/GHSA-r9cc-f5pr-p3j2) -- TOCTOU symlink following vulnerability
-- [TOCTOU race conditions (Wikipedia)](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use) -- general background on the vulnerability class
+- [Linux Tools Pipe Behavior Differences](https://www.howtogeek.com/these-linux-tools-behave-very-differently-when-you-pipe-them/) -- TTY vs pipe behavioral changes
+- [The TTY Demystified](https://www.linusakesson.net/programming/tty/) -- foundational PTY/TTY architecture
+- [A Terminal Case of Linux](https://fasterthanli.me/articles/a-terminal-case-of-linux) -- deep dive on terminal I/O and isatty
+- [How to Force git status Color Output](https://www.codestudy.net/blog/force-git-status-to-output-color-on-the-terminal-inside-a-script/) -- git isatty behavior
+- [Color and TTYs](https://eklitzke.org/ansi-color-codes) -- why commands disable color in pipes
+- [Process Substitution and Race Conditions](https://www.natewoodward.org/blog/2019/11/25/process-substitution-and-race-conditions) -- tee/process substitution races in bash vs ksh vs zsh
+- [Greg's Wiki: ProcessSubstitution](https://mywiki.wooledge.org/ProcessSubstitution) -- bash process substitution edge cases
+- [Exit Status of Piped Processes (Baeldung)](https://www.baeldung.com/linux/exit-status-piped-processes) -- PIPESTATUS and pipefail behavior
+- [Capture Exit Status When Piping Output](https://www.codestudy.net/blog/pipe-output-and-capture-exit-status-in-bash/) -- tee exit code masking problem
+- [PIPESTATUS and pipefail](https://www.signorini.ch/content/bash-pipestatus-and-pipefail) -- detailed analysis of exit code propagation
+- [PowerShell Pipeline Objects](https://renenyffenegger.ch/notes/Windows/PowerShell/pipeline/index) -- PS object vs text pipeline fundamentals
+- [PowerShell Issue #1908: Keep bytes as-is](https://github.com/PowerShell/PowerShell/issues/1908) -- byte stream corruption in PS pipelines
+- [PowerShell Issue #4552: Mixed object types](https://github.com/PowerShell/PowerShell/issues/4552) -- heterogeneous pipeline formatting loss
+- [Viewing Truncated PowerShell Output](https://greiginsydney.com/viewing-truncated-powershell-output/) -- Format-Table truncation gotchas
+- [ConPTY Introduction (Microsoft)](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/) -- ConPTY architecture and limitations
+- [ConPTY Buffer Sync Issues #15976](https://github.com/microsoft/terminal/issues/15976) -- ConPTY buffer desynchronization
+- [VSCode ConPTY Performance #214529](https://github.com/microsoft/vscode/issues/214529) -- ConPTY overhead concerns
+- [OWASP Command Injection](https://owasp.org/www-community/attacks/Command_Injection) -- shell injection prevention fundamentals
+- [Python Buffering and tee (Baeldung)](https://www.baeldung.com/linux/python-buffering-and-tee) -- pipe buffering behavior
+- [PowerShell Piped Data Buffering #19036](https://github.com/PowerShell/PowerShell/issues/19036) -- PS pipeline buffering semantics
+- Glass source: `crates/glass_terminal/src/pty.rs` -- PTY reader architecture, `READ_BUFFER_SIZE`, `OutputBuffer` integration
+- Glass source: `crates/glass_terminal/src/output_capture.rs` -- existing `OutputBuffer` pattern (max_bytes, total_seen, alt-screen detection)
+- Glass source: `crates/glass_snapshot/src/command_parser.rs` -- existing pipe-as-unparseable decision, `contains_unparseable_syntax()`
+- Glass source: `crates/glass_terminal/src/block_manager.rs` -- block lifecycle, single-block-per-command model
+- Glass source: `shell-integration/glass.ps1` -- current shell integration (123 lines, OSC 133 only)
 
 ---
-*Pitfalls research for: Glass v1.2 -- Command-Level Undo with Filesystem Snapshots*
+*Pitfalls research for: Glass v1.3 -- Pipe Visualization*
 *Researched: 2026-03-05*

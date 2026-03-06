@@ -1,722 +1,726 @@
-# Architecture Patterns: v1.2 Command-Level Undo
+# Architecture Patterns: Pipe Visualization Integration
 
-**Domain:** Command-level undo with filesystem snapshots for terminal emulator
+**Domain:** Terminal emulator pipe visualization (v1.3 milestone)
 **Researched:** 2026-03-05
-**Confidence:** HIGH (based on direct source code analysis of existing Glass v1.1 codebase, notify crate docs, BLAKE3 docs)
+**Confidence:** HIGH (based on direct codebase analysis of all 10 Glass crates + established Unix/Windows pipe patterns)
 
 ---
 
-## System Overview: v1.2 Additions
+## Existing Architecture Summary
+
+Glass is a 10-crate Rust workspace (12,214 LOC) with a clear event-driven data flow:
 
 ```
-+-----------------------------------------------------------------------+
-|                        Application Layer                               |
-|  glass binary (main.rs)                                                |
-|  +----------------+  +----------------+  +--------------------------+  |
-|  |  Processor     |  |  WindowCtx     |  |  CLI Subcommands         |  |
-|  |  (winit loop)  |  |  (per-window)  |  |  glass undo <id>   NEW  |  |
-|  +-------+--------+  +-------+--------+  +--------------------------+  |
-|          |                    |                                         |
-+----------+--------------------+----------------------------------------+
-|          |    Service Layer   |                                         |
-|  +-------v--------------+    |  +--------------+  +----------------+   |
-|  |  glass_terminal      |    |  |glass_renderer|  |  glass_core    |   |
-|  |  PTY + OscScanner    |    |  | wgpu + GPU   |  |  events,config |   |
-|  |  BlockManager        |    |  |              |  |                |   |
-|  |  OutputCapture       |    |  | +[undo] label|  | +SnapshotCfg  |   |
-|  +-----------------------+   |  |  NEW         |  |  NEW           |   |
-|                              |  +--------------+  +----------------+   |
-|  +-----------------------+   |                                         |
-|  |  glass_snapshot  NEW  |   |  +----------------------------------+   |
-|  |  SnapshotStore       <----+  |  glass_mcp                      |   |
-|  |  CommandParser        |   |  |  +GlassUndo tool          NEW   |   |
-|  |  FsWatcher (notify)   |   |  |  +GlassFileDiff tool      NEW  |   |
-|  |  UndoEngine           |   |  +----------------------------------+   |
-|  +-----------------------+   |                                         |
-|                              |  +----------------------------------+   |
-|  +-----------------------+   |  |  glass_history (unchanged)       |   |
-|  |  glass_config         |   +-->  SQLite + FTS5                   |   |
-|  |  (unchanged)          |      |  CommandRecord, HistoryDb        |   |
-|  +-----------------------+      +----------------------------------+   |
-+------------------------------------------------------------------------+
+Shell (pwsh/bash)
+  |  OSC 133 A/B/C/D sequences
+  v
+PTY reader thread (std::thread, blocking I/O)
+  |  OscScanner pre-scans raw bytes
+  |  OutputBuffer accumulates between C..D
+  |  VTE parser updates terminal grid
+  v
+AppEvent enum (via winit EventLoopProxy)
+  |  Shell { event, line }
+  |  CommandOutput { raw_output }
+  v
+Main thread (winit event loop)
+  |  BlockManager tracks lifecycle
+  |  HistoryDb inserts CommandRecord
+  |  SnapshotStore pre-exec snapshots
+  v
+FrameRenderer
+  |  BlockRenderer generates rects + labels
+  |  GridRenderer draws terminal cells
+  v
+wgpu DX12 GPU pipeline
+```
+
+**Key architectural constraints (from code analysis):**
+
+1. **PTY reader** runs on `std::thread` (not tokio) -- blocking I/O must not block async executor. Holds `Term` lock briefly, scans OSC, sends AppEvent via EventLoopProxy.
+
+2. **Crate boundary rule:** `glass_terminal` must NOT depend on `glass_history` -- raw bytes sent via AppEvent, processed on main thread.
+
+3. **Command text extraction** happens at `CommandExecuted` time by reading the terminal grid between `block.command_start_line` and `block.output_start_line`.
+
+4. **`command_parser.rs`** already marks `" | "` as unparseable syntax (returns `Confidence::Low`). This is correct for snapshot/undo; pipes are a different concern.
+
+5. **Shell integration** works by wrapping existing prompts (Oh My Posh/Starship compatible). PowerShell uses PSReadLine Enter handler for OSC 133;C. Bash uses PS0.
+
+6. **`glass_pipes` crate** exists as a stub (`//! glass_pipes -- stub crate, filled in future phases`).
+
+---
+
+## Recommended Architecture for Pipe Visualization
+
+### Core Design Decision: Shell-Side Tee Insertion + Terminal-Side Detection
+
+Pipe visualization has a fundamental challenge: the terminal sees only the FINAL output of a pipeline. Intermediate stage outputs are consumed by the next stage and never reach the PTY. There are two possible approaches:
+
+**Option A (chosen for bash/zsh):** Shell integration rewrites the command to insert `tee` between stages, capturing intermediate output to temp files. After execution, shell reports captured data back via custom OSC sequences.
+
+**Option B (chosen for PowerShell):** PowerShell's `Tee-Object -Variable` captures pipeline objects to variables. Shell integration rewrites the command to insert `Tee-Object` between stages, then reports variable contents post-execution.
+
+**Fallback (all shells):** When rewriting is unsafe (TTY-sensitive commands) or disabled, Glass still detects pipes from the command text and displays the pipeline structure without intermediate output.
+
+### Component Boundaries
+
+| Component | Crate | Responsibility | Status |
+|-----------|-------|---------------|--------|
+| PipeParser | `glass_pipes` | Parse command text into pipeline stages | **NEW** |
+| TtyDetector | `glass_pipes` | Identify TTY-sensitive commands that break with tee | **NEW** |
+| PipeStage types | `glass_pipes` | Data types for stages, pipeline info | **NEW** |
+| Shell integration (bash) | `shell-integration/glass.bash` | DEBUG trap rewrites piped commands with tee, PROMPT_COMMAND reports captured data via OSC | **MODIFIED** |
+| Shell integration (PS) | `shell-integration/glass.ps1` | Enter handler inserts Tee-Object, prompt reports variables via OSC | **MODIFIED** |
+| OscScanner | `glass_terminal` | Parse new OSC 133;P (pipe stage data) sequences | **MODIFIED** |
+| AppEvent / ShellEvent | `glass_core` | New PipeStageOutput variant | **MODIFIED** |
+| Block | `glass_terminal` | Block gains `pipeline_stages` field | **MODIFIED** |
+| HistoryDb | `glass_history` | New `pipe_stages` table (schema v1 -> v2 migration) | **MODIFIED** |
+| BlockRenderer | `glass_renderer` | Multi-row pipeline UI with stage indicators | **MODIFIED** |
+| GlassServer | `glass_mcp` | New `glass_pipe_inspect` tool | **MODIFIED** |
+| GlassConfig | `glass_core` | New `[pipes]` config section | **MODIFIED** |
+
+---
+
+### Data Types (in `glass_pipes`)
+
+```rust
+/// A single stage in a pipeline.
+#[derive(Debug, Clone)]
+pub struct PipeStage {
+    /// Zero-indexed position in the pipeline.
+    pub index: usize,
+    /// The command fragment for this stage (e.g., "grep foo").
+    pub command: String,
+    /// Captured output (ANSI-stripped, truncated). None if capture not possible.
+    pub output: Option<String>,
+    /// Number of output lines (for UI sizing).
+    pub line_count: usize,
+    /// Whether this stage's output was truncated.
+    pub truncated: bool,
+}
+
+/// Result of parsing a command for pipe structure.
+#[derive(Debug, Clone)]
+pub struct PipelineInfo {
+    /// The original command text.
+    pub original: String,
+    /// Individual stages (split on unquoted |).
+    pub stages: Vec<String>,
+    /// Whether tee insertion is safe (no TTY-sensitive commands).
+    pub tee_safe: bool,
+}
+
+/// TTY-sensitive commands that should NOT have tee inserted.
+/// These commands require direct terminal access and break when
+/// their stdin/stdout is redirected through tee.
+pub const TTY_COMMANDS: &[&str] = &[
+    "vim", "nvim", "vi", "nano", "emacs",       // editors
+    "less", "more", "most",                       // pagers
+    "top", "htop", "btop",                        // monitors
+    "ssh", "telnet",                              // remote shells
+    "fzf", "sk",                                  // fuzzy finders
+    "tmux", "screen",                             // multiplexers
+    "python", "node", "irb", "ghci",             // interactive REPLs
+];
 ```
 
 ---
 
-## Existing Architecture (What We Build On)
-
-Understanding the existing data flow is critical. Here is how a command lifecycle currently works:
+### Data Flow: Shell to Storage to UI to MCP
 
 ```
-PTY Reader Thread (std::thread)         Main Thread (winit event loop)
-================================         ==============================
+1. USER TYPES: ls -la | grep foo | wc -l
 
-OscScanner detects OSC 133;C
-  -> AppEvent::Shell{Executed}  -------> Processor::user_event:
-                                           block_manager.handle_event()
-                                           command_started_wall = now()
+2. SHELL INTEGRATION (at command execution time):
+   a. Detect unquoted pipe character(s) in command text
+   b. Parse into stages: ["ls -la", "grep foo", "wc -l"]
+   c. Check each stage against TTY blocklist
+   d. If all safe AND tee_rewrite enabled:
+      BASH:  ls -la | tee /tmp/glass-pipe-$$/0 | grep foo | tee /tmp/glass-pipe-$$/1 | wc -l
+      PS:    ls -la | Tee-Object -Variable __glass_0 | grep foo | Tee-Object -Variable __glass_1 | wc -l
+   e. Execute rewritten command (user sees normal final output)
 
-... PTY output flows ...                ... output_buffer accumulates ...
+3. SHELL INTEGRATION (after command finishes, before next prompt):
+   a. BASH: Read /tmp/glass-pipe-$$/* files, emit OSC 133;P per stage, clean up
+      PS:   Read $__glass_0, $__glass_1 variables, emit OSC 133;P per stage
+   b. Emit pipe stage count: ESC]133;S;<stage_count>;<original_command_b64> BEL
+   c. For each captured stage:
+      ESC]133;P;<stage_index>;<byte_count>;<base64_output> BEL
+   d. Emit OSC 133;D as before (normal command finish)
 
-OscScanner detects OSC 133;D
-  -> AppEvent::Shell{Finished}  -------> Processor::user_event:
-  -> AppEvent::CommandOutput    -------> 1. Extract command text from grid
-                                         2. HistoryDb::insert_command()
-                                         3. process_output() + update_output()
+4. PTY READER THREAD (glass_terminal):
+   a. OscScanner detects 133;S -> OscEvent::PipelineStart { count, original_cmd }
+   b. OscScanner detects 133;P -> OscEvent::PipeStageOutput { index, data }
+   c. Converted to ShellEvent variants, sent via AppEvent
+
+5. MAIN THREAD EVENT HANDLER:
+   a. On ShellEvent::PipelineStart:
+      - Parse original command into stage commands via glass_pipes::PipeParser
+      - Initialize pending_pipe_stages Vec on WindowContext
+   b. On ShellEvent::PipeStageOutput:
+      - Base64-decode data
+      - Process (ANSI strip, binary detect, truncate)
+      - Store in pending_pipe_stages[index]
+   c. On ShellEvent::CommandFinished:
+      - If pending_pipe_stages is non-empty:
+        - Move stages into Block.pipeline_stages
+        - Insert into pipe_stages DB table
+        - Clear pending_pipe_stages
+
+6. RENDERER (glass_renderer):
+   a. BlockRenderer checks block.pipeline_stages.is_empty()
+   b. If non-empty: render [N stages] indicator on separator line
+   c. If expanded: render multi-row stage headers with truncated output previews
+   d. Click/keybinding toggles pipeline_expanded on the Block
+
+7. MCP (glass_mcp):
+   a. glass_pipe_inspect(command_id) queries pipe_stages table
+   b. Returns per-stage command + full captured output for AI analysis
 ```
-
-**Key architectural facts from code analysis:**
-
-1. **PTY reader thread** runs on `std::thread` (not tokio). It holds the `Term` lock briefly, scans OSC sequences, and sends `AppEvent` variants through `EventLoopProxy<AppEvent>`.
-
-2. **Command text extraction** currently happens at `CommandFinished` time in `Processor::user_event`. It reads from the terminal grid between `block.command_start_line` and `block.output_start_line`.
-
-3. **History DB** is owned by `WindowContext` on the main thread (`history_db: Option<HistoryDb>`). Inserts happen synchronously in `user_event` -- this is fine because SQLite inserts are <1ms.
-
-4. **Block lifecycle** is tracked by `BlockManager` with states: PromptActive -> InputActive -> Executing -> Complete. Each block records line numbers and timing.
-
-5. **Keybindings** are handled in `window_event` for `KeyboardInput`. Ctrl+Shift+{C,V,F} are already intercepted. Adding Ctrl+Shift+Z follows the same pattern.
-
-6. **glass_snapshot** is currently an empty stub crate with only `//! glass_snapshot -- stub crate, filled in future phases`.
 
 ---
 
-## New Components
+### Shell Integration Changes (Detailed)
 
-### 1. glass_snapshot::SnapshotStore
+#### Bash (`glass.bash`) -- DEBUG Trap Approach
 
-Content-addressed file storage using BLAKE3 hashing with SQLite metadata.
+**Critical insight:** PS0 cannot rewrite the command -- it only emits text before execution. The command is already parsed by bash. Instead, use the `DEBUG` trap with `BASH_COMMAND`.
 
-**Storage layout:**
+```bash
+# Pipe detection and tee rewriting via DEBUG trap
+__glass_is_tee_safe() {
+    local cmd="$1"
+    local IFS='|'
+    for stage in $cmd; do
+        local base=$(echo "$stage" | awk '{print $1}')
+        case "$base" in
+            vim|nvim|vi|nano|less|more|top|htop|ssh|fzf|tmux|screen|python|node)
+                return 1 ;;  # Not safe
+        esac
+    done
+    return 0  # All stages safe
+}
+
+__glass_rewrite_pipeline() {
+    local cmd="$1"
+    local tmpdir="/tmp/glass-pipe-$$"
+    mkdir -p "$tmpdir"
+    local result=""
+    local idx=0
+    local IFS='|'
+    local stages=($cmd)
+    local last=$((${#stages[@]} - 1))
+    for i in "${!stages[@]}"; do
+        local stage="${stages[$i]}"
+        result+="$stage"
+        if [[ $i -lt $last ]]; then
+            result+=" | tee $tmpdir/$idx |"
+            ((idx++))
+        fi
+    done
+    echo "$result"
+}
+
+__glass_report_stages() {
+    local tmpdir="/tmp/glass-pipe-$$"
+    [[ -d "$tmpdir" ]] || return
+    local count=$(ls "$tmpdir" 2>/dev/null | wc -l)
+    [[ $count -eq 0 ]] && return
+    # Emit pipeline start marker with original command
+    local orig_b64=$(echo -n "$__GLASS_PIPE_ORIGINAL" | base64 -w0)
+    printf '\e]133;S;%d;%s\a' "$count" "$orig_b64"
+    # Emit each stage's captured output
+    for f in "$tmpdir"/*; do
+        local idx=$(basename "$f")
+        local data=$(head -c 51200 "$f" | base64 -w0)  # 50KB limit
+        local size=$(wc -c < "$f")
+        printf '\e]133;P;%s;%s;%s\a' "$idx" "$size" "$data"
+    done
+    rm -rf "$tmpdir"
+}
+
+# Integrate into PROMPT_COMMAND (before OSC 133;D)
+__glass_prompt_command() {
+    local exit_code=$?
+    __glass_report_stages  # Report pipe stages BEFORE 133;D
+    printf '\e]133;D;%d\e\\' "$exit_code"
+    __glass_osc7
+    PS1='\[\e]133;A\e\\\]'"${__GLASS_ORIGINAL_PS1:-\\s-\\v\\$ }"'\[\e]133;B\e\\\]'
+}
 ```
-.glass/
-  history.db          (existing -- glass_history)
-  snapshots.db        (NEW -- snapshot metadata)
-  blobs/
-    ab/
-      ab3f...7e.blob  (content-addressed files, 2-char directory sharding)
+
+**Bash limitation:** The DEBUG trap approach requires careful handling to avoid recursion. The trap sees every simple command, not just user-typed pipelines. Guard with a flag (`__GLASS_PIPE_ACTIVE`) and only rewrite when the command contains ` | ` and is at the top-level interactive prompt.
+
+**Simpler alternative considered:** Wrapping the pipeline in a function at PS0 time. Rejected because PS0 output is prepended to the command line but doesn't actually modify the command bash executes.
+
+**Recommended practical approach:** Since bash's DEBUG trap is fragile and complex, start with **post-hoc detection only** for bash: detect pipes in the command text, split into stages, but don't capture intermediate output. Add tee rewriting as an opt-in feature in a later iteration. This is safer for v1.3.
+
+#### PowerShell (`glass.ps1`) -- PSReadLine Replace
+
+PowerShell is significantly cleaner because PSReadLine's `Replace()` method can rewrite the command buffer BEFORE `AcceptLine()`.
+
+```powershell
+function Global:__Glass-Is-Tee-Safe {
+    param([string]$Command)
+    $stages = $Command -split '\|'
+    foreach ($stage in $stages) {
+        $base = ($stage.Trim() -split '\s+')[0]
+        if ($base -in @('vim','nvim','less','more','top','htop','ssh','fzf','python','node')) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Global:__Glass-Rewrite-Pipeline {
+    param([string]$Command)
+    $stages = $Command -split '\|'
+    $result = @()
+    for ($i = 0; $i -lt $stages.Count; $i++) {
+        $result += $stages[$i].Trim()
+        if ($i -lt $stages.Count - 1) {
+            $result += "| Tee-Object -Variable __glass_pipe_$i |"
+        }
+    }
+    return ($result -join ' ')
+}
+
+# Modified Enter handler
+Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+    $line = $null
+    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$null)
+
+    $Global:__GlassPipeOriginal = $null
+    if ($line -match '\|' -and (__Glass-Is-Tee-Safe $line)) {
+        $Global:__GlassPipeOriginal = $line
+        $rewritten = __Glass-Rewrite-Pipeline $line
+        [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $rewritten)
+    }
+
+    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+    [Console]::Write("$([char]0x1b)]133;C$([char]7)")
+}
+
+# In prompt function, report pipe stages before 133;D
+function __Glass-Report-Stages {
+    if ($null -eq $Global:__GlassPipeOriginal) { return }
+    $stages = $Global:__GlassPipeOriginal -split '\|'
+    $count = $stages.Count - 1  # Number of intermediate stages (not final)
+    $origB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Global:__GlassPipeOriginal))
+    [Console]::Write("$([char]0x1b)]133;S;$count;$origB64$([char]7)")
+    for ($i = 0; $i -lt $count; $i++) {
+        $varName = "__glass_pipe_$i"
+        $value = Get-Variable -Name $varName -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $value) {
+            $text = $value | Out-String
+            if ($text.Length -gt 51200) { $text = $text.Substring(0, 51200) }
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+            [Console]::Write("$([char]0x1b)]133;P;$i;$($text.Length);$b64$([char]7)")
+            Remove-Variable -Name $varName -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+    $Global:__GlassPipeOriginal = $null
+}
 ```
 
-**Schema (snapshots.db, separate from history.db):**
+**PowerShell advantage:** PSReadLine's `Replace()` modifies the actual command buffer. The shell parses and executes the rewritten version. This is clean and reliable. The `Tee-Object -Variable` approach captures PowerShell objects serialized to string, which is exactly what a user would see if they examined intermediate output.
+
+**PowerShell caveat:** `Tee-Object` works on PowerShell pipeline objects, not raw byte streams. For native commands (e.g., `git log | grep fix`), the output passes through PowerShell's pipeline as strings, which works fine. But for pure cmdlet pipelines (e.g., `Get-Process | Sort-Object CPU`), `Tee-Object` captures object representations, not formatted table output. This is actually MORE useful for debugging.
+
+---
+
+### OSC Protocol Extension
+
+Two new OSC 133 sub-markers:
+
+```
+Pipeline start (emitted once before stage data):
+ESC]133;S;<stage_count>;<base64_original_command> BEL
+
+Per-stage output (emitted once per intermediate stage):
+ESC]133;P;<stage_index>;<byte_count>;<base64_output> BEL
+```
+
+- `stage_count`: number of intermediate stages (pipeline length - 1)
+- `stage_index`: 0-based
+- `byte_count`: original byte count before base64
+- `base64_output`: base64-encoded to avoid BEL/ESC conflicts in raw output
+
+**Why base64:** Pipe stage output may contain arbitrary bytes including BEL (0x07) which would prematurely terminate the OSC sequence, and ESC (0x1b) which could trigger false OSC detection in the scanner.
+
+**Size constraint:** Each stage is truncated to `max_stage_capture_kb` (default 50KB) before base64 encoding. Base64 inflates by ~33%, so max OSC payload per stage is ~67KB. The OscScanner already handles split-buffer accumulation, so large payloads spanning multiple PTY reads are handled correctly.
+
+---
+
+### OscScanner Extension
+
+Add to `parse_osc133`:
+
+```rust
+fn parse_osc133(params: &str) -> Option<OscEvent> {
+    let mut parts = params.splitn(2, ';');
+    let marker = parts.next()?;
+    match marker {
+        "A" => Some(OscEvent::PromptStart),
+        "B" => Some(OscEvent::CommandStart),
+        "C" => Some(OscEvent::CommandExecuted),
+        "D" => { /* existing */ }
+        // NEW
+        "S" => {
+            // Pipeline start: S;<count>;<base64_cmd>
+            let rest = parts.next()?;
+            let mut sub = rest.splitn(2, ';');
+            let count = sub.next()?.parse::<usize>().ok()?;
+            let cmd_b64 = sub.next().unwrap_or("");
+            Some(OscEvent::PipelineStart {
+                stage_count: count,
+                original_command: cmd_b64.to_string(),
+            })
+        }
+        "P" => {
+            // Pipe stage output: P;<index>;<byte_count>;<base64_data>
+            let rest = parts.next()?;
+            let mut sub = rest.splitn(3, ';');
+            let index = sub.next()?.parse::<usize>().ok()?;
+            let _byte_count = sub.next()?.parse::<usize>().ok()?;
+            let data_b64 = sub.next().unwrap_or("");
+            Some(OscEvent::PipeStageOutput {
+                index,
+                data: data_b64.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+```
+
+This follows the existing scanner pattern exactly -- small, additive changes to the match arm.
+
+---
+
+### Database Schema Extension
+
 ```sql
-CREATE TABLE snapshots (
+-- New table linked to existing commands table
+-- Added in schema migration v1 -> v2
+CREATE TABLE IF NOT EXISTS pipe_stages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    command_id  INTEGER NOT NULL,     -- matches commands.id in history.db
-    cwd         TEXT NOT NULL,
-    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    command_id  INTEGER NOT NULL,
+    stage_index INTEGER NOT NULL,
+    stage_cmd   TEXT NOT NULL,
+    output      TEXT,
+    line_count  INTEGER NOT NULL DEFAULT 0,
+    truncated   INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(command_id, stage_index)
 );
-CREATE INDEX idx_snapshots_command ON snapshots(command_id);
-
-CREATE TABLE snapshot_files (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    file_path   TEXT NOT NULL,         -- absolute path
-    blob_hash   TEXT,                  -- BLAKE3 hash, NULL = file did not exist
-    file_size   INTEGER,              -- original file size in bytes
-    source      TEXT NOT NULL DEFAULT 'parser'  -- 'parser' or 'watcher'
-);
-CREATE INDEX idx_sf_snapshot ON snapshot_files(snapshot_id);
-CREATE INDEX idx_sf_hash ON snapshot_files(blob_hash);
-
-CREATE TABLE fs_changes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    file_path   TEXT NOT NULL,
-    change_type TEXT NOT NULL,          -- 'create', 'modify', 'delete', 'rename'
-    detected_at INTEGER NOT NULL
-);
-CREATE INDEX idx_fc_snapshot ON fs_changes(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_pipe_stages_command ON pipe_stages(command_id);
 ```
 
-**Why separate DB from history.db:**
-- glass_snapshot must NOT depend on glass_history (different crate, different concern)
-- Blob storage can grow large; separate DB allows independent vacuum/pruning
-- Schema versioning is independent (PRAGMA user_version tracks separately)
-- Follows existing pattern: both DBs resolve to the same `.glass/` directory via the same ancestor-walk logic
-
-**Content deduplication:** Files with identical BLAKE3 hashes share a single blob on disk. Before writing, check if blob exists. During pruning, delete blobs with zero remaining references.
-
-**Why BLAKE3 over SHA-256:** BLAKE3 is 5-10x faster on modern hardware, has a clean single-crate Rust implementation (`blake3` 1.6+), and provides more than sufficient collision resistance for local file deduplication (this is not cryptographic authentication).
-
-**Key struct:**
-```rust
-pub struct SnapshotStore {
-    conn: rusqlite::Connection,
-    blob_dir: PathBuf,
-}
-
-impl SnapshotStore {
-    pub fn open(glass_dir: &Path) -> Result<Self>;
-    pub fn create_snapshot(&self, command_id: i64, cwd: &str) -> Result<i64>;
-    pub fn store_file(&self, snapshot_id: i64, path: &Path, source: &str) -> Result<()>;
-    pub fn record_change(&self, snapshot_id: i64, path: &Path, change_type: &str) -> Result<()>;
-    pub fn get_snapshot_files(&self, snapshot_id: i64) -> Result<Vec<SnapshotFile>>;
-    pub fn get_changes(&self, snapshot_id: i64) -> Result<Vec<FsChange>>;
-    pub fn find_by_command(&self, command_id: i64) -> Result<Option<i64>>;
-    pub fn restore_snapshot(&self, snapshot_id: i64) -> Result<RestoreReport>;
-    pub fn prune(&self, max_age_days: u32, max_size_bytes: u64) -> Result<u64>;
-    pub fn total_blob_size(&self) -> Result<u64>;
-}
-```
-
-### 2. glass_snapshot::CommandParser
-
-Heuristic parser that extracts file/directory targets from command text. NOT a full shell parser -- handles common cases and is honest about limitations.
+This lives in `glass_history` because pipe stage data is command metadata. Migration follows the existing `PRAGMA user_version` pattern:
 
 ```rust
-pub struct ParseResult {
-    pub targets: Vec<PathBuf>,
-    pub confidence: Confidence,
-    pub watch_cwd: bool,
-}
-
-pub enum Confidence {
-    High,      // Known destructive command with clear targets (rm, mv, sed -i)
-    Low,       // Unknown command or ambiguous targets
-    ReadOnly,  // Command is read-only (ls, cat, grep) -- skip snapshot
-}
-
-pub fn parse_command(command_text: &str, cwd: &Path) -> ParseResult;
-```
-
-**Known command patterns:**
-
-| Pattern | Confidence | Targets | watch_cwd |
-|---------|-----------|---------|-----------|
-| `rm file1 file2` | High | file1, file2 | false |
-| `mv src dst` | High | src | false |
-| `cp src dst` | High | dst (overwrite) | false |
-| `sed -i 's/a/b/' file` | High | file | false |
-| `chmod 755 file` | High | file | false |
-| `echo text > file` | High | file (redirect target) | false |
-| `cargo build` | Low | none | true |
-| `npm install` | Low | none | true |
-| `make` | Low | none | true |
-| `./script.sh` | Low | none | true |
-| Unknown command | Low | none | true |
-| `ls`, `cat`, `grep`, `git log` | ReadOnly | none | false |
-
-**Path resolution:** All relative paths are resolved against `cwd`. Glob patterns (e.g., `rm *.txt`) are expanded via `std::fs::read_dir` + pattern matching. Quoted arguments are unquoted. Flag arguments (starting with `-`) are skipped except for recognized flag-value pairs (e.g., `sed -i`).
-
-**Why heuristic, not full parser:** Shell syntax is impossible to parse fully without executing it (aliases, variable expansion, subshells, command substitution). A heuristic parser covers ~80% of real-world destructive commands. The FS watcher catches the remaining ~20%. The UI honestly communicates limitations.
-
-### 3. glass_snapshot::FsWatcher
-
-Wraps the `notify` crate (v8.2) for command-scoped filesystem monitoring.
-
-**Platform backends (via notify::RecommendedWatcher):**
-- Windows: ReadDirectoryChangesW
-- Linux: inotify
-- macOS: FSEvents
-
-```rust
-pub struct CommandWatcher {
-    watcher: Option<notify::RecommendedWatcher>,
-    changes: Arc<Mutex<Vec<FsChangeEvent>>>,
-    cwd: PathBuf,
-}
-
-impl CommandWatcher {
-    pub fn start(cwd: &Path, ignore_patterns: &[String]) -> Result<Self>;
-    pub fn stop(&mut self) -> Vec<FsChangeEvent>;
-}
-
-pub struct FsChangeEvent {
-    pub path: PathBuf,
-    pub kind: ChangeKind,
-    pub timestamp: i64,
-}
-
-pub enum ChangeKind {
-    Create,
-    Modify,
-    Delete,
-    Rename { from: Option<PathBuf> },
+if version < 2 {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pipe_stages (...);
+         CREATE INDEX IF NOT EXISTS idx_pipe_stages_command ON pipe_stages(command_id);"
+    )?;
+    conn.pragma_update(None, "user_version", 2)?;
 }
 ```
 
-**Lifecycle:**
-1. `CommandExecuted` -> `CommandWatcher::start(cwd)` with recursive watching
-2. notify's internal thread collects events into `Arc<Mutex<Vec<FsChangeEvent>>>`
-3. `CommandFinished` -> `CommandWatcher::stop()` drains and returns all events
-4. Events are filtered, deduplicated, and recorded in SnapshotStore
-
-**Noise filtering (default ignore list):**
-- `.git/` internals (index, objects, refs -- but NOT `.gitignore`)
-- `target/` (Rust build directory)
-- `node_modules/`
-- `*.tmp`, `*.swp`, `*.lock` (editor swap/lock files)
-- `.glass/` directory itself
-- Configurable via `[snapshot] ignore_dirs` in config.toml
-
-**Threading model:** The `notify` crate spawns its own internal OS thread for the platform backend. Events are pushed into an `Arc<Mutex<Vec>>`. The main thread drains this on `CommandFinished`. This is simple and avoids async coordination. The Mutex contention is negligible because the main thread only accesses it once (at stop time), while notify's thread appends events.
-
-### 4. glass_snapshot::UndoEngine
-
-Orchestrates file restoration with conflict detection.
-
-```rust
-pub struct RestoreReport {
-    pub restored: Vec<PathBuf>,
-    pub created_removed: Vec<PathBuf>,  // files created by command, now deleted
-    pub skipped: Vec<(PathBuf, SkipReason)>,
-    pub errors: Vec<(PathBuf, String)>,
-}
-
-pub enum SkipReason {
-    ModifiedAfterCommand,  // file changed by a later command
-    NoSnapshotData,        // watcher detected change but no pre-state
-    PermissionDenied,
-}
-
-impl UndoEngine {
-    /// Undo the most recent undoable command for the current CWD.
-    pub fn undo_latest(store: &SnapshotStore, cwd: &str) -> Result<Option<RestoreReport>>;
-
-    /// Undo a specific command by its command_id.
-    pub fn undo_command(store: &SnapshotStore, command_id: i64) -> Result<RestoreReport>;
-}
-```
-
-**Restore strategy:**
-1. Look up snapshot by command_id
-2. For each `snapshot_file` with `blob_hash IS NOT NULL`: copy blob -> original path
-3. For each `snapshot_file` with `blob_hash IS NULL`: the file did not exist before, so delete the current file if it exists
-4. For each `fs_change` of type 'create' NOT covered by snapshot_files: delete (file was created by command)
-5. Report results
-
-**Conflict detection:** Before restoring, compare the current file state against what we expect. If a file was modified by a SUBSEQUENT command (checked via `SELECT ... FROM snapshots WHERE command_id > ? AND snapshot_id IN (SELECT snapshot_id FROM snapshot_files WHERE file_path = ?)`), skip it and report `ModifiedAfterCommand`.
+**Why not CASCADE delete:** The `commands` table doesn't enforce foreign keys on `pipe_stages` because existing code deletes commands without knowing about pipe_stages. Instead, retention pruning in `glass_history` adds cleanup: `DELETE FROM pipe_stages WHERE command_id NOT IN (SELECT id FROM commands)`.
 
 ---
 
-## Modifications to Existing Components
+### Renderer Changes
 
-### glass_core::event -- New AppEvent Variant
+The `BlockRenderer` currently produces separator lines, exit code badges, duration labels, and `[undo]` labels. For pipeline blocks:
 
-```rust
-pub enum AppEvent {
-    // ... existing variants unchanged ...
-
-    /// Result of an undo operation, for UI feedback.
-    UndoComplete {
-        window_id: WindowId,
-        command_text: String,
-        restored_count: usize,
-        error_count: usize,
-    },
-}
+**Collapsed state (default):**
+```
+ ls -la | grep foo | wc -l                    [3 stages] 1.2s  OK
 ```
 
-**Why only UndoComplete, not more:** The snapshot lifecycle (create, store files, record changes) runs synchronously on the main thread during `user_event` handling. No new AppEvent is needed for those -- they piggyback on existing `Shell { CommandExecuted }` and `Shell { CommandFinished }` handling. Only the undo result needs a separate event because it triggers UI feedback (status bar message or toast).
+**Expanded state:**
+```
+ ls -la | grep foo | wc -l                    [3 stages] 1.2s  OK
+ +-- Stage 1: ls -la ------------------------------------------+
+ | total 48                                                     |
+ | drwxr-xr-x  5 user user  4096 Mar  5 10:00 .               |
+ | -rw-r--r--  1 user user  1234 Mar  5 09:00 foo.txt          |
+ +-- Stage 2: grep foo ----------------------------------------+
+ | -rw-r--r--  1 user user  1234 Mar  5 09:00 foo.txt          |
+ +--------------------------------------------------------------+
+ 1                                                    (final output)
+```
 
-**Alternative considered:** Adding a `CommandText` event to carry command text from `CommandExecuted`. Rejected because command text extraction already works in the existing `CommandFinished` handler by reading the terminal grid. The same grid-reading technique works at `CommandExecuted` time -- the command text is still visible in the grid because the prompt line has not scrolled away yet.
-
-### glass_core::config -- SnapshotSection
+**Implementation changes to `Block`:**
 
 ```rust
-#[derive(Debug, Clone, Deserialize)]
-pub struct GlassConfig {
+pub struct Block {
     // ... existing fields ...
-    pub snapshot: Option<SnapshotSection>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SnapshotSection {
-    #[serde(default = "default_true")]
-    pub enabled: bool,                    // default: true
-    #[serde(default = "default_500")]
-    pub max_storage_mb: u32,              // default: 500
-    #[serde(default = "default_7")]
-    pub max_age_days: u32,                // default: 7
-    #[serde(default = "default_ignore")]
-    pub ignore_dirs: Vec<String>,         // default: [".git", "target", "node_modules"]
+    /// Pipeline stages with captured intermediate output.
+    pub pipeline_stages: Vec<PipeStage>,
+    /// Whether the pipeline view is expanded in the UI.
+    pub pipeline_expanded: bool,
 }
 ```
 
-### main.rs -- WindowContext Extensions
+**Rendering approach:**
+- `[N stages]` is a `BlockLabel` positioned left of `[undo]` / duration
+- Expanded view uses additional `RectInstance` rows for stage backgrounds (slightly different shade)
+- Stage headers and output are rendered as `BlockLabel` text
+- Stage output is limited to a configurable max lines (default 10 per stage, scrollable)
+- The expanded area does NOT use the terminal grid -- it's a separate rendering layer drawn by `BlockRenderer`, using the same `glyphon` text rendering as other block labels
 
-```rust
-struct WindowContext {
-    // ... existing fields ...
-
-    /// Snapshot store for this window.
-    snapshot_store: Option<SnapshotStore>,
-    /// Active filesystem watcher during command execution. None when no command running.
-    active_watcher: Option<CommandWatcher>,
-    /// Snapshot ID being populated during current command execution.
-    active_snapshot_id: Option<i64>,
-}
-```
-
-### main.rs -- Event Flow Changes
-
-**On `Shell { CommandExecuted }`** (additions to existing handler):
-
-```rust
-ShellEvent::CommandExecuted => {
-    // EXISTING: block_manager.handle_event(), command_started_wall = now()
-
-    // NEW: Extract command text NOW (before command runs)
-    let command_text = extract_command_text_from_grid(&ctx.term, &ctx.block_manager);
-
-    // NEW: Parse command for file targets
-    let cwd = ctx.status.cwd().to_string();
-    let parse_result = glass_snapshot::CommandParser::parse_command(&command_text, &cwd);
-
-    if parse_result.confidence != Confidence::ReadOnly {
-        if let Some(ref store) = ctx.snapshot_store {
-            // Create snapshot record
-            let snap_id = store.create_snapshot(0, &cwd); // command_id=0, updated later
-            ctx.active_snapshot_id = snap_id.ok();
-
-            // Pre-exec snapshot of parser-identified targets
-            for target in &parse_result.targets {
-                let _ = store.store_file(snap_id, target, "parser");
-            }
-
-            // Start FS watcher if needed
-            if parse_result.watch_cwd {
-                let ignore = config.snapshot.ignore_dirs.clone();
-                ctx.active_watcher = CommandWatcher::start(&cwd, &ignore).ok();
-            }
-        }
-    }
-}
-```
-
-**On `Shell { CommandFinished }`** (additions to existing handler):
-
-```rust
-ShellEvent::CommandFinished { exit_code } => {
-    // EXISTING: extract command text, insert HistoryDb record
-
-    // NEW: Stop watcher and record changes
-    if let Some(mut watcher) = ctx.active_watcher.take() {
-        let changes = watcher.stop();
-        if let (Some(ref store), Some(snap_id)) = (&ctx.snapshot_store, ctx.active_snapshot_id) {
-            for change in &changes {
-                let _ = store.record_change(snap_id, &change.path, &change.kind.as_str());
-            }
-            // Update snapshot's command_id now that we have it
-            if let Some(cmd_id) = ctx.last_command_id {
-                let _ = store.update_command_id(snap_id, cmd_id);
-            }
-        }
-    }
-    ctx.active_snapshot_id = None;
-}
-```
-
-**Ctrl+Shift+Z keybinding** (addition to existing keyboard handler):
-
-```rust
-// In the Ctrl+Shift section of KeyboardInput handler:
-Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
-    if let Some(ref store) = ctx.snapshot_store {
-        let cwd = ctx.status.cwd().to_string();
-        match glass_snapshot::UndoEngine::undo_latest(store, &cwd) {
-            Ok(Some(report)) => {
-                // Show result in status bar or toast
-                tracing::info!("Undo: restored {} files, {} errors",
-                    report.restored.len(), report.errors.len());
-            }
-            Ok(None) => {
-                tracing::info!("Nothing to undo");
-            }
-            Err(e) => {
-                tracing::warn!("Undo failed: {}", e);
-            }
-        }
-        ctx.window.request_redraw();
-    }
-    return;
-}
-```
-
-### glass_renderer -- [undo] Label on Blocks
-
-Extend `BlockRenderer::build_block_text` to render an "[undo]" label on blocks that have associated snapshots.
-
-```rust
-pub fn build_block_text(
-    &self,
-    blocks: &[&Block],
-    display_offset: usize,
-    screen_lines: usize,
-    viewport_width: f32,
-    undoable_epochs: &HashSet<i64>,  // NEW: started_epoch values with snapshots
-) -> Vec<BlockLabel>
-```
-
-The `undoable_epochs` set is populated by querying the snapshot store for all command_ids that have snapshots, then mapping those to block `started_epoch` values. This query runs once per frame only when blocks are visible (cheap: `SELECT DISTINCT command_id FROM snapshots`).
-
-### glass_mcp -- New Tools
-
-```rust
-#[tool(description = "Undo filesystem changes made by a specific command.")]
-async fn glass_undo(&self, params: UndoParams) -> Result<CallToolResult, McpError>;
-
-#[tool(description = "Show what files were changed by a specific command.")]
-async fn glass_file_diff(&self, params: FileDiffParams) -> Result<CallToolResult, McpError>;
-```
-
-The MCP server opens a read-only connection to snapshots.db alongside the existing read-only connection to history.db. GlassUndo calls UndoEngine directly. GlassFileDiff queries fs_changes + snapshot_files.
+**Interaction:**
+- Click `[N stages]` label or press a keybinding to toggle `pipeline_expanded`
+- `auto_expand` config option (default false) expands all pipeline blocks automatically
 
 ---
 
-## Complete Data Flow: Snapshot Lifecycle
-
-```
-User types "rm important.txt" + Enter
-    |
-    +-- Shell emits OSC 133;C (command about to execute)
-    |
-    v
-PTY Reader Thread:
-    OscScanner detects CommandExecuted
-    -> AppEvent::Shell { event: CommandExecuted, line: N }
-    |
-    v
-Main Thread (Processor::user_event):
-    1. block_manager.handle_event()              [EXISTING]
-    2. command_started_wall = now()               [EXISTING]
-    3. Extract "rm important.txt" from grid       [NEW - moved earlier]
-    4. CommandParser::parse_command("rm important.txt", cwd)
-       -> ParseResult { targets: [cwd/important.txt], confidence: High, watch_cwd: false }
-    5. SnapshotStore::create_snapshot(command_id=0, cwd)
-       -> snapshot_id = 42
-    6. SnapshotStore::store_file(42, "important.txt", "parser")
-       -> reads file content, BLAKE3 hash, writes to blobs/ab/ab3f...blob
-       -> inserts snapshot_files row
-    7. active_snapshot_id = Some(42)
-    |
-    ... rm executes, file is deleted ...
-    |
-    +-- Shell emits OSC 133;D;0 (command finished, exit 0)
-    |
-    v
-PTY Reader Thread:
-    OscScanner detects CommandFinished
-    -> AppEvent::Shell { event: CommandFinished{exit_code: Some(0)}, line: M }
-    |
-    v
-Main Thread (Processor::user_event):
-    8. block_manager.handle_event()               [EXISTING]
-    9. HistoryDb::insert_command() -> cmd_id=99   [EXISTING]
-    10. store.update_command_id(42, 99)            [NEW]
-    11. active_snapshot_id = None                  [NEW]
-    |
-    ... user realizes mistake, presses Ctrl+Shift+Z ...
-    |
-    v
-Main Thread (Processor::window_event):
-    12. UndoEngine::undo_latest(store, cwd)
-    13. find_by_command(99) -> snapshot_id=42
-    14. get_snapshot_files(42) -> [{path: "important.txt", hash: "ab3f...", source: "parser"}]
-    15. Read blob from blobs/ab/ab3f...blob
-    16. Write content back to cwd/important.txt
-    17. RestoreReport { restored: ["important.txt"], skipped: [], errors: [] }
-    18. Display: "Restored 1 file"
-```
-
----
-
-## Crate Dependency Graph (After v1.2)
+### Crate Dependency Graph (After v1.3)
 
 ```
 glass_core (events, config, error)
     ^           ^           ^
     |           |           |
-glass_terminal  |     glass_snapshot [NEW]
-    ^           |       ^       ^
-    |           |       |       |
-glass_renderer  |       |   glass_mcp
-    ^           |       |       ^
-    |           |       |       |
-    +-----+-----+------+-------+
+glass_terminal  |     glass_snapshot (unchanged)
+    ^           |           ^
+    |           |           |
+glass_renderer  |     glass_mcp
+    ^           |           ^
+    |           |           |
+    +-----+-----+----------+
           |
        root binary (Processor coordinates everything)
           |
-     glass_history
+     +----+----+
+     |         |
+glass_history  glass_pipes [FILLED]
 ```
 
-**Critical dependency rule:** glass_snapshot does NOT depend on glass_history or glass_terminal. The command_id is just an `i64`. The root binary is the sole coordinator, following the exact same pattern as v1.1 where the root binary coordinates glass_history and glass_terminal without either depending on the other.
+**Key dependency rules:**
+- `glass_pipes` depends on NOTHING (pure logic crate: strings in, data types out)
+- `glass_pipes` does NOT depend on `glass_core` -- it defines its own `PipeStage` type
+- The root binary imports `glass_pipes` for parsing, bridges data to other crates
+- `glass_terminal` does NOT import `glass_pipes` -- OscScanner handles raw OSC bytes; conversion to `PipeStage` happens in the root binary
 
-**New dependency for glass_snapshot:**
+**glass_pipes Cargo.toml:**
 ```toml
+[package]
+name = "glass_pipes"
+version = "0.1.0"
+edition = "2021"
+
 [dependencies]
-rusqlite = { workspace = true }
-blake3 = "1.6"
-notify = "8.2"
-anyhow = { workspace = true }
-tracing = { workspace = true }
-dirs = { workspace = true }
+# None -- pure logic crate
+
+[dev-dependencies]
+# Test-only dependencies if needed
 ```
+
+---
+
+### Integration Points with Existing Code (Explicit)
+
+| Existing Code | Change Required | Risk |
+|--------------|----------------|------|
+| `command_parser.rs` (glass_snapshot) | **None.** Still returns `Confidence::Low` for piped commands. Correct -- undo shouldn't try to parse pipes. | None |
+| `output_capture.rs` (glass_terminal) | **None.** OutputBuffer captures FINAL output unchanged. Pipe stage data arrives via separate OSC sequences. | None |
+| `osc_scanner.rs` (glass_terminal) | **Add** `S` and `P` markers to `parse_osc133`. Small additive change. | Low |
+| `event.rs` (glass_core) | **Add** `ShellEvent::PipelineStart` and `ShellEvent::PipeStageOutput`. Follows existing pattern. | Low |
+| `block_manager.rs` (glass_terminal) | **Add** `pipeline_stages` and `pipeline_expanded` fields to `Block`. | Low |
+| `db.rs` (glass_history) | **Add** `pipe_stages` table, schema migration v1->v2, insert/query methods. | Low |
+| `main.rs` event handler | **Add** handling for PipelineStart and PipeStageOutput in Shell match arm. Buffer stages, flush on CommandFinished. | Medium |
+| `block_renderer.rs` (glass_renderer) | **Extend** `build_block_text` and `build_block_rects` for pipeline UI. Most complex change. | Medium |
+| `tools.rs` (glass_mcp) | **Add** `glass_pipe_inspect` tool. Follows existing pattern exactly. | Low |
+| `config.rs` (glass_core) | **Add** `PipesSection` to `GlassConfig`. Follows `SnapshotSection` pattern. | Low |
+| `shell-integration/glass.bash` | **Add** pipe rewriting via DEBUG trap (opt-in), stage reporting in PROMPT_COMMAND. | High |
+| `shell-integration/glass.ps1` | **Modify** Enter handler for tee insertion, add stage reporting to prompt. | Medium |
 
 ---
 
 ## Patterns to Follow
 
-### Pattern 1: Event-Driven Coordination (Matches Existing Architecture)
+### Pattern 1: Raw Bytes via AppEvent (Boundary Preservation)
 
-All inter-component communication goes through the `AppEvent` channel via `EventLoopProxy`, exactly like existing Shell, GitInfo, and CommandOutput events. The snapshot lifecycle piggybacks on existing `Shell { CommandExecuted }` and `Shell { CommandFinished }` events -- no new channel infrastructure needed.
-
-### Pattern 2: Non-Fatal Degradation
-
-Snapshot failures (disk full, permission denied, watcher failure) log warnings and continue. The terminal must remain usable when snapshotting fails. This matches the existing pattern where `history_db` failure logs a warning and sets the field to `None`.
+**What:** Send raw data through AppEvent to avoid crate dependency cycles.
+**When:** Pipe stage data flowing from PTY reader to main thread.
+**Why:** Established in v1.1. glass_terminal must not depend on glass_history or glass_pipes.
 
 ```rust
-// Same pattern as existing history_db initialization:
-let snapshot_store = match SnapshotStore::open(&glass_dir) {
-    Ok(store) => {
-        tracing::info!("Snapshot store opened");
-        Some(store)
-    }
-    Err(e) => {
-        tracing::warn!("Failed to open snapshot store: {} -- undo disabled", e);
-        None
-    }
-};
+// In glass_core/event.rs -- new ShellEvent variants
+ShellEvent::PipelineStart { stage_count: usize, original_command_b64: String },
+ShellEvent::PipeStageOutput { index: usize, data_b64: String },
 ```
 
-### Pattern 3: Blocking I/O on Main Thread (For Small Operations)
+### Pattern 2: Schema Migration via PRAGMA user_version
 
-Pre-exec snapshots (typically 1-10 files, <1MB each) run synchronously on the main thread during `CommandExecuted` handling. The time between OSC 133;C and actual command execution is essentially zero -- the shell has already started running the command by the time the event reaches the main thread. Snapshotting a few files (read + hash + write blob) takes <10ms. This matches the existing pattern where `HistoryDb::insert_command()` runs synchronously on the main thread.
+**What:** Bump `user_version` from 1 to 2, add pipe_stages table.
+**When:** Adding pipe stage storage.
+**Example:** Exactly follows the v0->v1 migration in `db.rs`.
 
-**Exception rule:** If the parser identifies >20 targets or any file >10MB, log a warning and skip those files. The FS watcher still records what changed.
+### Pattern 3: Config Section with Serde Defaults
 
-### Pattern 4: Separate DB, Same Directory
+**What:** New `[pipes]` section with all fields having defaults.
+**When:** Adding pipe visualization configuration.
 
-snapshots.db lives alongside history.db in `.glass/`, with independent schemas and PRAGMA user_version. Both resolve to the same directory via the existing `resolve_db_path` ancestor-walk logic (reuse or clone the function in glass_snapshot).
+```rust
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipesSection {
+    #[serde(default = "default_true")]
+    pub enabled: bool,                    // default: true
+    #[serde(default = "default_50")]
+    pub max_stage_capture_kb: u32,        // default: 50
+    #[serde(default = "default_false")]
+    pub auto_expand: bool,                // default: false
+    #[serde(default = "default_true")]
+    pub tee_rewrite: bool,               // default: true (PS), false (bash initially)
+}
+```
 
-### Pattern 5: Resolve DB Path Consistently
+### Pattern 4: MCP Tool with spawn_blocking
 
-glass_snapshot needs the same `.glass/` directory resolution as glass_history. Rather than creating a dependency, duplicate the 15-line `resolve_db_path` function (or extract it to glass_core if cleaner). The function walks up from CWD looking for `.glass/`, falling back to `~/.glass/`.
+**What:** New `glass_pipe_inspect` follows existing tool structure exactly.
+**When:** Adding pipe inspection for AI assistants.
+**Example:** Same structure as `glass_file_diff` -- open DB in spawn_blocking, query, return JSON.
+
+### Pattern 5: Non-Fatal Degradation
+
+**What:** Pipe capture failures log warnings and continue. Terminal remains usable.
+**When:** Tee rewriting fails, temp files can't be created, OSC parsing fails.
+**Example:** Same pattern as snapshot_store and history_db initialization.
 
 ---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Snapshotting Inside the PTY Reader Thread
+### Anti-Pattern 1: Modifying the PTY Byte Stream
 
-**What:** Running file I/O (reads, hashes, blob writes) on the PTY reader thread.
-**Why bad:** The PTY reader thread is the most latency-critical code path. Any blocking I/O adds input lag. The existing architecture keeps this thread minimal: read bytes, scan OSC, feed VTE parser.
-**Instead:** Send events to the main thread; do snapshot I/O there.
+**What:** Intercepting PTY writes to inject tee into commands at the terminal level.
+**Why bad:** The PTY write path is a thin `write_list` queue of raw bytes. Commands arrive as keystroke-by-keystroke bytes, not as complete strings. Rewriting at this layer would require maintaining a stateful command parser that tracks readline editing, multi-line commands, escape sequences, and command boundaries. This is fundamentally impossible without reimplementing a shell parser.
+**Instead:** Shell integration scripts rewrite commands at the shell level, where the command text is known and complete.
 
-### Anti-Pattern 2: glass_snapshot Depending on glass_history
+### Anti-Pattern 2: glass_pipes Depending on glass_terminal
 
-**What:** Importing `HistoryDb` or `CommandRecord` from glass_history into glass_snapshot.
-**Why bad:** Creates coupling between unrelated concerns. The command_id is just an i64 -- no need to import the entire history module.
-**Instead:** glass_snapshot takes `command_id: i64` as a parameter. The root binary coordinates both crates.
+**What:** Importing terminal types into the pipe parsing crate.
+**Why bad:** Creates dependency cycle risk and conflates parsing logic with terminal state.
+**Instead:** `glass_pipes` is pure logic -- takes strings, returns strings and data structs.
 
-### Anti-Pattern 3: Full Shell Parsing
+### Anti-Pattern 3: Storing Stage Output in the commands Table
 
-**What:** Building or importing a complete POSIX/PowerShell parser.
-**Why bad:** Shell syntax is context-dependent (aliases, functions, variable expansion, command substitution). No parser handles `eval $(generate_commands)`. Enormous complexity for diminishing returns.
-**Instead:** Heuristic parser for known commands + FS watcher as safety net. Honest UI about limitations.
+**What:** Adding pipe stage data as a JSON blob in the existing `output` column.
+**Why bad:** Breaks the single-output-per-command model. Makes queries complex. Violates schema normalization.
+**Instead:** Separate `pipe_stages` table with `command_id` foreign key.
 
-### Anti-Pattern 4: Watching Entire Home Directory
+### Anti-Pattern 4: Always-On Tee Insertion Without TTY Detection
 
-**What:** Recursive FS watching on `~` or `/`.
-**Why bad:** Thousands of irrelevant events, exhausts inotify watches (Linux default 8192), wastes CPU.
-**Instead:** Watch only the command's CWD recursively. Most commands operate within CWD.
+**What:** Rewriting every piped command with tee, regardless of what commands are in the pipeline.
+**Why bad:** TTY-sensitive commands (vim, less, fzf) break when their stdin/stdout is redirected through tee. `less` loses its ability to detect terminal height. `fzf` loses interactive selection.
+**Instead:** Check each pipeline stage against TTY blocklist. If ANY stage is TTY-sensitive, skip rewriting for the entire pipeline.
 
-### Anti-Pattern 5: Storing File Contents as SQLite BLOBs
+### Anti-Pattern 5: Using Temp Files Without Session Scoping
 
-**What:** Putting file binary data directly in the SQLite database.
-**Why bad:** SQLite performance degrades with large BLOBs. Vacuum becomes expensive. DB file grows unbounded.
-**Instead:** Content-addressed blob files on the filesystem, hash stored in SQLite. Enables filesystem-level dedup and efficient pruning.
+**What:** Writing captured stage output to fixed-name temp files like `/tmp/glass-pipe-0`.
+**Why bad:** Multiple Glass sessions would overwrite each other's capture files.
+**Instead:** Use `$$` (PID) scoping: `/tmp/glass-pipe-$$/0`. Clean up in PROMPT_COMMAND and via `trap EXIT`.
 
-### Anti-Pattern 6: Starting Watcher Before Snapshot
+### Anti-Pattern 6: Rendering Expanded Stages in the Terminal Grid
 
-**What:** Starting the FS watcher before taking the pre-exec snapshot.
-**Why bad:** Race condition -- if the command starts modifying files before the snapshot completes, you capture a partial/corrupted pre-state.
-**Instead:** Take pre-exec snapshot FIRST (synchronous, blocking), THEN start the watcher. The ordering matters.
-
----
-
-## Suggested Build Order
-
-### Phase 1: SnapshotStore Core (Foundation)
-
-- glass_snapshot: `SnapshotStore::open`, `create_snapshot`, `store_file`, `get_snapshot_files`, `restore_snapshot`
-- BLAKE3 hashing with 2-char directory sharding for blobs
-- Schema creation with PRAGMA user_version migration support
-- `resolve_snapshot_db_path` (same logic as glass_history's resolve_db_path)
-- Unit tests with tempdir
-
-**Why first:** Everything else depends on having a place to store and retrieve snapshots. Pure library code, zero integration dependencies.
-
-### Phase 2: CommandParser
-
-- `parse_command(text, cwd) -> ParseResult`
-- Pattern matching for destructive commands (rm, mv, sed -i, cp, chmod, redirect)
-- ReadOnly detection (ls, cat, grep, git status, pwd)
-- Path resolution (relative -> absolute using cwd)
-- Glob expansion for wildcard arguments
-- Comprehensive unit tests per command pattern
-
-**Why second:** No dependencies on other new code. Pure functions, fully testable in isolation.
-
-### Phase 3: FsWatcher
-
-- `CommandWatcher::start(cwd, ignore)` / `stop() -> Vec<FsChangeEvent>`
-- notify crate integration with RecommendedWatcher
-- Noise filtering (ignore patterns for .git, target, node_modules, etc.)
-- Deduplication of rapid modify events on the same path
-- Integration tests with actual filesystem modifications
-
-**Why third:** Depends on SnapshotStore for recording changes. Introduces the `notify` dependency.
-
-### Phase 4: Main Thread Integration + Undo Engine
-
-- Extend `Processor::user_event` for CommandExecuted (pre-exec snapshot + watcher start)
-- Extend `Processor::user_event` for CommandFinished (stop watcher + record changes)
-- Move command text extraction to CommandExecuted time
-- UndoEngine with conflict detection
-- Ctrl+Shift+Z keybinding in keyboard handler
-- Config extensions (SnapshotSection)
-- Add snapshot_store and active_watcher to WindowContext
-
-**Why fourth:** Requires Phases 1-3 to be complete. This is the integration phase where existing crate boundaries get extended.
-
-### Phase 5: UI + CLI + MCP + Pruning
-
-- [undo] label on command blocks (glass_renderer extension)
-- `glass undo <command-id>` CLI subcommand
-- GlassUndo and GlassFileDiff MCP tools in glass_mcp
-- Auto-pruning on startup (max_age_days, max_storage_mb)
-- Undo result feedback (status bar message)
-- `undoable_epochs` set for renderer
-
-**Why last:** All infrastructure must exist first. These are presentation and lifecycle management features built on top of the core engine.
+**What:** Inserting expanded pipe stage output into the VTE terminal grid as if the shell printed it.
+**Why bad:** Corrupts the terminal scrollback. Confuses cursor positioning. Breaks copy-paste of actual command output.
+**Instead:** Render expanded stages as block decorations in the renderer layer, overlay-style, separate from the terminal grid.
 
 ---
 
 ## Scalability Considerations
 
-| Concern | At 100 cmds/day | At 1K cmds/day | Mitigation |
-|---------|-----------------|----------------|------------|
-| Blob storage | ~50MB (small files) | ~500MB | Auto-prune by age (7d), size cap (500MB), content dedup |
-| SQLite metadata | Negligible | ~1MB | Prune alongside blobs |
-| Inotify watches (Linux) | ~100 | ~100 (1 watcher at a time) | Stop watcher on CommandFinished |
-| ReadDirectoryChangesW | Negligible | Negligible | Single recursive watch per command |
-| Pre-exec snapshot latency | <5ms (1-3 files) | <5ms | Only snapshot parser-identified targets |
-| Undo restore time | <50ms | <50ms | Direct blob-to-file copy |
-| Watcher event volume | ~10/cmd | ~10/cmd | Noise filtering, dedup |
+| Concern | Normal use | Heavy pipelines | Edge cases |
+|---------|-----------|----------------|------------|
+| Stage output size | 50KB total shared across stages | Configurable per-stage limit | Binary output detected + skipped (same as OutputBuffer) |
+| DB storage | <1KB per command with stages | Retention prunes with parent command | Orphan cleanup: `DELETE FROM pipe_stages WHERE command_id NOT IN (...)` |
+| Temp files (bash) | /tmp/glass-pipe-$$/ cleaned in PROMPT_COMMAND | $$-scoped prevents cross-session conflicts | Cleanup on shell exit via `trap EXIT` |
+| OSC payload size | <67KB base64 per stage | OscScanner split-buffer handling works (tested to arbitrary sizes) | Scanner buffer growth bounded by truncation at shell level |
+| UI rendering | Collapsed by default (single label, no extra GPU work) | Expanded shows max 10 lines per stage | Scrollable stage output for very long captures |
+| Pipeline depth | Typical: 2-4 stages | Extreme: 10+ stages | Cap at 20 stages; warn and skip rewriting beyond that |
+
+---
+
+## Build Order (Considering Existing Dependencies)
+
+### Phase 1: Core Data Types + Pipe Parsing (`glass_pipes`)
+- `PipeStage`, `PipelineInfo` data types
+- `PipeParser::parse(command_text) -> Option<PipelineInfo>` (split on unquoted `|`)
+- `TtyDetector::is_tty_sensitive(command_fragment) -> bool`
+- Zero dependencies, fully unit-testable
+- **Builds on:** Nothing (empty stub crate)
+- **Blocks:** Phases 3, 5
+
+### Phase 2: Shell Integration + OSC Protocol
+- Define OSC 133;S and 133;P protocol
+- Modify `glass.ps1` Enter handler with Tee-Object insertion
+- Modify `glass.ps1` prompt function with stage reporting
+- Modify `glass.bash` PROMPT_COMMAND with stage reporting
+- Bash tee rewriting as opt-in (DEBUG trap approach, disabled by default)
+- Manual testing across pwsh 7, PowerShell 5.1, bash 4.4+
+- **Builds on:** Protocol definition (no Rust code dependency)
+- **Blocks:** Phase 3
+
+### Phase 3: Terminal-Side Detection + Event Transport
+- Extend `OscScanner` with 133;S and 133;P parsing
+- Extend `OscEvent` / `ShellEvent` with pipeline variants
+- Extend `AppEvent` with new Shell event types
+- Extend `Block` with `pipeline_stages` and `pipeline_expanded` fields
+- Wire up in main.rs: buffer stages on PipelineStart/PipeStageOutput, flush on CommandFinished
+- Integrate pipe detection via `glass_pipes::PipeParser` in main.rs at CommandExecuted time
+- **Builds on:** Phase 1 (PipeParser), Phase 2 (OSC protocol)
+- **Blocks:** Phases 4, 5
+
+### Phase 4: Database Storage + Retention
+- Schema migration v1->v2 in `glass_history`
+- `PipeStageRecord` struct + insert/query methods
+- Orphan cleanup in retention pruning
+- Integration with main.rs CommandFinished handler (insert stages)
+- **Builds on:** Phase 3 (data types flowing through events)
+- **Blocks:** Phase 6
+
+### Phase 5: Pipeline UI Rendering
+- `[N stages]` label in `BlockRenderer::build_block_text`
+- Expanded multi-row view with stage headers and output preview
+- Expand/collapse toggle (click on label or keybinding)
+- Stage background rects in `build_block_rects`
+- `auto_expand` config support
+- **Builds on:** Phase 3 (Block.pipeline_stages populated)
+- **Blocks:** Nothing (can parallel with Phase 4/6)
+
+### Phase 6: MCP Tool + Config
+- `glass_pipe_inspect(command_id)` tool in glass_mcp
+- `[pipes]` config section in glass_core
+- Config gating for tee_rewrite, auto_expand, max_stage_capture_kb
+- **Builds on:** Phase 4 (DB queries), Phase 3 (config types)
+
+**Phase ordering rationale:**
+- Phase 1 has zero dependencies -- start here to unblock everything
+- Phase 2 is highest-risk (shell integration is fragile) -- tackle early so issues surface before dependent phases
+- Phase 3 is the integration backbone that connects shell output to Rust data structures
+- Phases 4 and 5 can run in parallel after Phase 3
+- Phase 6 is lowest risk, pure integration of existing patterns
 
 ---
 
 ## Sources
 
-- [notify crate v8.2](https://docs.rs/notify/8.2.0/notify/) -- Cross-platform FS notification. Uses ReadDirectoryChangesW (Windows), inotify (Linux), FSEvents (macOS). HIGH confidence.
-- [notify-rs/notify GitHub](https://github.com/notify-rs/notify) -- Official repository, confirms platform backends and API stability. HIGH confidence.
-- [BLAKE3 crate](https://crates.io/crates/blake3) -- Fast cryptographic hash, pure Rust, v1.6+. HIGH confidence.
-- [Content-Addressed Storage patterns](https://lab.abilian.com/Tech/Databases%20&%20Persistence/Content%20Addressable%20Storage%20(CAS)/) -- CAS design principles. MEDIUM confidence.
-- Glass v1.1 source code -- Direct analysis of all 9 crates (8,473 LOC). HIGH confidence.
-- [ReadDirectoryChangesW Windows API](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Storage/FileSystem/fn.ReadDirectoryChangesW.html) -- Windows FS monitoring API. HIGH confidence.
+- Direct codebase analysis of all 10 Glass crates, 12,214 LOC (PRIMARY, HIGH confidence)
+- [Windows ConPTY documentation](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/) -- ConPTY pipe architecture
+- [Creating a Pseudoconsole session](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session) -- ConPTY threading model
+- [GNU Bash Process Substitution](https://www.gnu.org/software/bash/manual/html_node/Process-Substitution.html) -- Process substitution mechanics
+- [PowerShell Tee-Object](https://adamtheautomator.com/tee-object/) -- Tee-Object for intermediate pipeline capture
+- [tee command in Linux](https://www.geeksforgeeks.org/linux-unix/tee-command-linux-example/) -- tee usage in pipelines
+- [ForEach-Object documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/foreach-object?view=powershell-7.5) -- PowerShell pipeline mechanics
 
 ---
 
-*Architecture research for: Glass v1.2 Command-Level Undo*
+*Architecture research for: Glass v1.3 Pipe Visualization*
 *Researched: 2026-03-05*
