@@ -381,6 +381,7 @@ fn pty_read_with_scan(
             let shell_event = convert_osc_to_shell(osc_event.clone());
             let _ = app_proxy.send_event(AppEvent::Shell {
                 window_id,
+                session_id: event_proxy.session_id(),
                 event: shell_event,
                 line,
             });
@@ -402,6 +403,7 @@ fn pty_read_with_scan(
                         if !raw_bytes.is_empty() {
                             let _ = app_proxy.send_event(AppEvent::CommandOutput {
                                 window_id,
+                                session_id: event_proxy.session_id(),
                                 raw_output: raw_bytes,
                             });
                         }

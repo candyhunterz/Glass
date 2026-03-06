@@ -1,5 +1,5 @@
 use alacritty_terminal::event::EventListener;
-use glass_core::event::AppEvent;
+use glass_core::event::{AppEvent, SessionId};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
@@ -13,11 +13,17 @@ use winit::window::WindowId;
 pub struct EventProxy {
     proxy: EventLoopProxy<AppEvent>,
     window_id: WindowId,
+    session_id: SessionId,
 }
 
 impl EventProxy {
-    pub fn new(proxy: EventLoopProxy<AppEvent>, window_id: WindowId) -> Self {
-        Self { proxy, window_id }
+    pub fn new(proxy: EventLoopProxy<AppEvent>, window_id: WindowId, session_id: SessionId) -> Self {
+        Self { proxy, window_id, session_id }
+    }
+
+    /// Returns the session ID this proxy routes events for.
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
     }
 }
 
@@ -31,14 +37,17 @@ impl EventListener for EventProxy {
                     .send_event(AppEvent::TerminalDirty { window_id: self.window_id });
             }
             Event::Title(title) => {
-                let _ = self
-                    .proxy
-                    .send_event(AppEvent::SetTitle { window_id: self.window_id, title });
+                let _ = self.proxy.send_event(AppEvent::SetTitle {
+                    window_id: self.window_id,
+                    session_id: self.session_id,
+                    title,
+                });
             }
             Event::Exit | Event::ChildExit(_) => {
-                let _ = self
-                    .proxy
-                    .send_event(AppEvent::TerminalExit { window_id: self.window_id });
+                let _ = self.proxy.send_event(AppEvent::TerminalExit {
+                    window_id: self.window_id,
+                    session_id: self.session_id,
+                });
             }
             _ => {}
         }

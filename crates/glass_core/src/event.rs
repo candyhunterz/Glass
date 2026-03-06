@@ -1,3 +1,23 @@
+/// Unique identifier for a terminal session within a SessionMux.
+/// Wraps a u64 counter. Used to route PTY events to the correct session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(u64);
+
+impl SessionId {
+    pub fn new(id: u64) -> Self {
+        Self(id)
+    }
+    pub fn val(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "session-{}", self.0)
+    }
+}
+
 /// Events produced by shell integration OSC sequences.
 ///
 /// Mirrors `OscEvent` from glass_terminal but lives in glass_core
@@ -35,23 +55,39 @@ pub struct GitStatus {
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    /// Any terminal output received -- triggers redraw. NO session_id because
+    /// any dirty terminal triggers a full redraw regardless of which session.
     TerminalDirty { window_id: winit::window::WindowId },
-    SetTitle { window_id: winit::window::WindowId, title: String },
-    TerminalExit { window_id: winit::window::WindowId },
+    SetTitle { window_id: winit::window::WindowId, session_id: SessionId, title: String },
+    TerminalExit { window_id: winit::window::WindowId, session_id: SessionId },
     /// Shell integration event from the PTY reader thread's OscScanner.
-    Shell { window_id: winit::window::WindowId, event: ShellEvent, line: usize },
+    Shell { window_id: winit::window::WindowId, session_id: SessionId, event: ShellEvent, line: usize },
     /// Git status result from a background query thread.
-    GitInfo { window_id: winit::window::WindowId, info: Option<GitStatus> },
+    GitInfo { window_id: winit::window::WindowId, session_id: SessionId, info: Option<GitStatus> },
     /// Captured command output from the PTY reader thread.
     /// Contains raw bytes accumulated between CommandExecuted and CommandFinished.
     /// Processing (ANSI stripping, binary detection, truncation) happens on the
     /// main thread to avoid glass_terminal depending on glass_history.
-    CommandOutput { window_id: winit::window::WindowId, raw_output: Vec<u8> },
+    CommandOutput { window_id: winit::window::WindowId, session_id: SessionId, raw_output: Vec<u8> },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_id_display() {
+        let sid = SessionId::new(42);
+        assert_eq!(sid.val(), 42);
+        assert_eq!(format!("{}", sid), "session-42");
+    }
+
+    #[test]
+    fn session_id_copy_eq() {
+        let a = SessionId::new(1);
+        let b = a; // Copy
+        assert_eq!(a, b);
+    }
 
     #[test]
     fn shell_event_pipeline_start_variant() {

@@ -12,7 +12,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
-use glass_core::event::{AppEvent, GitStatus, ShellEvent};
+use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
 use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
 use crate::search_overlay::SearchOverlay;
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
@@ -244,7 +244,9 @@ impl ApplicationHandler<AppEvent> for Processor {
         );
 
         // Create EventProxy using the pre-created proxy (EventLoopProxy is Clone)
-        let event_proxy = EventProxy::new(self.proxy.clone(), window.id());
+        // SessionId::new(0) is a placeholder -- Plan 03 will wire the real
+        // SessionId from SessionMux when multi-session support is added.
+        let event_proxy = EventProxy::new(self.proxy.clone(), window.id(), SessionId::new(0));
 
         // Spawn shell via ConPTY with a dedicated reader thread + OscScanner
         let max_output_kb = self.config.history.as_ref()
@@ -790,12 +792,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            AppEvent::SetTitle { window_id, title } => {
+            AppEvent::SetTitle { window_id, session_id: _, title } => {
                 if let Some(ctx) = self.windows.get(&window_id) {
                     ctx.window.set_title(&title);
                 }
             }
-            AppEvent::TerminalExit { window_id } => {
+            AppEvent::TerminalExit { window_id, session_id: _ } => {
                 tracing::info!("Shell exited — closing window");
                 self.windows.remove(&window_id);
                 // Exit the event loop when the shell exits
@@ -803,6 +805,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::Shell {
                 window_id,
+                session_id: _,
                 event: shell_event,
                 line,
             } => {
@@ -1129,6 +1132,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     });
                                     let _ = proxy.send_event(AppEvent::GitInfo {
                                         window_id: wid,
+                                        session_id: SessionId::new(0), // placeholder until Plan 03 wires real session
                                         info,
                                     });
                                 })
@@ -1140,7 +1144,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            AppEvent::CommandOutput { window_id, raw_output } => {
+            AppEvent::CommandOutput { window_id, session_id: _, raw_output } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Process raw bytes: binary detection, ANSI stripping, truncation
                     let max_kb = self.config.history.as_ref()
@@ -1166,7 +1170,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
             }
-            AppEvent::GitInfo { window_id, info } => {
+            AppEvent::GitInfo { window_id, session_id: _, info } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     ctx.status.git_query_pending = false;
                     let git_info = info.map(|gi| glass_terminal::GitInfo {
