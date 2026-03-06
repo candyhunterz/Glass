@@ -61,7 +61,10 @@
   3. Commands containing TTY-sensitive programs (less, vim, fzf, git log) are flagged for exclusion from capture
   4. A `--no-glass` flag on any command opts it out of pipe interception
   5. Stage buffers exceeding 10MB are sampled (head + tail) rather than truncated, and binary data is detected and labeled
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 15-01-PLAN.md -- Crate foundation: types + pipe-splitting parser
+- [ ] 15-02-PLAN.md -- Pipeline classification (TTY/opt-out) + StageBuffer with sampling
 
 ### Phase 16: Shell Capture + Terminal Transport
 **Goal**: Pipe stage intermediate output is captured by the shell and delivered to the terminal via OSC sequences
@@ -127,7 +130,7 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 12. FS Watcher Engine | v1.2 | 2/2 | Complete | 2026-03-06 |
 | 13. Integration + Undo Engine | v1.2 | 4/4 | Complete | 2026-03-06 |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
-| 15. Pipe Parsing Core | v1.3 | 0/? | Not started | - |
+| 15. Pipe Parsing Core | v1.3 | 0/2 | In progress | - |
 | 16. Shell Capture + Terminal Transport | v1.3 | 0/? | Not started | - |
 | 17. Pipeline UI | v1.3 | 0/? | Not started | - |
 | 18. Storage + Retention | v1.3 | 0/? | Not started | - |
