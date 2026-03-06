@@ -199,6 +199,81 @@ impl SnapshotDb {
         }
     }
 
+    /// Count total number of snapshots.
+    pub fn count_snapshots(&self) -> Result<u64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM snapshots",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    /// Delete all snapshots with created_at < epoch. Returns deleted IDs.
+    pub fn delete_snapshots_before(&self, epoch: i64) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM snapshots WHERE created_at < ?1",
+        )?;
+        let ids: Vec<i64> = stmt
+            .query_map(params![epoch], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        if !ids.is_empty() {
+            self.conn.execute(
+                "DELETE FROM snapshots WHERE created_at < ?1",
+                params![epoch],
+            )?;
+        }
+        Ok(ids)
+    }
+
+    /// Get the N oldest snapshot IDs, ordered by created_at ASC.
+    pub fn get_oldest_snapshot_ids(&self, limit: u32) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM snapshots ORDER BY created_at ASC LIMIT ?1",
+        )?;
+        let ids: Vec<i64> = stmt
+            .query_map(params![limit], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    /// Get all distinct blob hashes still referenced by snapshot_files.
+    pub fn get_referenced_hashes(&self) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT blob_hash FROM snapshot_files WHERE blob_hash IS NOT NULL",
+        )?;
+        let hashes: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<std::collections::HashSet<_>, _>>()?;
+        Ok(hashes)
+    }
+
+    /// Get the created_at timestamp of the Nth newest snapshot (1-indexed).
+    /// Returns None if fewer than N snapshots exist.
+    pub fn get_nth_newest_created_at(&self, n: u32) -> Result<Option<i64>> {
+        let offset = n.saturating_sub(1);
+        let mut stmt = self.conn.prepare(
+            "SELECT created_at FROM snapshots ORDER BY created_at DESC LIMIT 1 OFFSET ?1",
+        )?;
+        let mut rows = stmt.query_map(params![offset], |row| row.get::<_, i64>(0))?;
+        match rows.next() {
+            Some(Ok(ts)) => Ok(Some(ts)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Set the created_at timestamp of a snapshot (for testing).
+    #[cfg(test)]
+    pub fn set_created_at(&self, snapshot_id: i64, created_at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE snapshots SET created_at = ?1 WHERE id = ?2",
+            params![created_at, snapshot_id],
+        )?;
+        Ok(())
+    }
+
     /// Update the command_id on an existing snapshot.
     pub fn update_command_id(&self, snapshot_id: i64, command_id: i64) -> Result<()> {
         self.conn.execute(

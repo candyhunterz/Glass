@@ -48,6 +48,30 @@ impl BlobStore {
         blob_path.exists()
     }
 
+    /// List all blob hashes stored on disk by walking the blobs/ directory.
+    pub fn list_blob_hashes(&self) -> Result<Vec<String>> {
+        let mut hashes = Vec::new();
+        if !self.blob_dir.exists() {
+            return Ok(hashes);
+        }
+        for shard_entry in std::fs::read_dir(&self.blob_dir)? {
+            let shard_entry = shard_entry?;
+            let shard_path = shard_entry.path();
+            if !shard_path.is_dir() {
+                continue;
+            }
+            for blob_entry in std::fs::read_dir(&shard_path)? {
+                let blob_entry = blob_entry?;
+                let file_name = blob_entry.file_name();
+                let name = file_name.to_string_lossy();
+                if let Some(hash) = name.strip_suffix(".blob") {
+                    hashes.push(hash.to_string());
+                }
+            }
+        }
+        Ok(hashes)
+    }
+
     /// Delete a blob by hash. Returns true if it existed.
     pub fn delete_blob(&self, hash: &str) -> Result<bool> {
         let blob_path = self.blob_dir.join(&hash[..2]).join(format!("{}.blob", hash));
