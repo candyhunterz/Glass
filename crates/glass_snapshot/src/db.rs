@@ -171,6 +171,34 @@ impl SnapshotDb {
         Ok(deleted > 0)
     }
 
+    /// Get the most recent snapshot that has at least one parser-sourced file.
+    /// Used by the undo engine to find the latest undoable command.
+    pub fn get_latest_parser_snapshot(&self) -> Result<Option<SnapshotRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.command_id, s.cwd, s.created_at
+             FROM snapshots s
+             WHERE EXISTS (
+                 SELECT 1 FROM snapshot_files sf
+                 WHERE sf.snapshot_id = s.id AND sf.source = 'parser'
+             )
+             ORDER BY s.id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok(SnapshotRecord {
+                id: row.get(0)?,
+                command_id: row.get(1)?,
+                cwd: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(record)) => Ok(Some(record)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
     /// Update the command_id on an existing snapshot.
     pub fn update_command_id(&self, snapshot_id: i64, command_id: i64) -> Result<()> {
         self.conn.execute(
