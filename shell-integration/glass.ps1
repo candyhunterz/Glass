@@ -101,6 +101,9 @@ function prompt {
     # Command-input start (OSC 133;B)
     $out += "$E]133;B$([char]7)"
 
+    # Clean up temp files from previous pipeline captures
+    __Glass-Cleanup-Stages
+
     # Remember the current history ID for the next prompt cycle
     $Global:__GlassLastHistoryId = $LastHistoryEntry.Id
 
@@ -108,14 +111,126 @@ function prompt {
 }
 
 # ---------------------------------------------------------------------------
-# PSReadLine Enter-key handler -- emits OSC 133;C
+# Pipeline capture: Tee-Object rewriting + OSC 133;S/P emission
+#
+# Intercepts piped commands at Enter, rewrites them to insert Tee-Object
+# between stages, captures intermediate output to temp files, and emits
+# OSC 133;S (pipeline start) and 133;P (per-stage data) so the terminal
+# can display pipe stage output.
+# ---------------------------------------------------------------------------
+
+# State variables for pipeline capture
+$Global:__GlassCaptureDir = $null
+$Global:__GlassCaptureStageCount = 0
+
+# Detect and rewrite pipeline commands with Tee-Object capture.
+# Returns $null if the command is not a pipeline or should be skipped.
+function Global:__Glass-Rewrite-Pipeline {
+    param([string]$Command)
+
+    # Skip --no-glass commands
+    if ($Command -match '--no-glass') { return $null }
+    # Skip internal functions
+    if ($Command -match '^__Glass') { return $null }
+
+    # Split on unquoted pipes (not ||)
+    $stages = @()
+    $current = ""
+    $inSingle = $false
+    $inDouble = $false
+
+    for ($i = 0; $i -lt $Command.Length; $i++) {
+        $c = $Command[$i]
+        if ($c -eq "'" -and -not $inDouble) { $inSingle = -not $inSingle }
+        elseif ($c -eq '"' -and -not $inSingle) { $inDouble = -not $inDouble }
+        elseif ($c -eq '|' -and -not $inSingle -and -not $inDouble) {
+            # Check for ||
+            if ($i + 1 -lt $Command.Length -and $Command[$i + 1] -eq '|') {
+                $current += '||'
+                $i++
+                continue
+            }
+            $stages += $current.Trim()
+            $current = ""
+            continue
+        }
+        $current += $c
+    }
+    $stages += $current.Trim()
+
+    # Not a pipeline if only one stage
+    if ($stages.Count -le 1) { return $null }
+
+    # Create temp directory
+    $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) "glass_$PID`_$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    [System.IO.Directory]::CreateDirectory($tmpdir) | Out-Null
+    $Global:__GlassCaptureDir = $tmpdir
+    $Global:__GlassCaptureStageCount = $stages.Count - 1
+
+    # Build rewritten command with Tee-Object between stages
+    $parts = @()
+    for ($i = 0; $i -lt $stages.Count; $i++) {
+        $parts += $stages[$i]
+        if ($i -lt ($stages.Count - 1)) {
+            $path = Join-Path $tmpdir "stage_$i.txt"
+            $parts += "| Tee-Object -FilePath '$path'"
+        }
+    }
+
+    return ($parts -join ' ') + "; __Glass-Emit-Stages"
+}
+
+# Emit OSC 133;S (pipeline start) and 133;P (per-stage) sequences
+function Global:__Glass-Emit-Stages {
+    $tmpdir = $Global:__GlassCaptureDir
+    if (-not $tmpdir -or -not (Test-Path $tmpdir)) { return }
+
+    $E = [char]0x1b
+    $count = $Global:__GlassCaptureStageCount
+    if (-not $count -or $count -eq 0) { return }
+
+    # Pipeline start marker
+    [Console]::Write("$E]133;S;$count$E\")
+
+    for ($i = 0; $i -lt $count; $i++) {
+        $path = Join-Path $tmpdir "stage_$i.txt"
+        if (Test-Path $path) {
+            $size = (Get-Item $path).Length
+            [Console]::Write("$E]133;P;$i;$size;$path$E\")
+        }
+    }
+
+    $Global:__GlassCaptureDir = $null
+    $Global:__GlassCaptureStageCount = 0
+}
+
+# Clean up temp dirs from previous pipeline executions
+function Global:__Glass-Cleanup-Stages {
+    $pattern = Join-Path ([System.IO.Path]::GetTempPath()) "glass_$PID`_*"
+    Get-ChildItem $pattern -Directory -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
+# PSReadLine Enter-key handler -- emits OSC 133;C and intercepts pipelines
 #
 # 133;C marks the exact moment between "user finished typing" and "command
 # starts executing".  We hook the Enter key so the marker appears before
-# PowerShell begins processing.
+# PowerShell begins processing.  Pipeline commands are rewritten to insert
+# Tee-Object capture before execution.
 # ---------------------------------------------------------------------------
 if (Get-Module PSReadLine) {
     Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+        $line = $null
+        $cursor = $null
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
+
+        # Try to rewrite pipeline commands
+        $rewritten = __Glass-Rewrite-Pipeline $line
+        if ($rewritten) {
+            [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $rewritten)
+        }
+
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
         [Console]::Write("$([char]0x1b)]133;C$([char]7)")
     }
