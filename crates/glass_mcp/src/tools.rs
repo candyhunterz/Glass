@@ -419,4 +419,39 @@ mod tests {
         let entry = HistoryEntry::from(record);
         assert!(entry.output_preview.is_none());
     }
+
+    #[test]
+    fn test_pipe_inspect_params_deserialize() {
+        let json = r#"{"command_id": 42}"#;
+        let params: PipeInspectParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 42);
+        assert!(params.stage.is_none());
+    }
+
+    #[test]
+    fn test_pipe_inspect_params_stage_filter() {
+        let json = r#"{"command_id": 10, "stage": 1}"#;
+        let params: PipeInspectParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 10);
+        assert_eq!(params.stage, Some(1));
+    }
+
+    #[test]
+    fn test_pipe_stage_entry_serializes() {
+        let entry = PipeStageEntry {
+            stage_index: 0,
+            command: "cat file".to_string(),
+            output: Some("hello\n".to_string()),
+            total_bytes: 6,
+            is_binary: false,
+            is_sampled: false,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["stage_index"], 0);
+        assert_eq!(json["command"], "cat file");
+        assert_eq!(json["output"], "hello\n");
+        assert_eq!(json["total_bytes"], 6);
+        assert_eq!(json["is_binary"], false);
+        assert_eq!(json["is_sampled"], false);
+    }
 }
