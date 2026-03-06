@@ -20,6 +20,12 @@ pub struct ContextSummary {
     pub latest_timestamp: Option<i64>,
     /// Up to 10 most recently used distinct working directories.
     pub recent_directories: Vec<String>,
+    /// Number of distinct commands that have pipeline stages.
+    pub pipeline_count: i64,
+    /// Average number of stages per pipeline command.
+    pub avg_pipeline_stages: f64,
+    /// Fraction of pipeline commands with non-zero exit code.
+    pub pipeline_failure_rate: f64,
 }
 
 /// Build an aggregate activity summary from the commands table.
@@ -77,12 +83,62 @@ pub fn build_context_summary(
         recent_directories.push(dir?);
     }
 
+    // Pipeline stats: count and avg stages
+    let (pipe_count_sql, pipe_fail_sql) = if after.is_some() {
+        (
+            "SELECT COUNT(DISTINCT ps.command_id), \
+                    CAST(COUNT(*) AS REAL) / NULLIF(COUNT(DISTINCT ps.command_id), 0) \
+             FROM pipe_stages ps \
+             JOIN commands c ON c.id = ps.command_id \
+             WHERE c.started_at >= ?1",
+            "SELECT COUNT(DISTINCT ps.command_id) \
+             FROM pipe_stages ps \
+             JOIN commands c ON c.id = ps.command_id \
+             WHERE c.exit_code != 0 AND c.started_at >= ?1",
+        )
+    } else {
+        (
+            "SELECT COUNT(DISTINCT ps.command_id), \
+                    CAST(COUNT(*) AS REAL) / NULLIF(COUNT(DISTINCT ps.command_id), 0) \
+             FROM pipe_stages ps \
+             JOIN commands c ON c.id = ps.command_id",
+            "SELECT COUNT(DISTINCT ps.command_id) \
+             FROM pipe_stages ps \
+             JOIN commands c ON c.id = ps.command_id \
+             WHERE c.exit_code != 0",
+        )
+    };
+
+    let mut pipe_stmt = conn.prepare(pipe_count_sql)?;
+    let (pipeline_count, avg_pipeline_stages) = pipe_stmt
+        .query_row(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<f64>>(1)?,
+            ))
+        })?;
+    let avg_pipeline_stages = avg_pipeline_stages.unwrap_or(0.0);
+
+    let mut pipe_fail_stmt = conn.prepare(pipe_fail_sql)?;
+    let failed_pipeline_count: i64 = pipe_fail_stmt
+        .query_row(rusqlite::params_from_iter(params.iter()), |row| {
+            row.get(0)
+        })?;
+    let pipeline_failure_rate = if pipeline_count > 0 {
+        failed_pipeline_count as f64 / pipeline_count as f64
+    } else {
+        0.0
+    };
+
     Ok(ContextSummary {
         command_count,
         failure_count,
         earliest_timestamp,
         latest_timestamp,
         recent_directories,
+        pipeline_count,
+        avg_pipeline_stages,
+        pipeline_failure_rate,
     })
 }
 
