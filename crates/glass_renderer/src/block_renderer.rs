@@ -208,238 +208,244 @@ impl BlockRenderer {
         labels
     }
 
-    /// Build colored rectangles for pipeline stage rows.
+    /// Build colored rectangles for pipeline stage panel at the bottom of viewport.
     ///
-    /// For each expanded pipeline block, generates a subtle background rect
-    /// per stage row, positioned below the block separator.
+    /// Renders a fixed panel above the status bar showing stages for the most
+    /// recently expanded pipeline block. Panel grows upward when a stage is expanded.
     pub fn build_pipeline_rects(
         &self,
         blocks: &[&Block],
-        display_offset: usize,
-        screen_lines: usize,
         viewport_width: f32,
+        viewport_height: f32,
+        status_bar_height: f32,
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
 
-        for block in blocks {
-            if !block.pipeline_expanded || block.pipeline_stages.is_empty() {
-                continue;
-            }
+        let block = match blocks.iter().rev().find(|b| b.pipeline_expanded) {
+            Some(b) => b,
+            None => return rects,
+        };
 
-            let line = block.prompt_start_line;
-            if line < display_offset || line >= display_offset + screen_lines {
-                continue;
-            }
+        let stage_count = Self::panel_stage_count(block);
+        if stage_count == 0 { return rects; }
 
-            let block_y = (line - display_offset) as f32 * self.cell_height;
+        let total_rows = Self::panel_total_rows(block, stage_count);
+        let panel_top = viewport_height - status_bar_height - total_rows as f32 * self.cell_height;
+        let mut row = 0;
 
-            for (i, _stage) in block.pipeline_stages.iter().enumerate() {
-                let row_y = block_y + self.cell_height * (i as f32 + 1.0);
+        for i in 0..stage_count {
+            let row_y = panel_top + row as f32 * self.cell_height;
+            let selected = block.expanded_stage_index == Some(i);
+            let color = if selected {
+                [50.0 / 255.0, 50.0 / 255.0, 70.0 / 255.0, 0.95]
+            } else {
+                [30.0 / 255.0, 30.0 / 255.0, 40.0 / 255.0, 0.95]
+            };
+            rects.push(RectInstance {
+                pos: [0.0, row_y, viewport_width, self.cell_height],
+                color,
+            });
+            row += 1;
 
-                // Subtle background for pipeline stage row
-                rects.push(RectInstance {
-                    pos: [0.0, row_y, viewport_width, self.cell_height],
-                    color: [30.0 / 255.0, 30.0 / 255.0, 40.0 / 255.0, 0.8],
-                });
-
-                // If this stage is expanded, add background rects for output lines
-                if block.expanded_stage_index == Some(i) {
-                    let output_lines = line_count(&_stage.data).min(50);
-                    for line_idx in 0..output_lines {
-                        let output_y = row_y + self.cell_height * (line_idx as f32 + 1.0);
-                        rects.push(RectInstance {
-                            pos: [0.0, output_y, viewport_width, self.cell_height],
-                            color: [25.0 / 255.0, 25.0 / 255.0, 35.0 / 255.0, 0.8],
-                        });
-                    }
+            // Expanded stage output rows
+            if selected {
+                let output_rows = Self::expanded_output_row_count(block, i);
+                for j in 0..output_rows {
+                    let out_y = panel_top + (row + j) as f32 * self.cell_height;
+                    rects.push(RectInstance {
+                        pos: [0.0, out_y, viewport_width, self.cell_height],
+                        color: [25.0 / 255.0, 25.0 / 255.0, 35.0 / 255.0, 0.9],
+                    });
                 }
+                row += output_rows;
             }
         }
 
         rects
     }
 
-    /// Build text labels for pipeline stage rows.
-    ///
-    /// For each expanded pipeline block, generates labels showing:
-    /// - Stage command text
-    /// - Line count (right-aligned)
-    /// - Byte count (right-aligned)
-    /// - Expand/collapse indicator
+    /// Build text labels for pipeline stage panel at the bottom of viewport.
     pub fn build_pipeline_text(
         &self,
         blocks: &[&Block],
-        display_offset: usize,
-        screen_lines: usize,
         viewport_width: f32,
+        viewport_height: f32,
+        status_bar_height: f32,
     ) -> Vec<BlockLabel> {
         let mut labels = Vec::new();
 
-        for block in blocks {
-            if !block.pipeline_expanded || block.pipeline_stages.is_empty() {
-                continue;
-            }
+        let block = match blocks.iter().rev().find(|b| b.pipeline_expanded) {
+            Some(b) => b,
+            None => return labels,
+        };
 
-            let line = block.prompt_start_line;
-            if line < display_offset || line >= display_offset + screen_lines {
-                continue;
-            }
+        let stage_count = Self::panel_stage_count(block);
+        if stage_count == 0 { return labels; }
 
-            let block_y = (line - display_offset) as f32 * self.cell_height;
+        let total_rows = Self::panel_total_rows(block, stage_count);
+        let panel_top = viewport_height - status_bar_height - total_rows as f32 * self.cell_height;
+        let mut row = 0;
 
-            for (i, stage) in block.pipeline_stages.iter().enumerate() {
-                let row_y = block_y + self.cell_height * (i as f32 + 1.0);
+        for i in 0..stage_count {
+            let row_y = panel_top + row as f32 * self.cell_height;
+            let captured = block.pipeline_stages.get(i);
+            let selected = block.expanded_stage_index == Some(i);
 
-                // Command text
-                let cmd_text = if i < block.pipeline_stage_commands.len() {
-                    format!("  stage {}: {}", i, block.pipeline_stage_commands[i])
-                } else {
-                    format!("  stage {}", i)
-                };
-                labels.push(BlockLabel {
-                    x: self.cell_width * 2.0,
-                    y: row_y,
-                    text: cmd_text,
-                    color: Rgb { r: 180, g: 180, b: 220 },
-                });
+            // Command text
+            let cmd_text = if i < block.pipeline_stage_commands.len() {
+                format!("  stage {}: {}", i, block.pipeline_stage_commands[i])
+            } else {
+                format!("  stage {}", i)
+            };
+            labels.push(BlockLabel {
+                x: self.cell_width * 2.0,
+                y: row_y,
+                text: cmd_text,
+                color: Rgb { r: 180, g: 180, b: 220 },
+            });
 
-                // Line count
+            // Line count and byte count
+            let (line_text, byte_text) = if let Some(stage) = captured {
                 let lines = line_count(&stage.data);
-                let line_text = if lines == 1 {
+                let lt = if lines == 1 {
                     "1 line".to_string()
                 } else {
                     format!("{} lines", lines)
                 };
+                (lt, format_bytes(stage.total_bytes))
+            } else {
+                ("".to_string(), "".to_string())
+            };
 
-                // Byte count
-                let byte_text = format_bytes(stage.total_bytes);
+            // Expand/collapse indicator
+            let indicator = if selected { "[-]" } else { "[+]" };
 
-                // Expand indicator
-                let indicator = if block.expanded_stage_index == Some(i) {
-                    "[^]"
-                } else {
-                    "[v]"
-                };
+            let indicator_width = indicator.len() as f32 * self.cell_width;
+            let indicator_x = viewport_width - indicator_width - self.cell_width;
+            labels.push(BlockLabel {
+                x: indicator_x,
+                y: row_y,
+                text: indicator.to_string(),
+                color: Rgb { r: 100, g: 160, b: 220 },
+            });
 
-                // Position right-aligned: indicator at far right, then byte count, then line count
-                let indicator_width = indicator.len() as f32 * self.cell_width;
-                let indicator_x = viewport_width - indicator_width - self.cell_width;
-                labels.push(BlockLabel {
-                    x: indicator_x,
-                    y: row_y,
-                    text: indicator.to_string(),
-                    color: Rgb { r: 100, g: 160, b: 220 },
-                });
-
-                let byte_width = byte_text.len() as f32 * self.cell_width;
-                let byte_x = indicator_x - byte_width - self.cell_width;
+            let byte_width = byte_text.len() as f32 * self.cell_width;
+            let byte_x = indicator_x - byte_width - self.cell_width;
+            if !byte_text.is_empty() {
                 labels.push(BlockLabel {
                     x: byte_x,
                     y: row_y,
                     text: byte_text,
                     color: Rgb { r: 140, g: 140, b: 140 },
                 });
+            }
 
-                let line_width = line_text.len() as f32 * self.cell_width;
-                let line_x = byte_x - line_width - self.cell_width;
+            let line_width = line_text.len() as f32 * self.cell_width;
+            let line_x = byte_x - line_width - self.cell_width;
+            if !line_text.is_empty() {
                 labels.push(BlockLabel {
                     x: line_x,
                     y: row_y,
                     text: line_text,
                     color: Rgb { r: 140, g: 140, b: 140 },
                 });
+            }
 
-                // If this stage is expanded, render captured output lines
-                if block.expanded_stage_index == Some(i) {
-                    let output_labels = self.build_stage_output_labels(
-                        &stage.data,
-                        row_y,
-                    );
-                    labels.extend(output_labels);
-                }
+            row += 1;
+
+            // Expanded stage output
+            if selected {
+                let output_labels = self.build_expanded_output(block, i, panel_top, &mut row);
+                labels.extend(output_labels);
             }
         }
 
         labels
     }
 
-    /// Build text labels for expanded stage output content.
-    fn build_stage_output_labels(
+    /// Helper: stage count for panel.
+    fn panel_stage_count(block: &Block) -> usize {
+        if !block.pipeline_stage_commands.is_empty() {
+            block.pipeline_stage_commands.len()
+        } else {
+            block.pipeline_stages.len()
+        }
+    }
+
+    /// Helper: total panel rows including expanded output.
+    fn panel_total_rows(block: &Block, stage_count: usize) -> usize {
+        let mut rows = stage_count;
+        if let Some(idx) = block.expanded_stage_index {
+            rows += Self::expanded_output_row_count(block, idx);
+        }
+        rows
+    }
+
+    /// Helper: number of output rows for an expanded stage.
+    fn expanded_output_row_count(block: &Block, stage_idx: usize) -> usize {
+        if let Some(stage) = block.pipeline_stages.get(stage_idx) {
+            let lines = line_count(&stage.data);
+            if lines == 0 { 1 } else { lines.min(30) } // at least 1 for "empty" message
+        } else {
+            1 // "no data captured" message
+        }
+    }
+
+    /// Build text labels for expanded stage output in the panel.
+    fn build_expanded_output(
         &self,
-        data: &FinalizedBuffer,
-        stage_row_y: f32,
+        block: &Block,
+        stage_idx: usize,
+        panel_top: f32,
+        row: &mut usize,
     ) -> Vec<BlockLabel> {
         let mut labels = Vec::new();
         let content_color = Rgb { r: 160, g: 160, b: 160 };
         let x = self.cell_width * 4.0;
 
-        match data {
-            FinalizedBuffer::Complete(bytes) => {
-                let text = String::from_utf8_lossy(bytes);
-                for (idx, line) in text.lines().take(50).enumerate() {
-                    let y = stage_row_y + self.cell_height * (idx as f32 + 1.0);
-                    labels.push(BlockLabel {
-                        x,
-                        y,
-                        text: format!("  | {}", line),
-                        color: content_color,
-                    });
+        if let Some(stage) = block.pipeline_stages.get(stage_idx) {
+            match &stage.data {
+                FinalizedBuffer::Complete(bytes) if bytes.is_empty() => {
+                    let y = panel_top + *row as f32 * self.cell_height;
+                    labels.push(BlockLabel { x, y, text: "  (empty)".to_string(), color: content_color });
+                    *row += 1;
+                }
+                FinalizedBuffer::Complete(bytes) => {
+                    let text = String::from_utf8_lossy(bytes);
+                    for line in text.lines().take(30) {
+                        let y = panel_top + *row as f32 * self.cell_height;
+                        labels.push(BlockLabel { x, y, text: format!("  | {}", line), color: content_color });
+                        *row += 1;
+                    }
+                }
+                FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+                    let head_text = String::from_utf8_lossy(head);
+                    for line in head_text.lines().take(15) {
+                        let y = panel_top + *row as f32 * self.cell_height;
+                        labels.push(BlockLabel { x, y, text: format!("  | {}", line), color: content_color });
+                        *row += 1;
+                    }
+                    let omitted = total_bytes - head.len() - tail.len();
+                    let y = panel_top + *row as f32 * self.cell_height;
+                    labels.push(BlockLabel { x, y, text: format!("  | ... {} bytes omitted ...", omitted), color: content_color });
+                    *row += 1;
+                    let tail_text = String::from_utf8_lossy(tail);
+                    for line in tail_text.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev() {
+                        let y = panel_top + *row as f32 * self.cell_height;
+                        labels.push(BlockLabel { x, y, text: format!("  | {}", line), color: content_color });
+                        *row += 1;
+                    }
+                }
+                FinalizedBuffer::Binary { size } => {
+                    let y = panel_top + *row as f32 * self.cell_height;
+                    labels.push(BlockLabel { x, y, text: format!("  [binary: {}]", format_bytes(*size)), color: content_color });
+                    *row += 1;
                 }
             }
-            FinalizedBuffer::Sampled { head, tail, total_bytes } => {
-                let head_text = String::from_utf8_lossy(head);
-                let head_lines: Vec<&str> = head_text.lines().collect();
-                let tail_text = String::from_utf8_lossy(tail);
-                let tail_lines: Vec<&str> = tail_text.lines().collect();
-
-                let max_head = 25.min(head_lines.len());
-                let max_tail = 25.min(tail_lines.len());
-                let mut line_idx = 0;
-
-                for line in head_lines.iter().take(max_head) {
-                    let y = stage_row_y + self.cell_height * (line_idx as f32 + 1.0);
-                    labels.push(BlockLabel {
-                        x,
-                        y,
-                        text: format!("  | {}", line),
-                        color: content_color,
-                    });
-                    line_idx += 1;
-                }
-
-                // Omission indicator
-                let omitted = total_bytes - head.len() - tail.len();
-                let y = stage_row_y + self.cell_height * (line_idx as f32 + 1.0);
-                labels.push(BlockLabel {
-                    x,
-                    y,
-                    text: format!("  | ... {} bytes omitted ...", omitted),
-                    color: content_color,
-                });
-                line_idx += 1;
-
-                // Tail lines (from the end)
-                let tail_start = tail_lines.len().saturating_sub(max_tail);
-                for line in tail_lines.iter().skip(tail_start) {
-                    let y = stage_row_y + self.cell_height * (line_idx as f32 + 1.0);
-                    labels.push(BlockLabel {
-                        x,
-                        y,
-                        text: format!("  | {}", line),
-                        color: content_color,
-                    });
-                    line_idx += 1;
-                }
-            }
-            FinalizedBuffer::Binary { size } => {
-                let y = stage_row_y + self.cell_height;
-                labels.push(BlockLabel {
-                    x,
-                    y,
-                    text: format!("  | [binary: {}]", format_bytes(*size)),
-                    color: content_color,
-                });
-            }
+        } else {
+            let y = panel_top + *row as f32 * self.cell_height;
+            labels.push(BlockLabel { x, y, text: "  (no captured data)".to_string(), color: Rgb { r: 120, g: 120, b: 120 } });
+            *row += 1;
         }
 
         labels

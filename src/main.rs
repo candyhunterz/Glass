@@ -275,6 +275,21 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         tracing::info!("PTY spawned — PowerShell is running");
 
+        // Auto-inject shell integration for PowerShell
+        let shell_name = self.config.shell.as_deref().unwrap_or("");
+        let is_powershell = shell_name.is_empty()
+            || shell_name.contains("pwsh")
+            || shell_name.to_lowercase().contains("powershell");
+        if is_powershell {
+            if let Some(path) = find_shell_integration() {
+                let cmd = format!(". '{}'\r\n", path.display());
+                let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(cmd.into_bytes())));
+                tracing::info!("Auto-injecting shell integration: {}", path.display());
+            } else {
+                tracing::warn!("Shell integration script (glass.ps1) not found");
+            }
+        }
+
         let default_colors = DefaultColors::default();
 
         // Open history database from initial cwd (non-fatal on failure)
@@ -663,7 +678,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
                                 if let Some(block) = ctx.block_manager.blocks_mut().iter_mut().rev()
-                                    .find(|b| b.pipeline_stage_count.unwrap_or(0) > 0)
+                                    .find(|b| b.pipeline_stage_count.unwrap_or(0) > 0 || b.pipeline_stage_commands.len() > 1)
                                 {
                                     block.toggle_pipeline_expanded();
                                     ctx.window.request_redraw();
@@ -716,15 +731,13 @@ impl ApplicationHandler<AppEvent> for Processor {
             } => {
                 if let Some((_, y)) = ctx.cursor_position {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                    let snapshot = {
-                        let term = ctx.term.lock();
-                        snapshot_term(&term, &ctx.default_colors)
-                    };
-                    let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+                    let size = ctx.window.inner_size();
+                    let viewport_h = size.height as f32;
+                    let status_bar_h = cell_h; // status bar is always 1 cell tall
 
-                    // Hit test pipeline stage rows
+                    // Hit test pipeline stage panel (bottom of viewport)
                     if let Some((block_idx, hit)) = ctx.block_manager.pipeline_hit_test(
-                        0.0, y as f32, cell_w, cell_h, viewport_abs_start, snapshot.screen_lines,
+                        0.0, y as f32, cell_w, cell_h, viewport_h, status_bar_h,
                     ) {
                         match hit {
                             PipelineHit::StageRow(stage_idx) => {
@@ -896,9 +909,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::debug!("Pre-exec snapshot skipped: snapshots disabled in config");
                         }
 
-                        // Parse pipeline stages to extract per-stage command text
+                        // Parse pipeline stages to extract per-stage command text.
+                        // Strip prompt prefix (e.g. "PS C:\path> ") since command_text
+                        // is extracted from the terminal grid which includes it.
+                        let pipe_text = if let Some(pos) = command_text.find("> ") {
+                            &command_text[pos + 2..]
+                        } else {
+                            &command_text
+                        };
                         if let Some(idx) = ctx.block_manager.current_block_index() {
-                            let pipeline = glass_pipes::parse_pipeline(&command_text);
+                            let pipeline = glass_pipes::parse_pipeline(pipe_text);
                             if pipeline.stages.len() > 1 {
                                 let stage_commands: Vec<String> = pipeline.stages.iter()
                                     .map(|s| s.command.clone())
@@ -1090,6 +1110,32 @@ impl ApplicationHandler<AppEvent> for Processor {
 }
 
 /// Copy the current terminal selection to the system clipboard.
+/// Locate the shell integration script (glass.ps1) relative to the executable.
+///
+/// Checks two layouts:
+/// - Installed: `<exe_dir>/shell-integration/glass.ps1`
+/// - Development: `<exe_dir>/../../shell-integration/glass.ps1` (exe in target/{debug,release}/)
+fn find_shell_integration() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    // Installed layout
+    let candidate = exe_dir.join("shell-integration").join("glass.ps1");
+    if candidate.exists() {
+        return Some(candidate);
+    }
+
+    // Development layout: exe in target/{debug,release}/
+    if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
+        let candidate = repo_root.join("shell-integration").join("glass.ps1");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 fn clipboard_copy(term: &Arc<FairMutex<Term<EventProxy>>>) {
     let term = term.lock();
     if let Some(selection) = term.selection_to_string() {

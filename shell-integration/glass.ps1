@@ -165,11 +165,14 @@ function Global:__Glass-Rewrite-Pipeline {
     $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) "glass_$PID`_$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
     [System.IO.Directory]::CreateDirectory($tmpdir) | Out-Null
     $Global:__GlassCaptureDir = $tmpdir
-    $Global:__GlassCaptureStageCount = $stages.Count - 1
+    $Global:__GlassCaptureStageCount = $stages.Count
 
     # Build rewritten command with Tee-Object between stages
     $parts = @()
     for ($i = 0; $i -lt $stages.Count; $i++) {
+        if ($i -gt 0) {
+            $parts += "|"
+        }
         $parts += $stages[$i]
         if ($i -lt ($stages.Count - 1)) {
             $path = Join-Path $tmpdir "stage_$i.txt"

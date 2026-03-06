@@ -245,4 +245,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         render_pass.draw(0..6, 0..instance_count);
     }
+
+    /// Draw a range of instanced rectangles into the given render pass.
+    pub fn render_range<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        start: u32,
+        end: u32,
+    ) {
+        if start >= end {
+            return;
+        }
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        render_pass.draw(0..6, start..end);
+    }
 }

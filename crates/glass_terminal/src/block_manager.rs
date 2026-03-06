@@ -102,10 +102,14 @@ impl Block {
     /// Number of overlay rows this pipeline uses.
     /// 0 if collapsed or non-pipeline, stage_count if expanded.
     pub fn pipeline_row_count(&self) -> usize {
-        if !self.pipeline_expanded || self.pipeline_stages.is_empty() {
+        if !self.pipeline_expanded {
             return 0;
         }
-        self.pipeline_stages.len()
+        if !self.pipeline_stage_commands.is_empty() {
+            self.pipeline_stage_commands.len()
+        } else {
+            self.pipeline_stages.len()
+        }
     }
 }
 
@@ -170,8 +174,8 @@ impl BlockManager {
                         block.finished_at = Some(Instant::now());
 
                         // Auto-expand pipeline blocks on failure or >2 stages
-                        if block.pipeline_stage_count.unwrap_or(0) > 0 {
-                            let stage_count = block.pipeline_stage_count.unwrap_or(0);
+                        if block.pipeline_stage_count.unwrap_or(0) > 0 || block.pipeline_stage_commands.len() > 1 {
+                            let stage_count = block.pipeline_stage_count.unwrap_or(0).max(block.pipeline_stage_commands.len());
                             let failed = block.exit_code.map_or(false, |c| c != 0);
                             block.pipeline_expanded = failed || stage_count > 2;
                         }
@@ -257,41 +261,73 @@ impl BlockManager {
         self.blocks.iter_mut().rev().find(|b| b.started_epoch == Some(epoch))
     }
 
-    /// Hit test pipeline stage rows given pixel coordinates.
+    /// Hit test pipeline stage panel at the bottom of the viewport.
     /// Returns (block_index, PipelineHit) if a pipeline row was clicked.
+    ///
+    /// `viewport_height` and `status_bar_height` are in pixels.
     pub fn pipeline_hit_test(
         &self,
         _x: f32, y: f32,
         _cell_w: f32, cell_h: f32,
-        display_offset: usize,
-        screen_lines: usize,
+        viewport_height: f32,
+        status_bar_height: f32,
     ) -> Option<(usize, PipelineHit)> {
-        for (i, block) in self.blocks.iter().enumerate() {
-            if block.pipeline_stages.is_empty() {
-                continue;
-            }
-            let line = block.prompt_start_line;
-            if line < display_offset || line >= display_offset + screen_lines {
-                continue;
-            }
-            let sep_y = (line - display_offset) as f32 * cell_h;
+        // Find the last expanded pipeline block (matching renderer)
+        let (block_idx, block) = self.blocks.iter().enumerate().rev()
+            .find(|(_, b)| b.pipeline_expanded)?;
 
-            // Check if click is on separator line (header toggle)
-            if y >= sep_y && y < sep_y + cell_h {
-                return Some((i, PipelineHit::Header));
-            }
+        let stage_count = if !block.pipeline_stage_commands.is_empty() {
+            block.pipeline_stage_commands.len()
+        } else if !block.pipeline_stages.is_empty() {
+            block.pipeline_stages.len()
+        } else {
+            return None;
+        };
 
-            // Check stage rows (only if expanded)
-            if block.pipeline_expanded {
-                for (si, _) in block.pipeline_stages.iter().enumerate() {
-                    let row_y = sep_y + (si as f32 + 1.0) * cell_h;
-                    if y >= row_y && y < row_y + cell_h {
-                        return Some((i, PipelineHit::StageRow(si)));
-                    }
-                }
+        // Calculate total panel rows (matching renderer logic)
+        let mut total_rows = stage_count;
+        if let Some(idx) = block.expanded_stage_index {
+            total_rows += self.expanded_output_row_count(block, idx);
+        }
+
+        let panel_top = viewport_height - status_bar_height - total_rows as f32 * cell_h;
+        let mut row = 0;
+
+        for si in 0..stage_count {
+            let row_y = panel_top + row as f32 * cell_h;
+            if y >= row_y && y < row_y + cell_h {
+                return Some((block_idx, PipelineHit::StageRow(si)));
+            }
+            row += 1;
+
+            // Skip expanded output rows
+            if block.expanded_stage_index == Some(si) {
+                row += self.expanded_output_row_count(block, si);
             }
         }
+
         None
+    }
+
+    /// Number of output rows for an expanded stage (mirrors renderer logic).
+    fn expanded_output_row_count(&self, block: &Block, stage_idx: usize) -> usize {
+        if let Some(stage) = block.pipeline_stages.get(stage_idx) {
+            let lines = match &stage.data {
+                glass_pipes::FinalizedBuffer::Complete(bytes) => {
+                    let n = bytes.iter().filter(|&&b| b == b'\n').count();
+                    n.max(if bytes.is_empty() { 0 } else { 1 })
+                }
+                glass_pipes::FinalizedBuffer::Sampled { head, tail, .. } => {
+                    head.iter().filter(|&&b| b == b'\n').count()
+                        + tail.iter().filter(|&&b| b == b'\n').count()
+                        + 1 // omission indicator row
+                }
+                glass_pipes::FinalizedBuffer::Binary { .. } => 1,
+            };
+            if lines == 0 { 1 } else { lines.min(30) }
+        } else {
+            1 // "no captured data" row
+        }
     }
 }
 

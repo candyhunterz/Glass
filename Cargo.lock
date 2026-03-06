@@ -1190,6 +1190,7 @@ dependencies = [
  "alacritty_terminal",
  "bytemuck",
  "glass_core",
+ "glass_pipes",
  "glass_terminal",
  "glyphon",
  "tracing",

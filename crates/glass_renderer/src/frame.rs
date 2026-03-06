@@ -39,6 +39,8 @@ pub struct FrameRenderer {
     text_buffers: Vec<Buffer>,
     /// Reusable buffer storage for overlay text (block labels, status bar)
     overlay_buffers: Vec<Buffer>,
+    /// Reusable buffer storage for pipeline overlay text (drawn after overlay rects)
+    pipeline_buffers: Vec<Buffer>,
 }
 
 impl FrameRenderer {
@@ -91,6 +93,7 @@ impl FrameRenderer {
             default_bg,
             text_buffers: Vec::new(),
             overlay_buffers: Vec::new(),
+            pipeline_buffers: Vec::new(),
         }
     }
 
@@ -135,14 +138,6 @@ impl FrameRenderer {
             );
             rect_instances.extend(block_rects);
 
-            // Pipeline stage row background rects
-            let pipeline_rects = self.block_renderer.build_pipeline_rects(
-                blocks,
-                viewport_abs_start,
-                snapshot.screen_lines,
-                w,
-            );
-            rect_instances.extend(pipeline_rects);
         }
 
         // 1c. Append status bar background rect
@@ -162,9 +157,25 @@ impl FrameRenderer {
             rect_instances.extend(overlay_rects);
         }
 
-        let rect_count = rect_instances.len() as u32;
+        // Record where background rects end (pipeline overlay rects come after)
+        let bg_rect_count = rect_instances.len() as u32;
 
-        // 2. Prepare rect renderer
+        // 1e. Pipeline panel rects (bottom of viewport, above status bar)
+        let (_, cell_height_early) = self.grid_renderer.cell_size();
+        let status_bar_h = if status.is_some() { cell_height_early } else { 0.0 };
+        if !blocks.is_empty() {
+            let pipeline_rects = self.block_renderer.build_pipeline_rects(
+                blocks,
+                w,
+                h,
+                status_bar_h,
+            );
+            rect_instances.extend(pipeline_rects);
+        }
+
+        let total_rect_count = rect_instances.len() as u32;
+
+        // 2. Prepare rect renderer (all rects in one buffer, drawn in two passes)
         self.rect_renderer.prepare(device, queue, &rect_instances, width, height);
 
         // 3. Build text buffers and text areas for grid content
@@ -232,37 +243,6 @@ impl FrameRenderer {
                 });
             }
 
-            // Pipeline stage label buffers
-            let pipeline_labels = self.block_renderer.build_pipeline_text(
-                blocks,
-                viewport_abs_start,
-                snapshot.screen_lines,
-                w,
-            );
-            for label in &pipeline_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
-                );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
-            }
         }
 
         // Status bar text buffers
@@ -382,6 +362,45 @@ impl FrameRenderer {
             }
         }
 
+        // Build pipeline label buffers separately (rendered in second pass)
+        self.pipeline_buffers.clear();
+        let mut pipeline_metas: Vec<OverlayMeta> = Vec::new();
+
+        if !blocks.is_empty() {
+            let pipeline_labels = self.block_renderer.build_pipeline_text(
+                blocks,
+                w,
+                h,
+                status_bar_h,
+            );
+            for label in &pipeline_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.pipeline_buffers.push(buffer);
+                pipeline_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        let has_pipeline_overlay = !pipeline_metas.is_empty();
+
         // Phase B: Create TextAreas from overlay buffers (immutable borrows only)
         for (i, meta) in overlay_metas.iter().enumerate() {
             text_areas.push(TextArea {
@@ -403,7 +422,7 @@ impl FrameRenderer {
         // 4. Update viewport resolution
         self.glyph_cache.viewport.update(queue, Resolution { width, height });
 
-        // 5. Prepare text renderer
+        // 5. Prepare text renderer (grid + block labels + status bar — NO pipeline labels)
         if let Err(e) = self.glyph_cache.text_renderer.prepare(
             device,
             queue,
@@ -445,10 +464,10 @@ impl FrameRenderer {
                 multiview_mask: None,
             });
 
-            // 7. Draw rect backgrounds first (grid + block decorations + status bar)
-            self.rect_renderer.render(&mut pass, rect_count);
+            // 7. Draw background rects (grid + block decorations + status bar)
+            self.rect_renderer.render(&mut pass, bg_rect_count);
 
-            // 8. Draw text on top (grid + block labels + status bar text)
+            // 8. Draw text (grid + block labels + status bar)
             if let Err(e) = self.glyph_cache.text_renderer.render(
                 &self.glyph_cache.atlas,
                 &self.glyph_cache.viewport,
@@ -456,10 +475,76 @@ impl FrameRenderer {
             ) {
                 tracing::warn!("Text render error: {:?}", e);
             }
+
+            // 9. Draw pipeline overlay rects on top of text
+            self.rect_renderer.render_range(&mut pass, bg_rect_count, total_rect_count);
         }
 
-        // 9. Submit (caller presents)
+        // Submit pass 1
         queue.submit([encoder.finish()]);
+
+        // 10. Second pass for pipeline label text (on top of overlay rects)
+        if has_pipeline_overlay {
+            let pipeline_text_areas: Vec<TextArea<'_>> = pipeline_metas
+                .iter()
+                .enumerate()
+                .map(|(i, meta)| TextArea {
+                    buffer: &self.pipeline_buffers[i],
+                    left: meta.left,
+                    top: meta.top,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: width as i32,
+                        bottom: height as i32,
+                    },
+                    default_color: meta.color,
+                    custom_glyphs: &[],
+                })
+                .collect();
+
+            if let Err(e) = self.glyph_cache.text_renderer.prepare(
+                device,
+                queue,
+                &mut self.glyph_cache.font_system,
+                &mut self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                pipeline_text_areas,
+                &mut self.glyph_cache.swash_cache,
+            ) {
+                tracing::warn!("Pipeline text prepare error: {:?}", e);
+            }
+
+            let mut encoder2 = device.create_command_encoder(&Default::default());
+            {
+                let mut pass2 = encoder2.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("pipeline_overlay_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load, // preserve previous content
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                if let Err(e) = self.glyph_cache.text_renderer.render(
+                    &self.glyph_cache.atlas,
+                    &self.glyph_cache.viewport,
+                    &mut pass2,
+                ) {
+                    tracing::warn!("Pipeline text render error: {:?}", e);
+                }
+            }
+            queue.submit([encoder2.finish()]);
+        }
     }
 
     /// Free unused glyph atlas space between frames.
