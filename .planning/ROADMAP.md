@@ -94,12 +94,12 @@ Plans:
   3. If a file has been modified since the undone command ran, Glass warns about the conflict before overwriting
   4. Each file-modifying command displays its undo confidence level (full pre-exec snapshot vs watcher-only recording)
   5. Snapshot behavior is configurable via config.toml (enabled, max_count, max_size_mb, retention_days)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 13-01: TBD
-- [ ] 13-02: TBD
-- [ ] 13-03: TBD
+- [ ] 13-01-PLAN.md — Config extension (SnapshotSection), undo types (FileOutcome, UndoResult), DB query methods
+- [ ] 13-02-PLAN.md — UndoEngine with TDD: file restoration, conflict detection, per-file outcomes
+- [ ] 13-03-PLAN.md — Wire pre-exec snapshots into CommandExecuted + Ctrl+Shift+Z keybinding for undo
 
 ### Phase 14: UI + CLI + MCP + Pruning
 **Goal**: Undo is discoverable through the UI, accessible via CLI and MCP, and storage is managed automatically
@@ -138,5 +138,5 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 10. Content Store + DB Schema | 2/2 | Complete    | 2026-03-05 | - |
 | 11. Command Parser | 2/2 | Complete    | 2026-03-05 | - |
 | 12. FS Watcher Engine | 2/2 | Complete    | 2026-03-06 | - |
-| 13. Integration + Undo Engine | v1.2 | 0/? | Not started | - |
+| 13. Integration + Undo Engine | v1.2 | 0/3 | Not started | - |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 0/? | Not started | - |
