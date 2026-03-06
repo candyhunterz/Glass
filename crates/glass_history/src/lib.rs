@@ -12,7 +12,7 @@ pub mod retention;
 pub mod search;
 
 pub use config::HistoryConfig;
-pub use db::{CommandRecord, HistoryDb};
+pub use db::{CommandRecord, HistoryDb, PipeStageRow};
 pub use query::QueryFilter;
 pub use search::SearchResult;
 

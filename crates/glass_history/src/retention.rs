@@ -30,6 +30,12 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
     if !ids_to_delete.is_empty() {
         let tx = conn.unchecked_transaction()?;
         for &id in &ids_to_delete {
+            tx.execute(
+                "DELETE FROM pipe_stages WHERE command_id = ?1",
+                params![id],
+            )?;
+        }
+        for &id in &ids_to_delete {
             // Delete from FTS table (standard FTS5 -- just DELETE by rowid)
             tx.execute(
                 "DELETE FROM commands_fts WHERE rowid = ?1",
@@ -70,6 +76,12 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
 
         if !old_ids.is_empty() {
             let tx = conn.unchecked_transaction()?;
+            for &id in &old_ids {
+                tx.execute(
+                    "DELETE FROM pipe_stages WHERE command_id = ?1",
+                    params![id],
+                )?;
+            }
             for &id in &old_ids {
                 tx.execute(
                     "DELETE FROM commands_fts WHERE rowid = ?1",
