@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
-status: Checkpoint Pending
-stopped_at: "17-02 Task 2 checkpoint:human-verify pending"
-last_updated: "2026-03-06T07:39:34.240Z"
-last_activity: 2026-03-06 -- Completed 17-02 Task 1, awaiting human-verify for Task 2
+status: Active
+stopped_at: "Completed 18-01-PLAN.md"
+last_updated: "2026-03-06T17:51:58Z"
+last_activity: 2026-03-06 -- Completed 18-01 pipe_stages storage and retention
 progress:
-  total_phases: 5
-  completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
+  total_phases: 6
+  completed_phases: 4
+  total_plans: 8
+  completed_plans: 8
   percent: 100
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 17 - Pipeline UI
+**Current focus:** Phase 18 - Storage + Retention
 
 ## Current Position
 
-Phase: 17 (3 of 5 in v1.3)
-Plan: 2 of 2 in current phase (17-02 checkpoint pending)
-Status: Checkpoint Pending
-Last activity: 2026-03-06 -- Completed 17-02 Task 1, awaiting human-verify for Task 2
+Phase: 18 (4 of 6 in v1.3)
+Plan: 1 of 1 in current phase (18-01 complete)
+Status: Active
+Last activity: 2026-03-06 -- Completed 18-01 pipe_stages storage and retention
 
-Progress: [██████████] 100% (v1.3 Phase 17 -- pending verification)
+Progress: [██████████] 100% (v1.3 Phase 18 complete)
 
 ## Performance Metrics
 
@@ -38,8 +38,8 @@ Progress: [██████████] 100% (v1.3 Phase 17 -- pending verifi
 - v1.0: 12 plans in ~1.8 hours (~9 min/plan)
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
-- v1.3: 4 plans so far
-- Total: 41 plans across 17 phases in 3 days
+- v1.3: 5 plans so far
+- Total: 42 plans across 18 phases in 3 days
 
 ## Accumulated Context
 
@@ -66,6 +66,10 @@ Recent decisions affecting current work:
 - [Phase 17-02]: Hit test uses prompt_start_line as pipeline header row for coordinate mapping
 - [Phase 17-02]: Mouse x-coordinate unused in hit test (full-row click targets for usability)
 - [Phase 17-02]: Hit test uses prompt_start_line as pipeline header row for coordinate mapping
+- [Phase 18-01]: Hardcoded version numbers in migration steps to prevent version skipping
+- [Phase 18-01]: Belt-and-suspenders deletion: explicit DELETE + ON DELETE CASCADE
+- [Phase 18-01]: FinalizedBuffer-to-PipeStageRow conversion in main.rs to avoid glass_history/glass_pipes coupling
+- [Phase 18-01]: PRAGMA foreign_keys = ON enabled globally in HistoryDb::open()
 
 ### Pending Todos
 
@@ -79,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T07:39:30.446Z
-Stopped at: 17-02 Task 2 checkpoint:human-verify pending
+Last session: 2026-03-06T17:51:58Z
+Stopped at: Completed 18-01-PLAN.md
 Resume file: None

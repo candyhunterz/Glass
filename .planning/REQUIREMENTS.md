@@ -29,8 +29,8 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 ### Storage & History
 
-- [ ] **STOR-01**: Pipe stage data stored in `pipe_stages` table linked to command_id in history.db
-- [ ] **STOR-02**: Stage data included in retention/pruning policies
+- [x] **STOR-01**: Pipe stage data stored in `pipe_stages` table linked to command_id in history.db
+- [x] **STOR-02**: Stage data included in retention/pruning policies
 
 ### MCP Integration
 
@@ -79,8 +79,8 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 | UI-02 | Phase 17 | Complete |
 | UI-03 | Phase 17 | Complete |
 | UI-04 | Phase 17 | Complete |
-| STOR-01 | Phase 18 | Pending |
-| STOR-02 | Phase 18 | Pending |
+| STOR-01 | Phase 18 | Complete |
+| STOR-02 | Phase 18 | Complete |
 | MCP-01 | Phase 19 | Pending |
 | MCP-02 | Phase 19 | Pending |
 | CONF-01 | Phase 19 | Pending |
