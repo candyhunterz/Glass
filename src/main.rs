@@ -717,32 +717,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         };
                         // Pre-exec snapshot: parse command, snapshot identified targets
-                        if let Some(ref store) = ctx.snapshot_store {
-                            let cwd_path_snap = std::path::Path::new(ctx.status.cwd());
-                            let parse_result = glass_snapshot::command_parser::parse_command(
-                                &command_text, cwd_path_snap,
-                            );
+                        let snapshot_enabled = self.config.snapshot.as_ref()
+                            .map(|s| s.enabled)
+                            .unwrap_or(true);
+                        if snapshot_enabled {
+                            if let Some(ref store) = ctx.snapshot_store {
+                                let cwd_path_snap = std::path::Path::new(ctx.status.cwd());
+                                let parse_result = glass_snapshot::command_parser::parse_command(
+                                    &command_text, cwd_path_snap,
+                                );
 
-                            if parse_result.confidence != glass_snapshot::Confidence::ReadOnly
-                                && !parse_result.targets.is_empty()
-                            {
-                                match store.create_snapshot(0, ctx.status.cwd()) {
-                                    Ok(sid) => {
-                                        for target in &parse_result.targets {
-                                            if let Err(e) = store.store_file(sid, target, "parser") {
-                                                tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
+                                if parse_result.confidence != glass_snapshot::Confidence::ReadOnly
+                                    && !parse_result.targets.is_empty()
+                                {
+                                    match store.create_snapshot(0, ctx.status.cwd()) {
+                                        Ok(sid) => {
+                                            for target in &parse_result.targets {
+                                                if let Err(e) = store.store_file(sid, target, "parser") {
+                                                    tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
+                                                }
                                             }
+                                            tracing::info!(
+                                                "Pre-exec snapshot {} with {} targets (confidence: {:?})",
+                                                sid, parse_result.targets.len(), parse_result.confidence,
+                                            );
+                                            ctx.pending_snapshot_id = Some(sid);
+                                            ctx.pending_parse_confidence = Some(parse_result.confidence);
                                         }
-                                        tracing::info!(
-                                            "Pre-exec snapshot {} with {} targets (confidence: {:?})",
-                                            sid, parse_result.targets.len(), parse_result.confidence,
-                                        );
-                                        ctx.pending_snapshot_id = Some(sid);
-                                        ctx.pending_parse_confidence = Some(parse_result.confidence);
+                                        Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
                                     }
-                                    Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
                                 }
                             }
+                        } else {
+                            tracing::debug!("Pre-exec snapshot skipped: snapshots disabled in config");
                         }
 
                         ctx.pending_command_text = Some(command_text);
