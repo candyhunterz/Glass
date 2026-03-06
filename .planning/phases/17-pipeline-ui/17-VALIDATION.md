@@ -1,10 +1,11 @@
 ---
 phase: 17
 slug: pipeline-ui
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-05
+validated: 2026-03-06
 ---
 
 # Phase 17 — Validation Strategy
@@ -36,27 +37,30 @@ created: 2026-03-05
 
 ## Per-Task Verification Map
 
-| Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 17-01-01 | 01 | 1 | UI-01 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_stage_command_text` | Wave 0 | pending |
-| 17-01-02 | 01 | 1 | UI-01 | unit | `cargo test -p glass_renderer --lib block_renderer` | Wave 0 | pending |
-| 17-01-03 | 01 | 1 | UI-02 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_auto_expand` | Wave 0 | pending |
-| 17-01-04 | 01 | 1 | UI-02 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_auto_collapse` | Wave 0 | pending |
-| 17-01-05 | 01 | 1 | UI-03 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_stage_expand_toggle` | Wave 0 | pending |
-| 17-01-06 | 01 | 1 | UI-04 | unit | `cargo test -p glass_renderer --lib block_renderer::tests::pipeline_hit_test` | Wave 0 | pending |
-
-*Status: pending / green / red / flaky*
+| Task ID | Plan | Wave | Requirement | Test Type | Automated Command | Status |
+|---------|------|------|-------------|-----------|-------------------|--------|
+| 17-01-01 | 01 | 1 | UI-01 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_stage_commands_stored` | green |
+| 17-01-02 | 01 | 1 | UI-01 | unit | `cargo test -p glass_renderer --lib block_renderer::tests` | green |
+| 17-01-03 | 01 | 1 | UI-02 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_auto_expand` | green |
+| 17-01-04 | 01 | 1 | UI-02 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_auto_collapse` | green |
+| 17-01-05 | 01 | 1 | UI-03 | unit | `cargo test -p glass_terminal --lib block_manager::tests::set_expanded_stage` | green |
+| 17-01-06 | 01 | 1 | UI-04 | unit | `cargo test -p glass_terminal --lib block_manager::tests::pipeline_hit_test` | green |
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `block_manager::tests::pipeline_auto_expand` — covers UI-02 auto-expand logic
-- [ ] `block_manager::tests::pipeline_auto_collapse` — covers UI-02 auto-collapse logic
-- [ ] `block_manager::tests::pipeline_stage_command_text` — covers UI-01 command text storage
-- [ ] `block_manager::tests::pipeline_stage_expand_toggle` — covers UI-03 stage expansion toggle
-- [ ] `block_renderer` pipeline rendering tests — covers UI-01 rect/label generation
-- [ ] Hit test helper tests — covers UI-04 click detection
+- [x] `block_manager::tests::pipeline_auto_expand_on_failure` — covers UI-02 auto-expand logic
+- [x] `block_manager::tests::pipeline_auto_expand_on_many_stages` — covers UI-02 auto-expand logic
+- [x] `block_manager::tests::pipeline_auto_collapse_simple_success` — covers UI-02 auto-collapse logic
+- [x] `block_manager::tests::pipeline_stage_commands_stored` — covers UI-01 command text storage
+- [x] `block_manager::tests::set_expanded_stage_sets_and_clears` — covers UI-03 stage expansion toggle
+- [x] `block_manager::tests::toggle_pipeline_expanded_clears_expanded_stage` — covers UI-03/UI-04 toggle
+- [x] `block_renderer::tests::test_pipeline_rects_*` (3 tests) — covers UI-01 rect generation
+- [x] `block_renderer::tests::test_pipeline_text_*` (5 tests) — covers UI-01 label generation
+- [x] `block_renderer::tests::test_line_count_*` (5 tests) — covers UI-01 line counting
+- [x] `block_renderer::tests::test_format_bytes_*` (3 tests) — covers UI-01 byte formatting
+- [x] `block_manager::tests::pipeline_hit_test_*` (4 tests) — covers UI-04 click detection
 
 ---
 
@@ -71,11 +75,19 @@ created: 2026-03-05
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** validated
+
+## Validation Audit 2026-03-06
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 2 |
+| Resolved | 2 |
+| Escalated | 0 |
