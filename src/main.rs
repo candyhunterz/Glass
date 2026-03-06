@@ -982,6 +982,46 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 Ok(id) => {
                                     ctx.last_command_id = Some(id);
                                     tracing::debug!("Inserted command record id={}", id);
+
+                                    // Persist pipeline stage data if present
+                                    if let Some(block) = ctx.block_manager.blocks().last() {
+                                        if !block.pipeline_stages.is_empty() {
+                                            let stages: Vec<glass_history::PipeStageRow> = block.pipeline_stages.iter().enumerate().map(|(i, stage)| {
+                                                let cmd_text = block.pipeline_stage_commands
+                                                    .get(i)
+                                                    .map(|s| s.as_str())
+                                                    .unwrap_or("");
+                                                let (output, total_bytes, is_binary, is_sampled) = match &stage.data {
+                                                    glass_pipes::FinalizedBuffer::Complete(data) => {
+                                                        let text = String::from_utf8_lossy(data).into_owned();
+                                                        (if text.is_empty() { None } else { Some(text) }, data.len() as i64, false, false)
+                                                    }
+                                                    glass_pipes::FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+                                                        let head_text = String::from_utf8_lossy(head);
+                                                        let tail_text = String::from_utf8_lossy(tail);
+                                                        let omitted = total_bytes - head.len() - tail.len();
+                                                        let combined = format!("{}\n[...{} bytes omitted...]\n{}", head_text, omitted, tail_text);
+                                                        (Some(combined), *total_bytes as i64, false, true)
+                                                    }
+                                                    glass_pipes::FinalizedBuffer::Binary { size } => {
+                                                        (None, *size as i64, true, false)
+                                                    }
+                                                };
+                                                glass_history::PipeStageRow {
+                                                    stage_index: stage.index as i64,
+                                                    command: cmd_text.to_string(),
+                                                    output,
+                                                    total_bytes,
+                                                    is_binary,
+                                                    is_sampled,
+                                                }
+                                            }).collect();
+
+                                            if let Err(e) = db.insert_pipe_stages(id, &stages) {
+                                                tracing::warn!("Failed to insert pipe stages: {}", e);
+                                            }
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     tracing::warn!("Failed to insert command record: {}", e);
