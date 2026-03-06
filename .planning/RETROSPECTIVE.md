@@ -2,6 +2,54 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v1.2 -- Command-Level Undo
+
+**Shipped:** 2026-03-06
+**Phases:** 5 | **Plans:** 13 | **Sessions:** ~4
+
+### What Was Built
+- Content-addressed blob store (glass_snapshot crate) with BLAKE3 hashing, deduplication, and SQLite snapshot metadata
+- POSIX + PowerShell command parser with whitelist dispatch identifying file targets for pre-exec snapshot
+- Filesystem watcher engine with .glassignore pattern matching and notify-based event monitoring
+- UndoEngine with conflict detection, file restoration, confidence tracking, and one-shot semantics
+- [undo] label on command blocks, Ctrl+Shift+Z keybinding, CLI undo subcommand, GlassUndo + GlassFileDiff MCP tools
+- Storage pruning with age/count/orphan cleanup on startup background thread
+
+### What Worked
+- Dual mechanism design (pre-exec parser + FS watcher) gave honest confidence levels without over-promising
+- Clean phase layering: storage foundation (10) -> independent parser (11) + watcher (12) -> integration (13) -> UI/CLI/MCP (14)
+- Parallel phase execution for 11+12 (both depended only on 10) saved time
+- Single glass_snapshot crate API surface kept consumers (main.rs, glass_mcp) clean
+- Gap closure plan (13-04) caught confidence display and config gating gaps before moving to Phase 14
+- Re-verification pattern (Phase 13 verified twice: before and after gap closure) caught real issues
+
+### What Was Inefficient
+- Phases 11 and 12 could have been more tightly integrated during planning -- watcher events needed to map to parser confidence levels, which required Phase 13 to reconcile
+- VALIDATION.md files created as drafts for all phases but never completed -- Nyquist validation remains a persistent gap across all milestones
+- 13 plans across 5 phases for a single feature (undo) may have been over-decomposed -- some plans had very narrow scope
+
+### Patterns Established
+- SnapshotStore coordinator pattern (BlobStore + SnapshotDb behind single API)
+- Whitelist dispatch command parser with per-command extractors
+- HashMap deduplication for watcher events (keep last event per path)
+- Safety margin pattern for pruning (protect N most recent from age-based deletion)
+- Config gating pattern: Option<Section> with enabled field, absent = default enabled
+- Per-request store opening in spawn_blocking for !Send types in async MCP handlers
+
+### Key Lessons
+1. Dual mechanism designs (parser + watcher) are more honest than trying to make one approach perfect
+2. Gap closure plans are a reliable pattern -- plan for them rather than hoping everything is wired first time
+3. Nyquist validation needs to be integrated into phase execution, not deferred -- it's been skipped across 3 milestones now
+4. One-shot undo is the right V1 semantics -- simpler mental model for users before adding undo chains
+5. Separate SQLite databases (history.db, snapshots.db) enable independent lifecycle management
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~4 sessions across 2 days
+- Notable: 13 plans in ~6 hours, averaging ~28 min/plan (slower than v1.1 due to complex cross-phase integration)
+
+---
+
 ## Milestone: v1.1 -- Structured Scrollback + MCP Server
 
 **Shipped:** 2026-03-05
@@ -104,6 +152,7 @@
 |-----------|----------|--------|------------|
 | v1.0 | ~4 | 4 | Established GSD workflow with TDD, wave execution |
 | v1.1 | ~5 | 5 | Added gap closure pattern, cross-crate integration testing |
+| v1.2 | ~4 | 5 | Dual mechanism design, re-verification after gap closure, parallel phase execution |
 
 ### Cumulative Quality
 
@@ -111,10 +160,13 @@
 |-----------|-------|----------|-----------------|
 | v1.0 | 27+ | Partial (Nyquist gaps in phases 2-4) | 3 |
 | v1.1 | 88+ (phase 5 alone) | Partial (Nyquist gaps in phases 5-9) | 4 |
+| v1.2 | 234+ (full workspace) | Partial (Nyquist gaps in phases 10-14) | 2 |
 
 ### Top Lessons (Verified Across Milestones)
 
-1. Always verify API/SDK versions against installed source, not documentation -- confirmed in both v1.0 (winit/wgpu) and v1.1 (rmcp)
+1. Always verify API/SDK versions against installed source, not documentation -- confirmed in v1.0 (winit/wgpu), v1.1 (rmcp)
 2. Roadmap checkbox state drifts consistently -- needs automated verification
-3. Pin exact crate versions for unstable APIs -- confirmed across both milestones
+3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
+5. Gap closure plans are reliable -- confirmed in v1.1 (Phase 6) and v1.2 (Phase 13); plan for them proactively
+6. Nyquist validation is persistently skipped -- 3 milestones with partial coverage; needs workflow integration, not just reminders

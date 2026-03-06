@@ -1,5 +1,32 @@
 # Milestones
 
+## v1.2 Command-Level Undo (Shipped: 2026-03-06)
+
+**Phases completed:** 5 phases, 13 plans
+**Lines of code:** 12,214 Rust (up from 8,473)
+**Timeline:** 2026-03-05 to 2026-03-06 (2 days)
+**Git range:** feat(10-01) to docs(phase-14)
+
+**Delivered:** Command-level undo system with automatic filesystem snapshots, pre-exec command parsing, FS watcher engine, one-keystroke revert (Ctrl+Shift+Z), CLI undo, MCP tools for AI integration, and storage lifecycle management.
+
+**Key accomplishments:**
+- Content-addressed blob store (glass_snapshot crate) with BLAKE3 hashing, deduplication, and SQLite snapshot metadata
+- POSIX + PowerShell command parser identifying file targets for pre-exec snapshot (rm, mv, sed -i, cp, chmod, git checkout, Remove-Item, etc.)
+- Filesystem watcher engine with .glassignore pattern matching and notify-based event monitoring during command execution
+- UndoEngine with conflict detection (BLAKE3 hash comparison), file restoration, and confidence tracking
+- [undo] label on command blocks, Ctrl+Shift+Z keybinding, `glass undo <id>` CLI, GlassUndo + GlassFileDiff MCP tools
+- Storage pruning with configurable age/count limits and orphan blob cleanup on startup
+
+**Tech debt (from audit):**
+- pruner.rs: max_size_mb accepted but not enforced (count and age pruning work; size is secondary)
+- Nyquist validation partial across all 5 phases (VALIDATION.md exists but draft/non-compliant)
+
+**v1.1 tech debt resolved by v1.2:**
+- Command text extraction fixed (now extracted at CommandExecuted time, no longer empty string)
+- prune() now auto-triggered on startup via background thread
+
+---
+
 ## v1.1 Structured Scrollback + MCP Server (Shipped: 2026-03-05)
 
 **Phases completed:** 5 phases, 12 plans

@@ -1,93 +1,46 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Command-Level Undo
-status: completed
-stopped_at: Completed 14-02-SUMMARY.md (retroactive)
-last_updated: "2026-03-06T03:17:59.535Z"
-last_activity: 2026-03-06 -- Completed 14-03-PLAN.md (MCP undo + file diff tools)
+milestone: null
+milestone_name: null
+status: between_milestones
+stopped_at: null
+last_updated: "2026-03-06T04:45:00Z"
+last_activity: 2026-03-06 -- Completed v1.2 milestone (Command-Level Undo)
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 13
-  completed_plans: 13
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-05)
+See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 14 - UI + CLI + MCP + Pruning
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 14 (5 of 5 in v1.2)
-Plan: 3 of 3 in current phase
-Status: Phase 14 complete
-Last activity: 2026-03-06 -- Completed 14-03-PLAN.md (MCP undo + file diff tools)
-
-Progress: [██████████] 100% (Phase 14)
+No active milestone. v1.2 Command-Level Undo shipped 2026-03-06.
+Use `/gsd:new-milestone` to start the next milestone.
 
 ## Performance Metrics
 
 **Velocity (cumulative):**
 - v1.0: 12 plans in ~1.8 hours (~9 min/plan)
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
-- Total: 24 plans across 9 phases in 2 days
+- v1.2: 13 plans in ~6 hours (~28 min/plan)
+- Total: 37 plans across 14 phases in 3 days
 
 ## Accumulated Context
 
 ### Decisions
 
 See PROJECT.md Key Decisions table for full history.
-Recent decisions affecting current work:
-
-- [v1.2 research]: Content-addressed blobs on filesystem (not SQLite BLOBs) -- >100KB threshold from SQLite guidance
-- [v1.2 research]: Separate snapshots.db from history.db -- avoids migration risk, independent pruning
-- [v1.2 research]: Dual mechanism (pre-exec snapshot + FS watcher) -- watcher is safety net for parser gaps
-- [v1.2 research]: shlex for POSIX tokenization, separate PowerShell tokenizer needed
-- [10-01]: BLAKE3 hex hashes stored as TEXT in SQLite for debuggability
-- [10-01]: NULL blob_hash for files that did not exist before command
-- [10-01]: Symlinks skipped during snapshot file storage
-- [10-02]: Command text extracted after block_manager processes CommandExecuted (output_start_line must be set first)
-- [10-02]: pending_command_text uses Option<String> with take() for single-consumption semantics
-- [10-02]: SnapshotStore opened alongside HistoryDb at window creation with warn-on-failure
-- [11-01]: Single-file parser with whitelist dispatch rather than submodule split
-- [11-01]: Redirect targets merged into ParseResult regardless of base command classification
-- [11-01]: POSIX / paths treated as absolute on Windows for WSL compatibility
-- [11-01]: Glob characters in arguments trigger Low confidence (no expansion)
-- [Phase 11]: Single-file parser with whitelist dispatch, shlex tokenization, redirect detection, WSL path compatibility
-- [11-02]: PowerShell aliases (del, move, copy) routed to PS parser, shadowing POSIX dispatch
-- [11-02]: Verb-Noun heuristic detects arbitrary cmdlets via alphabetic-hyphen-alphabetic pattern
-- [11-02]: tokenize_powershell uses simple quote-aware splitter (PS uses backtick, not backslash)
-- [11-02]: Unknown Verb-Noun cmdlets return Low confidence
-- [Phase 11-02]: PowerShell aliases routed to PS parser, Verb-Noun heuristic for cmdlet detection, tokenize_powershell without backslash escaping
-- [12-01]: Used ignore crate's gitignore module for .glassignore matching (battle-tested, handles negation and directory patterns)
-- [12-01]: matched_path_or_any_parents for subdirectory matching of ignored directories
-- [12-01]: HashMap deduplication keeps last event per path in drain_events()
-- [12-02]: Watcher drain placed after history record insert so last_command_id is available for snapshot
-- [12-02]: Rename events store both source and destination paths via store_file
-- [12-02]: Watcher creation failure is non-fatal (warns and continues without monitoring)
-- [13-01]: SnapshotSection uses Option<SnapshotSection> on GlassConfig for backward compatibility (absent = None, present = defaults)
-- [13-01]: get_latest_parser_snapshot uses EXISTS subquery on snapshot_files source column for efficient filtering
-- [13-02]: Optimistic conflict resolution: no watcher data for a file means no conflict
-- [13-02]: check_conflict returns Option tuple for direct Conflict variant population
-- [13-02]: Confidence::High hardcoded for V1 since get_latest_parser_snapshot only returns parser-sourced snapshots
-- [Phase 13]: Pre-exec snapshot uses local command_text variable before pending_command_text is set
-- [Phase 13]: Ctrl+Shift+Z follows identical pattern to Ctrl+Shift+C/V/F: match character, perform action, return early
-- [Phase 13]: Config absent (None) defaults to enabled=true for backward compatibility
-- [Phase 13]: Only pre-exec snapshot creation gated by config; undo handler and FS watcher remain ungated
-- [14-01]: Safety margin protects 10 most recent snapshots from age-based pruning using min(age_epoch, safe_epoch)
-- [14-01]: Pruner takes individual config values (retention_days, max_count, max_size_mb) to avoid cross-crate dependency
-- [14-01]: One-shot undo: both undo_latest and undo_command delete snapshot after successful restore
-- [14-01]: Shared restore_snapshot private method in UndoEngine for all undo operations
-- [14-03]: GlassServer stores glass_dir PathBuf (not open SnapshotStore) for per-request store opening in spawn_blocking
-- [14-03]: glass_file_diff filters to parser-sourced files only, excluding watcher files from output
-- [Phase 14-02]: Visual feedback V1: [undo] label disappearance IS the confirmation; per-file outcomes logged via tracing
 
 ### Pending Todos
 
@@ -95,12 +48,10 @@ None.
 
 ### Blockers/Concerns
 
-- ~~Command text extraction timing: must move from CommandFinished to CommandExecuted~~ RESOLVED in 10-02
-- notify crate default buffer size on Windows needs verification during Phase 12 planning
-- ~~PowerShell command parsing needs separate tokenizer (not shlex) -- design deferred to Phase 11~~ RESOLVED in 11-02
+None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T03:15:21.727Z
-Stopped at: Completed 14-02-SUMMARY.md (retroactive)
+Last session: 2026-03-06
+Stopped at: Milestone v1.2 complete
 Resume file: None

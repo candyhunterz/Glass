@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for PowerShell and Bash emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio.
+Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for PowerShell and Bash emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z).
 
 ## Core Value
 
@@ -34,24 +34,22 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ Search overlay (Ctrl+Shift+F) with live incremental search and scroll-to-block -- v1.1
 - ✓ MCP server (`glass mcp serve`) with GlassHistory and GlassContext tools over stdio -- v1.1
 - ✓ Clap subcommand routing preserving default terminal launch -- v1.1
+- ✓ Content-addressed blob store (BLAKE3) with deduplication for file snapshots -- v1.2
+- ✓ Command parser identifying file targets for pre-exec snapshot (POSIX + PowerShell) -- v1.2
+- ✓ FS watcher monitoring CWD during command execution with .glassignore -- v1.2
+- ✓ Auto pre-exec snapshot on file-modifying commands (OSC 133;C triggered) -- v1.2
+- ✓ Ctrl+Shift+Z undo restoring files to pre-command state -- v1.2
+- ✓ Conflict detection warning if file modified since tracked command -- v1.2
+- ✓ Confidence level display (pre-exec snapshot vs watcher-only) -- v1.2
+- ✓ [undo] label on command blocks with visual feedback after undo -- v1.2
+- ✓ CLI undo: `glass undo <command-id>` -- v1.2
+- ✓ MCP tools: GlassUndo and GlassFileDiff for AI integration -- v1.2
+- ✓ Storage pruning with configurable age/count limits and startup cleanup -- v1.2
+- ✓ Snapshot configuration section in config.toml -- v1.2
 
 ### Active
 
-## Current Milestone: v1.2 Command-Level Undo
-
-**Goal:** Automatic filesystem snapshots per command with one-keystroke revert via Ctrl+Shift+Z.
-
-**Target features:**
-- Filesystem monitoring engine (ReadDirectoryChangesW on Windows)
-- Pre-exec command parsing to identify file targets for snapshot
-- Snapshot storage with content-addressed deduplication
-- Ctrl+Shift+Z undo and [undo] button on command blocks
-- CLI interface: `glass undo <command-id>`
-- MCP tools: GlassUndo, GlassFileDiff
-- Storage management and pruning
-- File modification tracking integrated into history DB
-
-**Approach:** Targeted pre-exec snapshot (parse command text for file arguments, snapshot before execution) + FS watcher for recording all modifications. Honest limitations: commands with unpredictable file targets (scripts, build tools) get recorded but may not be fully undoable.
+(No active milestone -- define next with `/gsd:new-milestone`)
 
 #### Future
 
@@ -60,6 +58,12 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - [ ] Config hot reload
 - [ ] macOS and Linux support
 - [ ] Tabs and split panes
+- [ ] Blob compression with zstd for storage efficiency
+- [ ] Diff view before undo (preview what will change)
+- [ ] Per-file partial undo from multi-file commands
+- [ ] Undo/redo chain navigation
+- [ ] File modification timeline queries ("what changed config.ts?")
+- [ ] Multi-command batch undo
 
 ### Out of Scope
 
@@ -74,17 +78,20 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - FTS5 on output content -- defer until storage impact measured in practice
 - Custom FTS5 tokenizer -- unicode61 default sufficient; revisit if search quality is poor
 - MCP over network transport -- stdio sufficient for local AI; network adds security concerns
+- Full directory tree snapshots -- storage explosion (node_modules = 500MB+)
+- Process state undo -- killed processes, env changes, network effects are irreversible
+- Undo for sudo/elevated commands -- security implications of writing to system paths
+- Full shell command parser -- shell syntax is Turing-complete; heuristic whitelist instead
 
 ## Context
 
-Shipped v1.1 with 8,473 LOC Rust across 9 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_mcp + root binary).
-Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, chrono 0.4.
+Shipped v1.2 with 12,214 LOC Rust across 10 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_mcp + root binary).
+Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4.
 Windows 11 first -- ConPTY for PTY, DX12 for GPU rendering.
-Built across 2 milestones (9 phases, 24 plans) in 2 days.
+Built across 3 milestones (14 phases, 37 plans) in 3 days.
 
 Known tech debt:
-- Command text stored as empty string in history (grid extraction deferred)
-- prune() never auto-triggered (retention policies exist as library code only)
+- pruner.rs max_size_mb not enforced (count and age pruning work)
 - PTY throughput not benchmarked quantitatively
 - Nyquist validation partial across all phases
 
@@ -120,6 +127,13 @@ Known tech debt:
 | rmcp SDK for MCP | Official Rust MCP SDK, handles JSON-RPC framing | ✓ Good -- clean integration |
 | MCP as separate process | `glass mcp serve` not embedded in terminal process | ✓ Good -- isolation, testability |
 | Epoch timestamp matching for scroll-to-block | Wall-clock match between DB records and Block structs | ✓ Good -- reliable navigation |
+| Separate snapshots.db from history.db | Independent pruning, avoids migration risk | ✓ Good -- clean separation |
+| Content-addressed blobs on filesystem | >100KB threshold from SQLite guidance; shard dirs for scalability | ✓ Good -- dedup works well |
+| Dual mechanism (pre-exec parser + FS watcher) | Watcher is safety net for parser gaps | ✓ Good -- honest limitations |
+| shlex for POSIX, custom for PowerShell | shlex battle-tested; PS uses backtick escaping | ✓ Good -- correct tokenization |
+| One-shot undo (snapshot deleted after restore) | Simple V1 semantics; undo chain deferred | ✓ Good -- clear behavior |
+| Config gating pre-exec only | FS watcher and undo handler always available | ✓ Good -- can undo existing snapshots even when creation disabled |
+| GlassServer stores glass_dir not open store | Per-request store opening in spawn_blocking for thread safety | ✓ Good -- SnapshotStore is !Send |
 
 ---
-*Last updated: 2026-03-05 after v1.2 milestone start*
+*Last updated: 2026-03-06 after v1.2 milestone*
