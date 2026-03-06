@@ -209,6 +209,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_glass_server_accepts_glass_dir() {
+        let db_path = PathBuf::from("/tmp/history.db");
+        let glass_dir = PathBuf::from("/tmp/.glass");
+        let server = GlassServer::new(db_path.clone(), glass_dir.clone());
+        assert_eq!(server.db_path, db_path);
+        assert_eq!(server.glass_dir, glass_dir);
+    }
+
+    #[test]
+    fn test_undo_params_deserialize() {
+        let json = r#"{"command_id": 42}"#;
+        let params: UndoParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 42);
+    }
+
+    #[test]
+    fn test_file_diff_params_deserialize() {
+        let json = r#"{"command_id": 99}"#;
+        let params: FileDiffParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 99);
+    }
+
+    #[test]
     fn test_history_entry_from_record_truncates_long_output() {
         let record = CommandRecord {
             id: None,
