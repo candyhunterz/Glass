@@ -75,7 +75,11 @@ Plans:
   2. In PowerShell, running a piped command captures per-stage text representation via Tee-Object and emits OSC 133;P sequences
   3. Exit codes are preserved correctly through tee-rewritten pipelines (PIPESTATUS captured)
   4. The terminal's OscScanner parses OSC 133;S and 133;P sequences into ShellEvent variants, and Block structs gain pipeline_stages fields
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 16-01-PLAN.md -- Types, OscScanner parsing, and event wiring for pipeline OSC sequences
+- [ ] 16-02-PLAN.md -- Block pipeline_stages field and main event loop temp file reading
+- [ ] 16-03-PLAN.md -- Bash tee rewriting and PowerShell Tee-Object capture in shell scripts
 
 ### Phase 17: Pipeline UI
 **Goal**: Users see piped commands rendered as multi-row pipeline blocks with inspectable stage output
@@ -130,8 +134,8 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 12. FS Watcher Engine | v1.2 | 2/2 | Complete | 2026-03-06 |
 | 13. Integration + Undo Engine | v1.2 | 4/4 | Complete | 2026-03-06 |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
-| 15. Pipe Parsing Core | 2/2 | Complete    | 2026-03-06 | - |
-| 16. Shell Capture + Terminal Transport | v1.3 | 0/? | Not started | - |
+| 15. Pipe Parsing Core | v1.3 | 2/2 | Complete | 2026-03-06 |
+| 16. Shell Capture + Terminal Transport | v1.3 | 0/3 | Not started | - |
 | 17. Pipeline UI | v1.3 | 0/? | Not started | - |
 | 18. Storage + Retention | v1.3 | 0/? | Not started | - |
 | 19. MCP + Config + Polish | v1.3 | 0/? | Not started | - |
