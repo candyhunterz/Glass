@@ -9,7 +9,7 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 ### Pipe Parsing
 
-- [ ] **PIPE-01**: User's piped commands are detected and parsed into individual stages
+- [x] **PIPE-01**: User's piped commands are detected and parsed into individual stages
 - [ ] **PIPE-02**: User can opt out of pipe capture per-command with `--no-glass` flag
 - [ ] **PIPE-03**: TTY-sensitive commands (less, vim, fzf, git log) are auto-excluded from interception
 
@@ -68,7 +68,7 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | Phase 15 | Pending |
+| PIPE-01 | Phase 15 | Complete |
 | PIPE-02 | Phase 15 | Pending |
 | PIPE-03 | Phase 15 | Pending |
 | CAPT-01 | Phase 16 | Pending |
