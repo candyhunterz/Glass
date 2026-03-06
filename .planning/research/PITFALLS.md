@@ -1,323 +1,491 @@
-# Pitfalls Research
+# Domain Pitfalls
 
-**Domain:** Pipe visualization for terminal emulator (adding to existing Glass v1.3)
-**Researched:** 2026-03-05
-**Confidence:** HIGH (most pitfalls verified through official docs, codebase analysis, and multiple sources)
+**Domain:** Cross-platform terminal emulator (adding macOS/Linux + tabs/split panes to existing Windows-only Rust terminal)
+**Researched:** 2026-03-06
+**Confidence:** HIGH (verified against alacritty, wezterm, wgpu sources, and Glass codebase analysis)
 
 ## Critical Pitfalls
 
-### Pitfall 1: TTY Detection Changes Command Output (isatty Behavioral Shift)
+### Pitfall 1: PTY Abstraction Hides Fundamental Semantic Differences Between ConPTY and forkpty
 
 **What goes wrong:**
-When Glass inserts `tee` (or any pipe-based capture mechanism) between pipe stages, commands detect that stdout is no longer a TTY via `isatty(1)`. This causes `ls` to switch from multi-column to single-column output, `git` to disable colors, `grep --color=auto` to emit plain text, and programs like `less`/`more` to behave as `cat`. The user sees different output than they would without pipe visualization enabled, breaking Glass's core value: "looks and feels normal."
+Glass's `pty.rs` directly uses `alacritty_terminal::tty` which provides `tty::new()`, `tty::Pty`, and `EventedPty` -- these already abstract ConPTY on Windows vs forkpty on Unix. But the abstraction hides critical behavioral differences:
+- **Signal propagation:** Unix PTYs use signal groups (`SIGWINCH` for resize, `SIGHUP` on disconnect, `SIGCHLD` on child exit). ConPTY uses none of these -- resize is an API call (`ResizePseudoConsole`), and child exit comes via `WaitForSingleObject`. Glass's current code handles `tty::ChildEvent::Exited` which maps differently per platform.
+- **EOF semantics:** On Unix, the PTY master gets EOF when the child exits AND all file descriptors are closed. On Windows ConPTY, the pipe-based I/O can return EOF before the process has fully terminated, or vice versa.
+- **Process group lifetime:** Unix forkpty creates a new session with `setsid()`. The child is the session leader. If Glass crashes, orphaned children get `SIGHUP`. On Windows, ConPTY children are not in a job object by default -- if Glass crashes, child processes become orphans with no cleanup signal.
 
 **Why it happens:**
-Most CLI tools call `isatty()` on their stdout file descriptor. When stdout points to a pipe (from tee insertion) instead of the PTY, `isatty()` returns false. This is fundamental POSIX behavior. Commands with `--color=auto` (the default for git, ls, grep on most systems) disable color. Commands like `ls` switch to one-entry-per-line format. Interactive pagers refuse to paginate.
+ConPTY and forkpty solve the same problem (give a process a fake terminal) but with completely different OS primitives. ConPTY wraps Windows Console API with pipes. forkpty wraps Unix pseudo-terminal devices with file descriptors. The `alacritty_terminal::tty` trait makes them look similar, but edge cases (process lifecycle, signal handling, error conditions) diverge.
 
-**How to avoid:**
-1. Do NOT insert tee between pipe stages for bash/zsh. Instead, capture output at the PTY reader level, where Glass already sees all bytes via `OutputBuffer`. The challenge is attributing bytes to specific pipe stages, not capturing them.
-2. For per-stage capture in bash/zsh, the practical approach is post-hoc: parse the combined PTY output to reconstruct what each stage produced, using shell integration markers or heuristic splitting.
-3. For PowerShell, use `Tee-Object` which preserves object types natively.
-4. If tee insertion is truly unavoidable for a subset of scenarios, force `--color=always` on known commands -- but this is a maintenance nightmare and breaks unknown commands. Avoid this path.
+**Consequences:**
+- Zombie processes on macOS/Linux when Glass exits uncleanly (no `SIGHUP` sent, or sent but not handled correctly)
+- PTY reader thread hangs on Unix waiting for EOF that never comes because a background child process holds the PTY fd open
+- Different behavior between `Ctrl+C` (sends `SIGINT` to foreground process group on Unix, `CTRL_C_EVENT` via `GenerateConsoleCtrlEvent` on Windows)
 
-**Warning signs:**
-- `ls` output appears as one file per line when pipe visualization is active
-- Colors disappear from git/grep output in visualized pipes
-- Users report "my terminal looks different with pipe viz enabled"
+**Prevention:**
+1. Keep using `alacritty_terminal::tty` -- it handles the low-level differences. Do NOT write a custom PTY layer.
+2. Add explicit signal handling on Unix: install `SIGCHLD` handler for reaping, and send `SIGHUP` to child process group on Glass exit.
+3. On Windows, consider using Job Objects to ensure child cleanup on parent crash.
+4. Test the PTY reader thread shutdown path on each platform separately. The drain-on-exit logic (line 148 `drain_on_exit: true`) may behave differently.
+5. Add a watchdog: if child process exits but PTY reader thread hasn't received EOF within 5 seconds, force-close.
+
+**Detection:**
+- `ps aux | grep defunct` shows zombie processes after closing Glass on Linux/macOS
+- PTY reader thread still running after shell exits (check thread list)
+- `Ctrl+C` kills Glass instead of sending to child process
 
 **Phase to address:**
-Phase 1 (Pipe detection and capture architecture) -- this is the foundational decision. Getting capture wrong here poisons everything downstream.
+Phase 1 (Platform PTY abstraction) -- must be validated with per-platform integration tests before any tabs/splits work begins.
 
 ---
 
-### Pitfall 2: Exit Code Swallowing When Inserting Tee
+### Pitfall 2: wgpu Backend-Specific Shader and Surface Behavior Differences
 
 **What goes wrong:**
-In bash, `$?` returns the exit code of the LAST command in a pipeline. If Glass rewrites `cmd1 | cmd2` to `cmd1 | tee /tmp/cap1 | cmd2 | tee /tmp/cap2`, then `$?` reflects tee's exit code (almost always 0), not cmd2's. The exit code displayed in Glass's block decoration becomes meaningless. Glass uses OSC 133;D exit codes from `glass.ps1` -- the reported exit code would be tee's, not the user's actual pipeline result.
+Glass currently forces `wgpu::Backends::DX12` on Windows (surface.rs line 24). The existing `#[cfg(not(target_os = "windows"))]` falls back to `Backends::all()`, which means Metal on macOS and Vulkan on Linux. But WGSL shaders that work on DX12 may exhibit subtle differences on Metal or Vulkan due to Naga's shader translation:
+- **Texture format differences:** `caps.formats[0]` (surface.rs line 53) returns different preferred formats per backend. DX12 typically gives `Bgra8UnormSrgb`, Metal may give `Bgra8Unorm` (no sRGB), Vulkan may give `Bgra8Srgb`. If Glass's glyph rendering or rect rendering assumes a specific format, colors shift.
+- **Surface lost/outdated frequency:** macOS aggressively invalidates surfaces on window resize/occlude. Linux Wayland invalidates on compositor changes. Glass handles `SurfaceError::Lost` and `Outdated` already (surface.rs lines 80-84), but on macOS these fire much more frequently than DX12 on Windows.
+- **Metal shader compilation timeout:** Known wgpu issue (#4456) where certain WGSL patterns cause Metal shader compilation to hang. Glass's shaders are simple (instanced quads), so this is low risk but not zero.
+- **Integer minimum value:** `i32::MIN` (-2147483648) causes Metal shader compilation errors (wgpu issue #4399). If Glass ever uses this in shader constants, it will work on DX12 but crash on Metal.
 
 **Why it happens:**
-Bash default: `$?` = exit code of last pipeline component. Even with `set -o pipefail`, the behavior is "rightmost non-zero exit code" -- tee's success (0) masks failures in earlier stages. `PIPESTATUS` array helps but is bash-only (not available in zsh by default or PowerShell).
+wgpu abstracts graphics APIs through Naga shader translation. Naga translates WGSL to MSL (Metal Shading Language) for macOS, SPIR-V for Vulkan, and HLSL for DX12. Each translation has edge cases. Additionally, different backends have different surface lifecycle semantics.
 
-**How to avoid:**
-1. Prefer PTY-level capture over command rewriting entirely. Glass already captures output in `OutputBuffer` -- extend this rather than rewriting commands.
-2. If command rewriting is unavoidable, never let the tee process be the last command in the pipeline visible to the shell. Use process substitution: `cmd1 | tee >(cat > /tmp/cap1) | cmd2` -- tee feeds the capture via a subshell but cmd2 remains the last pipeline element.
-3. Run `echo ${PIPESTATUS[@]}` or equivalent after each pipeline to collect per-stage exit codes.
+**Consequences:**
+- Application renders correctly on Windows but shows wrong colors, blank screen, or crashes on macOS/Linux
+- Intermittent blank frames on macOS during window resize (surface invalidation race)
+- "No compatible GPU adapter found" panic on Linux VMs without GPU passthrough
 
-**Warning signs:**
-- All piped commands show exit code 0 regardless of actual failures
-- `set -e` scripts break when pipe visualization is enabled
-- CI/CD workflows behave differently under Glass
+**Prevention:**
+1. Test on all three platforms early -- do not develop the full renderer on Windows and port later.
+2. Explicitly handle texture format negotiation: query `caps.formats` and select a format that works for your shaders, rather than blindly taking `[0]`.
+3. On Linux, add fallback to GL backend (`wgpu::Backends::GL`) for environments without Vulkan (VMs, older GPUs, Wayland compositors with no Vulkan support).
+4. Add a `GLASS_GPU_BACKEND` environment variable override for debugging.
+5. Test surface lost/outdated handling on macOS by rapidly resizing the window and minimizing/restoring.
+
+**Detection:**
+- Colors look different between platforms (sRGB vs linear gamma)
+- Blank frames during resize on macOS
+- Crash on startup on Linux VM
 
 **Phase to address:**
-Phase 1 (Capture architecture) -- must be resolved before any shell-level command rewriting is considered.
+Phase 2 (Renderer abstraction) -- validate surface/format handling on each platform before building tab/split viewport splitting.
 
 ---
 
-### Pitfall 3: Shell Quoting/Escaping Corruption in Command Rewriting
+### Pitfall 3: macOS Keyboard Modifier Mapping -- Cmd vs Ctrl Confusion
 
 **What goes wrong:**
-If Glass rewrites `grep "hello world" file.txt | wc -l` by parsing and reconstructing it, incorrect re-quoting produces `grep hello world file.txt | wc -l` (argument split) or double-escaping produces `grep \"hello world\" file.txt | wc -l`. Commands with nested quotes, backticks, `$()` substitutions, heredocs, or brace expansion become mangled. The existing `command_parser.rs` already flags pipes (`" | "`) as `Confidence::Low` / unparseable syntax via `contains_unparseable_syntax()` -- this is correct and must be respected.
+Glass's current keyboard shortcuts use `Ctrl+Shift+C` (copy), `Ctrl+Shift+V` (paste), `Ctrl+Shift+F` (search), `Ctrl+Shift+Z` (undo). On macOS, users expect `Cmd+C` for copy, `Cmd+V` for paste, `Cmd+Z` for undo. But `Cmd+C` in a terminal must NOT send `SIGINT` (which is what `Ctrl+C` does). The mapping is:
+- **macOS convention:** `Cmd` = application shortcuts, `Ctrl` = terminal control characters
+- **Linux convention:** `Ctrl+Shift` = terminal app shortcuts (to avoid conflict with `Ctrl` terminal sequences)
+- **Windows convention (Glass current):** `Ctrl+Shift` = terminal app shortcuts
+
+If Glass naively maps `Cmd` to `Ctrl+Shift` on macOS, users lose the ability to use `Cmd+C` for copy (it would be `Ctrl+Shift+C` which is not intuitive on Mac). If Glass maps `Cmd+C` to copy but doesn't handle `Cmd+V` vs `Ctrl+V` consistently, muscle memory breaks.
 
 **Why it happens:**
-Shell syntax is Turing-complete (PROJECT.md explicitly notes: "Full shell command parser -- shell syntax is Turing-complete; heuristic whitelist instead"). Reconstructing a command after parsing inevitably loses quoting information. Problem cases include:
-- Nested single/double quotes: `echo "it's a 'test'" | wc`
-- Dollar-sign expansion: `echo "$HOME" | grep user`
-- Backtick substitution: `` echo `date` | tee log ``
-- Here-strings: `grep pattern <<< "$variable" | wc`
-- Brace expansion: `echo {a,b,c} | tr ' ' '\n'`
+macOS has a dedicated `Cmd` modifier separate from `Ctrl`. Linux and Windows share `Ctrl` for both OS-level and terminal-level functions, requiring `Shift` as a disambiguator. winit exposes `ModifiersState::SUPER` for the Cmd/Win key, but Glass's `input.rs` likely matches on `ModifiersState::CONTROL | ModifiersState::SHIFT`.
 
-**How to avoid:**
-1. Never parse-and-reconstruct shell commands for rewriting. This is the single most important rule.
-2. If modification is needed, use string-level insertion at pipe boundaries (`|` characters outside quotes) rather than full AST parsing. Insert `tee /tmp/capN |` at known safe positions without touching the rest of the command string.
-3. Glass already uses `shlex` for POSIX tokenization -- but shlex handles ARGUMENT splitting, not full shell syntax. Do not extend it to handle command rewriting.
-4. For PowerShell: use `Tee-Object` insertion which operates on the object pipeline and avoids string escaping entirely.
+**Consequences:**
+- macOS users cannot use standard `Cmd+C`/`Cmd+V` for copy/paste
+- `Cmd+Q` doesn't quit (macOS convention) -- users force-kill instead
+- Tab shortcuts (`Cmd+T` new tab, `Cmd+W` close tab) conflict with terminal sequences if mapped wrong
+- `Cmd+N` (new window) convention missed
 
-**Warning signs:**
-- Commands with special characters produce different results with pipe visualization
-- Users see "command not found" or syntax errors they didn't type
-- Tests pass with simple commands but fail with real-world complex pipelines
+**Prevention:**
+1. Define a `Shortcut` abstraction that maps logical actions to platform-specific key combinations:
+   - Copy: `Ctrl+Shift+C` (Win/Linux) / `Cmd+C` (macOS)
+   - Paste: `Ctrl+Shift+V` (Win/Linux) / `Cmd+V` (macOS)
+   - New Tab: `Ctrl+Shift+T` (Win/Linux) / `Cmd+T` (macOS)
+   - Close Tab: `Ctrl+Shift+W` (Win/Linux) / `Cmd+W` (macOS)
+2. On macOS, intercept `Cmd` modifier in `input.rs` before the terminal key encoder. `Cmd+<key>` should NEVER be sent to the PTY as a terminal escape sequence.
+3. Handle `Cmd+Q` for graceful shutdown on macOS.
+4. Make shortcuts configurable in `config.toml` for users who remap their keyboards.
+
+**Detection:**
+- macOS users report "copy/paste doesn't work"
+- `Cmd+C` sends `^C` to the shell instead of copying
+- `Cmd+W` sends escape sequence instead of closing tab
 
 **Phase to address:**
-Phase 1 (Capture architecture) -- the decision to avoid command rewriting must be made upfront.
+Phase 1 (Platform abstraction layer) -- keyboard handling must be platform-aware before tabs/splits add more shortcuts.
 
 ---
 
-### Pitfall 4: PowerShell Object Pipeline is Not a Byte Stream
+### Pitfall 4: Tab/Split Session Lifecycle Creates Zombie PTY Processes and Resource Leaks
 
 **What goes wrong:**
-PowerShell passes .NET objects between pipeline stages, not text bytes. Attempting to capture PowerShell pipe stages with the same mechanism used for bash (byte-stream tee) destroys object fidelity. `Get-Process | Where-Object { $_.CPU -gt 10 }` passes Process objects, not text. If Glass serializes these to text for capture, the captured "stage output" is a Format-Table rendering that loses property types, methods, hidden properties, and the ability to re-pipe.
-
-Additional PowerShell-specific traps:
-- Format-Table truncates columns based on terminal width (evaluated from first 300ms of data)
-- The FIRST object's properties determine column headers -- heterogeneous pipelines silently drop properties from later objects
-- `$FormatEnumerationLimit` defaults to 4, truncating arrays silently
-- PowerShell 5.1 vs 7+ handle byte-stream piping differently (`PSNativeCommandPreserveBytePipe` in 7.4+ preserves raw bytes between native executables)
+Moving from single-session to multi-session (tabs + splits) multiplies every resource by N:
+- Each tab/split needs its own PTY process, reader thread, `Term` instance, `BlockManager`, `OutputBuffer`, history DB connection, and snapshot context
+- Closing a tab must shut down ALL of these cleanly. If the PTY reader thread doesn't exit (because the child shell hasn't responded to close), it leaks a thread + PTY fd + child process.
+- Splitting a pane and then unsplitting must deallocate the renderer viewport correctly. wgpu resources (textures, buffers) tied to a split viewport that isn't properly destroyed cause GPU memory leaks.
+- Tab switching must pause rendering for inactive tabs but keep PTY reader threads running (commands continue executing in background tabs).
 
 **Why it happens:**
-PowerShell's pipeline is fundamentally different from POSIX. POSIX pipes are kernel file descriptors carrying byte streams. PowerShell pipes are in-process .NET object transfers. There is no "wire format" to intercept -- objects exist only in memory. `Tee-Object` works because it copies object references, not bytes.
+Single-session cleanup is trivial (process exit = everything dies). Multi-session requires explicit lifecycle management for each session independently. The PTY reader thread in Glass uses blocking I/O in a `std::thread` -- you cannot just "cancel" it; you must signal it via `PtyMsg::Shutdown` and wait for the thread to exit. If the child process is stuck (e.g., `sleep infinity`), the shutdown sequence stalls.
 
-**How to avoid:**
-1. Accept that PowerShell pipe stage capture is inherently lossy -- capture the text RENDERING of each stage, not the objects themselves. This is what the user sees anyway.
-2. Use `Tee-Object -Variable` to capture objects into PowerShell variables, then serialize post-hoc with `ConvertTo-Json` or `Out-String -Width 9999` for storage.
-3. For display, show the `Out-String -Stream` rendering at each stage.
-4. Do NOT attempt to intercept the .NET object pipeline at the CLR level -- unbounded complexity.
-5. Set `$FormatEnumerationLimit = -1` in capture context to avoid array truncation.
-6. This must be a separate code path from bash/zsh capture, not a shared abstraction.
+**Consequences:**
+- Each closed tab leaves a zombie shell process and orphaned thread
+- After opening/closing many tabs, Glass consumes GBs of memory
+- GPU memory grows monotonically (never freed for closed splits)
+- On macOS/Linux, file descriptor exhaustion after ~1000 tab open/close cycles (each PTY uses 2-3 fds)
 
-**Warning signs:**
-- PowerShell pipe stage output shows `System.Object[]` instead of actual data
-- Truncated columns with `...` ellipsis at end of values
-- Properties silently missing when pipeline has mixed object types
-- Different behavior between PowerShell 5.1 and 7+
+**Prevention:**
+1. Implement a `Session` struct that owns all resources for one tab/split: `PtySender`, `JoinHandle<()>` for the reader thread, `Arc<FairMutex<Term>>`, `BlockManager`, DB connections. `Drop` implementation must clean up in order: send `PtyMsg::Shutdown`, kill child process if still alive after timeout, join reader thread with timeout.
+2. Add a `SessionManager` that tracks all active sessions, enforces max session count, and handles graceful shutdown-all on app exit.
+3. For splits: share the wgpu device/queue (they're thread-safe) but create separate render targets per pane. On split close, explicitly destroy the render target.
+4. Set hard timeout on PTY reader thread join (2 seconds). If it doesn't exit, `kill -9` the child and `detach` the thread.
+5. Track resource counts (threads, fds, GPU allocations) in debug mode and log warnings if they grow monotonically.
+
+**Detection:**
+- Task Manager/Activity Monitor shows increasing process count as tabs are opened and closed
+- Memory usage grows over time even with few active tabs
+- "Too many open files" error after extended use on macOS/Linux
+- GPU driver warnings about resource exhaustion
 
 **Phase to address:**
-Phase 1 (Architecture decision) for fundamental approach; Phase 2 (Implementation) for PowerShell-specific capture logic.
+Phase 3 (Tabs/splits implementation) -- but the `Session` abstraction must be designed in Phase 1 as part of the architecture.
 
 ---
 
-### Pitfall 5: Buffer Explosion from Large Pipe Stage Output
+### Pitfall 5: Shell Integration Scripts Break on macOS/Linux Shell Differences
 
 **What goes wrong:**
-A pipeline like `find / -type f | grep pattern | head -5` produces potentially gigabytes from `find` even though the final output is 5 lines. If Glass captures each stage's output, stage 1 capture grows unbounded. Per-STAGE buffers multiply memory: a 5-stage pipeline needs 5x the memory. Worse, if capture happens at the PTY level, all bytes still flow through the PTY reader thread's `buf` (1MB `READ_BUFFER_SIZE` in `pty.rs`), and any additional processing in the hot path directly impacts throughput.
+Glass currently ships shell integration for PowerShell (`glass.ps1`) and Bash (`glass.bash`). Cross-platform adds new requirements:
+- **macOS default shell is zsh** (since Catalina), not bash. Glass needs `glass.zsh`.
+- **zsh has different hook mechanisms:** `precmd` / `preexec` functions (not `PROMPT_COMMAND` and `DEBUG` trap like bash). The `preexec` function receives the command string as `$1`, while bash's `DEBUG` trap uses `$BASH_COMMAND`.
+- **Fish shell** is popular on macOS/Linux. It uses `fish_prompt` / `fish_preexec` / `fish_postexec` event functions, completely unlike bash/zsh.
+- **Bash version differences:** macOS ships bash 3.2 (GPLv2, from 2007). Bash 4+ features (`|&`, associative arrays, `PIPESTATUS` behavior changes) are not available on stock macOS. Glass's pipe capture uses `PIPESTATUS` which exists in bash 3.2 but `pipefail` behavior differs subtly.
+- **OSC sequence emission in zsh:** zsh's `$COLUMNS` and `$LINES` are set differently than bash, affecting the shell integration's terminal size awareness.
+- **Starship/Oh My Posh interaction:** Glass's current shell integration is "Oh My Posh/Starship compatible." Each shell has a different integration mechanism for these prompt managers.
 
 **Why it happens:**
-Pipes are designed for streaming -- data flows through and is discarded. Capture turns streaming into accumulation. Unix pipes have ~64KB kernel buffers (Linux default). When capture accumulates beyond this, either memory grows unbounded or backpressure introduces latency. The PTY reader thread in Glass is a single `std::thread` doing blocking I/O -- it is the performance bottleneck for all terminal rendering.
+POSIX shell compatibility is a myth. Each shell (bash, zsh, fish, nushell) has distinct hook mechanisms, variable scoping, quoting rules, and built-in function APIs. Shell integration scripts that work in bash cannot be copy-pasted to zsh or fish.
 
-**How to avoid:**
-1. Apply per-stage byte caps identical to the existing `OutputBuffer.max_bytes` pattern. Default to the same limit as `max_output_capture_kb` per stage.
-2. Track `total_seen` per stage (Glass already does this pattern) so the UI can show "captured 50KB of 2.3MB" rather than silently truncating.
-3. For the PTY reader thread: do NOT add per-stage parsing in the hot path (`pty_read_with_scan`). Accumulate raw bytes and do stage attribution asynchronously or lazily.
-4. Consider ring-buffer semantics: keep the LAST N bytes rather than the FIRST N bytes, since tail output is often more diagnostic.
-5. Add a config option to disable per-stage capture for performance-sensitive users while still showing the pipe structure UI.
+**Consequences:**
+- Block decorations don't appear on macOS (zsh hooks not installed)
+- OSC 133 sequences emitted in wrong order causing block manager confusion
+- Shell integration conflicts with user's existing zsh config (`.zshrc` ordering)
+- Pipe capture breaks on macOS's ancient bash 3.2
+- Fish users get no shell integration at all
 
-**Warning signs:**
-- Memory usage spikes when running pipelines with large intermediate data
-- PTY reader thread latency increases (measurable via key echo delay exceeding 5ms target)
-- Glass becomes sluggish during long-running pipelines
+**Prevention:**
+1. Write separate shell integration files per shell: `glass.bash`, `glass.zsh`, `glass.fish`. Do NOT use a single POSIX-compatible script.
+2. For zsh: use `add-zsh-hook precmd glass_precmd` and `add-zsh-hook preexec glass_preexec` (the `add-zsh-hook` function properly chains with other hooks).
+3. For fish: use `function fish_preexec --on-event fish_preexec` and `function fish_postexec --on-event fish_postexec`.
+4. Test against macOS bash 3.2 explicitly. Use `#!/usr/bin/env bash` and avoid bash 4+ features in `glass.bash`.
+5. For pipe capture on macOS: if bash 3.2 lacks needed features, recommend users install bash 5 via Homebrew and configure Glass to use it.
+6. Test integration with Starship AND Oh My Posh on each shell to verify hook ordering.
+
+**Detection:**
+- No block separators on macOS with default zsh
+- "Command not found: add-zsh-hook" if loaded before zsh modules
+- Fish users reporting "glass: not a valid event handler"
+- Double-prompt or missing prompt when both Glass and Starship try to set the same hooks
 
 **Phase to address:**
-Phase 1 (Capture architecture) for buffer design; Phase 3 (Storage) for database schema and retention.
+Phase 1 (Shell integration) -- must be one of the first things ported, since all other features (blocks, history, snapshots, pipes) depend on shell integration working.
 
 ---
 
-### Pitfall 6: Pipe Detection Fails for Non-Obvious Pipe Syntax
+### Pitfall 6: Linux Display Server Fragmentation -- Wayland vs X11 Clipboard and Window Management
 
 **What goes wrong:**
-Glass's existing `contains_unparseable_syntax()` checks for `" | "` (pipe with spaces around it). But real-world pipe syntax includes: `cmd|cmd` (no spaces), `cmd |& cmd` (bash 4+ stderr pipe), `cmd 2>&1 | cmd` (redirect then pipe), multiline pipes with `\` continuation, and `|` characters inside string arguments (e.g., `grep "a|b" file | wc`). The pipe detector either misses pipes (no visualization offered) or incorrectly splits at `|` inside regex/string arguments.
+winit handles Wayland vs X11 windowing, but clipboard and certain window behaviors differ:
+- **Clipboard on Wayland:** Clipboard data is stored in the source client's memory. When Glass copies text, it must keep serving clipboard requests until another app copies something. If Glass is killed, clipboard content is lost (unlike X11 where the X server holds it). winit does not handle clipboard -- Glass likely uses a separate clipboard crate.
+- **Clipboard on X11:** Uses `CLIPBOARD` and `PRIMARY` selections. Most terminal emulators support both (middle-click paste from PRIMARY). Glass probably only handles `CLIPBOARD` currently.
+- **IME (Input Method Editor):** Wayland uses `text-input-v3` protocol for IME. X11 uses XIM or IBus. winit's IME support varies. CJK users cannot type in Glass if IME events are not forwarded.
+- **Window decorations:** Wayland expects client-side decorations (CSD) by default. X11 uses server-side decorations. winit supports both, but the window title bar appearance differs.
+- **DPI scaling:** Wayland handles per-monitor DPI natively. X11 has `Xft.dpi` or `GDK_SCALE` hacks. winit reports `scale_factor()` but Glass's font rendering must respond correctly.
 
 **Why it happens:**
-The `|` character appears in multiple contexts: pipe operator, regex alternation inside arguments, PowerShell `-match` patterns, heredoc content, and string literals. Naive string splitting on `|` is unreliable. The existing `command_parser.rs` correctly avoids this problem by treating pipes as unparseable.
+Linux has two competing display server protocols with fundamentally different security and IPC models. Wayland is sandboxed (apps cannot read other apps' windows or clipboard), while X11 is global (any app can access anything). Applications must handle both because ~40% of Linux desktop users are still on X11 (Arch, older Ubuntu, NVIDIA users).
 
-**How to avoid:**
-1. Use quote-aware pipe splitting: track single/double quote state (as `strip_redirects()` already does in `command_parser.rs`) and only recognize `|` as a pipe operator when outside quotes.
-2. For regex-heavy commands (grep, sed, awk), the `|` inside a regex argument is protected by quotes in well-formed commands. Handle the unquoted case as best-effort.
-3. Handle `|&` (bash stderr pipe) explicitly as a pipe variant.
-4. For multiline commands (continuation with `\`): accumulate the full command text from OSC 133;B to 133;C before pipe detection.
-5. Do NOT try to handle `$(cmd | cmd)` nesting -- mark as unparseable, consistent with existing approach.
-6. PowerShell: watch for `|` inside `-match` patterns and scriptblocks `{ }`.
+**Consequences:**
+- Copy/paste broken on Wayland (clipboard crate uses X11 API)
+- Glass crashes on Wayland-only systems (no X11 fallback)
+- CJK users cannot type Chinese/Japanese/Korean characters
+- Window appears tiny on HiDPI Wayland monitors or huge on X11 with scaling
+- Middle-click paste does nothing (no PRIMARY selection support)
 
-**Warning signs:**
-- Pipes not detected in commands with no spaces around `|`
-- False pipe detection inside grep/sed regex patterns
-- Multiline piped commands show as separate non-piped commands
+**Prevention:**
+1. Use the `arboard` crate or `copypasta` crate for clipboard -- they handle Wayland vs X11 automatically. Do NOT use platform-specific clipboard APIs.
+2. Test on both Wayland (GNOME on Fedora/Ubuntu 24+) and X11 (XFCE, i3, or `GDK_BACKEND=x11`).
+3. For IME: ensure winit's `Ime` events are forwarded to the PTY. Test with `fcitx5` or `ibus` on both Wayland and X11.
+4. Handle `ScaleFactorChanged` events to adjust font size and terminal grid dimensions.
+5. For Wayland clipboard persistence: consider running a background thread that keeps clipboard data alive, or integrate with `wl-clip-persist`.
+6. Support PRIMARY selection (highlight-to-copy, middle-click-to-paste) -- terminal users expect this on Linux.
+
+**Detection:**
+- `Ctrl+Shift+C` copies but paste in another app shows nothing (Wayland clipboard lost)
+- Glass window has no title bar decorations on Wayland
+- Font appears 2x too large or small on HiDPI displays
+- IME popup appears but selected characters don't reach the terminal
 
 **Phase to address:**
-Phase 1 (Pipe detection) -- this is the first thing that must work before any visualization.
+Phase 2 (Platform windowing/input) -- must be validated before tab bar UI (which adds more clipboard/keyboard complexity).
 
 ---
 
-### Pitfall 7: Command Rewriting Creates Security Vulnerabilities
+## Moderate Pitfalls
+
+### Pitfall 7: macOS Notarization and Code Signing Requirements
 
 **What goes wrong:**
-If Glass rewrites shell commands (inserting tee, process substitution, etc.), a crafted filename like `file$(rm -rf /)` or a git branch name containing shell metacharacters could be injected into the rewritten command if Glass doesn't properly escape inserted paths. Even without malicious intent, `tee /tmp/glass_capture_XXXX` creates world-readable temp files containing potentially sensitive pipe data (passwords, API keys, database query outputs).
+Distributing a Rust binary on macOS requires code signing and notarization, or users get "this app is damaged" / "cannot verify developer" Gatekeeper warnings. This is more than just signing:
+- Notarization requires a DMG, PKG, or .app bundle -- a bare binary cannot be notarized
+- Hardened runtime must be enabled (`codesign --options=runtime`)
+- The Apple notarization service has experienced multi-hour delays and timeouts (reported as recently as January 2026)
+- Requires paid Apple Developer Account ($99/year)
+- All nested binaries must be individually signed before the outer bundle is signed
 
-**Why it happens:**
-Shell command construction via string concatenation is the root cause of command injection vulnerabilities. If Glass constructs `cmd1 | tee /tmp/glass_capture | cmd2` by string interpolation, any part Glass didn't sanitize can break out. Temp files in `/tmp` are accessible to all users. Named pipes (FIFOs) have similar permission issues.
-
-**How to avoid:**
-1. Strongly prefer PTY-level capture (no command rewriting = no injection surface). This eliminates the entire vulnerability class.
-2. If temp files are needed, use `mktemp` with restrictive permissions (0600), place them in a Glass-owned directory under the user's Glass data directory, and clean them up immediately after capture.
-3. Never concatenate user-visible command text into a rewritten command string.
-4. For PowerShell `Tee-Object`: use `-Variable` (in-memory) instead of `-FilePath` to avoid temp file creation.
-
-**Warning signs:**
-- Temp files left behind after pipe visualization
-- Sensitive data visible in capture files
-- Command rewriting logic uses string formatting with user input
+**Prevention:**
+1. Build a proper `.app` bundle with `Info.plist`, icon, and the Glass binary inside `Contents/MacOS/`.
+2. Sign with `codesign -f --options=runtime -s 'Developer ID Application: ...'`.
+3. Submit via `xcrun notarytool submit` (not the deprecated `altool`).
+4. Add notarization to CI -- do not rely on manual submission.
+5. For Homebrew distribution (recommended for CLI-savvy users): Homebrew taps bypass Gatekeeper for formulae.
+6. Budget 1-2 days for notarization pipeline setup -- it always takes longer than expected.
 
 **Phase to address:**
-Phase 1 (Architecture) -- choosing PTY-level capture eliminates this class. If command rewriting is used, mandatory security review before Phase 2.
+Phase 4 (Packaging/distribution) -- but plan for it early because it requires Apple Developer account setup.
 
 ---
 
-## Technical Debt Patterns
+### Pitfall 8: Cross-Platform File Path and Config Directory Differences
 
-| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
-|----------|-------------------|----------------|-----------------|
-| Capture only whole-pipeline output (no per-stage) | Reuses existing `OutputBuffer`, no new capture mechanism | Users can't see intermediate stage data -- the core value prop of pipe viz | MVP only -- must add per-stage in follow-up |
-| Text-only PowerShell capture | Avoids .NET object complexity entirely | Loses object properties, truncated columns | Acceptable permanently -- object capture impractical outside PS runtime |
-| Fixed per-stage buffer cap (no config) | Simpler implementation | Power users can't tune for their workflows | Never -- Glass already makes `OutputBuffer` cap configurable |
-| Synchronous stage attribution in PTY reader thread | Simpler data flow, single-threaded reasoning | Degrades PTY throughput for ALL commands, not just piped ones | Never -- must be zero-cost when pipes are not detected |
-| Storing pipe stages as separate DB rows with FK | Clean relational schema | JOIN latency on every history lookup, even non-piped commands | Acceptable with LEFT JOIN or lazy-load pattern |
-| Detecting pipes only with spaces (` | `) | Trivial regex, matches most typed commands | Misses programmatic/script pipes like `cmd|cmd` | MVP only -- must handle no-space pipes quickly |
+**What goes wrong:**
+Glass uses `dirs::home_dir()` and `~/.glass/` for data storage (history.db, snapshots, blob store). This works on all platforms but violates platform conventions:
+- **macOS:** App data goes in `~/Library/Application Support/Glass/`, not `~/.glass/`
+- **Linux:** XDG spec says `$XDG_DATA_HOME/glass/` (defaults to `~/.local/share/glass/`), config in `$XDG_CONFIG_HOME/glass/` (defaults to `~/.config/glass/`)
+- **Windows:** `%APPDATA%\Glass\` (already somewhat handled)
+
+Additionally, `config.toml` path resolution differs. macOS and Linux users expect different locations for config files.
+
+Path separator differences (`\` vs `/`) can cause issues in CWD tracking (OSC 7 reports paths) and history DB queries that do `cwd.starts_with()` prefix matching.
+
+**Prevention:**
+1. Use `dirs::data_dir()` for databases/blobs and `dirs::config_dir()` for `config.toml`. Fall back to `~/.glass/` only if these return `None`.
+2. Normalize path separators in CWD tracking and history queries.
+3. The `.glass/` project-local directory convention (for per-project history) works cross-platform -- keep it.
+4. Consider migrating existing Windows users' data from `~/.glass/` to `%APPDATA%\Glass\` with a one-time migration prompt.
+
+**Phase to address:**
+Phase 1 (Platform abstraction) -- affects where config, history, and snapshots are stored, so must be resolved before anything else.
+
+---
+
+### Pitfall 9: notify Crate (File Watcher) Behavioral Differences Across Platforms
+
+**What goes wrong:**
+Glass uses `notify 8.2` for filesystem watching in `glass_snapshot`. The notify crate uses different backends per platform:
+- **Windows:** `ReadDirectoryChangesW` -- current implementation, works
+- **macOS:** FSEvents -- batches events with ambiguous types. A single file save can produce coalesced events where you can't distinguish "create then write" from "modify."
+- **Linux:** inotify -- generates 3-5 events for a single file save (editor-dependent: some editors truncate, others create-and-rename). Has system-wide limits (`fs.inotify.max_user_watches` defaults to 8192 on some distros, which can be exhausted when watching large directories).
+
+FSEvents on macOS has a security model that prevents watching files owned by other users. inotify on Linux doesn't work on `/proc` or `/sys` filesystems.
+
+**Prevention:**
+1. Glass's snapshot watcher already has debouncing and deduplication logic -- verify it handles FSEvents' batched events correctly.
+2. Add a note in documentation about `fs.inotify.max_user_watches` limits on Linux for users watching large project directories.
+3. Test watcher behavior with common editors on each platform (VS Code, vim, nano do different things on save).
+4. The existing `ignore 0.4` crate integration (`.glassignore`) reduces watch scope, mitigating inotify limits.
+
+**Phase to address:**
+Phase 2 (Feature porting) -- snapshot/undo feature must be tested per-platform after PTY and rendering work.
+
+---
+
+### Pitfall 10: Split Pane Rendering and Viewport Calculation Complexity
+
+**What goes wrong:**
+Adding split panes requires dividing the wgpu render surface into multiple viewports, each with:
+- Independent terminal grid dimensions (columns x rows)
+- Independent scroll positions
+- Independent cursor positions
+- Separate render passes or scissor rects
+
+Common mistakes:
+- **Off-by-one in viewport bounds:** A split at 50% of 1920px = 960px, but terminals need integer character cell widths. If cell width is 8px, 960/8 = 120 columns exact, but 961/8 = 120.125, causing 1px gaps or overlaps between panes.
+- **Resize cascading:** Resizing the window must recalculate ALL split dimensions proportionally, then resize each PTY, which triggers `SIGWINCH` on Unix or `ResizePseudoConsole` on Windows. This must happen atomically or users see flash-of-wrong-size content.
+- **Focus management:** Only one pane receives keyboard input at a time. Clicks must be translated to pane-local coordinates. Mouse events must account for split divider width.
+- **Scroll independence:** Each pane has its own scrollback buffer. `Ctrl+Shift+Up/Down` (scroll) must apply to the focused pane only.
+
+**Why it happens:**
+Single-session terminals treat the entire window as one viewport. Glass's `grid_renderer.rs` and `rect_renderer.rs` assume a single render target spanning the full surface. Splitting requires parameterizing everything by viewport bounds.
+
+**Prevention:**
+1. Introduce a `Viewport` struct: `{ x, y, width, height, columns, rows }`. Every renderer takes a `Viewport` reference.
+2. Use wgpu scissor rects (`render_pass.set_scissor_rect()`) to clip rendering per pane -- simpler than multiple render targets.
+3. Calculate split dimensions in character cells first, then derive pixel bounds. Never go pixels-first.
+4. Buffer resize events -- don't resize PTYs on every pixel of a window drag. Debounce to ~100ms or only resize when character dimensions actually change.
+5. Implement splits as a binary tree: `SplitNode::Leaf(Session)` or `SplitNode::Split { direction, ratio, left, right }`. This naturally handles nested splits.
+
+**Phase to address:**
+Phase 3 (Split panes) -- but viewport abstraction should be introduced in Phase 2 when adding tab support (tabs are simpler: only one viewport visible at a time).
+
+---
+
+### Pitfall 11: Cross-Platform CI Test Matrix is Expensive and Slow
+
+**What goes wrong:**
+Running CI on Windows + macOS + Linux triples build time and cost:
+- macOS GitHub Actions runners are 10x more expensive than Linux runners
+- Rust compilation on macOS ARM (M-series) vs macOS x86 requires separate targets
+- GPU-dependent tests (wgpu rendering) cannot run on CI without GPU -- headless rendering or software rasterization needed
+- PTY tests need actual shell processes, which behave differently per OS
+- Cross-compilation (e.g., building macOS binary on Linux) requires complex toolchains
+
+**Prevention:**
+1. Run most tests on Linux (cheapest). Only run platform-specific integration tests on their native OS.
+2. For GPU tests: use wgpu's software backend (`wgpu::Backends::GL` with Mesa's `llvmpipe`) for CI, or skip render tests and rely on manual testing.
+3. Use `#[cfg(target_os = "...")]` to gate platform-specific tests.
+4. Cache Rust build artifacts aggressively (`sccache` or GitHub Actions cache with target/ directory).
+5. Don't cross-compile -- build natively on each platform's runner. Cross-compilation for GUI apps with native dependencies is fragile.
+6. Start with Linux x86_64 + Windows x86_64 + macOS ARM64. Add macOS x86_64 only if needed (Rosetta 2 handles it).
+
+**Phase to address:**
+Phase 1 (CI setup) -- must be running before any platform-specific code is merged, or regressions accumulate silently.
+
+---
+
+## Minor Pitfalls
+
+### Pitfall 12: Default Shell Detection per Platform
+
+**What goes wrong:**
+Glass currently detects `pwsh` vs `powershell` on Windows. On macOS/Linux, detecting the user's preferred shell requires checking `$SHELL` env var, `/etc/passwd`, or defaulting. Common mistakes:
+- Defaulting to `bash` on macOS when the user's login shell is `zsh`
+- Not respecting `chsh` changes
+- Spawning the shell as a login shell (`-l` flag) vs interactive shell (`-i` flag) -- affects which rc files are sourced
+
+**Prevention:**
+Use `$SHELL` environment variable on Unix (set by login). Fall back to `/bin/sh`. Spawn as login shell (`-l`) for the first session and interactive shell for subsequent tabs.
+
+**Phase to address:** Phase 1.
+
+---
+
+### Pitfall 13: macOS-Specific Window Lifecycle Events
+
+**What goes wrong:**
+macOS has unique window events that winit exposes but Glass may not handle:
+- `applicationShouldTerminateAfterLastWindowClosed` -- on macOS, closing all windows doesn't quit the app (dock icon remains). Glass must handle this or users think it's still running.
+- Window tabbing: macOS has built-in window tabbing (`NSWindow.tabbingMode`). This can conflict with Glass's own tab implementation.
+- Full-screen behavior: macOS full screen creates a new desktop space. Window resize events fire differently.
+- App Nap: macOS puts background apps to sleep. If Glass has background tabs running commands, App Nap can throttle them.
+
+**Prevention:**
+1. Set `NSWindow.tabbingMode = .disallowed` to prevent macOS native tab merging with Glass's tabs.
+2. Handle `applicationShouldTerminate` to gracefully shut down all sessions.
+3. Disable App Nap for Glass (or at least for windows with active PTY I/O) via `ProcessInfo.processInfo.beginActivity()`.
+
+**Phase to address:** Phase 2 (macOS platform layer).
+
+---
+
+### Pitfall 14: alacritty_terminal Version Pinning Across Platforms
+
+**What goes wrong:**
+Glass pins `alacritty_terminal 0.25.1`. This version supports cross-platform PTY via its `tty` module, but:
+- Alacritty's `tty` module on macOS/Linux requires POSIX dependencies (`libc`, signal handling) that may not be tested in isolation
+- The crate's internal `cfg` attributes may not cover all platforms uniformly at this exact version
+- Updating the pin is risky (alacritty makes breaking API changes between minor versions)
+
+**Prevention:**
+1. Keep the pin at 0.25.1 -- it is known to work cross-platform (alacritty itself runs on all three platforms with this crate).
+2. Review the crate's `Cargo.toml` for platform-specific dependencies that need to be in Glass's own `Cargo.toml`.
+3. Run `cargo build --target` for all three platforms early to catch missing dependency issues.
+
+**Phase to address:** Phase 1 (dependency audit).
+
+---
+
+## Phase-Specific Warnings
+
+| Phase Topic | Likely Pitfall | Mitigation |
+|-------------|---------------|------------|
+| Platform PTY abstraction | Signal handling differences (SIGWINCH, SIGHUP, SIGCHLD) silently broken on Unix | Add Unix signal handler tests; test child cleanup on crash |
+| wgpu renderer porting | Surface format mismatch causes color shift or crash | Query and log format; test on all backends before shipping |
+| Shell integration (zsh/fish) | Wrong hook mechanism causes no block decorations | Write per-shell scripts; test on macOS default zsh |
+| Keyboard shortcuts | Cmd vs Ctrl mapping breaks copy/paste on macOS | Platform-aware shortcut abstraction from day one |
+| Tab lifecycle | Zombie PTY processes accumulate | Session struct with Drop-based cleanup; resource count monitoring |
+| Split pane rendering | Off-by-one viewport gaps or overlaps | Character-cell-first dimension calculation |
+| Clipboard | Wayland clipboard lost when Glass exits | Use arboard/copypasta; test on Wayland |
+| Config/data paths | Wrong directory on macOS/Linux | Use dirs crate platform-aware directories |
+| File watcher | inotify limits exceeded on Linux | Document limits; use .glassignore aggressively |
+| CI matrix | macOS CI runners expensive and slow | Run most tests on Linux; native build only |
+| macOS distribution | Gatekeeper blocks unsigned binary | Code signing + notarization pipeline in CI |
+| macOS window lifecycle | App doesn't quit when all windows closed | Handle NSApp termination events |
 
 ## Integration Gotchas
 
-Mistakes when integrating pipe visualization with existing Glass systems.
+Mistakes when integrating cross-platform + tabs/splits with existing Glass systems.
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| OutputBuffer (capture) | Running two capture systems (OutputBuffer for whole command + new per-stage capture) that conflict or double-count bytes | Extend `OutputBuffer` with stage awareness OR replace it for piped commands. One system, not two. |
-| BlockManager (lifecycle) | Treating a pipeline as multiple blocks, or trying to add sub-blocks to Block struct -- confusing rendering logic | A pipeline IS one block in `BlockManager`. Pipe stages are a NESTED concept within the block, managed by a new `PipeStageManager` or similar in `glass_pipes`. |
-| OSC 133 shell integration | Trying to emit per-stage OSC markers from `glass.ps1` -- adds complexity to shell scripts and relies on shell cooperation | Pipe detection and stage attribution should happen in Glass (Rust side), not in shell integration scripts. The shell emits existing 133;B/C/D; Glass does the rest. |
-| Command parser (glass_snapshot) | Extending `command_parser.rs` to handle pipes -- it already explicitly marks them as unparseable for file target extraction | Create a separate `pipe_parser` module in `glass_pipes` crate. Do not modify `command_parser.rs`'s pipe-rejection logic -- it is correct for its purpose. |
-| History DB schema | Adding pipe columns to the existing `commands` table | Add a new `pipe_stages` table with FK to `commands.id`. Don't modify existing schema -- migration risk. |
-| MCP server | Returning pipe stage data in the existing `GlassHistory` tool response | Add a new `GlassPipeInspect` tool (as planned in PROJECT.md). Keep `GlassHistory` unchanged. |
-| PTY reader thread (`pty_read_with_scan`) | Adding pipe-stage parsing logic to the hot read loop | Pipe stage attribution must happen OUTSIDE the PTY reader thread, or be gated by a fast "is this a piped command?" check before any processing. |
-
-## Performance Traps
-
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| Per-byte pipe-char scanning in PTY reader | Key echo latency >5ms, visible lag during fast output | Scan for `|` only in command text (at `CommandStart`), not during output streaming | Any pipeline producing >100KB/sec output |
-| Storing full stage output in SQLite BLOBs | History DB grows 5-10x faster, query latency increases | Use blob store (like `glass_snapshot`'s filesystem store) for stage output above threshold | After ~1000 piped commands with medium output |
-| Re-rendering pipe stage UI on every PTY read | GPU frame rate drops, wgpu pipeline stalls | Only update pipe stage UI on buffer threshold changes or explicit expand/collapse | Pipelines with continuous output (tail -f \| grep) |
-| Parsing pipe structure on every command | CPU spike on `CommandExecuted` even for non-piped commands | Fast-path check: scan for unquoted `|` first, full parsing only if found | High command frequency (scripted loops) |
-| Keeping all stage buffers live in memory | RAM grows proportional to (stages x cap x active_commands) | Drop stage buffers to disk/DB when command completes; keep only summary in memory | Sessions with hundreds of completed piped commands |
-
-## Security Mistakes
-
-| Mistake | Risk | Prevention |
-|---------|------|------------|
-| Temp files for tee capture in world-readable /tmp | Other users/processes read sensitive piped data (DB queries, API keys, credentials) | Use in-memory capture via PTY-level interception. If files needed, user-private dir with 0600 permissions. |
-| Command rewriting with string concatenation | Shell injection via crafted filenames, branch names, or prompt content | Avoid command rewriting entirely. If unavoidable, use only Glass-controlled constants. |
-| Capturing pipe output containing secrets | Secrets persisted in Glass history DB or blob store indefinitely | Apply existing retention policies to pipe stage data. Add per-command opt-out. Document this risk. |
-| MCP GlassPipeInspect exposing internal pipeline data | AI assistants could access sensitive intermediate data from pipelines | Apply same access controls as existing MCP tools. Respect per-command opt-out flags. |
-| Shell integration script modifications for pipe capture | Modified glass.ps1 could be targeted for prompt injection | Keep pipe logic in Rust side. Shell scripts should remain minimal (current 123 lines is good). |
-
-## UX Pitfalls
-
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| Showing pipe visualization for EVERY piped command | Visual noise -- most pipes are simple (`ls \| head`). Clutters the block view. | Default to collapsed/minimal view. Only auto-expand for failed pipelines (non-zero exit) or user click. |
-| Pipe stage output shown with raw ANSI escape codes | `\x1b[31m` text in stage preview is unreadable | Strip ANSI codes for stage preview (Glass already does this for output capture). Preserve in full/expanded view. |
-| No way to disable pipe visualization | Power users who don't want overhead or visual clutter are stuck | Config option: `[pipes] enabled = true/false`. Respect it globally. |
-| Pipe stages shown inline, expanding block height dramatically | A 5-stage pipeline with expanded output dominates scrollback, pushing other blocks offscreen | Use overlay/popup for expanded stage output, or horizontal tab-style layout within the block. |
-| Different pipe visualization for bash vs PowerShell without indication | User confusion when switching shells | Clear shell indicator on pipe blocks. Document behavioral differences (object vs byte capture). |
-| TTY-sensitive commands showing degraded output in visualization | User sees plain `ls` output in pipe stage preview while the actual terminal showed colored columns | Detect TTY-sensitive commands (ls, git, grep) and add UI note: "output may differ from terminal display due to pipe detection" |
+| BlockManager per session | Sharing one BlockManager across tabs/panes | Each session gets its own BlockManager instance. Block IDs must be session-scoped. |
+| History DB per session | All tabs writing to same DB concurrently without coordination | Use a single DB connection pool with WAL mode. Each session identifies itself with a session_id column. |
+| Snapshot watcher per session | Running N file watchers for N sessions all watching similar directories | Share a single watcher instance across sessions in the same CWD. Demux events to relevant sessions. |
+| OSC 7 CWD tracking | CWD updates from one tab affecting status bar of another | CWD is per-session state. Status bar must read from focused session only. |
+| Search overlay | Global search searching only the focused tab | Decision: search focused tab (simple) or all tabs (complex). Decide upfront and be consistent. |
+| Git status polling | N sessions polling git status independently for same repo | Share git status across sessions with same CWD. Single poller, multiple consumers. |
+| MCP server | MCP context returns data from wrong session | MCP should expose all sessions or accept a session filter parameter. |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Pipe detection:** Works with `cmd|cmd` (no spaces) not just `cmd | cmd` -- verify spacing variants
-- [ ] **Pipe detection:** Works with `cmd |& cmd` (bash stderr pipe) -- verify bash 4+ syntax
-- [ ] **Pipe detection:** Does NOT false-trigger on `grep "a|b" file` (pipe inside quotes) -- verify quote awareness
-- [ ] **Pipe detection:** Handles multiline commands with `\` continuation -- verify accumulation works
-- [ ] **Stage capture:** Handles binary output (images, compressed data) without corruption -- verify with `cat image.png | head -c 100`
-- [ ] **Stage capture:** Works with empty stages (e.g., `grep nomatch file | wc -l` where grep produces nothing) -- verify zero-byte stage display
-- [ ] **Exit codes:** Pipeline exit code in block decoration matches behavior WITHOUT pipe visualization -- verify with `false | true` and `true | false`
-- [ ] **PowerShell:** `Get-Process | Select-Object Name` shows process names, not `System.Diagnostics.Process` -- verify object rendering
-- [ ] **Performance:** Key echo latency unchanged (<5ms) when pipe visualization is enabled -- benchmark before/after
-- [ ] **Performance:** Memory stays bounded during `find / -type f 2>/dev/null | head -1` -- verify per-stage cap
-- [ ] **Storage:** Pipe stage data respects retention policies and gets pruned -- verify after configured retention period
-- [ ] **Collapse/expand:** Collapsed pipe blocks show correct summary (stage count, overall exit code) -- verify against actual data
-- [ ] **Opt-out:** `[pipes] enabled = false` completely disables all pipe-related processing including detection -- verify zero overhead when disabled
-- [ ] **Integration:** Existing `OutputBuffer` whole-command capture still works correctly for piped commands -- verify no regression
+- [ ] **PTY cleanup:** Close 50 tabs rapidly. Zero zombie processes remain (`ps aux | grep defunct` on Linux/macOS, Task Manager on Windows).
+- [ ] **Surface format:** Colors identical on DX12, Metal, and Vulkan. Screenshot comparison test.
+- [ ] **Keyboard:** `Cmd+C` copies on macOS. `Ctrl+C` sends SIGINT to shell. Both work correctly.
+- [ ] **Keyboard:** `Ctrl+Shift+C` copies on Linux. Does NOT conflict with terminal sequences.
+- [ ] **Shell integration:** zsh on macOS shows block decorations. bash on Linux shows block decorations. fish on both shows block decorations.
+- [ ] **Clipboard:** Copy in Glass, paste in another app -- works on Wayland, X11, macOS, Windows.
+- [ ] **Resize:** Resize window with 4 split panes. No gaps between panes, no overlapping text, no flash of wrong content.
+- [ ] **Config path:** `config.toml` loads from platform-correct location. `~/.glass/config.toml` works as fallback.
+- [ ] **File watcher:** Snapshot undo works on all three platforms. FSEvents batching doesn't cause missed snapshots.
+- [ ] **macOS:** App quits when last window closes (or docks correctly). No App Nap throttling of background tabs.
+- [ ] **Linux:** Works on both Wayland (GNOME 46+) and X11 (i3, XFCE). No crash on either.
+- [ ] **CI:** All platforms green. No platform-specific test skipped without documented reason.
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| TTY detection breaking command output | LOW | Add config flag to disable pipe-level capture, falling back to whole-command capture. No data migration needed. |
-| Exit code corruption | MEDIUM | Fix the capture mechanism. Old commands with wrong exit codes in history DB cannot be retroactively corrected. |
-| Shell quoting corruption | HIGH | If commands were executed with corrupted arguments, data loss or unintended effects already occurred. This is why command rewriting should be avoided. |
-| Buffer explosion (OOM) | LOW | Kill Glass, reduce per-stage cap in config, restart. No persistent damage. |
-| PowerShell object loss | LOW | Accept text-only capture. No recovery possible for lost object data -- design limitation, not bug. |
-| Security (temp file exposure) | HIGH | Delete exposed temp files, rotate any credentials visible in captured output, switch to in-memory capture. |
-| Pipe detection false positive | LOW | Disable pipe viz for affected command pattern. Add pattern to exclusion list. No data corruption. |
-
-## Pitfall-to-Phase Mapping
-
-| Pitfall | Prevention Phase | Verification |
-|---------|------------------|--------------|
-| TTY detection changes output (P1) | Phase 1: Capture Architecture | Run `ls`, `git status`, `grep --color=auto` through pipe with viz enabled; compare to non-visualized |
-| Exit code swallowing (P2) | Phase 1: Capture Architecture | `false \| true` and `true \| false` -- exit codes must match expected values |
-| Shell quoting corruption (P3) | Phase 1: Architecture (by avoiding rewriting) | Commands with nested quotes, `$()`, backticks through pipe viz; verify identical execution |
-| PowerShell object pipeline (P4) | Phase 1: Architecture + Phase 2: PS capture | `Get-Process \| Where-Object CPU -gt 0 \| Select-Object Name,CPU` -- stage output readable |
-| Buffer explosion (P5) | Phase 1: Buffer design | `find / -type f 2>/dev/null \| head -5` -- monitor memory; verify cap respected |
-| Pipe detection edge cases (P6) | Phase 1: Pipe parser | Test suite: no spaces, `\|&`, quoted pipes, multiline, nested `$()` |
-| Security from rewriting (P7) | Phase 1: Architecture (by choosing PTY-level capture) | Audit: no string concatenation with user input in any shell command construction |
-| Per-stage capture performance | Phase 2: Implementation | Benchmark PTY reader throughput with/without pipe viz; verify <5% overhead |
-| Storage growth | Phase 3: DB schema + retention | Run 1000 piped commands, measure DB growth, verify pruning |
-| UI clutter | Phase 4: Pipeline UI | User testing with mixed piped/non-piped sessions; verify collapsed default works |
+| Zombie PTY processes | LOW | Fix Session Drop impl. Users kill orphans manually meanwhile. |
+| Wrong surface format/colors | LOW | Fix format selection. No data corruption. |
+| Cmd/Ctrl mapping broken on macOS | LOW | Fix shortcut mapping. Users can workaround via config. |
+| Shell integration broken on zsh | MEDIUM | Write and test glass.zsh. Users lose block features until fixed. |
+| Wayland clipboard broken | MEDIUM | Switch to arboard crate. Users use terminal selection meanwhile. |
+| Split viewport off-by-one | LOW | Fix calculation. No data loss, just visual glitch. |
+| inotify limit exceeded | LOW | Increase system limit. Document in README. |
+| macOS notarization blocked | MEDIUM | Set up signing pipeline. Users bypass Gatekeeper via xattr meanwhile. |
+| History DB corruption from concurrent tab writes | HIGH | Switch to WAL mode and connection pool. May lose recent history. |
+| alacritty_terminal platform incompatibility | HIGH | Must fix or fork the crate. Blocks all cross-platform work. |
 
 ## Sources
 
-- [Linux Tools Pipe Behavior Differences](https://www.howtogeek.com/these-linux-tools-behave-very-differently-when-you-pipe-them/) -- TTY vs pipe behavioral changes
-- [The TTY Demystified](https://www.linusakesson.net/programming/tty/) -- foundational PTY/TTY architecture
-- [A Terminal Case of Linux](https://fasterthanli.me/articles/a-terminal-case-of-linux) -- deep dive on terminal I/O and isatty
-- [How to Force git status Color Output](https://www.codestudy.net/blog/force-git-status-to-output-color-on-the-terminal-inside-a-script/) -- git isatty behavior
-- [Color and TTYs](https://eklitzke.org/ansi-color-codes) -- why commands disable color in pipes
-- [Process Substitution and Race Conditions](https://www.natewoodward.org/blog/2019/11/25/process-substitution-and-race-conditions) -- tee/process substitution races in bash vs ksh vs zsh
-- [Greg's Wiki: ProcessSubstitution](https://mywiki.wooledge.org/ProcessSubstitution) -- bash process substitution edge cases
-- [Exit Status of Piped Processes (Baeldung)](https://www.baeldung.com/linux/exit-status-piped-processes) -- PIPESTATUS and pipefail behavior
-- [Capture Exit Status When Piping Output](https://www.codestudy.net/blog/pipe-output-and-capture-exit-status-in-bash/) -- tee exit code masking problem
-- [PIPESTATUS and pipefail](https://www.signorini.ch/content/bash-pipestatus-and-pipefail) -- detailed analysis of exit code propagation
-- [PowerShell Pipeline Objects](https://renenyffenegger.ch/notes/Windows/PowerShell/pipeline/index) -- PS object vs text pipeline fundamentals
-- [PowerShell Issue #1908: Keep bytes as-is](https://github.com/PowerShell/PowerShell/issues/1908) -- byte stream corruption in PS pipelines
-- [PowerShell Issue #4552: Mixed object types](https://github.com/PowerShell/PowerShell/issues/4552) -- heterogeneous pipeline formatting loss
-- [Viewing Truncated PowerShell Output](https://greiginsydney.com/viewing-truncated-powershell-output/) -- Format-Table truncation gotchas
-- [ConPTY Introduction (Microsoft)](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/) -- ConPTY architecture and limitations
-- [ConPTY Buffer Sync Issues #15976](https://github.com/microsoft/terminal/issues/15976) -- ConPTY buffer desynchronization
-- [VSCode ConPTY Performance #214529](https://github.com/microsoft/vscode/issues/214529) -- ConPTY overhead concerns
-- [OWASP Command Injection](https://owasp.org/www-community/attacks/Command_Injection) -- shell injection prevention fundamentals
-- [Python Buffering and tee (Baeldung)](https://www.baeldung.com/linux/python-buffering-and-tee) -- pipe buffering behavior
-- [PowerShell Piped Data Buffering #19036](https://github.com/PowerShell/PowerShell/issues/19036) -- PS pipeline buffering semantics
-- Glass source: `crates/glass_terminal/src/pty.rs` -- PTY reader architecture, `READ_BUFFER_SIZE`, `OutputBuffer` integration
-- Glass source: `crates/glass_terminal/src/output_capture.rs` -- existing `OutputBuffer` pattern (max_bytes, total_seen, alt-screen detection)
-- Glass source: `crates/glass_snapshot/src/command_parser.rs` -- existing pipe-as-unparseable decision, `contains_unparseable_syntax()`
-- Glass source: `crates/glass_terminal/src/block_manager.rs` -- block lifecycle, single-block-per-command model
-- Glass source: `shell-integration/glass.ps1` -- current shell integration (123 lines, OSC 133 only)
+- [WezTerm PTY and Process Management (DeepWiki)](https://deepwiki.com/wezterm/wezterm/4.5-pty-and-process-management) -- portable-pty architecture, cross-platform PTY abstraction patterns
+- [portable-pty crate (docs.rs)](https://docs.rs/portable-pty) -- cross-platform PTY API reference
+- [wgpu Backend Selection Issue #1416](https://github.com/gfx-rs/wgpu/issues/1416) -- backend priority and selection behavior
+- [wgpu Metal Shader Timeout Issue #4456](https://github.com/gfx-rs/wgpu/issues/4456) -- WGSL to Metal compilation hangs
+- [wgpu Metal Integer Min Issue #4399](https://github.com/gfx-rs/wgpu/issues/4399) -- i32::MIN breaks Metal shader compilation
+- [Cross-Platform Rust Graphics with wgpu (BrightCoding)](https://www.blog.brightcoding.dev/2025/09/30/cross-platform-rust-graphics-with-wgpu-one-api-to-rule-vulkan-metal-d3d12-opengl-webgpu/) -- wgpu cross-platform patterns
+- [macOS Code Signing and Notarization Guide (rsms gist)](https://gist.github.com/rsms/929c9c2fec231f0cf843a1a746a416f5) -- comprehensive macOS distribution guide
+- [Notarizing CLI Apps for macOS (Random Errata)](https://www.randomerrata.com/articles/2024/notarize/) -- practical notarization walkthrough
+- [Resolving Common Notarization Issues (Apple)](https://developer.apple.com/documentation/security/resolving-common-notarization-issues) -- official Apple troubleshooting
+- [Signing and Notarizing on macOS (Armaan Aggarwal)](https://armaan.cc/blog/signing-and-notarizing-macos/) -- exhaustive signing guide
+- [Wayland vs X11 in 2025 (dasroot.net)](https://dasroot.net/posts/2025/11/wayland-vs-x11/) -- current state of display server ecosystem
+- [wl-clipboard (GitHub)](https://github.com/bugaevc/wl-clipboard) -- Wayland clipboard utilities
+- [notify crate (GitHub)](https://github.com/notify-rs/notify) -- cross-platform file watcher, platform backend differences
+- [Building a Cross-Platform Rust CI/CD Pipeline (Ahmed Jama)](https://ahmedjama.com/blog/2025/12/cross-platform-rust-pipeline-github-actions/) -- GitHub Actions CI matrix patterns
+- [Zombie Process Accumulation in Terminal Apps (opencode #11225)](https://github.com/anomalyco/opencode/issues/11225) -- real-world zombie process leak
+- [Auto-Claude Process Cleanup Bug (#1252)](https://github.com/AndyMik90/Auto-Claude/issues/1252) -- Windows zombie process accumulation
+- [Alacritty Architecture (DeepWiki)](https://deepwiki.com/alacritty/alacritty) -- cross-platform terminal architecture reference
+- Glass source: `crates/glass_terminal/src/pty.rs` -- current PTY reader implementation (ConPTY-only)
+- Glass source: `crates/glass_renderer/src/surface.rs` -- current wgpu DX12-forced backend selection
+- Glass source: `crates/glass_history/src/lib.rs` -- `resolve_db_path` using `dirs::home_dir()`
+- Glass source: `crates/glass_snapshot/src/watcher.rs` -- notify-based file watcher
 
 ---
-*Pitfalls research for: Glass v1.3 -- Pipe Visualization*
-*Researched: 2026-03-05*
+*Pitfalls research for: Glass v2.0 -- Cross-Platform & Tabs/Splits*
+*Researched: 2026-03-06*

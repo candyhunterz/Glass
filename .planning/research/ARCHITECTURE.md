@@ -1,726 +1,549 @@
-# Architecture Patterns: Pipe Visualization Integration
+# Architecture Patterns
 
-**Domain:** Terminal emulator pipe visualization (v1.3 milestone)
-**Researched:** 2026-03-05
-**Confidence:** HIGH (based on direct codebase analysis of all 10 Glass crates + established Unix/Windows pipe patterns)
+**Domain:** Cross-platform terminal emulator with tabs/split panes
+**Researched:** 2026-03-06
 
----
+## Current Architecture (v1.3)
 
-## Existing Architecture Summary
-
-Glass is a 10-crate Rust workspace (12,214 LOC) with a clear event-driven data flow:
+Before describing changes, here is what exists today:
 
 ```
-Shell (pwsh/bash)
-  |  OSC 133 A/B/C/D sequences
-  v
-PTY reader thread (std::thread, blocking I/O)
-  |  OscScanner pre-scans raw bytes
-  |  OutputBuffer accumulates between C..D
-  |  VTE parser updates terminal grid
-  v
-AppEvent enum (via winit EventLoopProxy)
-  |  Shell { event, line }
-  |  CommandOutput { raw_output }
-  v
-Main thread (winit event loop)
-  |  BlockManager tracks lifecycle
-  |  HistoryDb inserts CommandRecord
-  |  SnapshotStore pre-exec snapshots
-  v
-FrameRenderer
-  |  BlockRenderer generates rects + labels
-  |  GridRenderer draws terminal cells
-  v
-wgpu DX12 GPU pipeline
+                    winit EventLoop<AppEvent>
+                           |
+                    Processor (ApplicationHandler)
+                           |
+               HashMap<WindowId, WindowContext>
+                           |
+         +-----------+-----+------+-----------+
+         |           |            |            |
+    GlassRenderer  FrameRenderer  PtySender   Term (FairMutex)
+    (wgpu surface) (render pipeline) |         |
+         |           |            PTY reader   BlockManager
+         |           |            thread       StatusState
+         |           |            (std::thread) HistoryDb
+         |           |                         SnapshotStore
+         +-----+-----+
+               |
+        Single render pass:
+        clear -> rects -> text -> present
 ```
 
-**Key architectural constraints (from code analysis):**
+Key characteristics:
+- **One WindowContext per window** (currently always one window)
+- **One PTY per WindowContext** (ConPTY, dedicated std::thread reader)
+- **One Term grid per PTY** (alacritty_terminal Term<EventProxy>)
+- **One FrameRenderer per window** (owns GlyphCache, GridRenderer, RectRenderer)
+- **AppEvent routed by WindowId** to the correct WindowContext
+- **GridSnapshot** extracted under brief FairMutex lock, rendered without lock held
 
-1. **PTY reader** runs on `std::thread` (not tokio) -- blocking I/O must not block async executor. Holds `Term` lock briefly, scans OSC, sends AppEvent via EventLoopProxy.
+## Target Architecture (v2.0)
 
-2. **Crate boundary rule:** `glass_terminal` must NOT depend on `glass_history` -- raw bytes sent via AppEvent, processed on main thread.
+### High-Level Changes
 
-3. **Command text extraction** happens at `CommandExecuted` time by reading the terminal grid between `block.command_start_line` and `block.output_start_line`.
-
-4. **`command_parser.rs`** already marks `" | "` as unparseable syntax (returns `Confidence::Low`). This is correct for snapshot/undo; pipes are a different concern.
-
-5. **Shell integration** works by wrapping existing prompts (Oh My Posh/Starship compatible). PowerShell uses PSReadLine Enter handler for OSC 133;C. Bash uses PS0.
-
-6. **`glass_pipes` crate** exists as a stub (`//! glass_pipes -- stub crate, filled in future phases`).
-
----
-
-## Recommended Architecture for Pipe Visualization
-
-### Core Design Decision: Shell-Side Tee Insertion + Terminal-Side Detection
-
-Pipe visualization has a fundamental challenge: the terminal sees only the FINAL output of a pipeline. Intermediate stage outputs are consumed by the next stage and never reach the PTY. There are two possible approaches:
-
-**Option A (chosen for bash/zsh):** Shell integration rewrites the command to insert `tee` between stages, capturing intermediate output to temp files. After execution, shell reports captured data back via custom OSC sequences.
-
-**Option B (chosen for PowerShell):** PowerShell's `Tee-Object -Variable` captures pipeline objects to variables. Shell integration rewrites the command to insert `Tee-Object` between stages, then reports variable contents post-execution.
-
-**Fallback (all shells):** When rewriting is unsafe (TTY-sensitive commands) or disabled, Glass still detects pipes from the command text and displays the pipeline structure without intermediate output.
+```
+                    winit EventLoop<AppEvent>
+                           |
+                    Processor (ApplicationHandler)
+                           |
+               HashMap<WindowId, WindowContext>
+                           |
+         +----------+------+-------+-----------+
+         |          |              |            |
+    GlassRenderer  FrameRenderer  SessionMux   TabBar (NEW)
+    (wgpu surface) (render pipeline)  (NEW)
+                        |              |
+                   Viewport layout     +-- Tab 0
+                   calculator (NEW)    |     +-- SplitTree (NEW)
+                        |              |     |     +-- Leaf: Session { pty, term, blocks, status, ... }
+                        |              |     |     +-- Leaf: Session { pty, term, blocks, status, ... }
+                        |              +-- Tab 1
+                        |                    +-- SplitTree
+                        |                          +-- Leaf: Session { pty, term, blocks, status, ... }
+                        |
+                   Renders each visible Session
+                   into its viewport rect
+```
 
 ### Component Boundaries
 
-| Component | Crate | Responsibility | Status |
-|-----------|-------|---------------|--------|
-| PipeParser | `glass_pipes` | Parse command text into pipeline stages | **NEW** |
-| TtyDetector | `glass_pipes` | Identify TTY-sensitive commands that break with tee | **NEW** |
-| PipeStage types | `glass_pipes` | Data types for stages, pipeline info | **NEW** |
-| Shell integration (bash) | `shell-integration/glass.bash` | DEBUG trap rewrites piped commands with tee, PROMPT_COMMAND reports captured data via OSC | **MODIFIED** |
-| Shell integration (PS) | `shell-integration/glass.ps1` | Enter handler inserts Tee-Object, prompt reports variables via OSC | **MODIFIED** |
-| OscScanner | `glass_terminal` | Parse new OSC 133;P (pipe stage data) sequences | **MODIFIED** |
-| AppEvent / ShellEvent | `glass_core` | New PipeStageOutput variant | **MODIFIED** |
-| Block | `glass_terminal` | Block gains `pipeline_stages` field | **MODIFIED** |
-| HistoryDb | `glass_history` | New `pipe_stages` table (schema v1 -> v2 migration) | **MODIFIED** |
-| BlockRenderer | `glass_renderer` | Multi-row pipeline UI with stage indicators | **MODIFIED** |
-| GlassServer | `glass_mcp` | New `glass_pipe_inspect` tool | **MODIFIED** |
-| GlassConfig | `glass_core` | New `[pipes]` config section | **MODIFIED** |
+| Component | Responsibility | Communicates With | New/Modified |
+|-----------|---------------|-------------------|--------------|
+| `Processor` | winit event loop, keyboard dispatch, window lifecycle | WindowContext, SessionMux | **Modified** -- routes keys/events to focused session via SessionMux |
+| `WindowContext` | Per-window GPU state, compositor | GlassRenderer, FrameRenderer, SessionMux | **Modified** -- replaces single-PTY fields with SessionMux |
+| `SessionMux` | Tab/pane tree, focus tracking, session lifecycle | Session, TabBar | **NEW crate: glass_mux** |
+| `Session` | Single terminal session (PTY + Term + blocks + status + history + snapshot) | PtySender, Term, BlockManager, HistoryDb, SnapshotStore | **NEW struct** (extracted from WindowContext fields) |
+| `SplitTree` | Binary tree of horizontal/vertical splits with size ratios | Session (leaves) | **NEW** in glass_mux |
+| `TabBar` | Tab strip rendering (titles, close buttons, active indicator) | SessionMux (reads tab list) | **NEW** in glass_renderer |
+| `ViewportLayout` | Computes pixel rects for each visible session from SplitTree | SplitTree, FrameRenderer | **NEW** in glass_mux |
+| `GlassRenderer` | wgpu surface, device, queue | FrameRenderer | **Modified** -- backend selection via cfg, no API change |
+| `FrameRenderer` | Render pipeline (rects, text, overlays) | GridSnapshot, Block, StatusState | **Modified** -- called per-session with viewport rect (scissor) |
+| `spawn_pty` | PTY creation and reader thread | EventProxy, AppEvent | **Modified** -- platform-conditional shell detection |
+| `GlassConfig` | TOML configuration | All consumers | **Modified** -- platform-aware defaults (font, shell) |
+| `AppEvent` | Event enum routed through winit proxy | PTY threads -> Processor | **Modified** -- adds SessionId to variants |
 
----
+### New Crate: glass_mux
 
-### Data Types (in `glass_pipes`)
+This is the only new crate needed. It owns the session multiplexer logic.
+
+```
+glass_mux/
+  src/
+    lib.rs          -- pub exports
+    session.rs      -- Session struct (extracted from WindowContext)
+    session_mux.rs  -- SessionMux: tabs vec, active tab index, focus tracking
+    split_tree.rs   -- SplitTree: binary tree of splits with ratio
+    layout.rs       -- ViewportLayout: compute pixel rects from split tree
+    tab.rs          -- Tab: wraps SplitTree + tab metadata (title, id)
+    types.rs        -- SessionId, TabId, SplitDirection, FocusDirection
+```
+
+Dependencies: `glass_core` (for AppEvent, GlassConfig), `glass_terminal` (for Session internals).
+
+## Detailed Design: Five Integration Points
+
+### 1. PTY Abstraction Layer
+
+**Current state:** `pty.rs` calls `alacritty_terminal::tty::new()` directly. alacritty_terminal already provides cross-platform PTY support internally -- ConPTY on Windows, forkpty on Unix. The `polling` crate (v3) already abstracts epoll/kqueue/IOCP.
+
+**What needs to change:** Almost nothing in the PTY read loop. The alacritty_terminal tty module handles platform differences. Changes are:
+
+1. **Shell detection** in `spawn_pty()` -- currently Windows-only (pwsh/powershell). Add:
+   - macOS: detect zsh (default), bash, fish
+   - Linux: read `$SHELL` or fall back to bash
+
+2. **Shell integration injection** in `main.rs` -- currently PowerShell only. Add:
+   - bash: `. ~/.glass/shell-integration/glass.bash`
+   - zsh: `. ~/.glass/shell-integration/glass.zsh`
+   - fish: `source ~/.glass/shell-integration/glass.fish`
+
+3. **Environment variables** -- TERM already set to `xterm-256color`, which is correct cross-platform.
+
+**No new PTY abstraction trait needed.** The alacritty_terminal tty module IS the abstraction. Glass's custom read loop (`glass_pty_loop`) works identically because it only uses `pty.reader().read()`, `pty.writer().write()`, `pty.on_resize()`, and `pty.register()/deregister()` -- all of which are trait methods on `EventedPty`/`EventedReadWrite` that alacritty_terminal implements per-platform.
+
+The one platform-specific concern: `tty::PTY_CHILD_EVENT_TOKEN` and `tty::PTY_READ_WRITE_TOKEN` -- these are constants from alacritty_terminal that differ per platform. The current code already uses them correctly.
 
 ```rust
-/// A single stage in a pipeline.
+// spawn_pty changes (pseudocode):
+pub fn spawn_pty(
+    // ... existing params ...
+    session_id: SessionId,  // NEW: identify which session this PTY belongs to
+) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
+    let shell_program = if let Some(shell) = shell_override {
+        shell.to_owned()
+    } else {
+        #[cfg(target_os = "windows")]
+        { detect_windows_shell() }  // existing pwsh/powershell logic
+        #[cfg(target_os = "macos")]
+        { std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()) }
+        #[cfg(target_os = "linux")]
+        { std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()) }
+    };
+    // ... rest unchanged ...
+}
+```
+
+### 2. wgpu Backend Selection
+
+**Current state:** `surface.rs` uses `#[cfg(target_os = "windows")] backends: wgpu::Backends::DX12` and `#[cfg(not(target_os = "windows"))] backends: wgpu::Backends::all()`.
+
+**This is already correct for cross-platform.** wgpu 28 auto-selects the best backend when `Backends::all()` is specified:
+- macOS: Metal (only option)
+- Linux: Vulkan (preferred), GL (fallback)
+- Windows: DX12 (forced, already configured)
+
+The existing `#[cfg]` pattern in `surface.rs` is the recommended approach. No changes needed beyond what is already there.
+
+**One consideration:** On Linux with older hardware, Vulkan may not be available. The `Backends::all()` fallback to GL handles this. The `WGPU_BACKEND` environment variable can override (built into wgpu).
+
+### 3. Session Multiplexer Architecture
+
+This is the largest new component. Design inspired by WezTerm's Mux but much simpler (no remote sessions, no client-server).
+
+```rust
+// glass_mux/src/types.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(pub u64);
+
+#[derive(Debug, Clone, Copy)]
+pub enum SplitDirection { Horizontal, Vertical }
+
+#[derive(Debug, Clone, Copy)]
+pub enum FocusDirection { Up, Down, Left, Right }
+```
+
+```rust
+// glass_mux/src/session.rs
+// Extracted from WindowContext -- one per terminal pane
+pub struct Session {
+    pub id: SessionId,
+    pub pty_sender: PtySender,
+    pub term: Arc<FairMutex<Term<EventProxy>>>,
+    pub default_colors: DefaultColors,
+    pub block_manager: BlockManager,
+    pub status: StatusState,
+    pub history_db: Option<HistoryDb>,
+    pub snapshot_store: Option<SnapshotStore>,
+    pub last_command_id: Option<i64>,
+    pub command_started_wall: Option<std::time::SystemTime>,
+    pub search_overlay: Option<SearchOverlay>,
+    pub pending_command_text: Option<String>,
+    pub active_watcher: Option<FsWatcher>,
+    pub pending_snapshot_id: Option<i64>,
+    pub pending_parse_confidence: Option<Confidence>,
+    pub cursor_position: Option<(f64, f64)>,
+    // NEW: tab title derived from shell CWD or process name
+    pub title: String,
+}
+```
+
+```rust
+// glass_mux/src/split_tree.rs
+pub enum SplitNode {
+    Leaf(SessionId),
+    Split {
+        direction: SplitDirection,
+        ratio: f32,  // 0.0..1.0, fraction allocated to first child
+        first: Box<SplitNode>,
+        second: Box<SplitNode>,
+    },
+}
+
+impl SplitNode {
+    /// Compute viewport rects for all leaf sessions given a bounding rect.
+    pub fn layout(&self, bounds: Rect) -> Vec<(SessionId, Rect)> { ... }
+
+    /// Find the session in a given direction from the focused session.
+    pub fn navigate(&self, from: SessionId, dir: FocusDirection) -> Option<SessionId> { ... }
+
+    /// Split the leaf containing `target` in the given direction.
+    /// Returns the new SessionId for the created pane.
+    pub fn split(&mut self, target: SessionId, dir: SplitDirection, new_id: SessionId) { ... }
+
+    /// Remove a session, collapsing its parent split.
+    pub fn remove(&mut self, target: SessionId) -> bool { ... }
+}
+```
+
+```rust
+// glass_mux/src/tab.rs
+pub struct Tab {
+    pub id: TabId,
+    pub tree: SplitNode,
+    pub focused_session: SessionId,
+    pub title: String,  // derived from focused session
+}
+```
+
+```rust
+// glass_mux/src/session_mux.rs
+pub struct SessionMux {
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    sessions: HashMap<SessionId, Session>,
+    next_id: u64,
+}
+
+impl SessionMux {
+    pub fn new_tab(&mut self, /* PTY spawn params */) -> TabId { ... }
+    pub fn close_tab(&mut self, id: TabId) { ... }
+    pub fn switch_tab(&mut self, index: usize) { ... }
+    pub fn next_tab(&mut self) { ... }
+    pub fn prev_tab(&mut self) { ... }
+
+    pub fn split(&mut self, dir: SplitDirection) -> SessionId { ... }
+    pub fn close_pane(&mut self, id: SessionId) { ... }
+    pub fn focus_direction(&mut self, dir: FocusDirection) { ... }
+
+    pub fn focused_session(&self) -> Option<&Session> { ... }
+    pub fn focused_session_mut(&mut self) -> Option<&mut Session> { ... }
+
+    pub fn active_tab(&self) -> Option<&Tab> { ... }
+
+    /// Get all visible sessions with their viewport rects for rendering.
+    pub fn visible_sessions(&self, window_rect: Rect) -> Vec<(SessionId, Rect, &Session)> { ... }
+
+    /// Route an AppEvent to the correct session by SessionId.
+    pub fn route_event(&mut self, session_id: SessionId) -> Option<&mut Session> { ... }
+}
+```
+
+### 4. Renderer Changes for Multiple Terminal Views
+
+**Current state:** `FrameRenderer::draw_frame()` renders one GridSnapshot to the full window.
+
+**What needs to change:** The FrameRenderer draws each visible session into a scissor-clipped viewport rect. The key insight: the existing `draw_frame` already takes `width` and `height` parameters. The change is to call it multiple times with different viewport offsets.
+
+**Approach: Scissor rect per session, shared render pass.**
+
+```rust
+// Modified draw flow in WindowContext (pseudocode):
+fn render_frame(&mut self) {
+    let frame = self.renderer.get_current_texture()?;
+    let view = frame.texture.create_view(&Default::default());
+
+    // 1. Draw tab bar at top (if >1 tab)
+    if self.session_mux.tab_count() > 1 {
+        self.tab_bar_renderer.draw(&view, &self.session_mux);
+    }
+
+    // 2. Compute available area (subtract tab bar height)
+    let tab_bar_height = if self.session_mux.tab_count() > 1 { TAB_BAR_HEIGHT } else { 0 };
+    let content_rect = Rect { x: 0, y: tab_bar_height, w: width, h: height - tab_bar_height };
+
+    // 3. For each visible session in the active tab's split tree:
+    for (session_id, viewport_rect, session) in self.session_mux.visible_sessions(content_rect) {
+        let snapshot = {
+            let term = session.term.lock();
+            snapshot_term(&term, &session.default_colors)
+        };
+        let visible_blocks = session.block_manager.visible_blocks(...);
+
+        // Draw with viewport offset and scissor
+        self.frame_renderer.draw_frame_viewport(
+            device, queue, &view,
+            viewport_rect,      // NEW: position and size of this pane
+            &snapshot,
+            &visible_blocks,
+            Some(&session.status),
+            search_overlay,
+        );
+    }
+
+    // 4. Draw split dividers (1px lines between panes)
+    self.draw_split_dividers(&view, &self.session_mux);
+
+    frame.present();
+}
+```
+
+**FrameRenderer changes:**
+- New method `draw_frame_viewport()` that takes a `Rect` instead of full `(width, height)`
+- Uses wgpu scissor rect to clip rendering to the pane's area
+- Offsets all positions by the viewport's (x, y) origin
+- The existing `draw_frame()` becomes a convenience wrapper calling `draw_frame_viewport` with full window rect
+
+**GlyphCache/FontSystem sharing:** All sessions in a window share the same `FrameRenderer` (and thus the same `GlyphCache` and `FontSystem`). This is critical -- FontSystem is expensive to create and holds the font atlas. Do NOT create a FrameRenderer per session.
+
+### 5. Event Routing with Multiple Sessions
+
+**Current state:** `AppEvent` variants carry `WindowId`. The Processor looks up `WindowContext` by WindowId.
+
+**What needs to change:** AppEvent needs `SessionId` so events from PTY threads route to the correct session.
+
+```rust
+// Modified AppEvent:
 #[derive(Debug, Clone)]
-pub struct PipeStage {
-    /// Zero-indexed position in the pipeline.
-    pub index: usize,
-    /// The command fragment for this stage (e.g., "grep foo").
-    pub command: String,
-    /// Captured output (ANSI-stripped, truncated). None if capture not possible.
-    pub output: Option<String>,
-    /// Number of output lines (for UI sizing).
-    pub line_count: usize,
-    /// Whether this stage's output was truncated.
-    pub truncated: bool,
-}
-
-/// Result of parsing a command for pipe structure.
-#[derive(Debug, Clone)]
-pub struct PipelineInfo {
-    /// The original command text.
-    pub original: String,
-    /// Individual stages (split on unquoted |).
-    pub stages: Vec<String>,
-    /// Whether tee insertion is safe (no TTY-sensitive commands).
-    pub tee_safe: bool,
-}
-
-/// TTY-sensitive commands that should NOT have tee inserted.
-/// These commands require direct terminal access and break when
-/// their stdin/stdout is redirected through tee.
-pub const TTY_COMMANDS: &[&str] = &[
-    "vim", "nvim", "vi", "nano", "emacs",       // editors
-    "less", "more", "most",                       // pagers
-    "top", "htop", "btop",                        // monitors
-    "ssh", "telnet",                              // remote shells
-    "fzf", "sk",                                  // fuzzy finders
-    "tmux", "screen",                             // multiplexers
-    "python", "node", "irb", "ghci",             // interactive REPLs
-];
-```
-
----
-
-### Data Flow: Shell to Storage to UI to MCP
-
-```
-1. USER TYPES: ls -la | grep foo | wc -l
-
-2. SHELL INTEGRATION (at command execution time):
-   a. Detect unquoted pipe character(s) in command text
-   b. Parse into stages: ["ls -la", "grep foo", "wc -l"]
-   c. Check each stage against TTY blocklist
-   d. If all safe AND tee_rewrite enabled:
-      BASH:  ls -la | tee /tmp/glass-pipe-$$/0 | grep foo | tee /tmp/glass-pipe-$$/1 | wc -l
-      PS:    ls -la | Tee-Object -Variable __glass_0 | grep foo | Tee-Object -Variable __glass_1 | wc -l
-   e. Execute rewritten command (user sees normal final output)
-
-3. SHELL INTEGRATION (after command finishes, before next prompt):
-   a. BASH: Read /tmp/glass-pipe-$$/* files, emit OSC 133;P per stage, clean up
-      PS:   Read $__glass_0, $__glass_1 variables, emit OSC 133;P per stage
-   b. Emit pipe stage count: ESC]133;S;<stage_count>;<original_command_b64> BEL
-   c. For each captured stage:
-      ESC]133;P;<stage_index>;<byte_count>;<base64_output> BEL
-   d. Emit OSC 133;D as before (normal command finish)
-
-4. PTY READER THREAD (glass_terminal):
-   a. OscScanner detects 133;S -> OscEvent::PipelineStart { count, original_cmd }
-   b. OscScanner detects 133;P -> OscEvent::PipeStageOutput { index, data }
-   c. Converted to ShellEvent variants, sent via AppEvent
-
-5. MAIN THREAD EVENT HANDLER:
-   a. On ShellEvent::PipelineStart:
-      - Parse original command into stage commands via glass_pipes::PipeParser
-      - Initialize pending_pipe_stages Vec on WindowContext
-   b. On ShellEvent::PipeStageOutput:
-      - Base64-decode data
-      - Process (ANSI strip, binary detect, truncate)
-      - Store in pending_pipe_stages[index]
-   c. On ShellEvent::CommandFinished:
-      - If pending_pipe_stages is non-empty:
-        - Move stages into Block.pipeline_stages
-        - Insert into pipe_stages DB table
-        - Clear pending_pipe_stages
-
-6. RENDERER (glass_renderer):
-   a. BlockRenderer checks block.pipeline_stages.is_empty()
-   b. If non-empty: render [N stages] indicator on separator line
-   c. If expanded: render multi-row stage headers with truncated output previews
-   d. Click/keybinding toggles pipeline_expanded on the Block
-
-7. MCP (glass_mcp):
-   a. glass_pipe_inspect(command_id) queries pipe_stages table
-   b. Returns per-stage command + full captured output for AI analysis
-```
-
----
-
-### Shell Integration Changes (Detailed)
-
-#### Bash (`glass.bash`) -- DEBUG Trap Approach
-
-**Critical insight:** PS0 cannot rewrite the command -- it only emits text before execution. The command is already parsed by bash. Instead, use the `DEBUG` trap with `BASH_COMMAND`.
-
-```bash
-# Pipe detection and tee rewriting via DEBUG trap
-__glass_is_tee_safe() {
-    local cmd="$1"
-    local IFS='|'
-    for stage in $cmd; do
-        local base=$(echo "$stage" | awk '{print $1}')
-        case "$base" in
-            vim|nvim|vi|nano|less|more|top|htop|ssh|fzf|tmux|screen|python|node)
-                return 1 ;;  # Not safe
-        esac
-    done
-    return 0  # All stages safe
-}
-
-__glass_rewrite_pipeline() {
-    local cmd="$1"
-    local tmpdir="/tmp/glass-pipe-$$"
-    mkdir -p "$tmpdir"
-    local result=""
-    local idx=0
-    local IFS='|'
-    local stages=($cmd)
-    local last=$((${#stages[@]} - 1))
-    for i in "${!stages[@]}"; do
-        local stage="${stages[$i]}"
-        result+="$stage"
-        if [[ $i -lt $last ]]; then
-            result+=" | tee $tmpdir/$idx |"
-            ((idx++))
-        fi
-    done
-    echo "$result"
-}
-
-__glass_report_stages() {
-    local tmpdir="/tmp/glass-pipe-$$"
-    [[ -d "$tmpdir" ]] || return
-    local count=$(ls "$tmpdir" 2>/dev/null | wc -l)
-    [[ $count -eq 0 ]] && return
-    # Emit pipeline start marker with original command
-    local orig_b64=$(echo -n "$__GLASS_PIPE_ORIGINAL" | base64 -w0)
-    printf '\e]133;S;%d;%s\a' "$count" "$orig_b64"
-    # Emit each stage's captured output
-    for f in "$tmpdir"/*; do
-        local idx=$(basename "$f")
-        local data=$(head -c 51200 "$f" | base64 -w0)  # 50KB limit
-        local size=$(wc -c < "$f")
-        printf '\e]133;P;%s;%s;%s\a' "$idx" "$size" "$data"
-    done
-    rm -rf "$tmpdir"
-}
-
-# Integrate into PROMPT_COMMAND (before OSC 133;D)
-__glass_prompt_command() {
-    local exit_code=$?
-    __glass_report_stages  # Report pipe stages BEFORE 133;D
-    printf '\e]133;D;%d\e\\' "$exit_code"
-    __glass_osc7
-    PS1='\[\e]133;A\e\\\]'"${__GLASS_ORIGINAL_PS1:-\\s-\\v\\$ }"'\[\e]133;B\e\\\]'
+pub enum AppEvent {
+    TerminalDirty { window_id: WindowId },  // unchanged -- any dirty triggers redraw
+    SetTitle { window_id: WindowId, session_id: SessionId, title: String },
+    TerminalExit { window_id: WindowId, session_id: SessionId },
+    Shell { window_id: WindowId, session_id: SessionId, event: ShellEvent, line: usize },
+    GitInfo { window_id: WindowId, session_id: SessionId, info: Option<GitStatus> },
+    CommandOutput { window_id: WindowId, session_id: SessionId, raw_output: Vec<u8> },
 }
 ```
 
-**Bash limitation:** The DEBUG trap approach requires careful handling to avoid recursion. The trap sees every simple command, not just user-typed pipelines. Guard with a flag (`__GLASS_PIPE_ACTIVE`) and only rewrite when the command contains ` | ` and is at the top-level interactive prompt.
-
-**Simpler alternative considered:** Wrapping the pipeline in a function at PS0 time. Rejected because PS0 output is prepended to the command line but doesn't actually modify the command bash executes.
-
-**Recommended practical approach:** Since bash's DEBUG trap is fragile and complex, start with **post-hoc detection only** for bash: detect pipes in the command text, split into stages, but don't capture intermediate output. Add tee rewriting as an opt-in feature in a later iteration. This is safer for v1.3.
-
-#### PowerShell (`glass.ps1`) -- PSReadLine Replace
-
-PowerShell is significantly cleaner because PSReadLine's `Replace()` method can rewrite the command buffer BEFORE `AcceptLine()`.
-
-```powershell
-function Global:__Glass-Is-Tee-Safe {
-    param([string]$Command)
-    $stages = $Command -split '\|'
-    foreach ($stage in $stages) {
-        $base = ($stage.Trim() -split '\s+')[0]
-        if ($base -in @('vim','nvim','less','more','top','htop','ssh','fzf','python','node')) {
-            return $false
-        }
-    }
-    return $true
-}
-
-function Global:__Glass-Rewrite-Pipeline {
-    param([string]$Command)
-    $stages = $Command -split '\|'
-    $result = @()
-    for ($i = 0; $i -lt $stages.Count; $i++) {
-        $result += $stages[$i].Trim()
-        if ($i -lt $stages.Count - 1) {
-            $result += "| Tee-Object -Variable __glass_pipe_$i |"
-        }
-    }
-    return ($result -join ' ')
-}
-
-# Modified Enter handler
-Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-    $line = $null
-    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$null)
-
-    $Global:__GlassPipeOriginal = $null
-    if ($line -match '\|' -and (__Glass-Is-Tee-Safe $line)) {
-        $Global:__GlassPipeOriginal = $line
-        $rewritten = __Glass-Rewrite-Pipeline $line
-        [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $rewritten)
-    }
-
-    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-    [Console]::Write("$([char]0x1b)]133;C$([char]7)")
-}
-
-# In prompt function, report pipe stages before 133;D
-function __Glass-Report-Stages {
-    if ($null -eq $Global:__GlassPipeOriginal) { return }
-    $stages = $Global:__GlassPipeOriginal -split '\|'
-    $count = $stages.Count - 1  # Number of intermediate stages (not final)
-    $origB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Global:__GlassPipeOriginal))
-    [Console]::Write("$([char]0x1b)]133;S;$count;$origB64$([char]7)")
-    for ($i = 0; $i -lt $count; $i++) {
-        $varName = "__glass_pipe_$i"
-        $value = Get-Variable -Name $varName -ValueOnly -ErrorAction SilentlyContinue
-        if ($null -ne $value) {
-            $text = $value | Out-String
-            if ($text.Length -gt 51200) { $text = $text.Substring(0, 51200) }
-            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
-            [Console]::Write("$([char]0x1b)]133;P;$i;$($text.Length);$b64$([char]7)")
-            Remove-Variable -Name $varName -Scope Global -ErrorAction SilentlyContinue
-        }
-    }
-    $Global:__GlassPipeOriginal = $null
-}
-```
-
-**PowerShell advantage:** PSReadLine's `Replace()` modifies the actual command buffer. The shell parses and executes the rewritten version. This is clean and reliable. The `Tee-Object -Variable` approach captures PowerShell objects serialized to string, which is exactly what a user would see if they examined intermediate output.
-
-**PowerShell caveat:** `Tee-Object` works on PowerShell pipeline objects, not raw byte streams. For native commands (e.g., `git log | grep fix`), the output passes through PowerShell's pipeline as strings, which works fine. But for pure cmdlet pipelines (e.g., `Get-Process | Sort-Object CPU`), `Tee-Object` captures object representations, not formatted table output. This is actually MORE useful for debugging.
-
----
-
-### OSC Protocol Extension
-
-Two new OSC 133 sub-markers:
-
-```
-Pipeline start (emitted once before stage data):
-ESC]133;S;<stage_count>;<base64_original_command> BEL
-
-Per-stage output (emitted once per intermediate stage):
-ESC]133;P;<stage_index>;<byte_count>;<base64_output> BEL
-```
-
-- `stage_count`: number of intermediate stages (pipeline length - 1)
-- `stage_index`: 0-based
-- `byte_count`: original byte count before base64
-- `base64_output`: base64-encoded to avoid BEL/ESC conflicts in raw output
-
-**Why base64:** Pipe stage output may contain arbitrary bytes including BEL (0x07) which would prematurely terminate the OSC sequence, and ESC (0x1b) which could trigger false OSC detection in the scanner.
-
-**Size constraint:** Each stage is truncated to `max_stage_capture_kb` (default 50KB) before base64 encoding. Base64 inflates by ~33%, so max OSC payload per stage is ~67KB. The OscScanner already handles split-buffer accumulation, so large payloads spanning multiple PTY reads are handled correctly.
-
----
-
-### OscScanner Extension
-
-Add to `parse_osc133`:
+**Keyboard routing:**
+- Global shortcuts (Ctrl+Shift+T new tab, Ctrl+Shift+W close tab, Ctrl+Tab switch tab, Ctrl+Shift+D split, etc.) handled by Processor before reaching any session
+- All other keyboard input forwarded to `session_mux.focused_session().pty_sender`
+- Mouse events: hit-test against viewport rects to determine which session receives the event; click also changes focus
 
 ```rust
-fn parse_osc133(params: &str) -> Option<OscEvent> {
-    let mut parts = params.splitn(2, ';');
-    let marker = parts.next()?;
-    match marker {
-        "A" => Some(OscEvent::PromptStart),
-        "B" => Some(OscEvent::CommandStart),
-        "C" => Some(OscEvent::CommandExecuted),
-        "D" => { /* existing */ }
-        // NEW
-        "S" => {
-            // Pipeline start: S;<count>;<base64_cmd>
-            let rest = parts.next()?;
-            let mut sub = rest.splitn(2, ';');
-            let count = sub.next()?.parse::<usize>().ok()?;
-            let cmd_b64 = sub.next().unwrap_or("");
-            Some(OscEvent::PipelineStart {
-                stage_count: count,
-                original_command: cmd_b64.to_string(),
-            })
-        }
-        "P" => {
-            // Pipe stage output: P;<index>;<byte_count>;<base64_data>
-            let rest = parts.next()?;
-            let mut sub = rest.splitn(3, ';');
-            let index = sub.next()?.parse::<usize>().ok()?;
-            let _byte_count = sub.next()?.parse::<usize>().ok()?;
-            let data_b64 = sub.next().unwrap_or("");
-            Some(OscEvent::PipeStageOutput {
-                index,
-                data: data_b64.to_string(),
-            })
-        }
-        _ => None,
+// In Processor::window_event, keyboard handling:
+fn handle_key(&mut self, ctx: &mut WindowContext, key: Key, mods: ModifiersState) {
+    // Global shortcuts first
+    match (mods, &key) {
+        (CTRL_SHIFT, Key::Named(NamedKey::T)) => { ctx.session_mux.new_tab(...); return; }
+        (CTRL_SHIFT, Key::Named(NamedKey::W)) => { ctx.session_mux.close_focused_pane(); return; }
+        (CTRL, Key::Named(NamedKey::Tab)) => { ctx.session_mux.next_tab(); return; }
+        (CTRL_SHIFT, Key::Character("d")) => { ctx.session_mux.split(Horizontal); return; }
+        (CTRL_SHIFT, Key::Character("e")) => { ctx.session_mux.split(Vertical); return; }
+        (ALT, Key::Named(NamedKey::ArrowLeft)) => { ctx.session_mux.focus_direction(Left); return; }
+        // ... etc
+        _ => {}
+    }
+
+    // Forward to focused session
+    if let Some(session) = ctx.session_mux.focused_session() {
+        let bytes = encode_key(key, mods, session.term.lock().mode());
+        session.pty_sender.send(PtyMsg::Input(bytes));
     }
 }
 ```
 
-This follows the existing scanner pattern exactly -- small, additive changes to the match arm.
+## Crate Modification Map
 
----
+### No changes needed
+- `glass_protocol` -- protocol types are session-agnostic
+- `glass_pipes` -- pipe parsing is session-agnostic
 
-### Database Schema Extension
+### Minor changes (add SessionId parameter)
+- `glass_terminal` -- `spawn_pty()` takes SessionId, passes it in AppEvent
+- `glass_core` -- AppEvent variants get SessionId field
+- `glass_history` -- no API change, but each Session opens its own HistoryDb
+- `glass_snapshot` -- no API change, each Session opens its own SnapshotStore
+- `glass_mcp` -- no change (separate process, reads DB directly)
 
-```sql
--- New table linked to existing commands table
--- Added in schema migration v1 -> v2
-CREATE TABLE IF NOT EXISTS pipe_stages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    command_id  INTEGER NOT NULL,
-    stage_index INTEGER NOT NULL,
-    stage_cmd   TEXT NOT NULL,
-    output      TEXT,
-    line_count  INTEGER NOT NULL DEFAULT 0,
-    truncated   INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(command_id, stage_index)
-);
-CREATE INDEX IF NOT EXISTS idx_pipe_stages_command ON pipe_stages(command_id);
-```
+### Moderate changes
+- `glass_config` -- platform-aware defaults (font: "SF Mono"/"Menlo" on macOS, "Consolas" on Windows, "Monospace" on Linux; shell detection per-platform)
+- `glass_renderer` -- new `draw_frame_viewport()` method, `TabBarRenderer` module, split divider rendering
 
-This lives in `glass_history` because pipe stage data is command metadata. Migration follows the existing `PRAGMA user_version` pattern:
+### Major changes
+- `glass_mux` -- **NEW CRATE** (session, split tree, tab, mux, layout)
+- Root `src/main.rs` -- WindowContext restructured to use SessionMux, keyboard routing rewritten, render loop iterates sessions
 
-```rust
-if version < 2 {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS pipe_stages (...);
-         CREATE INDEX IF NOT EXISTS idx_pipe_stages_command ON pipe_stages(command_id);"
-    )?;
-    conn.pragma_update(None, "user_version", 2)?;
-}
-```
-
-**Why not CASCADE delete:** The `commands` table doesn't enforce foreign keys on `pipe_stages` because existing code deletes commands without knowing about pipe_stages. Instead, retention pruning in `glass_history` adds cleanup: `DELETE FROM pipe_stages WHERE command_id NOT IN (SELECT id FROM commands)`.
-
----
-
-### Renderer Changes
-
-The `BlockRenderer` currently produces separator lines, exit code badges, duration labels, and `[undo]` labels. For pipeline blocks:
-
-**Collapsed state (default):**
-```
- ls -la | grep foo | wc -l                    [3 stages] 1.2s  OK
-```
-
-**Expanded state:**
-```
- ls -la | grep foo | wc -l                    [3 stages] 1.2s  OK
- +-- Stage 1: ls -la ------------------------------------------+
- | total 48                                                     |
- | drwxr-xr-x  5 user user  4096 Mar  5 10:00 .               |
- | -rw-r--r--  1 user user  1234 Mar  5 09:00 foo.txt          |
- +-- Stage 2: grep foo ----------------------------------------+
- | -rw-r--r--  1 user user  1234 Mar  5 09:00 foo.txt          |
- +--------------------------------------------------------------+
- 1                                                    (final output)
-```
-
-**Implementation changes to `Block`:**
-
-```rust
-pub struct Block {
-    // ... existing fields ...
-    /// Pipeline stages with captured intermediate output.
-    pub pipeline_stages: Vec<PipeStage>,
-    /// Whether the pipeline view is expanded in the UI.
-    pub pipeline_expanded: bool,
-}
-```
-
-**Rendering approach:**
-- `[N stages]` is a `BlockLabel` positioned left of `[undo]` / duration
-- Expanded view uses additional `RectInstance` rows for stage backgrounds (slightly different shade)
-- Stage headers and output are rendered as `BlockLabel` text
-- Stage output is limited to a configurable max lines (default 10 per stage, scrollable)
-- The expanded area does NOT use the terminal grid -- it's a separate rendering layer drawn by `BlockRenderer`, using the same `glyphon` text rendering as other block labels
-
-**Interaction:**
-- Click `[N stages]` label or press a keybinding to toggle `pipeline_expanded`
-- `auto_expand` config option (default false) expands all pipeline blocks automatically
-
----
-
-### Crate Dependency Graph (After v1.3)
+## Data Flow: New Tab Creation
 
 ```
-glass_core (events, config, error)
-    ^           ^           ^
-    |           |           |
-glass_terminal  |     glass_snapshot (unchanged)
-    ^           |           ^
-    |           |           |
-glass_renderer  |     glass_mcp
-    ^           |           ^
-    |           |           |
-    +-----+-----+----------+
-          |
-       root binary (Processor coordinates everything)
-          |
-     +----+----+
-     |         |
-glass_history  glass_pipes [FILLED]
+User presses Ctrl+Shift+T
+  -> Processor::handle_key()
+  -> ctx.session_mux.new_tab()
+    -> SessionMux generates new SessionId, TabId
+    -> spawn_pty(event_proxy, proxy, window_id, session_id, shell, ...)
+      -> Returns (PtySender, Arc<FairMutex<Term>>)
+    -> Open HistoryDb for CWD
+    -> Open SnapshotStore for CWD
+    -> Create Session { id, pty_sender, term, block_manager, status, history_db, ... }
+    -> Create Tab { id, tree: SplitNode::Leaf(session_id), focused: session_id }
+    -> Insert into tabs vec, set active_tab
+    -> Inject shell integration via PtyMsg::Input
+  -> window.request_redraw()
 ```
 
-**Key dependency rules:**
-- `glass_pipes` depends on NOTHING (pure logic crate: strings in, data types out)
-- `glass_pipes` does NOT depend on `glass_core` -- it defines its own `PipeStage` type
-- The root binary imports `glass_pipes` for parsing, bridges data to other crates
-- `glass_terminal` does NOT import `glass_pipes` -- OscScanner handles raw OSC bytes; conversion to `PipeStage` happens in the root binary
+## Data Flow: Split Pane Creation
 
-**glass_pipes Cargo.toml:**
-```toml
-[package]
-name = "glass_pipes"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# None -- pure logic crate
-
-[dev-dependencies]
-# Test-only dependencies if needed
+```
+User presses Ctrl+Shift+D (horizontal split)
+  -> Processor::handle_key()
+  -> ctx.session_mux.split(Horizontal)
+    -> Find focused session in active tab's SplitTree
+    -> Generate new SessionId
+    -> spawn_pty(...) for new session
+    -> Replace Leaf(focused_id) with Split { Horizontal, 0.5, Leaf(focused_id), Leaf(new_id) }
+    -> Resize BOTH PTYs: compute new cell dimensions from split viewport rects
+  -> window.request_redraw()
 ```
 
----
+## Data Flow: Rendering Multiple Panes
 
-### Integration Points with Existing Code (Explicit)
-
-| Existing Code | Change Required | Risk |
-|--------------|----------------|------|
-| `command_parser.rs` (glass_snapshot) | **None.** Still returns `Confidence::Low` for piped commands. Correct -- undo shouldn't try to parse pipes. | None |
-| `output_capture.rs` (glass_terminal) | **None.** OutputBuffer captures FINAL output unchanged. Pipe stage data arrives via separate OSC sequences. | None |
-| `osc_scanner.rs` (glass_terminal) | **Add** `S` and `P` markers to `parse_osc133`. Small additive change. | Low |
-| `event.rs` (glass_core) | **Add** `ShellEvent::PipelineStart` and `ShellEvent::PipeStageOutput`. Follows existing pattern. | Low |
-| `block_manager.rs` (glass_terminal) | **Add** `pipeline_stages` and `pipeline_expanded` fields to `Block`. | Low |
-| `db.rs` (glass_history) | **Add** `pipe_stages` table, schema migration v1->v2, insert/query methods. | Low |
-| `main.rs` event handler | **Add** handling for PipelineStart and PipeStageOutput in Shell match arm. Buffer stages, flush on CommandFinished. | Medium |
-| `block_renderer.rs` (glass_renderer) | **Extend** `build_block_text` and `build_block_rects` for pipeline UI. Most complex change. | Medium |
-| `tools.rs` (glass_mcp) | **Add** `glass_pipe_inspect` tool. Follows existing pattern exactly. | Low |
-| `config.rs` (glass_core) | **Add** `PipesSection` to `GlassConfig`. Follows `SnapshotSection` pattern. | Low |
-| `shell-integration/glass.bash` | **Add** pipe rewriting via DEBUG trap (opt-in), stage reporting in PROMPT_COMMAND. | High |
-| `shell-integration/glass.ps1` | **Modify** Enter handler for tee insertion, add stage reporting to prompt. | Medium |
-
----
+```
+RedrawRequested
+  -> For each (session_id, rect) in active_tab.tree.layout(content_area):
+    -> session = session_mux.sessions[session_id]
+    -> snapshot = snapshot_term(&session.term.lock(), &session.default_colors)
+    -> visible_blocks = session.block_manager.visible_blocks(...)
+    -> frame_renderer.draw_frame_viewport(device, queue, view, rect, snapshot, blocks, status, overlay)
+  -> Draw split dividers between pane rects
+  -> Draw tab bar (if multiple tabs)
+  -> frame.present()
+```
 
 ## Patterns to Follow
 
-### Pattern 1: Raw Bytes via AppEvent (Boundary Preservation)
+### Pattern 1: Extract-Then-Render (existing, extend to multi-session)
+**What:** Lock Term briefly to extract GridSnapshot, release lock, render from snapshot.
+**When:** Always -- this is critical for input latency.
+**Why for v2.0:** With multiple sessions, you must NOT hold multiple FairMutex locks simultaneously. Extract snapshots sequentially, then render all.
 
-**What:** Send raw data through AppEvent to avoid crate dependency cycles.
-**When:** Pipe stage data flowing from PTY reader to main thread.
-**Why:** Established in v1.1. glass_terminal must not depend on glass_history or glass_pipes.
+### Pattern 2: SharedRenderer, IndependentSessions
+**What:** One FrameRenderer (and GlyphCache/FontSystem) per window, shared across all sessions. Each session owns its own PTY, Term, BlockManager, etc.
+**When:** Always.
+**Why:** FontSystem is expensive (~35ms to create, holds font atlas). Creating one per session would be wasteful and cause font atlas fragmentation.
 
-```rust
-// In glass_core/event.rs -- new ShellEvent variants
-ShellEvent::PipelineStart { stage_count: usize, original_command_b64: String },
-ShellEvent::PipeStageOutput { index: usize, data_b64: String },
-```
+### Pattern 3: SessionId in Events
+**What:** Every AppEvent from a PTY thread includes both WindowId and SessionId.
+**When:** All PTY-to-main-thread communication.
+**Why:** With multiple PTY threads sending events, the main thread must know which session the event belongs to. WindowId alone is ambiguous when multiple sessions exist in one window.
 
-### Pattern 2: Schema Migration via PRAGMA user_version
-
-**What:** Bump `user_version` from 1 to 2, add pipe_stages table.
-**When:** Adding pipe stage storage.
-**Example:** Exactly follows the v0->v1 migration in `db.rs`.
-
-### Pattern 3: Config Section with Serde Defaults
-
-**What:** New `[pipes]` section with all fields having defaults.
-**When:** Adding pipe visualization configuration.
-
-```rust
-#[derive(Debug, Clone, Deserialize)]
-pub struct PipesSection {
-    #[serde(default = "default_true")]
-    pub enabled: bool,                    // default: true
-    #[serde(default = "default_50")]
-    pub max_stage_capture_kb: u32,        // default: 50
-    #[serde(default = "default_false")]
-    pub auto_expand: bool,                // default: false
-    #[serde(default = "default_true")]
-    pub tee_rewrite: bool,               // default: true (PS), false (bash initially)
-}
-```
-
-### Pattern 4: MCP Tool with spawn_blocking
-
-**What:** New `glass_pipe_inspect` follows existing tool structure exactly.
-**When:** Adding pipe inspection for AI assistants.
-**Example:** Same structure as `glass_file_diff` -- open DB in spawn_blocking, query, return JSON.
-
-### Pattern 5: Non-Fatal Degradation
-
-**What:** Pipe capture failures log warnings and continue. Terminal remains usable.
-**When:** Tee rewriting fails, temp files can't be created, OSC parsing fails.
-**Example:** Same pattern as snapshot_store and history_db initialization.
-
----
+### Pattern 4: cfg-gated Platform Code (not trait abstraction)
+**What:** Use `#[cfg(target_os = "...")]` for platform-specific code rather than a trait-based abstraction layer.
+**When:** Shell detection, shell integration injection, config defaults, keyboard shortcuts.
+**Why:** The number of platform-specific points is small (~5 functions). A trait-based abstraction would be over-engineering. alacritty_terminal already abstracts the hard part (PTY). The `polling` crate already abstracts I/O polling. wgpu already abstracts GPU backends. Just use cfg for the remaining glue.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Modifying the PTY Byte Stream
+### Anti-Pattern 1: One FrameRenderer per Session
+**What:** Creating a separate FrameRenderer/GlyphCache for each terminal pane.
+**Why bad:** Font atlas duplication, GPU memory waste, ~35ms overhead per new pane.
+**Instead:** Share one FrameRenderer, call draw_frame_viewport() per session with scissor rect.
 
-**What:** Intercepting PTY writes to inject tee into commands at the terminal level.
-**Why bad:** The PTY write path is a thin `write_list` queue of raw bytes. Commands arrive as keystroke-by-keystroke bytes, not as complete strings. Rewriting at this layer would require maintaining a stateful command parser that tracks readline editing, multi-line commands, escape sequences, and command boundaries. This is fundamentally impossible without reimplementing a shell parser.
-**Instead:** Shell integration scripts rewrite commands at the shell level, where the command text is known and complete.
+### Anti-Pattern 2: PTY Abstraction Trait
+**What:** Creating a `trait Pty { fn read(); fn write(); }` wrapper over alacritty_terminal's tty.
+**Why bad:** alacritty_terminal already IS the cross-platform PTY abstraction. Adding another layer adds complexity without value.
+**Instead:** Use alacritty_terminal::tty directly, with cfg-gated shell detection in spawn_pty.
 
-### Anti-Pattern 2: glass_pipes Depending on glass_terminal
+### Anti-Pattern 3: Global Session Registry (Arc<Mutex<SessionMux>>)
+**What:** Making SessionMux a global singleton shared between threads.
+**Why bad:** The winit event loop is single-threaded. SessionMux is only accessed from the main thread. Adding Arc<Mutex> creates unnecessary contention and deadlock risk.
+**Instead:** SessionMux is owned by WindowContext, accessed only in ApplicationHandler callbacks.
 
-**What:** Importing terminal types into the pipe parsing crate.
-**Why bad:** Creates dependency cycle risk and conflates parsing logic with terminal state.
-**Instead:** `glass_pipes` is pure logic -- takes strings, returns strings and data structs.
+### Anti-Pattern 4: Separate wgpu Surface per Pane
+**What:** Creating a wgpu Surface for each terminal pane.
+**Why bad:** Each surface requires its own swapchain. Multiple swapchains in one window cause tearing and synchronization issues.
+**Instead:** One surface per window. Use scissor rects and viewport offsets to render panes into sub-regions.
 
-### Anti-Pattern 3: Storing Stage Output in the commands Table
+## Suggested Build Order
 
-**What:** Adding pipe stage data as a JSON blob in the existing `output` column.
-**Why bad:** Breaks the single-output-per-command model. Makes queries complex. Violates schema normalization.
-**Instead:** Separate `pipe_stages` table with `command_id` foreign key.
+The build order must respect dependency chains and allow incremental testing.
 
-### Anti-Pattern 4: Always-On Tee Insertion Without TTY Detection
+### Phase 1: Session Extraction (foundation, no user-visible change)
+1. Create `glass_mux` crate with Session struct (move fields from WindowContext)
+2. Create SessionMux with single-tab, single-session mode
+3. Refactor WindowContext to use SessionMux instead of inline fields
+4. Add SessionId to AppEvent variants
+5. Update event routing in Processor to go through SessionMux
+6. **Test:** Everything works exactly as before (regression test)
 
-**What:** Rewriting every piped command with tee, regardless of what commands are in the pipeline.
-**Why bad:** TTY-sensitive commands (vim, less, fzf) break when their stdin/stdout is redirected through tee. `less` loses its ability to detect terminal height. `fzf` loses interactive selection.
-**Instead:** Check each pipeline stage against TTY blocklist. If ANY stage is TTY-sensitive, skip rewriting for the entire pipeline.
+### Phase 2: Platform PTY + Backend (cross-platform, no UI change)
+1. Add cfg-gated shell detection to spawn_pty()
+2. Write shell integration scripts for bash/zsh/fish
+3. Verify wgpu backend selection on macOS (Metal) and Linux (Vulkan/GL)
+4. Platform-aware config defaults (font family, shell)
+5. CI cross-compilation matrix
+6. **Test:** Glass launches on macOS and Linux with correct shell, rendering works
 
-### Anti-Pattern 5: Using Temp Files Without Session Scoping
+### Phase 3: Tabs (user-visible feature, builds on Session extraction)
+1. Implement Tab struct and tab management in SessionMux
+2. Add TabBarRenderer to glass_renderer
+3. Wire keyboard shortcuts (Ctrl+Shift+T/W, Ctrl+Tab, Ctrl+Shift+Tab)
+4. Tab title from CWD or process name
+5. Handle tab close (PTY shutdown, session cleanup)
+6. Handle last-tab-closed (window close)
+7. **Test:** Create/close/switch tabs, each has independent terminal session
 
-**What:** Writing captured stage output to fixed-name temp files like `/tmp/glass-pipe-0`.
-**Why bad:** Multiple Glass sessions would overwrite each other's capture files.
-**Instead:** Use `$$` (PID) scoping: `/tmp/glass-pipe-$$/0`. Clean up in PROMPT_COMMAND and via `trap EXIT`.
+### Phase 4: Split Panes (user-visible feature, builds on Tabs)
+1. Implement SplitTree (binary tree with direction + ratio)
+2. Implement ViewportLayout (compute pixel rects)
+3. Add `draw_frame_viewport()` to FrameRenderer (scissor rect rendering)
+4. Wire keyboard shortcuts (Ctrl+Shift+D/E for h/v split, Alt+arrows for focus)
+5. Split divider rendering (1-2px lines between panes)
+6. PTY resize on split (each pane gets correct cell dimensions)
+7. Mouse click to focus pane
+8. Pane close (collapse parent split)
+9. **Test:** Split in both directions, focus navigation, resize, close
 
-### Anti-Pattern 6: Rendering Expanded Stages in the Terminal Grid
-
-**What:** Inserting expanded pipe stage output into the VTE terminal grid as if the shell printed it.
-**Why bad:** Corrupts the terminal scrollback. Confuses cursor positioning. Breaks copy-paste of actual command output.
-**Instead:** Render expanded stages as block decorations in the renderer layer, overlay-style, separate from the terminal grid.
-
----
+**Phase ordering rationale:**
+- Phase 1 first because every subsequent phase depends on Session being extracted from WindowContext and SessionMux being the routing layer
+- Phase 2 before 3/4 because cross-platform must work before adding UI complexity
+- Phase 3 before 4 because tabs are simpler (no viewport subdivision) and validate the SessionMux design
+- Phase 4 last because it requires all prior infrastructure (session extraction, multi-session rendering, event routing)
 
 ## Scalability Considerations
 
-| Concern | Normal use | Heavy pipelines | Edge cases |
-|---------|-----------|----------------|------------|
-| Stage output size | 50KB total shared across stages | Configurable per-stage limit | Binary output detected + skipped (same as OutputBuffer) |
-| DB storage | <1KB per command with stages | Retention prunes with parent command | Orphan cleanup: `DELETE FROM pipe_stages WHERE command_id NOT IN (...)` |
-| Temp files (bash) | /tmp/glass-pipe-$$/ cleaned in PROMPT_COMMAND | $$-scoped prevents cross-session conflicts | Cleanup on shell exit via `trap EXIT` |
-| OSC payload size | <67KB base64 per stage | OscScanner split-buffer handling works (tested to arbitrary sizes) | Scanner buffer growth bounded by truncation at shell level |
-| UI rendering | Collapsed by default (single label, no extra GPU work) | Expanded shows max 10 lines per stage | Scrollable stage output for very long captures |
-| Pipeline depth | Typical: 2-4 stages | Extreme: 10+ stages | Cap at 20 stages; warn and skip rewriting beyond that |
-
----
-
-## Build Order (Considering Existing Dependencies)
-
-### Phase 1: Core Data Types + Pipe Parsing (`glass_pipes`)
-- `PipeStage`, `PipelineInfo` data types
-- `PipeParser::parse(command_text) -> Option<PipelineInfo>` (split on unquoted `|`)
-- `TtyDetector::is_tty_sensitive(command_fragment) -> bool`
-- Zero dependencies, fully unit-testable
-- **Builds on:** Nothing (empty stub crate)
-- **Blocks:** Phases 3, 5
-
-### Phase 2: Shell Integration + OSC Protocol
-- Define OSC 133;S and 133;P protocol
-- Modify `glass.ps1` Enter handler with Tee-Object insertion
-- Modify `glass.ps1` prompt function with stage reporting
-- Modify `glass.bash` PROMPT_COMMAND with stage reporting
-- Bash tee rewriting as opt-in (DEBUG trap approach, disabled by default)
-- Manual testing across pwsh 7, PowerShell 5.1, bash 4.4+
-- **Builds on:** Protocol definition (no Rust code dependency)
-- **Blocks:** Phase 3
-
-### Phase 3: Terminal-Side Detection + Event Transport
-- Extend `OscScanner` with 133;S and 133;P parsing
-- Extend `OscEvent` / `ShellEvent` with pipeline variants
-- Extend `AppEvent` with new Shell event types
-- Extend `Block` with `pipeline_stages` and `pipeline_expanded` fields
-- Wire up in main.rs: buffer stages on PipelineStart/PipeStageOutput, flush on CommandFinished
-- Integrate pipe detection via `glass_pipes::PipeParser` in main.rs at CommandExecuted time
-- **Builds on:** Phase 1 (PipeParser), Phase 2 (OSC protocol)
-- **Blocks:** Phases 4, 5
-
-### Phase 4: Database Storage + Retention
-- Schema migration v1->v2 in `glass_history`
-- `PipeStageRecord` struct + insert/query methods
-- Orphan cleanup in retention pruning
-- Integration with main.rs CommandFinished handler (insert stages)
-- **Builds on:** Phase 3 (data types flowing through events)
-- **Blocks:** Phase 6
-
-### Phase 5: Pipeline UI Rendering
-- `[N stages]` label in `BlockRenderer::build_block_text`
-- Expanded multi-row view with stage headers and output preview
-- Expand/collapse toggle (click on label or keybinding)
-- Stage background rects in `build_block_rects`
-- `auto_expand` config support
-- **Builds on:** Phase 3 (Block.pipeline_stages populated)
-- **Blocks:** Nothing (can parallel with Phase 4/6)
-
-### Phase 6: MCP Tool + Config
-- `glass_pipe_inspect(command_id)` tool in glass_mcp
-- `[pipes]` config section in glass_core
-- Config gating for tee_rewrite, auto_expand, max_stage_capture_kb
-- **Builds on:** Phase 4 (DB queries), Phase 3 (config types)
-
-**Phase ordering rationale:**
-- Phase 1 has zero dependencies -- start here to unblock everything
-- Phase 2 is highest-risk (shell integration is fragile) -- tackle early so issues surface before dependent phases
-- Phase 3 is the integration backbone that connects shell output to Rust data structures
-- Phases 4 and 5 can run in parallel after Phase 3
-- Phase 6 is lowest risk, pure integration of existing patterns
-
----
+| Concern | 1-2 tabs | 10 tabs | 50+ tabs |
+|---------|----------|---------|----------|
+| Memory | ~120MB (current baseline + minimal overhead) | ~200MB (each inactive PTY + Term ~8MB) | ~500MB+ -- consider lazy PTY for background tabs |
+| Render | One draw_frame call | One draw_frame call (only active tab renders) | Same -- only active tab's visible panes render |
+| Font atlas | Shared, no scaling issue | Shared | Shared -- glyphon atlas grows with unique glyphs, not session count |
+| PTY threads | 1 std::thread | 10 std::threads | Consider thread pool or async PTY at >20 sessions |
 
 ## Sources
 
-- Direct codebase analysis of all 10 Glass crates, 12,214 LOC (PRIMARY, HIGH confidence)
-- [Windows ConPTY documentation](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/) -- ConPTY pipe architecture
-- [Creating a Pseudoconsole session](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session) -- ConPTY threading model
-- [GNU Bash Process Substitution](https://www.gnu.org/software/bash/manual/html_node/Process-Substitution.html) -- Process substitution mechanics
-- [PowerShell Tee-Object](https://adamtheautomator.com/tee-object/) -- Tee-Object for intermediate pipeline capture
-- [tee command in Linux](https://www.geeksforgeeks.org/linux-unix/tee-command-linux-example/) -- tee usage in pipelines
-- [ForEach-Object documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/foreach-object?view=powershell-7.5) -- PowerShell pipeline mechanics
-
----
-
-*Architecture research for: Glass v1.3 Pipe Visualization*
-*Researched: 2026-03-05*
+- WezTerm Mux architecture: [DeepWiki - wezterm](https://deepwiki.com/wezterm/wezterm)
+- alacritty_terminal cross-platform PTY: [GitHub - alacritty/alacritty](https://github.com/alacritty/alacritty)
+- wgpu 28 backend selection: [wgpu docs](https://docs.rs/crate/wgpu/latest), [Backends documentation](https://docs.rs/wgpu/latest/wgpu/struct.Backends.html)
+- polling crate cross-platform: [GitHub - smol-rs/polling](https://github.com/smol-rs/polling)
+- Terminal multiplexer architecture in Rust: [implaustin - Terminal Multiplexer with Actors](https://implaustin.hashnode.dev/how-to-write-a-terminal-multiplexer-with-rust-async-and-actors-part-2)
