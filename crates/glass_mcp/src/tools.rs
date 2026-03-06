@@ -1,8 +1,10 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with two tools:
+//! Defines `GlassServer` with four tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
+//! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
+//! - `glass_file_diff`: Inspect pre-command file contents for a given command
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -56,6 +58,22 @@ pub struct ContextParams {
     pub after: Option<String>,
 }
 
+/// Parameters for the glass_undo tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UndoParams {
+    /// The command ID to undo (from glass_history results).
+    #[schemars(description = "The command ID to undo (from glass_history results)")]
+    pub command_id: i64,
+}
+
+/// Parameters for the glass_file_diff tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FileDiffParams {
+    /// The command ID to get file diffs for (from glass_history results).
+    #[schemars(description = "The command ID to get file diffs for (from glass_history results)")]
+    pub command_id: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -101,20 +119,22 @@ fn internal_err(e: impl std::fmt::Display) -> McpError {
 // GlassServer
 // ---------------------------------------------------------------------------
 
-/// MCP server exposing Glass terminal history tools.
+/// MCP server exposing Glass terminal history, undo, and file diff tools.
 #[derive(Clone)]
 pub struct GlassServer {
     tool_router: ToolRouter<Self>,
     db_path: PathBuf,
+    glass_dir: PathBuf,
 }
 
 #[tool_router]
 impl GlassServer {
-    /// Create a new GlassServer pointing at the given history database path.
-    pub fn new(db_path: PathBuf) -> Self {
+    /// Create a new GlassServer pointing at the given history database and glass directory.
+    pub fn new(db_path: PathBuf, glass_dir: PathBuf) -> Self {
         Self {
             tool_router: Self::tool_router(),
             db_path,
+            glass_dir,
         }
     }
 
@@ -190,6 +210,123 @@ impl GlassServer {
         let content = Content::json(&summary)?;
         Ok(CallToolResult::success(vec![content]))
     }
+
+    /// Undo a file-modifying command by restoring files to their pre-command state.
+    /// Returns per-file outcomes (restored, deleted, skipped, conflict, error).
+    #[tool(description = "Undo a file-modifying command by restoring files to their pre-command state. Returns per-file outcomes.")]
+    async fn glass_undo(
+        &self,
+        Parameters(params): Parameters<UndoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let glass_dir = self.glass_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let store =
+                glass_snapshot::SnapshotStore::open(&glass_dir).map_err(internal_err)?;
+            let engine = glass_snapshot::UndoEngine::new(&store);
+            engine.undo_command(params.command_id).map_err(internal_err)
+        })
+        .await
+        .map_err(internal_err)??;
+
+        match result {
+            Some(undo_result) => {
+                let outcomes: Vec<serde_json::Value> = undo_result
+                    .files
+                    .iter()
+                    .map(|(path, outcome)| {
+                        let status = match outcome {
+                            glass_snapshot::FileOutcome::Restored => "restored",
+                            glass_snapshot::FileOutcome::Deleted => "deleted",
+                            glass_snapshot::FileOutcome::Skipped => "skipped",
+                            glass_snapshot::FileOutcome::Conflict { .. } => "conflict",
+                            glass_snapshot::FileOutcome::Error(_) => "error",
+                        };
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "status": status,
+                        })
+                    })
+                    .collect();
+                let response = serde_json::json!({
+                    "command_id": undo_result.command_id,
+                    "confidence": format!("{:?}", undo_result.confidence),
+                    "files": outcomes,
+                });
+                let content = Content::json(&response)?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            None => {
+                let content = Content::text(format!(
+                    "No snapshot found for command {}",
+                    params.command_id
+                ));
+                Ok(CallToolResult::success(vec![content]))
+            }
+        }
+    }
+
+    /// Inspect file contents from before a command executed.
+    /// Returns the pre-command file contents for all files tracked in the snapshot.
+    #[tool(description = "Inspect file contents from before a command executed. Returns the pre-command file contents for all files tracked in the snapshot.")]
+    async fn glass_file_diff(
+        &self,
+        Parameters(params): Parameters<FileDiffParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let glass_dir = self.glass_dir.clone();
+        let result = tokio::task::spawn_blocking(
+            move || -> Result<Vec<serde_json::Value>, McpError> {
+                let store = glass_snapshot::SnapshotStore::open(&glass_dir)
+                    .map_err(internal_err)?;
+                let snapshots = store
+                    .db()
+                    .get_snapshots_by_command(params.command_id)
+                    .map_err(internal_err)?;
+                let mut file_diffs = Vec::new();
+                for snapshot in &snapshots {
+                    let files = store
+                        .db()
+                        .get_snapshot_files(snapshot.id)
+                        .map_err(internal_err)?;
+                    for file_rec in &files {
+                        if file_rec.source != "parser" {
+                            continue;
+                        }
+                        let pre_content = match &file_rec.blob_hash {
+                            Some(hash) => match store.blobs().read_blob(hash) {
+                                Ok(bytes) => {
+                                    Some(String::from_utf8_lossy(&bytes).into_owned())
+                                }
+                                Err(_) => None,
+                            },
+                            None => None, // File did not exist before command
+                        };
+                        file_diffs.push(serde_json::json!({
+                            "path": file_rec.file_path,
+                            "existed_before": file_rec.blob_hash.is_some(),
+                            "pre_command_content": pre_content,
+                            "file_size": file_rec.file_size,
+                        }));
+                    }
+                }
+                Ok(file_diffs)
+            },
+        )
+        .await
+        .map_err(internal_err)??;
+
+        if result.is_empty() {
+            let content = Content::text(format!(
+                "No file snapshots found for command {}",
+                params.command_id
+            ));
+            Ok(CallToolResult::success(vec![content]))
+        } else {
+            let response =
+                serde_json::json!({ "command_id": params.command_id, "files": result });
+            let content = Content::json(&response)?;
+            Ok(CallToolResult::success(vec![content]))
+        }
+    }
 }
 
 #[tool_handler]
@@ -198,8 +335,9 @@ impl ServerHandler for GlassServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("glass-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Glass terminal history and context server. \
-                 Use glass_history to search commands, glass_context for activity overview.",
+                "Glass terminal history, context, undo, and file diff server. \
+                 Use glass_history to search commands, glass_context for activity overview, \
+                 glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents.",
             )
     }
 }
