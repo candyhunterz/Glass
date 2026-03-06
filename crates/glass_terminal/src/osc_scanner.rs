@@ -164,6 +164,23 @@ impl OscScanner {
                     .and_then(|s| s.parse::<i32>().ok());
                 Some(OscEvent::CommandFinished { exit_code })
             }
+            "S" => {
+                // Pipeline start: OSC 133;S;{count}
+                let count = parts.next()?.parse::<usize>().ok()?;
+                Some(OscEvent::PipelineStart { stage_count: count })
+            }
+            "P" => {
+                // Pipeline stage: OSC 133;P;{index};{total_bytes};{temp_path}
+                let rest = parts.next()?;
+                let mut sub = rest.splitn(3, ';');
+                let index = sub.next()?.parse::<usize>().ok()?;
+                let total_bytes = sub.next()?.parse::<usize>().ok()?;
+                let temp_path = sub.next()?.to_string();
+                if temp_path.is_empty() {
+                    return None;
+                }
+                Some(OscEvent::PipelineStage { index, total_bytes, temp_path })
+            }
             _ => None,
         }
     }
@@ -366,5 +383,60 @@ mod tests {
             }
             other => panic!("Expected CurrentDirectory, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_pipeline_start_bel() {
+        let mut s = OscScanner::new();
+        let events = s.scan(b"\x1b]133;S;3\x07");
+        assert_eq!(events, vec![OscEvent::PipelineStart { stage_count: 3 }]);
+    }
+
+    #[test]
+    fn parse_pipeline_stage_st_terminator() {
+        let mut s = OscScanner::new();
+        let events = s.scan(b"\x1b]133;P;0;1024;/tmp/glass/stage_0\x1b\\");
+        assert_eq!(events, vec![OscEvent::PipelineStage {
+            index: 0,
+            total_bytes: 1024,
+            temp_path: "/tmp/glass/stage_0".into(),
+        }]);
+    }
+
+    #[test]
+    fn parse_pipeline_stage_windows_path() {
+        let mut s = OscScanner::new();
+        let events = s.scan(b"\x1b]133;P;2;5000;C:/Users/test/AppData/Local/Temp/glass_1234/stage_2\x07");
+        assert_eq!(events, vec![OscEvent::PipelineStage {
+            index: 2,
+            total_bytes: 5000,
+            temp_path: "C:/Users/test/AppData/Local/Temp/glass_1234/stage_2".into(),
+        }]);
+    }
+
+    #[test]
+    fn pipeline_interleaved_with_normal() {
+        let mut s = OscScanner::new();
+        let events = s.scan(b"\x1b]133;A\x07\x1b]133;S;2\x07\x1b]133;C\x07");
+        assert_eq!(events, vec![
+            OscEvent::PromptStart,
+            OscEvent::PipelineStart { stage_count: 2 },
+            OscEvent::CommandExecuted,
+        ]);
+    }
+
+    #[test]
+    fn invalid_pipeline_start_missing_count() {
+        let mut s = OscScanner::new();
+        let events = s.scan(b"\x1b]133;S\x07");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn invalid_pipeline_stage_missing_fields() {
+        let mut s = OscScanner::new();
+        // Only index, no total_bytes or temp_path
+        let events = s.scan(b"\x1b]133;P;0\x07");
+        assert!(events.is_empty());
     }
 }

@@ -125,6 +125,8 @@ impl BlockManager {
             }
             // CurrentDirectory events are handled by StatusState, not BlockManager
             OscEvent::CurrentDirectory(_) => {}
+            // Pipeline events are handled by pipeline capture, not BlockManager
+            OscEvent::PipelineStart { .. } | OscEvent::PipelineStage { .. } => {}
         }
     }
 

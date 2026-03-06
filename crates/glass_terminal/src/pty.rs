@@ -83,6 +83,8 @@ fn convert_osc_to_shell(osc: crate::osc_scanner::OscEvent) -> ShellEvent {
         OscEvent::CommandExecuted => ShellEvent::CommandExecuted,
         OscEvent::CommandFinished { exit_code } => ShellEvent::CommandFinished { exit_code },
         OscEvent::CurrentDirectory(path) => ShellEvent::CurrentDirectory(path),
+        OscEvent::PipelineStart { stage_count } => ShellEvent::PipelineStart { stage_count },
+        OscEvent::PipelineStage { index, total_bytes, temp_path } => ShellEvent::PipelineStage { index, total_bytes, temp_path },
     }
 }
 

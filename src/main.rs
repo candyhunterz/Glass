@@ -181,6 +181,12 @@ fn shell_event_to_osc(event: &ShellEvent) -> OscEvent {
             exit_code: *exit_code,
         },
         ShellEvent::CurrentDirectory(path) => OscEvent::CurrentDirectory(path.clone()),
+        ShellEvent::PipelineStart { stage_count } => OscEvent::PipelineStart { stage_count: *stage_count },
+        ShellEvent::PipelineStage { index, total_bytes, temp_path } => OscEvent::PipelineStage {
+            index: *index,
+            total_bytes: *total_bytes,
+            temp_path: temp_path.clone(),
+        },
     }
 }
 
