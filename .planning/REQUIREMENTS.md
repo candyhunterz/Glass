@@ -27,17 +27,17 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 
 - [ ] **UI-01**: File-modifying command blocks display an [undo] label
 - [ ] **UI-02**: After undo, visual confirmation shows which files were restored, skipped, or errored
-- [ ] **UI-03**: User can undo a specific command via `glass undo <command-id>` CLI
+- [x] **UI-03**: User can undo a specific command via `glass undo <command-id>` CLI
 
 ### Storage & Lifecycle
 
-- [ ] **STOR-01**: Storage pruning enforces configurable max age and max size limits with automatic cleanup
+- [x] **STOR-01**: Storage pruning enforces configurable max age and max size limits with automatic cleanup
 - [x] **STOR-02**: `.glassignore` patterns exclude directories from snapshot tracking (node_modules, target, .git)
 - [x] **STOR-03**: Snapshot configuration section in config.toml (enabled, max_count, max_size_mb, retention_days)
 
 ### AI Integration
 
-- [ ] **MCP-01**: GlassUndo MCP tool allows AI assistants to trigger undo programmatically
+- [x] **MCP-01**: GlassUndo MCP tool allows AI assistants to trigger undo programmatically
 - [ ] **MCP-02**: GlassFileDiff MCP tool allows AI assistants to inspect file diffs from commands
 
 ## Future Requirements
@@ -82,11 +82,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UNDO-04 | Phase 13 | Complete |
 | UI-01 | Phase 14 | Pending |
 | UI-02 | Phase 14 | Pending |
-| UI-03 | Phase 14 | Pending |
-| STOR-01 | Phase 14 | Pending |
+| UI-03 | Phase 14 | Complete |
+| STOR-01 | Phase 14 | Complete |
 | STOR-02 | Phase 12 | Complete |
 | STOR-03 | Phase 13 | Complete |
-| MCP-01 | Phase 14 | Pending |
+| MCP-01 | Phase 14 | Complete |
 | MCP-02 | Phase 14 | Pending |
 
 **Coverage:**

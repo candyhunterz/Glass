@@ -140,4 +140,4 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13 -> 14
 | 11. Command Parser | 2/2 | Complete    | 2026-03-05 | - |
 | 12. FS Watcher Engine | 2/2 | Complete    | 2026-03-06 | - |
 | 13. Integration + Undo Engine | 4/4 | Complete    | 2026-03-06 | - |
-| 14. UI + CLI + MCP + Pruning | v1.2 | 0/3 | Not started | - |
+| 14. UI + CLI + MCP + Pruning | 1/3 | In Progress|  | - |

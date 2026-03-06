@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
-status: completed
-stopped_at: Completed 13-04-PLAN.md
-last_updated: "2026-03-06T02:37:57.641Z"
-last_activity: 2026-03-06 -- Completed 13-03-PLAN.md (Pre-exec snapshot + Ctrl+Shift+Z undo)
+status: in-progress
+stopped_at: Completed 14-01-PLAN.md
+last_updated: "2026-03-06T02:59:08Z"
+last_activity: 2026-03-06 -- Completed 14-01-PLAN.md (Storage pruning + undo_command)
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 10
-  completed_plans: 10
-  percent: 100
+  total_plans: 13
+  completed_plans: 11
+  percent: 85
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 
 ## Current Position
 
-Phase: 13 (4 of 5 in v1.2) -- COMPLETE
-Plan: 3 of 3 in current phase
-Status: Phase 13 complete, moving to Phase 14
-Last activity: 2026-03-06 -- Completed 13-03-PLAN.md (Pre-exec snapshot + Ctrl+Shift+Z undo)
+Phase: 14 (5 of 5 in v1.2)
+Plan: 1 of 3 in current phase
+Status: Executing Phase 14 plans
+Last activity: 2026-03-06 -- Completed 14-01-PLAN.md (Storage pruning + undo_command)
 
-Progress: [██████████] 100% (v1.2)
+Progress: [███░░░░░░░] 33% (Phase 14)
 
 ## Performance Metrics
 
@@ -81,6 +81,10 @@ Recent decisions affecting current work:
 - [Phase 13]: Ctrl+Shift+Z follows identical pattern to Ctrl+Shift+C/V/F: match character, perform action, return early
 - [Phase 13]: Config absent (None) defaults to enabled=true for backward compatibility
 - [Phase 13]: Only pre-exec snapshot creation gated by config; undo handler and FS watcher remain ungated
+- [14-01]: Safety margin protects 10 most recent snapshots from age-based pruning using min(age_epoch, safe_epoch)
+- [14-01]: Pruner takes individual config values (retention_days, max_count, max_size_mb) to avoid cross-crate dependency
+- [14-01]: One-shot undo: both undo_latest and undo_command delete snapshot after successful restore
+- [14-01]: Shared restore_snapshot private method in UndoEngine for all undo operations
 
 ### Pending Todos
 
@@ -94,6 +98,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T02:34:19.204Z
-Stopped at: Completed 13-04-PLAN.md
+Last session: 2026-03-06T02:59:08Z
+Stopped at: Completed 14-01-PLAN.md
 Resume file: None
