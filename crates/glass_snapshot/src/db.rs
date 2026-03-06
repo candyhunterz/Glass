@@ -292,6 +292,69 @@ mod tests {
     }
 
     #[test]
+    fn test_get_latest_parser_snapshot_none_when_empty() {
+        let (db, _dir) = test_db();
+        let result = db.get_latest_parser_snapshot().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_latest_parser_snapshot_none_when_only_watcher() {
+        let (db, _dir) = test_db();
+        let sid = db.create_snapshot(1, "/tmp").unwrap();
+        db.insert_snapshot_file(sid, Path::new("/tmp/a.txt"), Some("aaa"), Some(10), "watcher")
+            .unwrap();
+        let result = db.get_latest_parser_snapshot().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_latest_parser_snapshot_returns_snapshot_with_parser_file() {
+        let (db, _dir) = test_db();
+        let sid = db.create_snapshot(1, "/tmp").unwrap();
+        db.insert_snapshot_file(sid, Path::new("/tmp/a.txt"), Some("aaa"), Some(10), "parser")
+            .unwrap();
+        let result = db.get_latest_parser_snapshot().unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, sid);
+    }
+
+    #[test]
+    fn test_get_latest_parser_snapshot_returns_newest() {
+        let (db, _dir) = test_db();
+        // Older snapshot with parser file
+        let sid1 = db.create_snapshot(1, "/tmp").unwrap();
+        db.insert_snapshot_file(sid1, Path::new("/tmp/a.txt"), Some("aaa"), Some(10), "parser")
+            .unwrap();
+        // Newer snapshot with only watcher files
+        let sid2 = db.create_snapshot(2, "/tmp").unwrap();
+        db.insert_snapshot_file(sid2, Path::new("/tmp/b.txt"), Some("bbb"), Some(20), "watcher")
+            .unwrap();
+        // Newest snapshot with parser file
+        let sid3 = db.create_snapshot(3, "/tmp").unwrap();
+        db.insert_snapshot_file(sid3, Path::new("/tmp/c.txt"), Some("ccc"), Some(30), "parser")
+            .unwrap();
+
+        let result = db.get_latest_parser_snapshot().unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, sid3);
+    }
+
+    #[test]
+    fn test_get_latest_parser_snapshot_with_pending_command() {
+        let (db, _dir) = test_db();
+        // command_id=0 means pending pre-exec snapshot
+        let sid = db.create_snapshot(0, "/home/user").unwrap();
+        db.insert_snapshot_file(sid, Path::new("/home/user/file.rs"), Some("abc"), Some(100), "parser")
+            .unwrap();
+        let result = db.get_latest_parser_snapshot().unwrap();
+        assert!(result.is_some());
+        let snap = result.unwrap();
+        assert_eq!(snap.id, sid);
+        assert_eq!(snap.command_id, 0);
+    }
+
+    #[test]
     fn test_insert_snapshot_file_null_hash() {
         let (db, _dir) = test_db();
         let sid = db.create_snapshot(1, "/tmp").unwrap();
