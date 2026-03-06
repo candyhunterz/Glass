@@ -18,9 +18,9 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 
 ### Undo Mechanics
 
-- [ ] **UNDO-01**: User can undo the most recent file-modifying command via Ctrl+Shift+Z
-- [ ] **UNDO-02**: Undo restores snapshotted file contents to their pre-command state
-- [ ] **UNDO-03**: Conflict detection warns if a file has been modified since the tracked command ran
+- [x] **UNDO-01**: User can undo the most recent file-modifying command via Ctrl+Shift+Z
+- [x] **UNDO-02**: Undo restores snapshotted file contents to their pre-command state
+- [x] **UNDO-03**: Conflict detection warns if a file has been modified since the tracked command ran
 - [x] **UNDO-04**: Each command displays its undo confidence level (pre-exec snapshot vs watcher-only)
 
 ### User Interface
@@ -76,9 +76,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SNAP-04 | Phase 12 | Complete |
 | SNAP-05 | Phase 10 | Complete |
 | SNAP-06 | Phase 10 | Complete |
-| UNDO-01 | Phase 13 | Pending |
-| UNDO-02 | Phase 13 | Pending |
-| UNDO-03 | Phase 13 | Pending |
+| UNDO-01 | Phase 13 | Complete |
+| UNDO-02 | Phase 13 | Complete |
+| UNDO-03 | Phase 13 | Complete |
 | UNDO-04 | Phase 13 | Complete |
 | UI-01 | Phase 14 | Pending |
 | UI-02 | Phase 14 | Pending |
