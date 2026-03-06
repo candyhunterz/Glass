@@ -44,7 +44,7 @@
 ### v1.3 Pipe Visualization (In Progress)
 
 - [x] **Phase 15: Pipe Parsing Core** - glass_pipes crate with pipe splitter, TTY detection, buffer policies, and data types (completed 2026-03-06)
-- [ ] **Phase 16: Shell Capture + Terminal Transport** - Shell integration rewriting (bash tee, PowerShell Tee-Object), OSC 133;S/P protocol, OscScanner extension, and event wiring
+- [x] **Phase 16: Shell Capture + Terminal Transport** - Shell integration rewriting (bash tee, PowerShell Tee-Object), OSC 133;S/P protocol, OscScanner extension, and event wiring (completed 2026-03-06)
 - [ ] **Phase 17: Pipeline UI** - Multi-row pipeline blocks with expand/collapse, stage output display, and auto-expand logic
 - [ ] **Phase 18: Storage + Retention** - pipe_stages DB table, schema migration, and retention policy integration
 - [ ] **Phase 19: MCP + Config + Polish** - GlassPipeInspect tool, GlassContext pipeline stats, and [pipes] config section
@@ -75,7 +75,7 @@ Plans:
   2. In PowerShell, running a piped command captures per-stage text representation via Tee-Object and emits OSC 133;P sequences
   3. Exit codes are preserved correctly through tee-rewritten pipelines (PIPESTATUS captured)
   4. The terminal's OscScanner parses OSC 133;S and 133;P sequences into ShellEvent variants, and Block structs gain pipeline_stages fields
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 16-01-PLAN.md -- Types, OscScanner parsing, and event wiring for pipeline OSC sequences
 - [ ] 16-02-PLAN.md -- Block pipeline_stages field and main event loop temp file reading
@@ -135,7 +135,7 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 13. Integration + Undo Engine | v1.2 | 4/4 | Complete | 2026-03-06 |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
 | 15. Pipe Parsing Core | v1.3 | 2/2 | Complete | 2026-03-06 |
-| 16. Shell Capture + Terminal Transport | 2/3 | In Progress|  | - |
+| 16. Shell Capture + Terminal Transport | 3/3 | Complete   | 2026-03-06 | - |
 | 17. Pipeline UI | v1.3 | 0/? | Not started | - |
 | 18. Storage + Retention | v1.3 | 0/? | Not started | - |
 | 19. MCP + Config + Polish | v1.3 | 0/? | Not started | - |

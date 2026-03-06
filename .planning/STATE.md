@@ -56,6 +56,8 @@ Recent decisions affecting current work:
 - [Phase 15]: Rolling tail window via Vec::drain for overflow buffer sampling
 - [Phase 16-01]: splitn(3) for OSC 133;P parsing to preserve Windows path colons in temp_path
 - [Phase 16-01]: CapturedStage temp_path is Option<String> for both temp-file and in-memory capture
+- [Phase 16-02]: PipelineStage stores empty FinalizedBuffer placeholder until temp file read in main loop
+- [Phase 16-02]: Synchronous temp file read on main thread (shell caps at ~10MB)
 - [Phase 16]: Two-step bind for Enter interception in bash pipeline rewriting
 - [Phase 16]: ST terminator for OSC 133;S/P sequences in shell scripts
 
