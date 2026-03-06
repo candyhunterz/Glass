@@ -1,12 +1,10 @@
-/// A parsed pipeline with its stages and classification.
+/// A parsed pipeline with its stages.
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     /// Original full command text
     pub raw_command: String,
     /// Individual pipe stages
     pub stages: Vec<PipeStage>,
-    /// Classification result (set after classification pass)
-    pub classification: PipelineClassification,
 }
 
 /// A single stage in a pipeline (one command between pipe operators).
@@ -20,30 +18,6 @@ pub struct PipeStage {
     pub program: String,
     /// Whether this stage's program is TTY-sensitive
     pub is_tty: bool,
-}
-
-/// Classification of a pipeline for capture decisions.
-#[derive(Debug, Clone)]
-pub struct PipelineClassification {
-    /// Whether any stage contains a TTY-sensitive command
-    pub has_tty_command: bool,
-    /// Which stages are TTY-sensitive (by index)
-    pub tty_stages: Vec<usize>,
-    /// Whether --no-glass opt-out flag is present
-    pub opted_out: bool,
-    /// Whether the pipeline should be captured
-    pub should_capture: bool,
-}
-
-impl Default for PipelineClassification {
-    fn default() -> Self {
-        Self {
-            has_tty_command: false,
-            tty_stages: Vec::new(),
-            opted_out: false,
-            should_capture: true,
-        }
-    }
 }
 
 /// Policy controlling buffer size limits for stage capture.

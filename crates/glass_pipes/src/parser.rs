@@ -1,4 +1,4 @@
-use crate::types::{Pipeline, PipeStage, PipelineClassification};
+use crate::types::{Pipeline, PipeStage};
 
 /// Split a command string into pipe stages.
 ///
@@ -136,7 +136,6 @@ pub fn parse_pipeline(command: &str) -> Pipeline {
     Pipeline {
         raw_command: command.to_string(),
         stages,
-        classification: PipelineClassification::default(),
     }
 }
 
@@ -275,12 +274,4 @@ mod tests {
         assert!(!pipeline.stages[1].is_tty);
     }
 
-    #[test]
-    fn parse_pipeline_default_classification() {
-        let pipeline = parse_pipeline("cat file | grep foo");
-        assert!(pipeline.classification.should_capture);
-        assert!(!pipeline.classification.has_tty_command);
-        assert!(!pipeline.classification.opted_out);
-        assert!(pipeline.classification.tty_stages.is_empty());
-    }
 }
