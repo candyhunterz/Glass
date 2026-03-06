@@ -13,7 +13,7 @@ pub mod output_capture;
 pub mod pty;
 pub mod status;
 
-pub use block_manager::{Block, BlockManager, BlockState, format_duration};
+pub use block_manager::{Block, BlockManager, BlockState, PipelineHit, format_duration};
 pub use event_proxy::EventProxy;
 pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, snapshot_term};
 pub use input::encode_key;

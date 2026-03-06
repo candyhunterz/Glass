@@ -17,7 +17,7 @@ use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
 use crate::search_overlay::SearchOverlay;
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
 use glass_terminal::{
-    BlockManager, DefaultColors, EventProxy, OscEvent, PtyMsg, PtySender, StatusState,
+    BlockManager, DefaultColors, EventProxy, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
     encode_key, query_git_status, snapshot_term,
 };
 use winit::application::ApplicationHandler;
@@ -152,6 +152,8 @@ struct WindowContext {
     pending_snapshot_id: Option<i64>,
     /// Parser confidence for the pending pre-exec snapshot (for UNDO-04 tracking).
     pending_parse_confidence: Option<glass_snapshot::Confidence>,
+    /// Current cursor position in physical pixels (for pipeline click hit testing).
+    cursor_position: Option<(f64, f64)>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -358,6 +360,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 active_watcher: None,
                 pending_snapshot_id: None,
                 pending_parse_confidence: None,
+                cursor_position: None,
             },
         );
     }
@@ -655,6 +658,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                                 return;
                             }
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("p") =>
+                            {
+                                // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
+                                if let Some(block) = ctx.block_manager.blocks_mut().iter_mut().rev()
+                                    .find(|b| b.pipeline_stage_count.unwrap_or(0) > 0)
+                                {
+                                    block.toggle_pipeline_expanded();
+                                    ctx.window.request_redraw();
+                                }
+                                return;
+                            }
                             _ => {}
                         }
                     }
@@ -688,6 +703,46 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .pty_sender
                             .send(PtyMsg::Input(Cow::Owned(bytes)));
                         tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                ctx.cursor_position = Some((position.x, position.y));
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if let Some((_, y)) = ctx.cursor_position {
+                    let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                    let snapshot = {
+                        let term = ctx.term.lock();
+                        snapshot_term(&term, &ctx.default_colors)
+                    };
+                    let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+
+                    // Hit test pipeline stage rows
+                    if let Some((block_idx, hit)) = ctx.block_manager.pipeline_hit_test(
+                        0.0, y as f32, cell_w, cell_h, viewport_abs_start, snapshot.screen_lines,
+                    ) {
+                        match hit {
+                            PipelineHit::StageRow(stage_idx) => {
+                                if let Some(block) = ctx.block_manager.block_mut(block_idx) {
+                                    if block.expanded_stage_index == Some(stage_idx) {
+                                        block.set_expanded_stage(None);
+                                    } else {
+                                        block.set_expanded_stage(Some(stage_idx));
+                                    }
+                                }
+                            }
+                            PipelineHit::Header => {
+                                if let Some(block) = ctx.block_manager.block_mut(block_idx) {
+                                    block.toggle_pipeline_expanded();
+                                }
+                            }
+                        }
+                        ctx.window.request_redraw();
                     }
                 }
             }
@@ -839,6 +894,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         } else {
                             tracing::debug!("Pre-exec snapshot skipped: snapshots disabled in config");
+                        }
+
+                        // Parse pipeline stages to extract per-stage command text
+                        if let Some(idx) = ctx.block_manager.current_block_index() {
+                            let pipeline = glass_pipes::parse_pipeline(&command_text);
+                            if pipeline.stages.len() > 1 {
+                                let stage_commands: Vec<String> = pipeline.stages.iter()
+                                    .map(|s| s.command.clone())
+                                    .collect();
+                                if let Some(block) = ctx.block_manager.block_mut(idx) {
+                                    block.pipeline_stage_commands = stage_commands;
+                                }
+                            }
                         }
 
                         ctx.pending_command_text = Some(command_text);

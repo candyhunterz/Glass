@@ -109,6 +109,15 @@ impl Block {
     }
 }
 
+/// Result of a hit test on pipeline stage rows.
+#[derive(Debug, PartialEq)]
+pub enum PipelineHit {
+    /// Clicked on the separator line of a pipeline block
+    Header,
+    /// Clicked on a specific stage row
+    StageRow(usize),
+}
+
 /// Manages the collection of command blocks.
 pub struct BlockManager {
     blocks: Vec<Block>,
@@ -223,6 +232,21 @@ impl BlockManager {
         &self.blocks
     }
 
+    /// Get a mutable reference to all blocks.
+    pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
+        &mut self.blocks
+    }
+
+    /// Get the current block index.
+    pub fn current_block_index(&self) -> Option<usize> {
+        self.current
+    }
+
+    /// Get a mutable reference to a block by index.
+    pub fn block_mut(&mut self, index: usize) -> Option<&mut Block> {
+        self.blocks.get_mut(index)
+    }
+
     /// Get a mutable reference to the current (most recent) block.
     pub fn current_block_mut(&mut self) -> Option<&mut Block> {
         self.current.and_then(|idx| self.blocks.get_mut(idx))
@@ -231,6 +255,43 @@ impl BlockManager {
     /// Find a block by its started_epoch and return a mutable reference.
     pub fn find_block_by_epoch_mut(&mut self, epoch: i64) -> Option<&mut Block> {
         self.blocks.iter_mut().rev().find(|b| b.started_epoch == Some(epoch))
+    }
+
+    /// Hit test pipeline stage rows given pixel coordinates.
+    /// Returns (block_index, PipelineHit) if a pipeline row was clicked.
+    pub fn pipeline_hit_test(
+        &self,
+        _x: f32, y: f32,
+        _cell_w: f32, cell_h: f32,
+        display_offset: usize,
+        screen_lines: usize,
+    ) -> Option<(usize, PipelineHit)> {
+        for (i, block) in self.blocks.iter().enumerate() {
+            if block.pipeline_stages.is_empty() {
+                continue;
+            }
+            let line = block.prompt_start_line;
+            if line < display_offset || line >= display_offset + screen_lines {
+                continue;
+            }
+            let sep_y = (line - display_offset) as f32 * cell_h;
+
+            // Check if click is on separator line (header toggle)
+            if y >= sep_y && y < sep_y + cell_h {
+                return Some((i, PipelineHit::Header));
+            }
+
+            // Check stage rows (only if expanded)
+            if block.pipeline_expanded {
+                for (si, _) in block.pipeline_stages.iter().enumerate() {
+                    let row_y = sep_y + (si as f32 + 1.0) * cell_h;
+                    if y >= row_y && y < row_y + cell_h {
+                        return Some((i, PipelineHit::StageRow(si)));
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
