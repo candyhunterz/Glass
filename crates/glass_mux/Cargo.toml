@@ -1,0 +1,15 @@
+[package]
+name = "glass_mux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glass_core = { path = "../glass_core" }
+glass_terminal = { path = "../glass_terminal" }
+glass_history = { path = "../glass_history" }
+glass_snapshot = { path = "../glass_snapshot" }
+tracing = { workspace = true }
+alacritty_terminal = { workspace = true }
+winit = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
