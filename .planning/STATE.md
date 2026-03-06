@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
-status: completed
-stopped_at: Completed 19-01-PLAN.md
-last_updated: "2026-03-06T18:25:15.009Z"
-last_activity: 2026-03-06 -- Completed 19-01 MCP + Config + Polish
+status: executing
+stopped_at: Completed 20-02-PLAN.md
+last_updated: "2026-03-06T19:09:10.059Z"
+last_activity: 2026-03-06 -- Completed 20-02 dead classify module removal
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
-  percent: 100
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 11
+  completed_plans: 11
+  percent: 91
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 
 ## Current Position
 
-Phase: 19 (5 of 5 in v1.3)
-Plan: 1 of 1 in current phase (19-01 complete)
-Status: Complete
-Last activity: 2026-03-06 -- Completed 19-01 MCP + Config + Polish
+Phase: 20 (gap closure)
+Plan: 2 of 2 in current phase (20-02 complete)
+Status: In Progress
+Last activity: 2026-03-06 -- Completed 20-02 dead classify module removal
 
-Progress: [██████████] 100% (v1.3 MILESTONE COMPLETE)
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -74,6 +74,7 @@ Recent decisions affecting current work:
 - [Phase 19-01]: auto_expand override in main.rs after handle_event keeps BlockManager config-agnostic
 - [Phase 19-01]: pipes.enabled=false skips temp file reading only (shell scripts still emit OSC)
 - [Phase 19]: PipeStageEntry local struct in tools.rs for Serialize (avoids glass_history coupling)
+- [Phase 20]: Removed parse_pipeline_default_classification test alongside PipelineClassification (tested dead code defaults)
 
 ### Pending Todos
 
@@ -87,6 +88,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T18:21:57.206Z
-Stopped at: Completed 19-01-PLAN.md
+Last session: 2026-03-06T19:09:10.057Z
+Stopped at: Completed 20-02-PLAN.md
 Resume file: None
