@@ -13,6 +13,7 @@ pub struct GitInfo {
 }
 
 /// Tracks current working directory and associated git state.
+#[derive(Clone)]
 pub struct StatusState {
     cwd: String,
     git_info: Option<GitInfo>,

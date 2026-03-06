@@ -1117,6 +1117,7 @@ dependencies = [
  "glass_core",
  "glass_history",
  "glass_mcp",
+ "glass_mux",
  "glass_pipes",
  "glass_renderer",
  "glass_snapshot",
@@ -1174,6 +1175,21 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "glass_mux"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "chrono",
+ "dirs",
+ "glass_core",
+ "glass_history",
+ "glass_snapshot",
+ "glass_terminal",
+ "tracing",
+ "winit",
 ]
 
 [[package]]

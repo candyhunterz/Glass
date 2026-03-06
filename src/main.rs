@@ -1,5 +1,4 @@
 mod history;
-mod search_overlay;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -14,7 +13,7 @@ use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
 use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
-use crate::search_overlay::SearchOverlay;
+use glass_mux::{Session, SessionMux, SearchOverlay};
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
 use glass_terminal::{
     BlockManager, DefaultColors, EventProxy, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
@@ -115,45 +114,31 @@ impl Dimensions for TermDimensions {
     }
 }
 
-/// Per-window state: OS window handle, GPU renderer, and PTY connection.
+/// Per-window state: OS window handle, GPU renderer, and session multiplexer.
+///
+/// All terminal state (PTY, grid, block manager, history, etc.) lives inside
+/// `Session` via `SessionMux`. WindowContext is thin: window + renderer + mux.
 struct WindowContext {
     window: Arc<Window>,
     renderer: GlassRenderer,
     /// GPU text rendering pipeline.
     frame_renderer: FrameRenderer,
-    /// Sender to write input to the PTY or resize it.
-    pty_sender: PtySender,
-    /// Shared terminal state grid.
-    term: Arc<FairMutex<Term<EventProxy>>>,
-    /// Default terminal colors for snapshot resolution.
-    default_colors: DefaultColors,
-    /// Block manager tracking command lifecycle via shell integration.
-    block_manager: BlockManager,
-    /// Status bar state: CWD and git info.
-    status: StatusState,
+    /// Session multiplexer managing terminal sessions (single-session in Phase 21).
+    session_mux: SessionMux,
     /// Whether the first-frame cold start metric has been logged.
     first_frame_logged: bool,
-    /// History database for this window (opened from cwd at window creation).
-    history_db: Option<HistoryDb>,
-    /// Row ID of the last inserted command, for attaching output later.
-    last_command_id: Option<i64>,
-    /// Wall-clock time when the current command started executing (set on CommandExecuted).
-    /// Block.started_at is Instant (monotonic), but CommandRecord needs epoch seconds.
-    command_started_wall: Option<std::time::SystemTime>,
-    /// Search overlay state. None when overlay is closed.
-    search_overlay: Option<SearchOverlay>,
-    /// Snapshot store for content-addressed file snapshots (opened alongside history_db).
-    snapshot_store: Option<glass_snapshot::SnapshotStore>,
-    /// Command text extracted at CommandExecuted time, consumed by CommandFinished handler.
-    pending_command_text: Option<String>,
-    /// Active filesystem watcher during command execution. Created on CommandExecuted, drained on CommandFinished.
-    active_watcher: Option<glass_snapshot::FsWatcher>,
-    /// Snapshot ID created at CommandExecuted time (pre-exec), updated to real command_id at CommandFinished.
-    pending_snapshot_id: Option<i64>,
-    /// Parser confidence for the pending pre-exec snapshot (for UNDO-04 tracking).
-    pending_parse_confidence: Option<glass_snapshot::Confidence>,
-    /// Current cursor position in physical pixels (for pipeline click hit testing).
-    cursor_position: Option<(f64, f64)>,
+}
+
+impl WindowContext {
+    /// Get an immutable reference to the focused session.
+    fn session(&self) -> &Session {
+        self.session_mux.focused_session().expect("no focused session")
+    }
+
+    /// Get a mutable reference to the focused session.
+    fn session_mut(&mut self) -> &mut Session {
+        self.session_mux.focused_session_mut().expect("no focused session")
+    }
 }
 
 /// Top-level application state. Holds all open windows.
@@ -243,10 +228,9 @@ impl ApplicationHandler<AppEvent> for Processor {
             cell_w, cell_h, num_cols, num_lines, scale_factor
         );
 
-        // Create EventProxy using the pre-created proxy (EventLoopProxy is Clone)
-        // SessionId::new(0) is a placeholder -- Plan 03 will wire the real
-        // SessionId from SessionMux when multi-session support is added.
-        let event_proxy = EventProxy::new(self.proxy.clone(), window.id(), SessionId::new(0));
+        // Create SessionId for the first session and wire it into EventProxy
+        let session_id = SessionId::new(0);
+        let event_proxy = EventProxy::new(self.proxy.clone(), window.id(), session_id);
 
         // Spawn shell via ConPTY with a dedicated reader thread + OscScanner
         let max_output_kb = self.config.history.as_ref()
@@ -281,18 +265,18 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         tracing::info!("PTY spawned — PowerShell is running");
 
-        // Auto-inject shell integration for PowerShell
+        // Auto-inject shell integration (platform-aware)
         let shell_name = self.config.shell.as_deref().unwrap_or("");
         let is_powershell = shell_name.is_empty()
             || shell_name.contains("pwsh")
             || shell_name.to_lowercase().contains("powershell");
         if is_powershell {
-            if let Some(path) = find_shell_integration() {
+            if let Some(path) = find_shell_integration(shell_name) {
                 let cmd = format!(". '{}'\r\n", path.display());
                 let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(cmd.into_bytes())));
                 tracing::info!("Auto-injecting shell integration: {}", path.display());
             } else {
-                tracing::warn!("Shell integration script (glass.ps1) not found");
+                tracing::warn!("Shell integration script not found for shell: {}", if shell_name.is_empty() { "default" } else { shell_name });
             }
         }
 
@@ -359,6 +343,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                 .ok();
         }
 
+        // Build Session with all terminal state, then wrap in SessionMux
+        let session = Session {
+            id: session_id,
+            pty_sender,
+            term,
+            default_colors,
+            block_manager: BlockManager::new(),
+            status: StatusState::default(),
+            history_db,
+            last_command_id: None,
+            command_started_wall: None,
+            search_overlay: None,
+            snapshot_store,
+            pending_command_text: None,
+            active_watcher: None,
+            pending_snapshot_id: None,
+            pending_parse_confidence: None,
+            cursor_position: None,
+            title: String::from("Glass"),
+        };
+        let session_mux = SessionMux::new(session);
+
         let id = window.id();
         self.windows.insert(
             id,
@@ -366,22 +372,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 window,
                 renderer,
                 frame_renderer,
-                pty_sender,
-                term,
-                default_colors,
-                block_manager: BlockManager::new(),
-                status: StatusState::default(),
+                session_mux,
                 first_frame_logged: false,
-                history_db,
-                last_command_id: None,
-                command_started_wall: None,
-                search_overlay: None,
-                snapshot_store,
-                pending_command_text: None,
-                active_watcher: None,
-                pending_snapshot_id: None,
-                pending_parse_confidence: None,
-                cursor_position: None,
             },
         );
     }
@@ -404,24 +396,29 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             WindowEvent::RedrawRequested => {
                 // Execute debounced search query
-                if let Some(ref mut overlay) = ctx.search_overlay {
-                    if overlay.should_search(std::time::Duration::from_millis(150)) {
-                        overlay.mark_searched();
-                        if !overlay.query.is_empty() {
-                            let filter = glass_history::query::QueryFilter {
-                                text: Some(overlay.query.clone()),
-                                limit: 20,
-                                ..Default::default()
-                            };
-                            if let Some(ref db) = ctx.history_db {
-                                let results = db.filtered_query(&filter).unwrap_or_default();
-                                overlay.set_results(results);
+                {
+                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                    if let Some(ref mut overlay) = session.search_overlay {
+                        if overlay.should_search(std::time::Duration::from_millis(150)) {
+                            overlay.mark_searched();
+                            if !overlay.query.is_empty() {
+                                let filter = glass_history::query::QueryFilter {
+                                    text: Some(overlay.query.clone()),
+                                    limit: 20,
+                                    ..Default::default()
+                                };
+                                if let Some(ref db) = session.history_db {
+                                    let results = db.filtered_query(&filter).unwrap_or_default();
+                                    overlay.set_results(results);
+                                }
+                            } else {
+                                overlay.set_results(Vec::new());
                             }
-                        } else {
-                            overlay.set_results(Vec::new());
                         }
                     }
-                    // Keep requesting redraws while search is pending (debounce timer not elapsed)
+                }
+                // Keep requesting redraws while search is pending (debounce timer not elapsed)
+                if let Some(ref overlay) = ctx.session().search_overlay {
                     if overlay.search_pending {
                         ctx.window.request_redraw();
                     }
@@ -429,18 +426,33 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Lock Term briefly for snapshot only, then release
                 let snapshot = {
-                    let term = ctx.term.lock();
-                    snapshot_term(&term, &ctx.default_colors)
+                    let session = ctx.session();
+                    let term = session.term.lock();
+                    snapshot_term(&term, &session.default_colors)
                 };
 
-                // Get visible blocks for the current viewport.
-                // Block lines are absolute (history_size + viewport_line).
-                // Viewport start in absolute coords: history_size - display_offset.
-                let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
-                let visible_blocks = ctx.block_manager.visible_blocks(
-                    viewport_abs_start,
-                    snapshot.screen_lines,
-                );
+                // Extract all session data needed for rendering into owned values.
+                // This avoids borrow conflicts between session_mux and renderer/frame_renderer.
+                let (visible_blocks, search_overlay_data, status_clone) = {
+                    let session = ctx.session_mux.focused_session().unwrap();
+                    let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+                    let vb: Vec<_> = session.block_manager.visible_blocks(
+                        viewport_abs_start,
+                        snapshot.screen_lines,
+                    ).into_iter().cloned().collect();
+                    let sod = session.search_overlay.as_ref().map(|overlay| {
+                        let data = overlay.extract_display_data();
+                        glass_renderer::frame::SearchOverlayRenderData {
+                            query: data.query,
+                            results: data.results.iter().map(|r| {
+                                (r.command.clone(), r.exit_code, r.timestamp.clone(), r.output_preview.clone())
+                            }).collect(),
+                            selected: data.selected,
+                        }
+                    });
+                    let sc = session.status.clone();
+                    (vb, sod, sc)
+                };
 
                 // Get surface texture
                 let Some(frame) = ctx.renderer.get_current_texture() else {
@@ -449,17 +461,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let view = frame.texture.create_view(&Default::default());
                 let sc = ctx.renderer.surface_config();
 
-                // Extract overlay render data (avoids borrow conflict with ctx fields)
-                let search_overlay_data = ctx.search_overlay.as_ref().map(|overlay| {
-                    let data = overlay.extract_display_data();
-                    glass_renderer::frame::SearchOverlayRenderData {
-                        query: data.query,
-                        results: data.results.iter().map(|r| {
-                            (r.command.clone(), r.exit_code, r.timestamp.clone(), r.output_preview.clone())
-                        }).collect(),
-                        selected: data.selected,
-                    }
-                });
+                // Convert owned blocks to references for draw_frame
+                let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
                 // Draw frame using FrameRenderer with block decorations and status bar
                 ctx.frame_renderer.draw_frame(
@@ -469,8 +472,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     sc.width,
                     sc.height,
                     &snapshot,
-                    &visible_blocks,
-                    Some(&ctx.status),
+                    &visible_block_refs,
+                    Some(&status_clone),
                     search_overlay_data.as_ref(),
                 );
 
@@ -509,13 +512,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                     cell_width: cell_w as u16,
                     cell_height: cell_h as u16,
                 };
-                let _ = ctx.pty_sender.send(PtyMsg::Resize(new_window_size));
+                {
+                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                    let _ = session.pty_sender.send(PtyMsg::Resize(new_window_size));
 
-                // Also resize the Term grid so content reflows (CORE-07)
-                ctx.term.lock().resize(TermDimensions {
-                    columns: num_cols as usize,
-                    screen_lines: num_lines as usize,
-                });
+                    // Also resize the Term grid so content reflows (CORE-07)
+                    session.term.lock().resize(TermDimensions {
+                        columns: num_cols as usize,
+                        screen_lines: num_lines as usize,
+                    });
+                }
 
                 // Request a redraw after resize so the surface is repainted immediately
                 ctx.window.request_redraw();
@@ -528,72 +534,81 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let modifiers = self.modifiers;
 
                     // Search overlay input interception -- must be FIRST to prevent PTY forwarding
-                    if let Some(ref mut overlay) = ctx.search_overlay {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => {
-                                ctx.search_overlay = None;
-                                ctx.window.request_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                overlay.move_up();
-                                ctx.window.request_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                overlay.move_down();
-                                ctx.window.request_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Enter) => {
-                                // Scroll-to-block: find the block whose started_epoch matches
-                                // the selected search result's started_at timestamp.
-                                if overlay.selected < overlay.results.len() {
-                                    let result_epoch = overlay.results[overlay.selected].started_at;
-                                    let all_blocks = ctx.block_manager.blocks();
-                                    let matched_block = all_blocks.iter().find(|b| {
-                                        b.started_epoch == Some(result_epoch)
-                                    });
-                                    if let Some(block) = matched_block {
-                                        let target_line = block.prompt_start_line;
-                                        let mut term = ctx.term.lock();
-                                        let history_size = term.grid().history_size();
-                                        let current_offset = term.grid().display_offset();
-                                        let target_offset = history_size.saturating_sub(target_line);
-                                        let delta = target_offset as i32 - current_offset as i32;
-                                        if delta != 0 {
-                                            term.scroll_display(Scroll::Delta(delta));
+                    // Uses an enum to capture what action to take, avoiding borrow conflicts
+                    // between session_mux (for overlay) and window (for request_redraw).
+                    enum OverlayAction { None, Handled, Close }
+                    let overlay_action = {
+                        let session = ctx.session_mux.focused_session_mut().unwrap();
+                        if let Some(ref mut overlay) = session.search_overlay {
+                            match &event.logical_key {
+                                Key::Named(NamedKey::Escape) => {
+                                    session.search_overlay = None;
+                                    OverlayAction::Close
+                                }
+                                Key::Named(NamedKey::ArrowUp) => {
+                                    overlay.move_up();
+                                    OverlayAction::Handled
+                                }
+                                Key::Named(NamedKey::ArrowDown) => {
+                                    overlay.move_down();
+                                    OverlayAction::Handled
+                                }
+                                Key::Named(NamedKey::Enter) => {
+                                    // Scroll-to-block: find the block whose started_epoch matches
+                                    // the selected search result's started_at timestamp.
+                                    if overlay.selected < overlay.results.len() {
+                                        let result_epoch = overlay.results[overlay.selected].started_at;
+                                        let all_blocks = session.block_manager.blocks();
+                                        let matched_block = all_blocks.iter().find(|b| {
+                                            b.started_epoch == Some(result_epoch)
+                                        });
+                                        if let Some(block) = matched_block {
+                                            let target_line = block.prompt_start_line;
+                                            let mut term = session.term.lock();
+                                            let history_size = term.grid().history_size();
+                                            let current_offset = term.grid().display_offset();
+                                            let target_offset = history_size.saturating_sub(target_line);
+                                            let delta = target_offset as i32 - current_offset as i32;
+                                            if delta != 0 {
+                                                term.scroll_display(Scroll::Delta(delta));
+                                            }
                                         }
                                     }
+                                    session.search_overlay = None;
+                                    OverlayAction::Close
                                 }
-                                ctx.search_overlay = None;
-                                ctx.window.request_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Backspace) => {
-                                overlay.pop_char();
-                                ctx.window.request_redraw();
-                                return;
-                            }
-                            Key::Character(c) => {
-                                // Allow Ctrl+Shift+F to toggle overlay closed even when open
-                                if modifiers.control_key()
-                                    && modifiers.shift_key()
-                                    && c.as_str().eq_ignore_ascii_case("f")
-                                {
-                                    ctx.search_overlay = None;
-                                    ctx.window.request_redraw();
-                                    return;
+                                Key::Named(NamedKey::Backspace) => {
+                                    overlay.pop_char();
+                                    OverlayAction::Handled
                                 }
-                                overlay.push_char(c.as_str());
-                                ctx.window.request_redraw();
-                                return;
+                                Key::Character(c) => {
+                                    // Allow Ctrl+Shift+F to toggle overlay closed even when open
+                                    if modifiers.control_key()
+                                        && modifiers.shift_key()
+                                        && c.as_str().eq_ignore_ascii_case("f")
+                                    {
+                                        session.search_overlay = None;
+                                        OverlayAction::Close
+                                    } else {
+                                        overlay.push_char(c.as_str());
+                                        OverlayAction::Handled
+                                    }
+                                }
+                                _ => OverlayAction::Handled // Swallow all other keys while overlay is open
                             }
-                            _ => { return; } // Swallow all other keys while overlay is open
+                        } else {
+                            OverlayAction::None
+                        }
+                    };
+                    match overlay_action {
+                        OverlayAction::None => {} // No overlay open, continue to normal key handling
+                        OverlayAction::Handled | OverlayAction::Close => {
+                            ctx.window.request_redraw();
+                            return;
                         }
                     }
 
-                    let mode = *ctx.term.lock().mode();
+                    let mode = *ctx.session().term.lock().mode();
 
                     // Check for Glass-handled keys first
                     if modifiers.control_key() && modifiers.shift_key() {
@@ -601,80 +616,81 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Key::Character(c)
                                 if c.as_str().eq_ignore_ascii_case("c") =>
                             {
-                                clipboard_copy(&ctx.term);
+                                clipboard_copy(&ctx.session().term);
                                 return;
                             }
                             Key::Character(c)
                                 if c.as_str().eq_ignore_ascii_case("v") =>
                             {
-                                clipboard_paste(&ctx.pty_sender, mode);
+                                clipboard_paste(&ctx.session().pty_sender, mode);
                                 return;
                             }
                             Key::Character(c)
                                 if c.as_str().eq_ignore_ascii_case("f") =>
                             {
-                                ctx.search_overlay = Some(SearchOverlay::new());
+                                ctx.session_mut().search_overlay = Some(SearchOverlay::new());
                                 ctx.window.request_redraw();
                                 return;
                             }
                             Key::Character(c)
                                 if c.as_str().eq_ignore_ascii_case("z") =>
                             {
-                                if let Some(ref store) = ctx.snapshot_store {
-                                    let engine = glass_snapshot::UndoEngine::new(store);
-                                    match engine.undo_latest() {
-                                        Ok(Some(result)) => {
-                                            // Count outcomes for summary line
-                                            let (mut restored, mut deleted, mut skipped, mut conflicts, mut errors) = (0u32, 0u32, 0u32, 0u32, 0u32);
-                                            for (path, outcome) in &result.files {
-                                                match outcome {
-                                                    glass_snapshot::FileOutcome::Restored => {
-                                                        restored += 1;
-                                                        tracing::info!("Undo: restored {}", path.display());
+                                {
+                                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                                    if let Some(ref store) = session.snapshot_store {
+                                        let engine = glass_snapshot::UndoEngine::new(store);
+                                        match engine.undo_latest() {
+                                            Ok(Some(result)) => {
+                                                // Count outcomes for summary line
+                                                let (mut restored, mut deleted, mut skipped, mut conflicts, mut errors) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                                                for (path, outcome) in &result.files {
+                                                    match outcome {
+                                                        glass_snapshot::FileOutcome::Restored => {
+                                                            restored += 1;
+                                                            tracing::info!("Undo: restored {}", path.display());
+                                                        }
+                                                        glass_snapshot::FileOutcome::Deleted => {
+                                                            deleted += 1;
+                                                            tracing::info!("Undo: deleted {}", path.display());
+                                                        }
+                                                        glass_snapshot::FileOutcome::Conflict { .. } => {
+                                                            conflicts += 1;
+                                                            tracing::warn!("Undo: CONFLICT {}", path.display());
+                                                        }
+                                                        glass_snapshot::FileOutcome::Error(e) => {
+                                                            errors += 1;
+                                                            tracing::error!("Undo: error {}: {}", path.display(), e);
+                                                        }
+                                                        glass_snapshot::FileOutcome::Skipped => {
+                                                            skipped += 1;
+                                                            tracing::info!("Undo: skipped {}", path.display());
+                                                        }
                                                     }
-                                                    glass_snapshot::FileOutcome::Deleted => {
-                                                        deleted += 1;
-                                                        tracing::info!("Undo: deleted {}", path.display());
-                                                    }
-                                                    glass_snapshot::FileOutcome::Conflict { .. } => {
-                                                        conflicts += 1;
-                                                        tracing::warn!("Undo: CONFLICT {}", path.display());
-                                                    }
-                                                    glass_snapshot::FileOutcome::Error(e) => {
-                                                        errors += 1;
-                                                        tracing::error!("Undo: error {}: {}", path.display(), e);
-                                                    }
-                                                    glass_snapshot::FileOutcome::Skipped => {
-                                                        skipped += 1;
-                                                        tracing::info!("Undo: skipped {}", path.display());
+                                                }
+                                                tracing::info!(
+                                                    "Undo complete: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
+                                                    restored, deleted, skipped, conflicts, errors,
+                                                );
+                                                // Remove [undo] label from the undone block (visual feedback).
+                                                let epoch_to_clear = session.block_manager.blocks().iter().rev()
+                                                    .find(|b| b.has_snapshot)
+                                                    .and_then(|b| b.started_epoch);
+                                                if let Some(ep) = epoch_to_clear {
+                                                    if let Some(b) = session.block_manager.find_block_by_epoch_mut(ep) {
+                                                        b.has_snapshot = false;
                                                     }
                                                 }
                                             }
-                                            tracing::info!(
-                                                "Undo complete: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
-                                                restored, deleted, skipped, conflicts, errors,
-                                            );
-                                            // Remove [undo] label from the undone block (visual feedback).
-                                            // Find the most recent block with has_snapshot=true
-                                            // (undo_latest operates on latest snapshot) and clear it.
-                                            let epoch_to_clear = ctx.block_manager.blocks().iter().rev()
-                                                .find(|b| b.has_snapshot)
-                                                .and_then(|b| b.started_epoch);
-                                            if let Some(ep) = epoch_to_clear {
-                                                if let Some(b) = ctx.block_manager.find_block_by_epoch_mut(ep) {
-                                                    b.has_snapshot = false;
-                                                }
+                                            Ok(None) => {
+                                                tracing::info!("Nothing to undo -- no file-modifying commands found");
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Undo failed: {}", e);
                                             }
                                         }
-                                        Ok(None) => {
-                                            tracing::info!("Nothing to undo -- no file-modifying commands found");
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Undo failed: {}", e);
-                                        }
+                                    } else {
+                                        tracing::debug!("Undo unavailable -- no snapshot store");
                                     }
-                                } else {
-                                    tracing::debug!("Undo unavailable -- no snapshot store");
                                 }
                                 ctx.window.request_redraw();
                                 return;
@@ -683,12 +699,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if c.as_str().eq_ignore_ascii_case("p") =>
                             {
                                 // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
-                                if let Some(block) = ctx.block_manager.blocks_mut().iter_mut().rev()
-                                    .find(|b| b.pipeline_stage_count.unwrap_or(0) > 0 || b.pipeline_stage_commands.len() > 1)
                                 {
-                                    block.toggle_pipeline_expanded();
-                                    ctx.window.request_redraw();
+                                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                                    if let Some(block) = session.block_manager.blocks_mut().iter_mut().rev()
+                                        .find(|b| b.pipeline_stage_count.unwrap_or(0) > 0 || b.pipeline_stage_commands.len() > 1)
+                                    {
+                                        block.toggle_pipeline_expanded();
+                                    }
                                 }
+                                ctx.window.request_redraw();
                                 return;
                             }
                             _ => {}
@@ -702,12 +721,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     {
                         match &event.logical_key {
                             Key::Named(NamedKey::PageUp) => {
-                                ctx.term.lock().scroll_display(Scroll::PageUp);
+                                ctx.session().term.lock().scroll_display(Scroll::PageUp);
                                 ctx.window.request_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::PageDown) => {
-                                ctx.term.lock().scroll_display(Scroll::PageDown);
+                                ctx.session().term.lock().scroll_display(Scroll::PageDown);
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -721,6 +740,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         encode_key(&event.logical_key, modifiers, mode)
                     {
                         let _ = ctx
+                            .session()
                             .pty_sender
                             .send(PtyMsg::Input(Cow::Owned(bytes)));
                         tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
@@ -728,26 +748,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                ctx.cursor_position = Some((position.x, position.y));
+                ctx.session_mut().cursor_position = Some((position.x, position.y));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                if let Some((_, y)) = ctx.cursor_position {
+                let needs_redraw = if let Some((_, y)) = ctx.session().cursor_position {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let size = ctx.window.inner_size();
                     let viewport_h = size.height as f32;
                     let status_bar_h = cell_h; // status bar is always 1 cell tall
 
                     // Hit test pipeline stage panel (bottom of viewport)
-                    if let Some((block_idx, hit)) = ctx.block_manager.pipeline_hit_test(
+                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                    if let Some((block_idx, hit)) = session.block_manager.pipeline_hit_test(
                         0.0, y as f32, cell_w, cell_h, viewport_h, status_bar_h,
                     ) {
                         match hit {
                             PipelineHit::StageRow(stage_idx) => {
-                                if let Some(block) = ctx.block_manager.block_mut(block_idx) {
+                                if let Some(block) = session.block_manager.block_mut(block_idx) {
                                     if block.expanded_stage_index == Some(stage_idx) {
                                         block.set_expanded_stage(None);
                                     } else {
@@ -756,13 +777,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             }
                             PipelineHit::Header => {
-                                if let Some(block) = ctx.block_manager.block_mut(block_idx) {
+                                if let Some(block) = session.block_manager.block_mut(block_idx) {
                                     block.toggle_pipeline_expanded();
                                 }
                             }
                         }
-                        ctx.window.request_redraw();
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                if needs_redraw {
+                    ctx.window.request_redraw();
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -775,7 +803,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 };
                 if lines != 0 {
                     // Positive delta = scroll up (into history), negative = scroll down
-                    ctx.term.lock().scroll_display(Scroll::Delta(lines));
+                    ctx.session().term.lock().scroll_display(Scroll::Delta(lines));
                     ctx.window.request_redraw();
                 }
             }
@@ -805,11 +833,16 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::Shell {
                 window_id,
-                session_id: _,
+                session_id,
                 event: shell_event,
                 line,
             } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    // Route to session by session_id
+                    if ctx.session_mux.session(session_id).is_none() {
+                        return;
+                    }
+
                     // Skip pipeline events entirely when pipes are disabled
                     let pipes_enabled = self.config.pipes.as_ref()
                         .map(|p| p.enabled)
@@ -820,308 +853,321 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    // Convert ShellEvent to OscEvent for BlockManager
-                    let osc_event = shell_event_to_osc(&shell_event);
-                    ctx.block_manager.handle_event(&osc_event, line);
+                    {
+                        let session = ctx.session_mux.session_mut(session_id).unwrap();
 
-                    // Override auto-expand if config disables it (after handle_event sets pipeline_expanded)
-                    if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
-                        let auto_expand = self.config.pipes.as_ref()
-                            .map(|p| p.auto_expand)
-                            .unwrap_or(true);
-                        if !auto_expand {
-                            if let Some(block) = ctx.block_manager.current_block_mut() {
-                                block.pipeline_expanded = false;
-                            }
-                        }
-                    }
+                        // Convert ShellEvent to OscEvent for BlockManager
+                        let osc_event = shell_event_to_osc(&shell_event);
+                        session.block_manager.handle_event(&osc_event, line);
 
-                    // Read temp files for pipeline stages and process through StageBuffer
-                    let pipes_enabled = self.config.pipes.as_ref()
-                        .map(|p| p.enabled)
-                        .unwrap_or(true);
-                    if pipes_enabled {
-                        if let ShellEvent::PipelineStage { index, total_bytes: _, ref temp_path } = shell_event {
-                            match std::fs::read(temp_path) {
-                                Ok(raw_bytes) => {
-                                    let max_bytes = self.config.pipes.as_ref()
-                                        .map(|p| (p.max_capture_mb as usize) * 1024 * 1024)
-                                        .unwrap_or(10 * 1024 * 1024);
-                                    let policy = glass_pipes::BufferPolicy::new(max_bytes, 512 * 1024);
-                                    let mut stage_buf = glass_pipes::StageBuffer::new(policy);
-                                    stage_buf.append(&raw_bytes);
-                                    let finalized = stage_buf.finalize();
-
-                                    if let Some(block) = ctx.block_manager.current_block_mut() {
-                                        if let Some(stage) = block.pipeline_stages.iter_mut().find(|s| s.index == index) {
-                                            stage.data = finalized;
-                                            stage.temp_path = None;
-                                        }
-                                    }
-
-                                    let _ = std::fs::remove_file(temp_path);
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to read pipeline stage {} from {}: {}", index, temp_path, e);
+                        // Override auto-expand if config disables it (after handle_event sets pipeline_expanded)
+                        if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
+                            let auto_expand = self.config.pipes.as_ref()
+                                .map(|p| p.auto_expand)
+                                .unwrap_or(true);
+                            if !auto_expand {
+                                if let Some(block) = session.block_manager.current_block_mut() {
+                                    block.pipeline_expanded = false;
                                 }
                             }
                         }
-                    }
 
-                    // Track wall-clock start time on CommandExecuted and extract command text
-                    // from the terminal grid NOW (before output overwrites the grid).
-                    // block_manager.handle_event() above has already set output_start_line.
-                    if matches!(shell_event, ShellEvent::CommandExecuted) {
-                        ctx.command_started_wall = Some(std::time::SystemTime::now());
+                        // Read temp files for pipeline stages and process through StageBuffer
+                        if pipes_enabled {
+                            if let ShellEvent::PipelineStage { index, total_bytes: _, ref temp_path } = shell_event {
+                                match std::fs::read(temp_path) {
+                                    Ok(raw_bytes) => {
+                                        let max_bytes = self.config.pipes.as_ref()
+                                            .map(|p| (p.max_capture_mb as usize) * 1024 * 1024)
+                                            .unwrap_or(10 * 1024 * 1024);
+                                        let policy = glass_pipes::BufferPolicy::new(max_bytes, 512 * 1024);
+                                        let mut stage_buf = glass_pipes::StageBuffer::new(policy);
+                                        stage_buf.append(&raw_bytes);
+                                        let finalized = stage_buf.finalize();
 
-                        // Extract command text from the terminal grid using block line info.
-                        // command_start_line..output_start_line covers the input area.
-                        let command_text = {
-                            let blocks = ctx.block_manager.blocks();
-                            if let Some(block) = blocks.last() {
-                                let start = block.command_start_line;
-                                let end = block.output_start_line
-                                    .map(|o| o.max(start + 1))
-                                    .unwrap_or(start + 1);
-                                let term_guard = ctx.term.lock();
-                                let hist = term_guard.grid().history_size();
-                                let cols = term_guard.columns();
-                                let topmost = term_guard.grid().topmost_line();
-                                let bottommost = term_guard.grid().bottommost_line();
-                                let mut text = String::new();
-                                for abs_line in start..end {
-                                    let grid_line = Line(abs_line as i32 - hist as i32);
-                                    if grid_line < topmost || grid_line > bottommost {
-                                        continue;
-                                    }
-                                    let row = &term_guard.grid()[grid_line];
-                                    for col in 0..cols {
-                                        let c = row[Column(col)].c;
-                                        if c != '\0' {
-                                            text.push(c);
-                                        }
-                                    }
-                                }
-                                text.trim().to_string()
-                            } else {
-                                String::new()
-                            }
-                        };
-                        // Pre-exec snapshot: parse command, snapshot identified targets
-                        let snapshot_enabled = self.config.snapshot.as_ref()
-                            .map(|s| s.enabled)
-                            .unwrap_or(true);
-                        if snapshot_enabled {
-                            if let Some(ref store) = ctx.snapshot_store {
-                                let cwd_path_snap = std::path::Path::new(ctx.status.cwd());
-                                let parse_result = glass_snapshot::command_parser::parse_command(
-                                    &command_text, cwd_path_snap,
-                                );
-
-                                if parse_result.confidence != glass_snapshot::Confidence::ReadOnly
-                                    && !parse_result.targets.is_empty()
-                                {
-                                    match store.create_snapshot(0, ctx.status.cwd()) {
-                                        Ok(sid) => {
-                                            for target in &parse_result.targets {
-                                                if let Err(e) = store.store_file(sid, target, "parser") {
-                                                    tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
-                                                }
-                                            }
-                                            tracing::info!(
-                                                "Pre-exec snapshot {} with {} targets (confidence: {:?})",
-                                                sid, parse_result.targets.len(), parse_result.confidence,
-                                            );
-                                            ctx.pending_snapshot_id = Some(sid);
-                                            ctx.pending_parse_confidence = Some(parse_result.confidence);
-                                            // Mark current block as having a snapshot for [undo] label
-                                            if let Some(block) = ctx.block_manager.current_block_mut() {
-                                                block.has_snapshot = true;
+                                        if let Some(block) = session.block_manager.current_block_mut() {
+                                            if let Some(stage) = block.pipeline_stages.iter_mut().find(|s| s.index == index) {
+                                                stage.data = finalized;
+                                                stage.temp_path = None;
                                             }
                                         }
-                                        Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
+
+                                        let _ = std::fs::remove_file(temp_path);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to read pipeline stage {} from {}: {}", index, temp_path, e);
                                     }
                                 }
                             }
-                        } else {
-                            tracing::debug!("Pre-exec snapshot skipped: snapshots disabled in config");
                         }
 
-                        // Parse pipeline stages to extract per-stage command text.
-                        // Strip prompt prefix (e.g. "PS C:\path> ") since command_text
-                        // is extracted from the terminal grid which includes it.
-                        let pipe_text = if let Some(pos) = command_text.find("> ") {
-                            &command_text[pos + 2..]
-                        } else {
-                            &command_text
-                        };
-                        if let Some(idx) = ctx.block_manager.current_block_index() {
-                            let pipeline = glass_pipes::parse_pipeline(pipe_text);
-                            if pipeline.stages.len() > 1 {
-                                let stage_commands: Vec<String> = pipeline.stages.iter()
-                                    .map(|s| s.command.clone())
-                                    .collect();
-                                if let Some(block) = ctx.block_manager.block_mut(idx) {
-                                    block.pipeline_stage_commands = stage_commands;
+                        // Track wall-clock start time on CommandExecuted and extract command text
+                        // from the terminal grid NOW (before output overwrites the grid).
+                        // block_manager.handle_event() above has already set output_start_line.
+                        if matches!(shell_event, ShellEvent::CommandExecuted) {
+                            session.command_started_wall = Some(std::time::SystemTime::now());
+
+                            // Extract command text from the terminal grid using block line info.
+                            // command_start_line..output_start_line covers the input area.
+                            let command_text = {
+                                let blocks = session.block_manager.blocks();
+                                if let Some(block) = blocks.last() {
+                                    let start = block.command_start_line;
+                                    let end = block.output_start_line
+                                        .map(|o| o.max(start + 1))
+                                        .unwrap_or(start + 1);
+                                    let term_guard = session.term.lock();
+                                    let hist = term_guard.grid().history_size();
+                                    let cols = term_guard.columns();
+                                    let topmost = term_guard.grid().topmost_line();
+                                    let bottommost = term_guard.grid().bottommost_line();
+                                    let mut text = String::new();
+                                    for abs_line in start..end {
+                                        let grid_line = Line(abs_line as i32 - hist as i32);
+                                        if grid_line < topmost || grid_line > bottommost {
+                                            continue;
+                                        }
+                                        let row = &term_guard.grid()[grid_line];
+                                        for col in 0..cols {
+                                            let c = row[Column(col)].c;
+                                            if c != '\0' {
+                                                text.push(c);
+                                            }
+                                        }
+                                    }
+                                    text.trim().to_string()
+                                } else {
+                                    String::new()
                                 }
-                            }
-                        }
-
-                        ctx.pending_command_text = Some(command_text);
-
-                        // Start filesystem watcher for this command's CWD
-                        let cwd_path = std::path::Path::new(ctx.status.cwd());
-                        let ignore = glass_snapshot::IgnoreRules::load(cwd_path);
-                        ctx.active_watcher = match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
-                            Ok(w) => {
-                                tracing::debug!("FS watcher started for {}", cwd_path.display());
-                                Some(w)
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to start FS watcher: {}", e);
-                                None
-                            }
-                        };
-                    }
-
-                    // Insert CommandRecord on CommandFinished
-                    if let ShellEvent::CommandFinished { exit_code } = &shell_event {
-                        if let Some(ref db) = ctx.history_db {
-                            let now = std::time::SystemTime::now();
-                            let finished_epoch = now
-                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                                .map(|d| d.as_secs() as i64)
-                                .unwrap_or(0);
-                            let started_epoch = ctx.command_started_wall
-                                .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs() as i64)
-                                .unwrap_or(finished_epoch);
-                            let duration_ms = ctx.command_started_wall
-                                .and_then(|t| now.duration_since(t).ok())
-                                .map(|d| d.as_millis() as i64)
-                                .unwrap_or(0);
-
-                            // Use command text extracted earlier at CommandExecuted time.
-                            // If CommandExecuted never fired (edge case), default to empty string.
-                            let command_text = ctx.pending_command_text.take().unwrap_or_default();
-
-                            let record = CommandRecord {
-                                id: None,
-                                command: command_text,
-                                cwd: ctx.status.cwd().to_string(),
-                                exit_code: *exit_code,
-                                started_at: started_epoch,
-                                finished_at: finished_epoch,
-                                duration_ms,
-                                output: None,
                             };
+                            // Pre-exec snapshot: parse command, snapshot identified targets
+                            let snapshot_enabled = self.config.snapshot.as_ref()
+                                .map(|s| s.enabled)
+                                .unwrap_or(true);
+                            if snapshot_enabled {
+                                if let Some(ref store) = session.snapshot_store {
+                                    let cwd_path_snap = std::path::Path::new(session.status.cwd());
+                                    let parse_result = glass_snapshot::command_parser::parse_command(
+                                        &command_text, cwd_path_snap,
+                                    );
 
-                            match db.insert_command(&record) {
-                                Ok(id) => {
-                                    ctx.last_command_id = Some(id);
-                                    tracing::debug!("Inserted command record id={}", id);
-
-                                    // Persist pipeline stage data if present
-                                    if let Some(block) = ctx.block_manager.blocks().last() {
-                                        if !block.pipeline_stages.is_empty() {
-                                            let stages: Vec<glass_history::PipeStageRow> = block.pipeline_stages.iter().enumerate().map(|(i, stage)| {
-                                                let cmd_text = block.pipeline_stage_commands
-                                                    .get(i)
-                                                    .map(|s| s.as_str())
-                                                    .unwrap_or("");
-                                                let (output, total_bytes, is_binary, is_sampled) = match &stage.data {
-                                                    glass_pipes::FinalizedBuffer::Complete(data) => {
-                                                        let text = String::from_utf8_lossy(data).into_owned();
-                                                        (if text.is_empty() { None } else { Some(text) }, data.len() as i64, false, false)
+                                    if parse_result.confidence != glass_snapshot::Confidence::ReadOnly
+                                        && !parse_result.targets.is_empty()
+                                    {
+                                        match store.create_snapshot(0, session.status.cwd()) {
+                                            Ok(sid) => {
+                                                for target in &parse_result.targets {
+                                                    if let Err(e) = store.store_file(sid, target, "parser") {
+                                                        tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
                                                     }
-                                                    glass_pipes::FinalizedBuffer::Sampled { head, tail, total_bytes } => {
-                                                        let head_text = String::from_utf8_lossy(head);
-                                                        let tail_text = String::from_utf8_lossy(tail);
-                                                        let omitted = total_bytes - head.len() - tail.len();
-                                                        let combined = format!("{}\n[...{} bytes omitted...]\n{}", head_text, omitted, tail_text);
-                                                        (Some(combined), *total_bytes as i64, false, true)
-                                                    }
-                                                    glass_pipes::FinalizedBuffer::Binary { size } => {
-                                                        (None, *size as i64, true, false)
-                                                    }
-                                                };
-                                                glass_history::PipeStageRow {
-                                                    stage_index: stage.index as i64,
-                                                    command: cmd_text.to_string(),
-                                                    output,
-                                                    total_bytes,
-                                                    is_binary,
-                                                    is_sampled,
                                                 }
-                                            }).collect();
-
-                                            if let Err(e) = db.insert_pipe_stages(id, &stages) {
-                                                tracing::warn!("Failed to insert pipe stages: {}", e);
+                                                tracing::info!(
+                                                    "Pre-exec snapshot {} with {} targets (confidence: {:?})",
+                                                    sid, parse_result.targets.len(), parse_result.confidence,
+                                                );
+                                                session.pending_snapshot_id = Some(sid);
+                                                session.pending_parse_confidence = Some(parse_result.confidence);
+                                                // Mark current block as having a snapshot for [undo] label
+                                                if let Some(block) = session.block_manager.current_block_mut() {
+                                                    block.has_snapshot = true;
+                                                }
                                             }
+                                            Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
                                         }
                                     }
+                                }
+                            } else {
+                                tracing::debug!("Pre-exec snapshot skipped: snapshots disabled in config");
+                            }
+
+                            // Parse pipeline stages to extract per-stage command text.
+                            // Strip prompt prefix (e.g. "PS C:\path> ") since command_text
+                            // is extracted from the terminal grid which includes it.
+                            let pipe_text = if let Some(pos) = command_text.find("> ") {
+                                &command_text[pos + 2..]
+                            } else {
+                                &command_text
+                            };
+                            if let Some(idx) = session.block_manager.current_block_index() {
+                                let pipeline = glass_pipes::parse_pipeline(pipe_text);
+                                if pipeline.stages.len() > 1 {
+                                    let stage_commands: Vec<String> = pipeline.stages.iter()
+                                        .map(|s| s.command.clone())
+                                        .collect();
+                                    if let Some(block) = session.block_manager.block_mut(idx) {
+                                        block.pipeline_stage_commands = stage_commands;
+                                    }
+                                }
+                            }
+
+                            session.pending_command_text = Some(command_text);
+
+                            // Start filesystem watcher for this command's CWD
+                            let cwd_path = std::path::Path::new(session.status.cwd());
+                            let ignore = glass_snapshot::IgnoreRules::load(cwd_path);
+                            session.active_watcher = match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
+                                Ok(w) => {
+                                    tracing::debug!("FS watcher started for {}", cwd_path.display());
+                                    Some(w)
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to insert command record: {}", e);
-                                    ctx.last_command_id = None;
+                                    tracing::warn!("Failed to start FS watcher: {}", e);
+                                    None
                                 }
-                            }
+                            };
                         }
-                        // Clear wall-clock tracker
-                        ctx.command_started_wall = None;
 
-                        // Update pre-exec snapshot with real command_id
-                        if let (Some(sid), Some(ref store)) = (ctx.pending_snapshot_id.take(), &ctx.snapshot_store) {
-                            let command_id = ctx.last_command_id.unwrap_or(0);
-                            if let Err(e) = store.update_command_id(sid, command_id) {
-                                tracing::warn!("Failed to update snapshot {} command_id: {}", sid, e);
-                            }
-                        }
-                        ctx.pending_parse_confidence = None;
+                        // Insert CommandRecord on CommandFinished
+                        if let ShellEvent::CommandFinished { exit_code } = &shell_event {
+                            if let Some(ref db) = session.history_db {
+                                let now = std::time::SystemTime::now();
+                                let finished_epoch = now
+                                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
+                                let started_epoch = session.command_started_wall
+                                    .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(finished_epoch);
+                                let duration_ms = session.command_started_wall
+                                    .and_then(|t| now.duration_since(t).ok())
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0);
 
-                        // Drain filesystem watcher events and store modified files
-                        if let Some(watcher) = ctx.active_watcher.take() {
-                            let events = watcher.drain_events();
-                            if !events.is_empty() {
-                                tracing::debug!("FS watcher captured {} events", events.len());
-                                if let Some(ref store) = ctx.snapshot_store {
-                                    let command_id = ctx.last_command_id.unwrap_or(0);
-                                    let cwd = ctx.status.cwd().to_string();
-                                    match store.create_snapshot(command_id, &cwd) {
-                                        Ok(snapshot_id) => {
-                                            for event in &events {
-                                                if let Err(e) = store.store_file(snapshot_id, &event.path, "watcher") {
-                                                    tracing::warn!("Failed to store watcher file {}: {}", event.path.display(), e);
-                                                }
-                                                // For Rename events, also store the destination path
-                                                if let glass_snapshot::WatcherEventKind::Rename { ref to } = event.kind {
-                                                    if let Err(e) = store.store_file(snapshot_id, to, "watcher") {
-                                                        tracing::warn!("Failed to store watcher rename target {}: {}", to.display(), e);
+                                // Use command text extracted earlier at CommandExecuted time.
+                                let command_text = session.pending_command_text.take().unwrap_or_default();
+
+                                let record = CommandRecord {
+                                    id: None,
+                                    command: command_text,
+                                    cwd: session.status.cwd().to_string(),
+                                    exit_code: *exit_code,
+                                    started_at: started_epoch,
+                                    finished_at: finished_epoch,
+                                    duration_ms,
+                                    output: None,
+                                };
+
+                                match db.insert_command(&record) {
+                                    Ok(id) => {
+                                        session.last_command_id = Some(id);
+                                        tracing::debug!("Inserted command record id={}", id);
+
+                                        // Persist pipeline stage data if present
+                                        if let Some(block) = session.block_manager.blocks().last() {
+                                            if !block.pipeline_stages.is_empty() {
+                                                let stages: Vec<glass_history::PipeStageRow> = block.pipeline_stages.iter().enumerate().map(|(i, stage)| {
+                                                    let cmd_text = block.pipeline_stage_commands
+                                                        .get(i)
+                                                        .map(|s| s.as_str())
+                                                        .unwrap_or("");
+                                                    let (output, total_bytes, is_binary, is_sampled) = match &stage.data {
+                                                        glass_pipes::FinalizedBuffer::Complete(data) => {
+                                                            let text = String::from_utf8_lossy(data).into_owned();
+                                                            (if text.is_empty() { None } else { Some(text) }, data.len() as i64, false, false)
+                                                        }
+                                                        glass_pipes::FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+                                                            let head_text = String::from_utf8_lossy(head);
+                                                            let tail_text = String::from_utf8_lossy(tail);
+                                                            let omitted = total_bytes - head.len() - tail.len();
+                                                            let combined = format!("{}\n[...{} bytes omitted...]\n{}", head_text, omitted, tail_text);
+                                                            (Some(combined), *total_bytes as i64, false, true)
+                                                        }
+                                                        glass_pipes::FinalizedBuffer::Binary { size } => {
+                                                            (None, *size as i64, true, false)
+                                                        }
+                                                    };
+                                                    glass_history::PipeStageRow {
+                                                        stage_index: stage.index as i64,
+                                                        command: cmd_text.to_string(),
+                                                        output,
+                                                        total_bytes,
+                                                        is_binary,
+                                                        is_sampled,
                                                     }
+                                                }).collect();
+
+                                                if let Err(e) = db.insert_pipe_stages(id, &stages) {
+                                                    tracing::warn!("Failed to insert pipe stages: {}", e);
                                                 }
                                             }
-                                            tracing::debug!("Stored {} watcher files in snapshot {}", events.len(), snapshot_id);
                                         }
-                                        Err(e) => {
-                                            tracing::warn!("Failed to create watcher snapshot: {}", e);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to insert command record: {}", e);
+                                        session.last_command_id = None;
+                                    }
+                                }
+                            }
+                            // Clear wall-clock tracker
+                            session.command_started_wall = None;
+
+                            // Update pre-exec snapshot with real command_id
+                            if let (Some(sid), Some(ref store)) = (session.pending_snapshot_id.take(), &session.snapshot_store) {
+                                let command_id = session.last_command_id.unwrap_or(0);
+                                if let Err(e) = store.update_command_id(sid, command_id) {
+                                    tracing::warn!("Failed to update snapshot {} command_id: {}", sid, e);
+                                }
+                            }
+                            session.pending_parse_confidence = None;
+
+                            // Drain filesystem watcher events and store modified files
+                            if let Some(watcher) = session.active_watcher.take() {
+                                let events = watcher.drain_events();
+                                if !events.is_empty() {
+                                    tracing::debug!("FS watcher captured {} events", events.len());
+                                    if let Some(ref store) = session.snapshot_store {
+                                        let command_id = session.last_command_id.unwrap_or(0);
+                                        let cwd = session.status.cwd().to_string();
+                                        match store.create_snapshot(command_id, &cwd) {
+                                            Ok(snapshot_id) => {
+                                                for event in &events {
+                                                    if let Err(e) = store.store_file(snapshot_id, &event.path, "watcher") {
+                                                        tracing::warn!("Failed to store watcher file {}: {}", event.path.display(), e);
+                                                    }
+                                                    // For Rename events, also store the destination path
+                                                    if let glass_snapshot::WatcherEventKind::Rename { ref to } = event.kind {
+                                                        if let Err(e) = store.store_file(snapshot_id, to, "watcher") {
+                                                            tracing::warn!("Failed to store watcher rename target {}: {}", to.display(), e);
+                                                        }
+                                                    }
+                                                }
+                                                tracing::debug!("Stored {} watcher files in snapshot {}", events.len(), snapshot_id);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("Failed to create watcher snapshot: {}", e);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    // On CurrentDirectory events, update status and query git info
+                        // On CurrentDirectory events, update status and query git info
+                        // Track whether we need to spawn a git query (can't spawn inside session borrow)
+                        let spawn_git_query = if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
+                            session.status.set_cwd(cwd.clone());
+                            if !session.status.git_query_pending {
+                                session.status.git_query_pending = true;
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        let _ = spawn_git_query; // used below after session borrow ends
+                    } // drop session borrow
+
+                    // Spawn git query outside session borrow (needs self.proxy and window_id)
                     if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
-                        ctx.status.set_cwd(cwd.clone());
-
-                        // Spawn background thread for git status query
-                        // to avoid blocking the render thread
-                        if !ctx.status.git_query_pending {
-                            ctx.status.git_query_pending = true;
+                        // Re-check: only spawn if we set git_query_pending above
+                        let session = ctx.session_mux.session(session_id).unwrap();
+                        if session.status.git_query_pending {
                             let cwd_owned = cwd.clone();
                             let proxy = self.proxy.clone();
                             let wid = window_id;
+                            let sid = session_id;
                             std::thread::Builder::new()
                                 .name("Glass git query".into())
                                 .spawn(move || {
@@ -1132,7 +1178,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     });
                                     let _ = proxy.send_event(AppEvent::GitInfo {
                                         window_id: wid,
-                                        session_id: SessionId::new(0), // placeholder until Plan 03 wires real session
+                                        session_id: sid,
                                         info,
                                     });
                                 })
@@ -1144,7 +1190,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            AppEvent::CommandOutput { window_id, session_id: _, raw_output } => {
+            AppEvent::CommandOutput { window_id, session_id, raw_output } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Process raw bytes: binary detection, ANSI stripping, truncation
                     let max_kb = self.config.history.as_ref()
@@ -1152,32 +1198,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .unwrap_or(50);
                     let processed = glass_history::output::process_output(Some(raw_output), max_kb);
                     if let Some(output) = processed {
-                        // Update the last command record with captured output
-                        if let (Some(ref db), Some(cmd_id)) = (&ctx.history_db, ctx.last_command_id) {
-                            match db.update_output(cmd_id, &output) {
-                                Ok(()) => {
-                                    tracing::debug!(
-                                        "Updated command {} with {} bytes of output",
-                                        cmd_id,
-                                        output.len(),
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to update command output: {}", e);
+                        if let Some(session) = ctx.session_mux.session_mut(session_id) {
+                            // Update the last command record with captured output
+                            if let (Some(ref db), Some(cmd_id)) = (&session.history_db, session.last_command_id) {
+                                match db.update_output(cmd_id, &output) {
+                                    Ok(()) => {
+                                        tracing::debug!(
+                                            "Updated command {} with {} bytes of output",
+                                            cmd_id,
+                                            output.len(),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to update command output: {}", e);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            AppEvent::GitInfo { window_id, session_id: _, info } => {
+            AppEvent::GitInfo { window_id, session_id, info } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
-                    ctx.status.git_query_pending = false;
-                    let git_info = info.map(|gi| glass_terminal::GitInfo {
-                        branch: gi.branch,
-                        dirty_count: gi.dirty_count,
-                    });
-                    ctx.status.set_git_info(git_info);
+                    {
+                        if let Some(session) = ctx.session_mux.session_mut(session_id) {
+                            session.status.git_query_pending = false;
+                            let git_info = info.map(|gi| glass_terminal::GitInfo {
+                                branch: gi.branch,
+                                dirty_count: gi.dirty_count,
+                            });
+                            session.status.set_git_info(git_info);
+                        }
+                    }
                     ctx.window.request_redraw();
                 }
             }
@@ -1189,24 +1241,36 @@ impl ApplicationHandler<AppEvent> for Processor {
 }
 
 /// Copy the current terminal selection to the system clipboard.
-/// Locate the shell integration script (glass.ps1) relative to the executable.
+/// Locate the shell integration script relative to the executable.
+///
+/// Platform-aware: selects glass.ps1/glass.zsh/glass.bash/glass.fish based on shell name.
 ///
 /// Checks two layouts:
-/// - Installed: `<exe_dir>/shell-integration/glass.ps1`
-/// - Development: `<exe_dir>/../../shell-integration/glass.ps1` (exe in target/{debug,release}/)
-fn find_shell_integration() -> Option<std::path::PathBuf> {
+/// - Installed: `<exe_dir>/shell-integration/<script>`
+/// - Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
+fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
+    let script_name = if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") || shell_name.is_empty() {
+        "glass.ps1"
+    } else if shell_name.contains("zsh") {
+        "glass.zsh"
+    } else if shell_name.contains("fish") {
+        "glass.fish"
+    } else {
+        "glass.bash"
+    };
+
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
 
     // Installed layout
-    let candidate = exe_dir.join("shell-integration").join("glass.ps1");
+    let candidate = exe_dir.join("shell-integration").join(script_name);
     if candidate.exists() {
         return Some(candidate);
     }
 
     // Development layout: exe in target/{debug,release}/
     if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
-        let candidate = repo_root.join("shell-integration").join("glass.ps1");
+        let candidate = repo_root.join("shell-integration").join(script_name);
         if candidate.exists() {
             return Some(candidate);
         }

@@ -1,28 +1,10 @@
 //! Core type definitions for the glass_mux crate.
 
+// SessionId is canonically defined in glass_core::event (Decision from Plan 02).
+// Re-export it here so glass_mux consumers can use glass_mux::SessionId.
+pub use glass_core::event::SessionId;
+
 use std::fmt;
-
-/// Unique identifier for a terminal session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SessionId(u64);
-
-impl SessionId {
-    /// Create a new SessionId from a u64.
-    pub fn new(n: u64) -> Self {
-        Self(n)
-    }
-
-    /// Return the inner u64 value.
-    pub fn val(self) -> u64 {
-        self.0
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "session-{}", self.0)
-    }
-}
 
 /// Unique identifier for a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
