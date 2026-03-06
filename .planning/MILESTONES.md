@@ -1,5 +1,28 @@
 # Milestones
 
+## v1.3 Pipe Visualization (Shipped: 2026-03-06)
+
+**Phases completed:** 6 phases, 11 plans
+**Lines of code:** 28,885 Rust (up from 12,214)
+**Timeline:** 2026-03-04 to 2026-03-06 (2 days)
+**Git range:** feat(15-01) to feat(20-01)
+
+**Delivered:** Pipe visualization system with transparent intermediate stage capture, multi-row pipeline UI blocks, per-stage storage, MCP inspection tools, and full config gating across shell/terminal/DB layers.
+
+**Key accomplishments:**
+- Byte-level pipe parser (glass_pipes crate) with shell quoting awareness, TTY detection, and --no-glass opt-out
+- Shell capture via tee rewriting (bash/zsh) and Tee-Object (PowerShell) with OSC 133;S/P protocol transport
+- Multi-row pipeline UI with auto-expand on failure, click/keyboard stage expansion, and sampled output rendering
+- pipe_stages DB table with schema v2 migration, FK cascade, and retention policy integration
+- GlassPipeInspect MCP tool + GlassContext pipeline stats for AI integration
+- Three-layer pipes.enabled config gate (PTY env var, shell script checks, main.rs event processing)
+
+**Tech debt (from audit):**
+- PipeStage.is_tty populated by parse_pipeline but never consumed at runtime (vestigial after classify.rs removal)
+- SCHEMA_VERSION const produces dead_code warning (used only in tests, migration uses hardcoded values)
+
+---
+
 ## v1.2 Command-Level Undo (Shipped: 2026-03-06)
 
 **Phases completed:** 5 phases, 13 plans

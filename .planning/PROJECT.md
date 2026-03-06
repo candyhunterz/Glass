@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for PowerShell and Bash emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z).
+Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for PowerShell and Bash emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output.
 
 ## Core Value
 
@@ -46,24 +46,15 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ MCP tools: GlassUndo and GlassFileDiff for AI integration -- v1.2
 - ✓ Storage pruning with configurable age/count limits and startup cleanup -- v1.2
 - ✓ Snapshot configuration section in config.toml -- v1.2
+- ✓ Pipe parsing with TTY detection, opt-out flag, and buffer sampling -- v1.3
+- ✓ Shell capture via tee rewriting (bash) and Tee-Object (PowerShell) with OSC transport -- v1.3
+- ✓ Multi-row pipeline UI with auto-expand, click/keyboard stage expansion -- v1.3
+- ✓ pipe_stages DB table with schema migration and retention cascade -- v1.3
+- ✓ GlassPipeInspect MCP tool and GlassContext pipeline stats -- v1.3
+- ✓ [pipes] config section with enabled gate, max_capture_mb, auto_expand -- v1.3
 
 ### Active
 
-## Current Milestone: v1.3 Pipe Visualization
-
-**Goal:** Visual pipe debugging with inspectable intermediate stages across all platforms.
-
-**Target features:**
-- Pipe detection, parsing, and transparent capture (tee-based for bash/zsh, post-hoc for PowerShell)
-- Multi-row pipeline UI blocks with auto-expand/collapse and expandable stage output
-- TTY-sensitive command detection and opt-out flag
-- Pipe stage storage in history DB with retention policies
-- GlassPipeInspect MCP tool for AI integration
-- Config section for pipe visualization settings
-
-#### Future
-
-- [ ] Pipe visualization with intermediate stage output
 - [ ] Block collapse/expand, URL detection, block keyboard navigation
 - [ ] Config hot reload
 - [ ] macOS and Linux support
@@ -95,15 +86,16 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v1.2 with 12,214 LOC Rust across 10 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_mcp + root binary).
+Shipped v1.3 with 28,885 LOC Rust across 11 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp + root binary).
 Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4.
 Windows 11 first -- ConPTY for PTY, DX12 for GPU rendering.
-Built across 3 milestones (14 phases, 37 plans) in 3 days.
+Built across 4 milestones (20 phases, 48 plans) in 3 days.
 
 Known tech debt:
 - pruner.rs max_size_mb not enforced (count and age pruning work)
 - PTY throughput not benchmarked quantitatively
-- Nyquist validation partial across all phases
+- PipeStage.is_tty vestigial after classify.rs removal
+- Nyquist validation partial across most phases
 
 ## Constraints
 
@@ -144,6 +136,13 @@ Known tech debt:
 | One-shot undo (snapshot deleted after restore) | Simple V1 semantics; undo chain deferred | ✓ Good -- clear behavior |
 | Config gating pre-exec only | FS watcher and undo handler always available | ✓ Good -- can undo existing snapshots even when creation disabled |
 | GlassServer stores glass_dir not open store | Per-request store opening in spawn_blocking for thread safety | ✓ Good -- SnapshotStore is !Send |
+| Whitespace splitting for pipe program extraction | shlex treats backslash as escape, mangles Windows paths | ✓ Good -- correct on all platforms |
+| Backtick escape in pipe parser | PowerShell uses backtick not backslash for escaping | ✓ Good -- cross-shell compatibility |
+| OSC 133;S/P protocol for pipe transport | Reuses existing OSC infrastructure, no new IPC | ✓ Good -- clean integration |
+| Tee rewriting for bash, Tee-Object for PowerShell | Native shell primitives, no external binaries | ✓ Good -- reliable capture |
+| Pipeline overlays (not grid rows) for stage rendering | Consistent with existing overlay architecture | ✓ Good -- no grid disruption |
+| GLASS_PIPES_DISABLED env var for shell IPC | Shells can't read TOML config; env var is universal | ✓ Good -- clean three-layer gate |
+| Separate pipe_stages DB table with FK cascade | Independent lifecycle from commands, clean pruning | ✓ Good -- schema v2 migration works |
 
 ---
-*Last updated: 2026-03-05 after v1.3 milestone started*
+*Last updated: 2026-03-06 after v1.3 milestone*
