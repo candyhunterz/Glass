@@ -23,20 +23,111 @@ impl<'a> UndoEngine<'a> {
     /// Returns `Ok(None)` if there are no parser snapshots to undo.
     /// Returns `Ok(Some(UndoResult))` with per-file outcomes otherwise.
     pub fn undo_latest(&self) -> Result<Option<UndoResult>> {
-        todo!("implement in GREEN phase")
+        let snapshot = match self.store.db().get_latest_parser_snapshot()? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let files = self.store.db().get_snapshot_files(snapshot.id)?;
+        let mut outcomes = Vec::new();
+
+        for file_rec in &files {
+            // Only restore parser-sourced files (pre-exec snapshots)
+            if file_rec.source != "parser" {
+                continue;
+            }
+            outcomes.push(self.restore_file(file_rec, snapshot.command_id));
+        }
+
+        Ok(Some(UndoResult {
+            snapshot_id: snapshot.id,
+            command_id: snapshot.command_id,
+            confidence: Confidence::High,
+            files: outcomes,
+        }))
     }
 
     /// Check whether a file has been modified since the command ran.
     ///
     /// Compares the current on-disk hash against the watcher-recorded
     /// post-command hash for the same command_id.
-    fn check_conflict(&self, _file_path: &Path, _command_id: i64) -> Result<Option<(String, Option<String>)>> {
-        todo!("implement in GREEN phase")
+    ///
+    /// Returns `Ok(Some((current_hash, expected_hash)))` if conflict detected,
+    /// `Ok(None)` if no conflict.
+    fn check_conflict(&self, file_path: &Path, command_id: i64) -> Result<Option<(String, Option<String>)>> {
+        if !file_path.exists() {
+            return Ok(None);
+        }
+
+        let current_content = std::fs::read(file_path)?;
+        let current_hash = blake3::hash(&current_content).to_hex().to_string();
+
+        // Find watcher snapshots for the same command
+        let watcher_snapshots = self.store.db().get_snapshots_by_command(command_id)?;
+        for ws in &watcher_snapshots {
+            let ws_files = self.store.db().get_snapshot_files(ws.id)?;
+            for wf in &ws_files {
+                if wf.source == "watcher"
+                    && wf.file_path == file_path.to_string_lossy().as_ref()
+                {
+                    if let Some(ref watcher_hash) = wf.blob_hash {
+                        if current_hash != *watcher_hash {
+                            return Ok(Some((current_hash, Some(watcher_hash.clone()))));
+                        } else {
+                            // Current matches watcher -- no conflict
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
+
+        // No watcher data for this file -- optimistic, no conflict
+        Ok(None)
     }
 
     /// Restore a single file from its snapshot record.
-    fn restore_file(&self, _file_rec: &SnapshotFileRecord, _command_id: i64) -> (PathBuf, FileOutcome) {
-        todo!("implement in GREEN phase")
+    fn restore_file(&self, file_rec: &SnapshotFileRecord, command_id: i64) -> (PathBuf, FileOutcome) {
+        let path = PathBuf::from(&file_rec.file_path);
+
+        // Check for conflicts before restoring
+        match self.check_conflict(&path, command_id) {
+            Ok(Some((current_hash, expected_hash))) => {
+                return (path, FileOutcome::Conflict { current_hash, expected_hash });
+            }
+            Err(e) => {
+                return (path, FileOutcome::Error(e.to_string()));
+            }
+            Ok(None) => {}
+        }
+
+        match &file_rec.blob_hash {
+            Some(hash) => {
+                // File existed before command -- restore its content
+                match self.store.blobs().read_blob(hash) {
+                    Ok(content) => {
+                        if let Err(e) = std::fs::write(&path, &content) {
+                            (path, FileOutcome::Error(e.to_string()))
+                        } else {
+                            (path, FileOutcome::Restored)
+                        }
+                    }
+                    Err(e) => (path, FileOutcome::Error(e.to_string())),
+                }
+            }
+            None => {
+                // File did not exist before command -- delete it
+                if path.exists() {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        (path, FileOutcome::Error(e.to_string()))
+                    } else {
+                        (path, FileOutcome::Deleted)
+                    }
+                } else {
+                    (path, FileOutcome::Skipped)
+                }
+            }
+        }
     }
 }
 
