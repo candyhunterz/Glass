@@ -43,7 +43,7 @@
 
 ### v1.3 Pipe Visualization (In Progress)
 
-- [ ] **Phase 15: Pipe Parsing Core** - glass_pipes crate with pipe splitter, TTY detection, buffer policies, and data types
+- [x] **Phase 15: Pipe Parsing Core** - glass_pipes crate with pipe splitter, TTY detection, buffer policies, and data types (completed 2026-03-06)
 - [ ] **Phase 16: Shell Capture + Terminal Transport** - Shell integration rewriting (bash tee, PowerShell Tee-Object), OSC 133;S/P protocol, OscScanner extension, and event wiring
 - [ ] **Phase 17: Pipeline UI** - Multi-row pipeline blocks with expand/collapse, stage output display, and auto-expand logic
 - [ ] **Phase 18: Storage + Retention** - pipe_stages DB table, schema migration, and retention policy integration
@@ -61,7 +61,7 @@
   3. Commands containing TTY-sensitive programs (less, vim, fzf, git log) are flagged for exclusion from capture
   4. A `--no-glass` flag on any command opts it out of pipe interception
   5. Stage buffers exceeding 10MB are sampled (head + tail) rather than truncated, and binary data is detected and labeled
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 15-01-PLAN.md -- Crate foundation: types + pipe-splitting parser
 - [ ] 15-02-PLAN.md -- Pipeline classification (TTY/opt-out) + StageBuffer with sampling
@@ -130,7 +130,7 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 12. FS Watcher Engine | v1.2 | 2/2 | Complete | 2026-03-06 |
 | 13. Integration + Undo Engine | v1.2 | 4/4 | Complete | 2026-03-06 |
 | 14. UI + CLI + MCP + Pruning | v1.2 | 3/3 | Complete | 2026-03-06 |
-| 15. Pipe Parsing Core | 1/2 | In Progress|  | - |
+| 15. Pipe Parsing Core | 2/2 | Complete   | 2026-03-06 | - |
 | 16. Shell Capture + Terminal Transport | v1.3 | 0/? | Not started | - |
 | 17. Pipeline UI | v1.3 | 0/? | Not started | - |
 | 18. Storage + Retention | v1.3 | 0/? | Not started | - |

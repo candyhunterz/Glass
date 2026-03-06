@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
 status: executing
-stopped_at: Completed 15-01-PLAN.md
-last_updated: "2026-03-06T06:26:51.637Z"
-last_activity: 2026-03-06 -- Completed 15-01 (pipe parser core)
+stopped_at: Completed 15-02-PLAN.md
+last_updated: "2026-03-06T06:31:20.413Z"
+last_activity: 2026-03-06 -- Completed 15-02 (pipeline classification + buffer)
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 50
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 15 (1 of 5 in v1.3)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-03-06 -- Completed 15-01 (pipe parser core)
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 15 Complete
+Last activity: 2026-03-06 -- Completed 15-02 (pipeline classification + buffer)
 
-Progress: [█████░░░░░] 50% (v1.3)
+Progress: [██████████] 100% (v1.3 Phase 15)
 
 ## Performance Metrics
 
@@ -51,6 +51,8 @@ Recent decisions affecting current work:
 - [v1.2]: Separate snapshots.db from history.db -- pipe_stages goes in history.db
 - [v1.3-15-01]: Whitespace splitting for program extraction (not shlex) to preserve Windows backslash paths
 - [v1.3-15-01]: Backtick escape support in pipe parser for PowerShell compatibility
+- [Phase 15]: Control char ratio for binary detection matching glass_history pattern
+- [Phase 15]: Rolling tail window via Vec::drain for overflow buffer sampling
 
 ### Pending Todos
 
@@ -64,6 +66,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T06:26:51.636Z
-Stopped at: Completed 15-01-PLAN.md
+Last session: 2026-03-06T06:31:20.411Z
+Stopped at: Completed 15-02-PLAN.md
 Resume file: None
