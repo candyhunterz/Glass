@@ -38,7 +38,7 @@ Requirements for command-level undo milestone. Each maps to roadmap phases.
 ### AI Integration
 
 - [x] **MCP-01**: GlassUndo MCP tool allows AI assistants to trigger undo programmatically
-- [ ] **MCP-02**: GlassFileDiff MCP tool allows AI assistants to inspect file diffs from commands
+- [x] **MCP-02**: GlassFileDiff MCP tool allows AI assistants to inspect file diffs from commands
 
 ## Future Requirements
 
@@ -87,7 +87,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STOR-02 | Phase 12 | Complete |
 | STOR-03 | Phase 13 | Complete |
 | MCP-01 | Phase 14 | Complete |
-| MCP-02 | Phase 14 | Pending |
+| MCP-02 | Phase 14 | Complete |
 
 **Coverage:**
 - v1.2 requirements: 18 total

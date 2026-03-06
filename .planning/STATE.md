@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Command-Level Undo
 status: in-progress
-stopped_at: Completed 14-01-PLAN.md
-last_updated: "2026-03-06T02:59:08Z"
-last_activity: 2026-03-06 -- Completed 14-01-PLAN.md (Storage pruning + undo_command)
+stopped_at: Completed 14-03-PLAN.md
+last_updated: "2026-03-06T03:04:19Z"
+last_activity: 2026-03-06 -- Completed 14-03-PLAN.md (MCP undo + file diff tools)
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 13
-  completed_plans: 11
-  percent: 85
+  completed_plans: 13
+  percent: 100
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 14 (5 of 5 in v1.2)
-Plan: 1 of 3 in current phase
-Status: Executing Phase 14 plans
-Last activity: 2026-03-06 -- Completed 14-01-PLAN.md (Storage pruning + undo_command)
+Plan: 3 of 3 in current phase
+Status: Phase 14 complete
+Last activity: 2026-03-06 -- Completed 14-03-PLAN.md (MCP undo + file diff tools)
 
-Progress: [███░░░░░░░] 33% (Phase 14)
+Progress: [██████████] 100% (Phase 14)
 
 ## Performance Metrics
 
@@ -85,6 +85,8 @@ Recent decisions affecting current work:
 - [14-01]: Pruner takes individual config values (retention_days, max_count, max_size_mb) to avoid cross-crate dependency
 - [14-01]: One-shot undo: both undo_latest and undo_command delete snapshot after successful restore
 - [14-01]: Shared restore_snapshot private method in UndoEngine for all undo operations
+- [14-03]: GlassServer stores glass_dir PathBuf (not open SnapshotStore) for per-request store opening in spawn_blocking
+- [14-03]: glass_file_diff filters to parser-sourced files only, excluding watcher files from output
 
 ### Pending Todos
 
@@ -98,6 +100,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T02:59:08Z
-Stopped at: Completed 14-01-PLAN.md
+Last session: 2026-03-06T03:04:19Z
+Stopped at: Completed 14-03-PLAN.md
 Resume file: None
