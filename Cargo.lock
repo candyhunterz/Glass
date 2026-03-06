@@ -1117,6 +1117,7 @@ dependencies = [
  "glass_core",
  "glass_history",
  "glass_mcp",
+ "glass_pipes",
  "glass_renderer",
  "glass_snapshot",
  "glass_terminal",
@@ -1164,6 +1165,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "glass_history",
+ "glass_snapshot",
  "rmcp",
  "rusqlite",
  "schemars",
@@ -1177,6 +1179,9 @@ dependencies = [
 [[package]]
 name = "glass_pipes"
 version = "0.1.0"
+dependencies = [
+ "shlex",
+]
 
 [[package]]
 name = "glass_renderer"
@@ -1214,6 +1219,7 @@ dependencies = [
  "alacritty_terminal",
  "arboard",
  "glass_core",
+ "glass_pipes",
  "polling",
  "tokio",
  "tracing",

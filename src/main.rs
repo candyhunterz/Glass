@@ -739,6 +739,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let osc_event = shell_event_to_osc(&shell_event);
                     ctx.block_manager.handle_event(&osc_event, line);
 
+                    // Read temp files for pipeline stages and process through StageBuffer
+                    if let ShellEvent::PipelineStage { index, total_bytes: _, ref temp_path } = shell_event {
+                        match std::fs::read(temp_path) {
+                            Ok(raw_bytes) => {
+                                let mut stage_buf = glass_pipes::StageBuffer::new(glass_pipes::BufferPolicy::default());
+                                stage_buf.append(&raw_bytes);
+                                let finalized = stage_buf.finalize();
+
+                                if let Some(block) = ctx.block_manager.current_block_mut() {
+                                    if let Some(stage) = block.pipeline_stages.iter_mut().find(|s| s.index == index) {
+                                        stage.data = finalized;
+                                        stage.temp_path = None;
+                                    }
+                                }
+
+                                let _ = std::fs::remove_file(temp_path);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to read pipeline stage {} from {}: {}", index, temp_path, e);
+                            }
+                        }
+                    }
+
                     // Track wall-clock start time on CommandExecuted and extract command text
                     // from the terminal grid NOW (before output overwrites the grid).
                     // block_manager.handle_event() above has already set output_start_line.

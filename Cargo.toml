@@ -81,6 +81,7 @@ glass_mcp = { path = "crates/glass_mcp" }
 glass_snapshot = { path = "crates/glass_snapshot" }
 tokio = { workspace = true }
 chrono.workspace = true
+glass_pipes = { path = "crates/glass_pipes" }
 
 [dev-dependencies]
 serde_json = "1.0"
