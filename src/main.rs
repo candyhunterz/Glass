@@ -138,11 +138,11 @@ struct WindowContext {
     /// Search overlay state. None when overlay is closed.
     search_overlay: Option<SearchOverlay>,
     /// Snapshot store for content-addressed file snapshots (opened alongside history_db).
-    /// Used by future phases (11+) for pre-exec snapshots.
-    #[allow(dead_code)]
     snapshot_store: Option<glass_snapshot::SnapshotStore>,
     /// Command text extracted at CommandExecuted time, consumed by CommandFinished handler.
     pending_command_text: Option<String>,
+    /// Active filesystem watcher during command execution. Created on CommandExecuted, drained on CommandFinished.
+    active_watcher: Option<glass_snapshot::FsWatcher>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -308,6 +308,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 search_overlay: None,
                 snapshot_store,
                 pending_command_text: None,
+                active_watcher: None,
             },
         );
     }
