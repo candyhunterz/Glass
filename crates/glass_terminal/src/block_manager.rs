@@ -686,6 +686,113 @@ mod tests {
         assert_eq!(block.expanded_stage_index, None);
     }
 
+    // -- Pipeline hit test tests (UI-04) --
+
+    /// Helper: create a BlockManager with one expanded pipeline block for hit testing.
+    fn make_hit_test_manager(
+        commands: Vec<&str>,
+        expanded: bool,
+        expanded_stage: Option<usize>,
+    ) -> BlockManager {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 1);
+        {
+            let block = bm.current_block_mut().unwrap();
+            block.pipeline_stage_commands = commands.iter().map(|s| s.to_string()).collect();
+            block.pipeline_expanded = expanded;
+            block.expanded_stage_index = expanded_stage;
+        }
+        bm
+    }
+
+    #[test]
+    fn pipeline_hit_test_returns_none_when_collapsed() {
+        let bm = make_hit_test_manager(vec!["cat", "grep"], false, None);
+        // Click somewhere in the viewport
+        let result = bm.pipeline_hit_test(100.0, 500.0, 8.0, 16.0, 600.0, 20.0);
+        assert_eq!(result, None, "Collapsed pipeline should not produce hits");
+    }
+
+    #[test]
+    fn pipeline_hit_test_returns_stage_row_for_correct_y() {
+        let bm = make_hit_test_manager(vec!["cat file", "grep foo", "wc -l"], true, None);
+        let cell_h = 16.0;
+        let viewport_h = 600.0;
+        let status_h = 20.0;
+        // Panel with 3 stages: panel_top = 600 - 20 - 3*16 = 532
+        let panel_top = viewport_h - status_h - 3.0 * cell_h;
+
+        // Click on stage row 0 (first row in panel)
+        let result = bm.pipeline_hit_test(100.0, panel_top + 1.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, Some((0, PipelineHit::StageRow(0))));
+
+        // Click on stage row 1
+        let result = bm.pipeline_hit_test(100.0, panel_top + cell_h + 1.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, Some((0, PipelineHit::StageRow(1))));
+
+        // Click on stage row 2
+        let result = bm.pipeline_hit_test(100.0, panel_top + 2.0 * cell_h + 1.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, Some((0, PipelineHit::StageRow(2))));
+    }
+
+    #[test]
+    fn pipeline_hit_test_returns_none_outside_panel() {
+        let bm = make_hit_test_manager(vec!["cat", "grep"], true, None);
+        let cell_h = 16.0;
+        let viewport_h = 600.0;
+        let status_h = 20.0;
+        // Panel with 2 stages: panel_top = 600 - 20 - 2*16 = 548
+        let panel_top = viewport_h - status_h - 2.0 * cell_h;
+
+        // Click above the panel
+        let result = bm.pipeline_hit_test(100.0, panel_top - 10.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, None, "Click above panel should return None");
+
+        // Click below the panel (in status bar area)
+        let result = bm.pipeline_hit_test(100.0, viewport_h - status_h + 5.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, None, "Click in status bar should return None");
+    }
+
+    #[test]
+    fn pipeline_hit_test_skips_expanded_output_rows() {
+        // When a stage is expanded, output rows appear between stage rows.
+        // Clicking on an output row should NOT match a stage row.
+        let mut bm = make_hit_test_manager(vec!["cat file", "grep foo"], true, Some(0));
+        // Add a captured stage with 2 lines of output for stage 0
+        {
+            let block = bm.current_block_mut().unwrap();
+            block.pipeline_stages.push(CapturedStage {
+                index: 0,
+                total_bytes: 12,
+                data: glass_pipes::FinalizedBuffer::Complete(b"line1\nline2\n".to_vec()),
+                temp_path: None,
+            });
+            block.pipeline_stages.push(CapturedStage {
+                index: 1,
+                total_bytes: 5,
+                data: glass_pipes::FinalizedBuffer::Complete(b"hello".to_vec()),
+                temp_path: None,
+            });
+        }
+
+        let cell_h = 16.0;
+        let viewport_h = 600.0;
+        let status_h = 20.0;
+        // total_rows = 2 stages + 2 output rows for stage 0 = 4
+        // panel_top = 600 - 20 - 4*16 = 516
+        let panel_top = viewport_h - status_h - 4.0 * cell_h;
+
+        // Row 0 = stage 0 header
+        let result = bm.pipeline_hit_test(100.0, panel_top + 1.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, Some((0, PipelineHit::StageRow(0))));
+
+        // Row 3 = stage 1 header (after stage 0 header + 2 output rows)
+        let result = bm.pipeline_hit_test(100.0, panel_top + 3.0 * cell_h + 1.0, 8.0, cell_h, viewport_h, status_h);
+        assert_eq!(result, Some((0, PipelineHit::StageRow(1))));
+    }
+
     #[test]
     fn new_prompt_resets_pipeline_state() {
         let mut bm = BlockManager::new();

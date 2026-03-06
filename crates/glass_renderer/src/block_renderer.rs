@@ -451,3 +451,253 @@ impl BlockRenderer {
         labels
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glass_pipes::CapturedStage;
+
+    /// Helper: create a minimal Block for pipeline rendering tests.
+    fn make_pipeline_block(
+        commands: Vec<&str>,
+        stages: Vec<CapturedStage>,
+        expanded: bool,
+        expanded_stage: Option<usize>,
+    ) -> Block {
+        let block = Block {
+            prompt_start_line: 0,
+            command_start_line: 1,
+            output_start_line: Some(2),
+            output_end_line: Some(5),
+            exit_code: Some(0),
+            started_at: None,
+            finished_at: None,
+            started_epoch: None,
+            state: BlockState::Complete,
+            has_snapshot: false,
+            pipeline_stages: stages,
+            pipeline_stage_count: Some(commands.len()),
+            pipeline_expanded: expanded,
+            pipeline_stage_commands: commands.iter().map(|s| s.to_string()).collect(),
+            expanded_stage_index: expanded_stage,
+        };
+        block
+    }
+
+    // -- line_count tests --
+
+    #[test]
+    fn test_line_count_complete_buffer_counts_newlines() {
+        let data = FinalizedBuffer::Complete(b"hello\nworld\n".to_vec());
+        assert_eq!(line_count(&data), 2);
+    }
+
+    #[test]
+    fn test_line_count_complete_buffer_no_newlines_returns_one() {
+        let data = FinalizedBuffer::Complete(b"hello".to_vec());
+        assert_eq!(line_count(&data), 1);
+    }
+
+    #[test]
+    fn test_line_count_empty_complete_buffer_returns_zero() {
+        let data = FinalizedBuffer::Complete(Vec::new());
+        assert_eq!(line_count(&data), 0);
+    }
+
+    #[test]
+    fn test_line_count_sampled_sums_head_and_tail() {
+        let data = FinalizedBuffer::Sampled {
+            head: b"line1\nline2\n".to_vec(),
+            tail: b"lineN\n".to_vec(),
+            total_bytes: 10000,
+        };
+        assert_eq!(line_count(&data), 3); // 2 head + 1 tail
+    }
+
+    #[test]
+    fn test_line_count_binary_returns_zero() {
+        let data = FinalizedBuffer::Binary { size: 4096 };
+        assert_eq!(line_count(&data), 0);
+    }
+
+    // -- format_bytes tests --
+
+    #[test]
+    fn test_format_bytes_small() {
+        assert_eq!(format_bytes(42), "42B");
+        assert_eq!(format_bytes(0), "0B");
+        assert_eq!(format_bytes(1023), "1023B");
+    }
+
+    #[test]
+    fn test_format_bytes_kilobytes() {
+        assert_eq!(format_bytes(1024), "1.0KB");
+        assert_eq!(format_bytes(2560), "2.5KB");
+    }
+
+    #[test]
+    fn test_format_bytes_megabytes() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 + 512 * 1024), "3.5MB");
+    }
+
+    // -- build_pipeline_rects tests --
+
+    #[test]
+    fn test_pipeline_rects_empty_when_no_expanded_block() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let block = make_pipeline_block(vec!["cat", "grep"], vec![], false, None);
+        let blocks: Vec<&Block> = vec![&block];
+        let rects = renderer.build_pipeline_rects(&blocks, 800.0, 600.0, 20.0);
+        assert!(rects.is_empty(), "Collapsed pipeline should produce no rects");
+    }
+
+    #[test]
+    fn test_pipeline_rects_generates_row_per_stage_when_expanded() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let block = make_pipeline_block(
+            vec!["cat file", "grep foo", "wc -l"],
+            vec![],
+            true,
+            None,
+        );
+        let blocks: Vec<&Block> = vec![&block];
+        let rects = renderer.build_pipeline_rects(&blocks, 800.0, 600.0, 20.0);
+        // 3 stages expanded, no stage detail open -> 3 rects
+        assert_eq!(rects.len(), 3, "Should have one rect per stage row");
+    }
+
+    #[test]
+    fn test_pipeline_rects_includes_output_rows_for_expanded_stage() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let stage = CapturedStage {
+            index: 0,
+            total_bytes: 12,
+            data: FinalizedBuffer::Complete(b"line1\nline2\n".to_vec()),
+            temp_path: None,
+        };
+        let block = make_pipeline_block(
+            vec!["cat file", "grep foo"],
+            vec![stage.clone(), CapturedStage { index: 1, total_bytes: 5, data: FinalizedBuffer::Complete(b"hello".to_vec()), temp_path: None }],
+            true,
+            Some(0), // stage 0 expanded
+        );
+        let blocks: Vec<&Block> = vec![&block];
+        let rects = renderer.build_pipeline_rects(&blocks, 800.0, 600.0, 20.0);
+        // 2 stage rows + 2 output rows for expanded stage 0 = 4
+        assert_eq!(rects.len(), 4, "Should have stage rows plus expanded output rows");
+    }
+
+    // -- build_pipeline_text tests --
+
+    #[test]
+    fn test_pipeline_text_empty_when_no_expanded_block() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let block = make_pipeline_block(vec!["cat", "grep"], vec![], false, None);
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
+        assert!(labels.is_empty(), "Collapsed pipeline should produce no labels");
+    }
+
+    #[test]
+    fn test_pipeline_text_generates_command_labels_with_stage_text() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let stage0 = CapturedStage {
+            index: 0,
+            total_bytes: 100,
+            data: FinalizedBuffer::Complete(b"hello\n".to_vec()),
+            temp_path: None,
+        };
+        let stage1 = CapturedStage {
+            index: 1,
+            total_bytes: 50,
+            data: FinalizedBuffer::Complete(b"world\n".to_vec()),
+            temp_path: None,
+        };
+        let block = make_pipeline_block(
+            vec!["cat file.txt", "grep foo"],
+            vec![stage0, stage1],
+            true,
+            None,
+        );
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
+
+        // Each stage produces: command label, indicator, byte count, line count = 4 labels per stage
+        // So 2 stages * 4 = 8 labels
+        assert!(!labels.is_empty(), "Expanded pipeline should produce labels");
+
+        // Find command text labels
+        let cmd_labels: Vec<_> = labels.iter().filter(|l| l.text.contains("stage")).collect();
+        assert_eq!(cmd_labels.len(), 2, "Should have one command label per stage");
+        assert!(cmd_labels[0].text.contains("cat file.txt"), "Stage 0 should show its command");
+        assert!(cmd_labels[1].text.contains("grep foo"), "Stage 1 should show its command");
+    }
+
+    #[test]
+    fn test_pipeline_text_includes_line_count_and_byte_count() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let stage0 = CapturedStage {
+            index: 0,
+            total_bytes: 2048,
+            data: FinalizedBuffer::Complete(b"line1\nline2\nline3\n".to_vec()),
+            temp_path: None,
+        };
+        let block = make_pipeline_block(
+            vec!["cat file.txt"],
+            vec![stage0],
+            true,
+            None,
+        );
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
+
+        let line_label = labels.iter().find(|l| l.text.contains("lines"));
+        assert!(line_label.is_some(), "Should have a line count label");
+        assert!(line_label.unwrap().text.contains("3 lines"), "Should show correct line count");
+
+        let byte_label = labels.iter().find(|l| l.text.contains("KB"));
+        assert!(byte_label.is_some(), "Should have a byte count label showing 2.0KB");
+    }
+
+    #[test]
+    fn test_pipeline_text_shows_expand_indicator() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let block = make_pipeline_block(
+            vec!["cat", "grep"],
+            vec![],
+            true,
+            None,
+        );
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
+
+        let indicators: Vec<_> = labels.iter().filter(|l| l.text == "[+]" || l.text == "[-]").collect();
+        assert_eq!(indicators.len(), 2, "Should have one indicator per stage");
+        assert!(indicators.iter().all(|l| l.text == "[+]"), "All should be [+] when no stage expanded");
+    }
+
+    #[test]
+    fn test_pipeline_text_expanded_stage_shows_content_lines() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let stage0 = CapturedStage {
+            index: 0,
+            total_bytes: 12,
+            data: FinalizedBuffer::Complete(b"alpha\nbeta\n".to_vec()),
+            temp_path: None,
+        };
+        let block = make_pipeline_block(
+            vec!["cat file"],
+            vec![stage0],
+            true,
+            Some(0),
+        );
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
+
+        let content_lines: Vec<_> = labels.iter().filter(|l| l.text.starts_with("  | ")).collect();
+        assert_eq!(content_lines.len(), 2, "Should show 2 content lines from expanded stage");
+        assert!(content_lines[0].text.contains("alpha"));
+        assert!(content_lines[1].text.contains("beta"));
+    }
+}
