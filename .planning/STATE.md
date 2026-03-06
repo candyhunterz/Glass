@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
-status: executing
-stopped_at: Completed 17-01-PLAN.md
-last_updated: "2026-03-06T07:33:01.000Z"
-last_activity: 2026-03-06 -- Completed 17-01 (pipeline UI core - block expand/collapse and stage rendering)
+status: Checkpoint Pending
+stopped_at: "17-02 Task 2 checkpoint:human-verify pending"
+last_updated: "2026-03-06T07:39:34.240Z"
+last_activity: 2026-03-06 -- Completed 17-02 Task 1, awaiting human-verify for Task 2
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 7
-  completed_plans: 6
-  percent: 86
+  completed_plans: 7
+  percent: 100
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Phase: 17 (3 of 5 in v1.3)
-Plan: 1 of 2 in current phase (17-01 complete)
-Status: In Progress
-Last activity: 2026-03-06 -- Completed 17-01 (pipeline UI core - block expand/collapse and stage rendering)
+Plan: 2 of 2 in current phase (17-02 checkpoint pending)
+Status: Checkpoint Pending
+Last activity: 2026-03-06 -- Completed 17-02 Task 1, awaiting human-verify for Task 2
 
-Progress: [████████░░] 86% (v1.3 Phase 17)
+Progress: [██████████] 100% (v1.3 Phase 17 -- pending verification)
 
 ## Performance Metrics
 
@@ -63,6 +63,9 @@ Recent decisions affecting current work:
 - [Phase 17-01]: Pipeline stage rows rendered as overlays (not inserted grid rows) for consistency
 - [Phase 17-01]: Expanded stage output capped at 50 lines, virtual scrolling deferred
 - [Phase 17-01]: Sampled output shows 25 head + 25 tail lines with omission indicator
+- [Phase 17-02]: Hit test uses prompt_start_line as pipeline header row for coordinate mapping
+- [Phase 17-02]: Mouse x-coordinate unused in hit test (full-row click targets for usability)
+- [Phase 17-02]: Hit test uses prompt_start_line as pipeline header row for coordinate mapping
 
 ### Pending Todos
 
@@ -76,6 +79,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T07:33:01.000Z
-Stopped at: Completed 17-01-PLAN.md
+Last session: 2026-03-06T07:39:30.446Z
+Stopped at: 17-02 Task 2 checkpoint:human-verify pending
 Resume file: None
