@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Pipe Visualization
-status: Active
-stopped_at: Completed 18-01-PLAN.md
-last_updated: "2026-03-06T17:56:29.519Z"
-last_activity: 2026-03-06 -- Completed 18-01 pipe_stages storage and retention
+status: completed
+stopped_at: Completed 19-01-PLAN.md
+last_updated: "2026-03-06T18:22:05.960Z"
+last_activity: 2026-03-06 -- Completed 19-01 MCP + Config + Polish
 progress:
   total_phases: 5
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
+  completed_phases: 5
+  total_plans: 9
+  completed_plans: 9
   percent: 100
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 18 - Storage + Retention
+**Current focus:** v1.3 Pipe Visualization -- COMPLETE
 
 ## Current Position
 
-Phase: 18 (4 of 6 in v1.3)
-Plan: 1 of 1 in current phase (18-01 complete)
-Status: Active
-Last activity: 2026-03-06 -- Completed 18-01 pipe_stages storage and retention
+Phase: 19 (5 of 5 in v1.3)
+Plan: 1 of 1 in current phase (19-01 complete)
+Status: Complete
+Last activity: 2026-03-06 -- Completed 19-01 MCP + Config + Polish
 
-Progress: [██████████] 100% (v1.3 Phase 18 complete)
+Progress: [██████████] 100% (v1.3 MILESTONE COMPLETE)
 
 ## Performance Metrics
 
@@ -38,8 +38,8 @@ Progress: [██████████] 100% (v1.3 Phase 18 complete)
 - v1.0: 12 plans in ~1.8 hours (~9 min/plan)
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
-- v1.3: 5 plans so far
-- Total: 42 plans across 18 phases in 3 days
+- v1.3: 6 plans in ~45 min (~8 min/plan)
+- Total: 43 plans across 19 phases in 3 days
 
 ## Accumulated Context
 
@@ -70,6 +70,10 @@ Recent decisions affecting current work:
 - [Phase 18-01]: Belt-and-suspenders deletion: explicit DELETE + ON DELETE CASCADE
 - [Phase 18-01]: FinalizedBuffer-to-PipeStageRow conversion in main.rs to avoid glass_history/glass_pipes coupling
 - [Phase 18-01]: PRAGMA foreign_keys = ON enabled globally in HistoryDb::open()
+- [Phase 19-01]: PipeStageEntry local struct in tools.rs for Serialize (avoids glass_history coupling)
+- [Phase 19-01]: auto_expand override in main.rs after handle_event keeps BlockManager config-agnostic
+- [Phase 19-01]: pipes.enabled=false skips temp file reading only (shell scripts still emit OSC)
+- [Phase 19]: PipeStageEntry local struct in tools.rs for Serialize (avoids glass_history coupling)
 
 ### Pending Todos
 
@@ -83,6 +87,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06T17:51:58Z
-Stopped at: Completed 18-01-PLAN.md
+Last session: 2026-03-06T18:21:57.206Z
+Stopped at: Completed 19-01-PLAN.md
 Resume file: None

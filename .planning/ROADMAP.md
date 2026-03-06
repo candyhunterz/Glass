@@ -47,7 +47,7 @@
 - [x] **Phase 16: Shell Capture + Terminal Transport** - Shell integration rewriting (bash tee, PowerShell Tee-Object), OSC 133;S/P protocol, OscScanner extension, and event wiring (completed 2026-03-06)
 - [x] **Phase 17: Pipeline UI** - Multi-row pipeline blocks with expand/collapse, stage output display, and auto-expand logic (completed 2026-03-06)
 - [x] **Phase 18: Storage + Retention** - pipe_stages DB table, schema migration, and retention policy integration (completed 2026-03-06)
-- [ ] **Phase 19: MCP + Config + Polish** - GlassPipeInspect tool, GlassContext pipeline stats, and [pipes] config section
+- [x] **Phase 19: MCP + Config + Polish** - GlassPipeInspect tool, GlassContext pipeline stats, and [pipes] config section (completed 2026-03-06)
 
 ## Phase Details
 
@@ -115,7 +115,7 @@ Plans:
   1. `GlassPipeInspect(command_id, stage)` returns the intermediate output for a specific pipeline stage via MCP
   2. `GlassContext` activity summaries include pipeline statistics (pipe count, avg stages, failure rate)
   3. `[pipes]` section in config.toml controls enabled/disabled, max_capture_mb, and auto_expand behavior
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 19-01-PLAN.md -- GlassPipeInspect MCP tool, GlassContext pipeline stats, and [pipes] config section with main.rs wiring
 
@@ -145,4 +145,4 @@ Note: Phase 17 and Phase 18 both depend on Phase 16 and could execute in paralle
 | 16. Shell Capture + Terminal Transport | v1.3 | 3/3 | Complete | 2026-03-06 |
 | 17. Pipeline UI | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 18. Storage + Retention | v1.3 | 1/1 | Complete | 2026-03-06 |
-| 19. MCP + Config + Polish | v1.3 | 0/1 | Not started | - |
+| 19. MCP + Config + Polish | 1/1 | Complete   | 2026-03-06 | - |

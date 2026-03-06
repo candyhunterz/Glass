@@ -34,12 +34,12 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 
 ### MCP Integration
 
-- [ ] **MCP-01**: `GlassPipeInspect(command_id, stage)` MCP tool returns intermediate output for a pipeline stage
-- [ ] **MCP-02**: `GlassContext` tool updated to include pipeline stats in activity summaries
+- [x] **MCP-01**: `GlassPipeInspect(command_id, stage)` MCP tool returns intermediate output for a pipeline stage
+- [x] **MCP-02**: `GlassContext` tool updated to include pipeline stats in activity summaries
 
 ### Configuration
 
-- [ ] **CONF-01**: `[pipes]` section in config.toml with enabled, max_capture_mb, and auto_expand settings
+- [x] **CONF-01**: `[pipes]` section in config.toml with enabled, max_capture_mb, and auto_expand settings
 
 ## Future Requirements
 
@@ -81,9 +81,9 @@ Requirements for Pipe Visualization milestone. Each maps to roadmap phases.
 | UI-04 | Phase 17 | Complete |
 | STOR-01 | Phase 18 | Complete |
 | STOR-02 | Phase 18 | Complete |
-| MCP-01 | Phase 19 | Pending |
-| MCP-02 | Phase 19 | Pending |
-| CONF-01 | Phase 19 | Pending |
+| MCP-01 | Phase 19 | Complete |
+| MCP-02 | Phase 19 | Complete |
+| CONF-01 | Phase 19 | Complete |
 
 **Coverage:**
 - v1.3 requirements: 16 total
