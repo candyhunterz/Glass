@@ -228,10 +228,12 @@ if (Get-Module PSReadLine) {
         $cursor = $null
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
 
-        # Try to rewrite pipeline commands
-        $rewritten = __Glass-Rewrite-Pipeline $line
-        if ($rewritten) {
-            [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $rewritten)
+        # Try to rewrite pipeline commands (skip if pipes disabled)
+        if ($env:GLASS_PIPES_DISABLED -ne "1") {
+            $rewritten = __Glass-Rewrite-Pipeline $line
+            if ($rewritten) {
+                [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $rewritten)
+            }
         }
 
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()

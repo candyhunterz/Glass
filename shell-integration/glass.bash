@@ -207,6 +207,7 @@ if [[ "${BASH_VERSINFO[0]}" -ge 5 ]] || \
 
     # Enter key interception: rewrite pipeline commands before execution
     __glass_accept_line() {
+        [[ "$GLASS_PIPES_DISABLED" == "1" ]] && return
         local cmd="$READLINE_LINE"
 
         if [[ -n "$cmd" ]] && __glass_has_pipes "$cmd"; then
