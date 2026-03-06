@@ -1,5 +1,38 @@
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_outcome_variants_exist() {
+        let _restored = FileOutcome::Restored;
+        let _deleted = FileOutcome::Deleted;
+        let _skipped = FileOutcome::Skipped;
+        let _conflict = FileOutcome::Conflict {
+            current_hash: "abc".to_string(),
+            expected_hash: Some("def".to_string()),
+        };
+        let _error = FileOutcome::Error("something went wrong".to_string());
+    }
+
+    #[test]
+    fn undo_result_construction() {
+        let result = UndoResult {
+            snapshot_id: 1,
+            command_id: 42,
+            confidence: Confidence::High,
+            files: vec![
+                (PathBuf::from("/tmp/a.txt"), FileOutcome::Restored),
+                (PathBuf::from("/tmp/b.txt"), FileOutcome::Deleted),
+            ],
+        };
+        assert_eq!(result.snapshot_id, 1);
+        assert_eq!(result.command_id, 42);
+        assert_eq!(result.files.len(), 2);
+    }
+}
+
 /// How confident the parser is in its identification of file targets.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Confidence {

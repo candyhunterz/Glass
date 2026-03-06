@@ -122,6 +122,45 @@ mod tests {
     }
 
     #[test]
+    fn empty_toml_has_no_snapshot_section() {
+        let config = GlassConfig::load_from_str("");
+        assert!(config.snapshot.is_none());
+    }
+
+    #[test]
+    fn snapshot_section_with_no_fields_uses_defaults() {
+        let toml = "[snapshot]";
+        let config = GlassConfig::load_from_str(toml);
+        let snap = config.snapshot.expect("snapshot section should be Some");
+        assert!(snap.enabled);
+        assert_eq!(snap.max_count, 1000);
+        assert_eq!(snap.max_size_mb, 500);
+        assert_eq!(snap.retention_days, 30);
+    }
+
+    #[test]
+    fn snapshot_section_partial_fields() {
+        let toml = "[snapshot]\nenabled = false\nmax_count = 50";
+        let config = GlassConfig::load_from_str(toml);
+        let snap = config.snapshot.expect("snapshot section should be Some");
+        assert!(!snap.enabled);
+        assert_eq!(snap.max_count, 50);
+        assert_eq!(snap.max_size_mb, 500); // default
+        assert_eq!(snap.retention_days, 30); // default
+    }
+
+    #[test]
+    fn snapshot_section_all_fields() {
+        let toml = "[snapshot]\nenabled = true\nmax_count = 2000\nmax_size_mb = 1024\nretention_days = 90";
+        let config = GlassConfig::load_from_str(toml);
+        let snap = config.snapshot.expect("snapshot section should be Some");
+        assert!(snap.enabled);
+        assert_eq!(snap.max_count, 2000);
+        assert_eq!(snap.max_size_mb, 1024);
+        assert_eq!(snap.retention_days, 90);
+    }
+
+    #[test]
     fn load_missing_file_returns_defaults() {
         // GlassConfig::load() should return defaults when no config file exists
         // We can't guarantee ~/.glass/config.toml doesn't exist, but load() should never panic
