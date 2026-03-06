@@ -55,16 +55,36 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-- [ ] Block collapse/expand, URL detection, block keyboard navigation
-- [ ] Config hot reload
-- [ ] macOS and Linux support
-- [ ] Tabs and split panes
-- [ ] Blob compression with zstd for storage efficiency
-- [ ] Diff view before undo (preview what will change)
-- [ ] Per-file partial undo from multi-file commands
-- [ ] Undo/redo chain navigation
-- [ ] File modification timeline queries ("what changed config.ts?")
-- [ ] Multi-command batch undo
+- [ ] macOS support (Metal, FSEvents, Cmd shortcuts, zsh/bash/fish)
+- [ ] Linux support (Vulkan/GL, inotify, Wayland+X11, XDG, bash/zsh/fish)
+- [ ] Platform PTY abstraction (ConPTY vs forkpty)
+- [ ] CI cross-compilation and per-platform test matrix
+- [ ] Tab bar with keyboard shortcuts
+- [ ] Vertical and horizontal split panes
+- [ ] Independent PTY/history/snapshot per tab/pane
+
+## Current Milestone: v2.0 Cross-Platform & Tabs
+
+**Goal:** Port Glass to macOS and Linux, and add tabbed/split-pane terminal sessions.
+
+**Target features:**
+- macOS support (Metal backend, FSEvents, native .app, Cmd shortcuts)
+- Linux support (Vulkan/GL backend, inotify, Wayland+X11, XDG conventions)
+- Platform PTY abstraction layer
+- Tab bar with new/close/switch shortcuts
+- Vertical and horizontal split panes
+- Independent PTY, history, and snapshot context per session
+
+### Deferred (Future Milestones)
+
+- Block collapse/expand, URL detection, block keyboard navigation -- UI polish, not v2.0
+- Config hot reload -- deferred to Packaging & Polish milestone
+- Blob compression with zstd -- storage optimization, not critical yet
+- Diff view before undo -- undo enhancement
+- Per-file partial undo from multi-file commands -- undo enhancement
+- Undo/redo chain navigation -- undo enhancement
+- File modification timeline queries -- history enhancement
+- Multi-command batch undo -- undo enhancement
 
 ### Out of Scope
 
@@ -145,4 +165,4 @@ Known tech debt:
 | Separate pipe_stages DB table with FK cascade | Independent lifecycle from commands, clean pruning | ✓ Good -- schema v2 migration works |
 
 ---
-*Last updated: 2026-03-06 after v1.3 milestone*
+*Last updated: 2026-03-06 after v2.0 milestone started*

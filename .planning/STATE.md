@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: Pipe Visualization
-status: shipped
-stopped_at: Milestone v1.3 archived
-last_updated: "2026-03-06T19:22:30.393Z"
-last_activity: 2026-03-06 -- Milestone v1.3 Pipe Visualization shipped
+milestone: v2.0
+milestone_name: Cross-Platform & Tabs
+status: active
+stopped_at: null
+last_updated: "2026-03-06"
+last_activity: 2026-03-06 -- Milestone v2.0 started
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 11
-  completed_plans: 11
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,12 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** Defining requirements for v2.0
 
 ## Current Position
 
-Milestone v1.3 Pipe Visualization shipped 2026-03-06.
-Next: `/gsd:new-milestone` to start next milestone.
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-03-06 -- Milestone v2.0 started
 
 ## Performance Metrics
 
