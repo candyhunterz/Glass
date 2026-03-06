@@ -144,6 +144,53 @@
 
 ---
 
+## Milestone: v1.3 -- Pipe Visualization
+
+**Shipped:** 2026-03-06
+**Phases:** 6 | **Plans:** 11 | **Sessions:** ~3
+
+### What Was Built
+- Byte-level pipe parser (glass_pipes crate) with shell quoting awareness, TTY detection, opt-out flag, and buffer sampling
+- Shell capture via tee rewriting (bash) and Tee-Object (PowerShell) with OSC 133;S/P protocol transport
+- Multi-row pipeline UI with auto-expand on failure, click/keyboard stage expansion, and sampled output rendering
+- pipe_stages DB table with schema v2 migration, FK cascade, and retention policy integration
+- GlassPipeInspect MCP tool and GlassContext pipeline stats for AI integration
+- Three-layer pipes.enabled config gate (PTY env var, shell scripts, main.rs event processing)
+
+### What Worked
+- Clean phase layering: parsing core (15) -> transport (16) -> UI (17) + storage (18) -> MCP/config (19) -> gap closure (20)
+- Audit-driven gap closure: `/gsd:audit-milestone` identified config gate and dead code gaps, Phase 20 closed them cleanly
+- Re-audit after gap closure confirmed all 16/16 requirements satisfied with no remaining gaps
+- OSC protocol reuse (133;S/P extending existing 133;A/B/C/D) kept shell integration clean
+- Single glass_pipes crate for all parsing types kept downstream consumers (glass_core, glass_terminal, glass_mcp) clean
+
+### What Was Inefficient
+- classify.rs (TTY detection, opt-out) built in Phase 15 then entirely removed in Phase 20 -- the runtime never consumed classification results, only the parser's stage splitting
+- PipeStage.is_tty field populated but never read at runtime -- vestigial from removed classify module
+- Phase 20 was added post-audit; could have been caught during Phase 19 planning if config gating was scoped earlier
+- VALIDATION.md still only completed for Phase 17 (human-verified); Nyquist validation remains partial for 4th consecutive milestone
+
+### Patterns Established
+- OSC protocol extension pattern (133;S/P) for shell-to-terminal structured data transport
+- Three-layer config gating: env var IPC for shell scripts, parameter threading for Rust, event filtering in main loop
+- FinalizedBuffer-to-row conversion at crate boundary to avoid coupling (glass_pipes/glass_history)
+- Pipeline overlay rendering (not grid row insertion) for sub-block UI elements
+- Dead code removal as explicit audit-driven phase rather than ad-hoc cleanup
+
+### Key Lessons
+1. Audit-driven gap closure is now a proven 3-milestone pattern -- always run audit before marking complete
+2. Build only what the runtime consumes -- classify.rs was speculative infrastructure that got removed entirely
+3. Config gating needs to be planned from Phase 1, not bolted on after audit
+4. Three-layer gating (env var + code + event filter) is the right pattern when crossing process boundaries
+5. Schema migrations with hardcoded version numbers are more reliable than const-based versioning
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~3 sessions across 2 days
+- Notable: 11 plans in ~2 hours, averaging ~11 min/plan (faster than v1.1/v1.2 due to well-established patterns)
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -153,6 +200,7 @@
 | v1.0 | ~4 | 4 | Established GSD workflow with TDD, wave execution |
 | v1.1 | ~5 | 5 | Added gap closure pattern, cross-crate integration testing |
 | v1.2 | ~4 | 5 | Dual mechanism design, re-verification after gap closure, parallel phase execution |
+| v1.3 | ~3 | 6 | Audit-driven gap closure phase, dead code removal as explicit phase, three-layer config gating |
 
 ### Cumulative Quality
 
@@ -161,6 +209,7 @@
 | v1.0 | 27+ | Partial (Nyquist gaps in phases 2-4) | 3 |
 | v1.1 | 88+ (phase 5 alone) | Partial (Nyquist gaps in phases 5-9) | 4 |
 | v1.2 | 234+ (full workspace) | Partial (Nyquist gaps in phases 10-14) | 2 |
+| v1.3 | 376+ (full workspace) | Partial (Phase 17 verified, 5 phases partial) | 2 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -169,4 +218,6 @@
 3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
 5. Gap closure plans are reliable -- confirmed in v1.1 (Phase 6) and v1.2 (Phase 13); plan for them proactively
-6. Nyquist validation is persistently skipped -- 3 milestones with partial coverage; needs workflow integration, not just reminders
+6. Nyquist validation is persistently skipped -- 4 milestones with partial coverage; needs workflow integration, not just reminders
+7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3 -- always run audit before marking milestone complete
+8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs removed after 1 milestone)
