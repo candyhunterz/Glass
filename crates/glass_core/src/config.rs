@@ -203,4 +203,40 @@ mod tests {
         assert!(!config.font_family.is_empty());
         assert!(config.font_size > 0.0);
     }
+
+    #[test]
+    fn test_empty_toml_has_no_pipes_section() {
+        let config = GlassConfig::load_from_str("");
+        assert!(config.pipes.is_none());
+    }
+
+    #[test]
+    fn test_pipes_section_with_no_fields_uses_defaults() {
+        let toml = "[pipes]";
+        let config = GlassConfig::load_from_str(toml);
+        let pipes = config.pipes.expect("pipes section should be Some");
+        assert!(pipes.enabled);
+        assert_eq!(pipes.max_capture_mb, 10);
+        assert!(pipes.auto_expand);
+    }
+
+    #[test]
+    fn test_pipes_section_partial_fields() {
+        let toml = "[pipes]\nenabled = false";
+        let config = GlassConfig::load_from_str(toml);
+        let pipes = config.pipes.expect("pipes section should be Some");
+        assert!(!pipes.enabled);
+        assert_eq!(pipes.max_capture_mb, 10); // default
+        assert!(pipes.auto_expand); // default
+    }
+
+    #[test]
+    fn test_pipes_section_all_fields() {
+        let toml = "[pipes]\nenabled = false\nmax_capture_mb = 5\nauto_expand = false";
+        let config = GlassConfig::load_from_str(toml);
+        let pipes = config.pipes.expect("pipes section should be Some");
+        assert!(!pipes.enabled);
+        assert_eq!(pipes.max_capture_mb, 5);
+        assert!(!pipes.auto_expand);
+    }
 }
