@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
-status: active
-stopped_at: null
-last_updated: "2026-03-06"
-last_activity: 2026-03-06 -- Milestone v2.0 started
+status: executing
+stopped_at: Completed 21-01-PLAN.md
+last_updated: "2026-03-06T22:38:10.259Z"
+last_activity: 2026-03-06 -- Completed 21-02 (Event SessionId + Zsh Shell Integration)
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
-  percent: 33
+  completed_plans: 2
 ---
 
 # Project State
@@ -45,6 +44,9 @@ Last activity: 2026-03-06 -- Completed 21-02 (Event SessionId + Zsh Shell Integr
 
 See PROJECT.md Key Decisions table for full history.
 
+- [21-01] Copied SearchOverlay into glass_mux for per-session ownership
+- [21-01] SessionId/TabId use u64 wrapper (no uuid dependency needed)
+- [21-01] Platform helpers use cfg-gated function definitions per OS
 - [21-02] SessionId defined in glass_core::event (not glass_mux) to avoid circular crate dependency
 - [21-02] TerminalDirty excluded from session_id (any dirty triggers full redraw)
 
@@ -61,6 +63,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-06
-Stopped at: Completed 21-02-PLAN.md
+Last session: 2026-03-06T22:38:10.257Z
+Stopped at: Completed 21-01-PLAN.md
 Resume file: None
