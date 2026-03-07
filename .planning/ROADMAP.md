@@ -87,7 +87,7 @@
   - [ ] 24-01-PLAN.md -- SplitTree layout engine with TDD (tree construction, layout computation, navigation, removal, resize)
   - [ ] 24-02-PLAN.md -- Tab restructuring for SplitNode and per-pane scissor-clipped rendering
   - [ ] 24-03-PLAN.md -- Input routing (keyboard splits, focus navigation, mouse click, PTY resize) and pane lifecycle
-- [ ] Phase 25: TerminalExit Multi-Pane Fix (1 plan)
+- [x] Phase 25: TerminalExit Multi-Pane Fix (1 plan) (completed 2026-03-07)
   **Goal:** Fix TerminalExit handler to use close_pane() for multi-pane tabs instead of close_tab(), completing SPLIT-11 satisfaction.
   **Requirements:** [SPLIT-11]
   **Gap Closure:** Closes gaps from v2.0 audit (1 requirement, 1 integration, 1 flow)
@@ -122,4 +122,4 @@
 | 22. Cross-Platform Validation | v2.0 | 2/2 | Complete | 2026-03-07 |
 | 23. Tabs | v2.0 | 3/3 | Complete | 2026-03-07 |
 | 24. Split Panes | v2.0 | 3/3 | Complete | 2026-03-07 |
-| 25. TerminalExit Multi-Pane Fix | v2.0 | 0/1 | Pending | -- |
+| 25. TerminalExit Multi-Pane Fix | 1/1 | Complete   | 2026-03-07 | -- |

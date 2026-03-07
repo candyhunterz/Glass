@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
 status: completed
-stopped_at: Completed 24-03-PLAN.md
-last_updated: "2026-03-07T03:41:30.216Z"
-last_activity: 2026-03-07 -- Completed 24-03 (Split Pane Interaction)
+stopped_at: Completed 25-01-PLAN.md
+last_updated: "2026-03-07T04:56:05Z"
+last_activity: 2026-03-07 -- Completed 25-01 (TerminalExit Multi-Pane Fix)
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 11
-  completed_plans: 11
+  total_phases: 5
+  completed_phases: 5
+  total_plans: 12
+  completed_plans: 12
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 24 complete -- Split Panes
+**Current focus:** Phase 25 complete -- TerminalExit Multi-Pane Fix
 
 ## Current Position
 
-Phase: 24 of 24 -- Split Panes
-Plan: 3 of 3
+Phase: 25 of 25 -- TerminalExit Multi-Pane Fix
+Plan: 1 of 1
 Status: Complete
-Last activity: 2026-03-07 -- Completed 24-03 (Split Pane Interaction)
+Last activity: 2026-03-07 -- Completed 25-01 (TerminalExit Multi-Pane Fix)
 
 ## Performance Metrics
 
@@ -37,7 +37,8 @@ Last activity: 2026-03-07 -- Completed 24-03 (Split Pane Interaction)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
 - v2.0: 6 plans in ~23 min (~4 min/plan)
-- Total: 54 plans across 24 phases in 3 days
+- Gap closure: 1 plan in ~2 min
+- Total: 55 plans across 25 phases in 3 days
 
 ## Accumulated Context
 
@@ -81,6 +82,8 @@ See PROJECT.md Key Decisions table for full history.
 - [24-03] Per-pane PTY resize uses pane viewport dimensions / cell size (not full window)
 - [24-03] Block decoration reflow triggered on resize to prevent stale decorations
 - [Phase 24]: Ctrl+Shift+W disambiguated: close pane if multi-pane, close tab if single pane
+- [25-01] TerminalExit handler mirrors Ctrl+Shift+W pane-count logic (close_pane for multi-pane, close_tab for single)
+- [25-01] Use session_id from TerminalExit event directly for tab lookup (not focused_session_id)
 
 ### Pending Todos
 
@@ -95,6 +98,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T03:36:39.350Z
-Stopped at: Completed 24-03-PLAN.md
+Last session: 2026-03-07T04:56:05Z
+Stopped at: Completed 25-01-PLAN.md
 Resume file: None
