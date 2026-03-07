@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: completed
-stopped_at: Completed 30-03-PLAN.md
-last_updated: "2026-03-07T20:48:00.000Z"
+stopped_at: Completed 30-01-PLAN.md
+last_updated: "2026-03-07T20:50:01.186Z"
 last_activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 11
-  completed_plans: 9
-  percent: 100
+  completed_plans: 10
+  percent: 82
 ---
 
 # Project State
@@ -76,6 +76,7 @@ Recent decisions affecting v2.1:
 - Ctrl+Shift+U in is_glass_shortcut block for platform-consistent keybind
 - Winget multi-file manifest v1.6.0 format; Homebrew cask targets custom tap (notarization deferred)
 - Package manager manifests use <GITHUB_USER>/<SHA256> placeholders for release-time substitution
+- [Phase 30]: mdBook with navy theme; config reference sourced from GlassConfig struct; GitHub URLs as placeholders
 
 ### Pending Todos
 
@@ -89,6 +90,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T20:48:00Z
-Stopped at: Completed 30-03-PLAN.md
+Last session: 2026-03-07T20:50:01.184Z
+Stopped at: Completed 30-01-PLAN.md
 Resume file: None

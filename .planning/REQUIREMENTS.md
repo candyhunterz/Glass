@@ -36,7 +36,7 @@ Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
 
 ### Documentation
 
-- [ ] **DOCS-01**: mdBook documentation site with feature guides (undo, pipes, MCP, search, config)
+- [x] **DOCS-01**: mdBook documentation site with feature guides (undo, pipes, MCP, search, config)
 - [ ] **DOCS-02**: GitHub Pages deployment for docs site
 - [ ] **DOCS-03**: README overhaul with screenshots, install instructions, feature overview, and badges
 
@@ -86,7 +86,7 @@ Deferred to future milestones.
 | UPDT-01 | Phase 29 | Complete |
 | UPDT-02 | Phase 29 | Complete |
 | UPDT-03 | Phase 29 | Complete |
-| DOCS-01 | Phase 30 | Pending |
+| DOCS-01 | Phase 30 | Complete |
 | DOCS-02 | Phase 30 | Pending |
 | DOCS-03 | Phase 30 | Pending |
 
