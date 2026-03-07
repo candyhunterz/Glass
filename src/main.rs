@@ -244,6 +244,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             self.proxy.clone(),
             window.id(),
             self.config.shell.as_deref(),
+            None, // working_directory -- initial session uses current dir
             max_output_kb,
             pipes_enabled,
         );

@@ -143,6 +143,7 @@ pub fn spawn_pty(
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     window_id: WindowId,
     shell_override: Option<&str>,
+    working_directory: Option<&std::path::Path>,
     max_output_capture_kb: u32,
     pipes_enabled: bool,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
@@ -155,7 +156,7 @@ pub fn spawn_pty(
 
     let options = TtyOptions {
         shell: Some(Shell::new(shell_program, vec![])),
-        working_directory: None,
+        working_directory: working_directory.map(|p| p.to_path_buf()),
         drain_on_exit: true,
         #[cfg(target_os = "windows")]
         escape_args: false,
