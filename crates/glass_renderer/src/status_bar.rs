@@ -16,12 +16,16 @@ pub struct StatusLabel {
     pub left_text: String,
     /// Right-aligned text (git branch + dirty count)
     pub right_text: Option<String>,
+    /// Center-aligned text (update notification)
+    pub center_text: Option<String>,
     /// Y position in pixels
     pub y: f32,
     /// Color for left text (CWD)
     pub left_color: Rgb,
     /// Color for right text (git info)
     pub right_color: Rgb,
+    /// Color for center text (update notification)
+    pub center_color: Rgb,
 }
 
 /// Renders the bottom-pinned status bar.
@@ -58,11 +62,13 @@ impl StatusBarRenderer {
     /// Build text content for the status bar.
     ///
     /// Left side: CWD path (truncated if needed).
+    /// Center: update notification (if available).
     /// Right side: git branch name + dirty count if available.
     pub fn build_status_text(
         &self,
         cwd: &str,
         git_info: Option<&GitInfo>,
+        update_text: Option<&str>,
         viewport_height: f32,
     ) -> StatusLabel {
         let y = viewport_height - self.cell_height;
@@ -82,6 +88,8 @@ impl StatusBarRenderer {
             }
         });
 
+        let center_text = update_text.map(|t| t.to_string());
+
         // Git branch color: cyan if clean, with yellow dirty count appended
         // For simplicity, use cyan as the base right_color
         let right_color = Rgb {
@@ -90,9 +98,17 @@ impl StatusBarRenderer {
             b: 200,
         };
 
+        // Bright yellow-gold for update notification visibility
+        let center_color = Rgb {
+            r: 255,
+            g: 200,
+            b: 50,
+        };
+
         StatusLabel {
             left_text,
             right_text,
+            center_text,
             y,
             left_color: Rgb {
                 r: 204,
@@ -100,6 +116,7 @@ impl StatusBarRenderer {
                 b: 204,
             },
             right_color,
+            center_color,
         }
     }
 }

@@ -154,6 +154,7 @@ impl FrameRenderer {
         status: Option<&StatusState>,
         search_overlay: Option<&SearchOverlayRenderData>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
+        update_text: Option<&str>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -292,6 +293,7 @@ impl FrameRenderer {
             let status_label = self.status_bar.build_status_text(
                 status_state.cwd(),
                 status_state.git_info(),
+                update_text,
                 h,
             );
 
@@ -363,6 +365,44 @@ impl FrameRenderer {
                         status_label.right_color.r,
                         status_label.right_color.g,
                         status_label.right_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Center text (update notification)
+            if let Some(ref center_text) = status_label.center_text {
+                let center_text_width = center_text.len() as f32 * cell_width;
+                let center_x = (w - center_text_width) / 2.0;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    center_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.center_color.r,
+                            status_label.center_color.g,
+                            status_label.center_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: center_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.center_color.r,
+                        status_label.center_color.g,
+                        status_label.center_color.b,
                         255,
                     ),
                 });
@@ -633,6 +673,7 @@ impl FrameRenderer {
         dividers: &[DividerRect],
         status: Option<&StatusState>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
+        update_text: Option<&str>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -759,6 +800,7 @@ impl FrameRenderer {
             let status_label = self.status_bar.build_status_text(
                 status_state.cwd(),
                 status_state.git_info(),
+                update_text,
                 h,
             );
 
@@ -815,6 +857,36 @@ impl FrameRenderer {
                     color: GlyphonColor::rgba(
                         status_label.right_color.r, status_label.right_color.g,
                         status_label.right_color.b, 255,
+                    ),
+                });
+            }
+
+            // Center text (update notification)
+            if let Some(ref center_text) = status_label.center_text {
+                let center_text_width = center_text.len() as f32 * cell_width;
+                let center_x = (w - center_text_width) / 2.0;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(&mut self.glyph_cache.font_system, Some(w), Some(cell_height));
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    center_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.center_color.r, status_label.center_color.g,
+                            status_label.center_color.b, 255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: center_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.center_color.r, status_label.center_color.g,
+                        status_label.center_color.b, 255,
                     ),
                 });
             }
