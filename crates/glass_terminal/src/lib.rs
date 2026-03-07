@@ -15,7 +15,7 @@ pub mod status;
 
 pub use block_manager::{Block, BlockManager, BlockState, PipelineHit, format_duration};
 pub use event_proxy::EventProxy;
-pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, snapshot_term};
+pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, resolve_color, snapshot_term};
 pub use input::encode_key;
 pub use osc_scanner::{OscEvent, OscScanner};
 pub use pty::{spawn_pty, PtyMsg, PtySender};

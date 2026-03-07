@@ -3,6 +3,9 @@ name = "glass_renderer"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+perf = []
+
 [dependencies]
 glass_core = { path = "../glass_core" }
 glass_terminal = { path = "../glass_terminal" }
