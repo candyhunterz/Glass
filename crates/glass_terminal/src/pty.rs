@@ -26,6 +26,18 @@ const READ_BUFFER_SIZE: usize = 0x10_0000;
 /// Max bytes to read from the PTY while the terminal is locked.
 const MAX_LOCKED_READ: usize = u16::MAX as usize;
 
+// PTY polling event tokens.
+// On Windows, alacritty_terminal re-exports these as pub; on Unix they're pub(crate).
+// The values differ per platform (Unix: 0/1, Windows: 2/1), so we define our own
+// matching the upstream values for each platform.
+#[cfg(target_os = "windows")]
+const PTY_READ_WRITE_TOKEN: usize = 2;
+#[cfg(not(target_os = "windows"))]
+const PTY_READ_WRITE_TOKEN: usize = 0;
+
+// Child event token is 1 on both platforms.
+const PTY_CHILD_EVENT_TOKEN: usize = 1;
+
 /// A minimal terminal size implementing the Dimensions trait for Term initialization.
 struct TermSize {
     columns: usize,
@@ -145,6 +157,7 @@ pub fn spawn_pty(
         shell: Some(Shell::new(shell_program, vec![])),
         working_directory: None,
         drain_on_exit: true,
+        #[cfg(target_os = "windows")]
         escape_args: false,
         env: {
             let mut env = std::collections::HashMap::from([
@@ -273,7 +286,7 @@ fn glass_pty_loop(
 
         for event in events.iter() {
             match event.key {
-                tty::PTY_CHILD_EVENT_TOKEN => {
+                PTY_CHILD_EVENT_TOKEN => {
                     if let Some(tty::ChildEvent::Exited(code)) = pty.next_child_event() {
                         if let Some(code) = code {
                             event_proxy.send_event(Event::ChildExit(code));
@@ -295,7 +308,7 @@ fn glass_pty_loop(
                         break 'event_loop;
                     }
                 }
-                tty::PTY_READ_WRITE_TOKEN => {
+                PTY_READ_WRITE_TOKEN => {
                     if event.is_interrupt() {
                         continue;
                     }
