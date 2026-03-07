@@ -1,11 +1,11 @@
 ---
 gsd_state_version: 1.0
-milestone: none
-milestone_name: none
-status: between_milestones
-stopped_at: v2.0 milestone completed
-last_updated: "2026-03-07T09:00:00.000Z"
-last_activity: 2026-03-07 -- Completed v2.0 milestone (Cross-Platform & Tabs)
+milestone: v2.1
+milestone_name: Packaging & Polish
+status: defining_requirements
+stopped_at: Defining requirements for v2.1
+last_updated: "2026-03-07T10:00:00.000Z"
+last_activity: 2026-03-07 -- Milestone v2.1 started
 progress:
   total_phases: 0
   completed_phases: 0
@@ -20,13 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** v2.1 Packaging & Polish
 
 ## Current Position
 
-Milestone: v2.0 shipped 2026-03-07
-Status: Between milestones
-Last activity: 2026-03-07 -- Completed v2.0 (Cross-Platform & Tabs)
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-03-07 -- Milestone v2.1 started
 
 ## Performance Metrics
 
@@ -57,5 +58,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-07
-Stopped at: v2.0 milestone completed
+Stopped at: Defining requirements for v2.1
 Resume file: None

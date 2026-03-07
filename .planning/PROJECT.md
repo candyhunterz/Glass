@@ -66,7 +66,18 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-(No active requirements -- next milestone not yet defined)
+<!-- Current scope: v2.1 Packaging & Polish -->
+
+- [ ] Platform installers (MSI, DMG, deb/rpm/AppImage/Flatpak)
+- [ ] Auto-update mechanism
+- [ ] Performance profiling and optimization pass
+- [ ] Public documentation site and README
+- [ ] Config validation and error reporting
+- [ ] Config hot-reload
+
+## Current Milestone: v2.1 Packaging & Polish
+
+**Goal:** Production-ready distribution, performance tuning, config polish, and public documentation across all three platforms.
 
 ### Deferred (Future Milestones)
 
@@ -170,4 +181,4 @@ Known tech debt:
 | fish event handlers (not precmd/preexec) | fish uses fish_prompt/fish_preexec events natively | ✓ Good -- cooperates with Starship/Tide |
 
 ---
-*Last updated: 2026-03-07 after v2.0 milestone completed*
+*Last updated: 2026-03-07 after v2.1 milestone started*
