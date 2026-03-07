@@ -1906,6 +1906,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
+            AppEvent::UpdateAvailable(info) => {
+                tracing::info!(
+                    "Update available: {} -> {} ({})",
+                    info.current, info.latest, info.download_url
+                );
+                // TODO(29-02): Store update info and show notification in status bar
+            }
         }
     }
 
