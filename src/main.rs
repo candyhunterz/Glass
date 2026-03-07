@@ -539,6 +539,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Request a redraw after resize so the surface is repainted immediately
                 ctx.window.request_redraw();
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                tracing::info!("Scale factor changed to {}", scale_factor);
+                // FrameRenderer does not yet support dynamic scale factor updates.
+                // Full font metric recalculation on scale factor change requires
+                // rebuilding the glyph atlas, which is a future enhancement for
+                // multi-monitor HiDPI support. For now, log the event.
+                tracing::warn!(
+                    "Dynamic scale factor update not yet supported; \
+                     restart Glass to apply new DPI settings"
+                );
+                ctx.window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
