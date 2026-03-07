@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
 status: in-progress
-stopped_at: Completed 22-01-PLAN.md
-last_updated: "2026-03-07T00:22:25Z"
-last_activity: 2026-03-07 -- Completed 22-01 (Cross-Platform Fixes)
+stopped_at: Completed 22-02-PLAN.md
+last_updated: "2026-03-07T00:28:56Z"
+last_activity: 2026-03-07 -- Completed 22-02 (CI & Cross-Compilation Validation)
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
+  total_plans: 2
+  completed_plans: 2
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 22 of 24 -- Cross-Platform Validation
-Plan: 1 of 1
-Status: Plan 01 Complete
-Last activity: 2026-03-07 -- Completed 22-01 (Cross-Platform Fixes)
+Plan: 2 of 2
+Status: Plan 02 Complete
+Last activity: 2026-03-07 -- Completed 22-02 (CI & Cross-Compilation Validation)
 
 ## Performance Metrics
 
@@ -36,8 +36,8 @@ Last activity: 2026-03-07 -- Completed 22-01 (Cross-Platform Fixes)
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
-- v2.0: 1 plan in ~3 min
-- Total: 49 plans across 21 phases in 3 days
+- v2.0: 2 plans in ~8 min (~4 min/plan)
+- Total: 50 plans across 21 phases in 3 days
 
 ## Accumulated Context
 
@@ -56,6 +56,9 @@ See PROJECT.md Key Decisions table for full history.
 - [22-01] Inline default_shell_program() in pty.rs to avoid glass_terminal depending on glass_mux
 - [22-01] Use not(any(windows, macos)) for Linux font default to cover other Unix-likes
 - [22-01] Resolve effective shell via glass_mux::platform::default_shell() before find_shell_integration
+- [22-02] Local PTY token constants matching upstream per-platform values (avoids pub(crate) dependency)
+- [22-02] ScaleFactorChanged logs warning only (FrameRenderer lacks dynamic DPI update)
+- [22-02] Cross-compilation validated per-crate (C deps need target CC toolchain, CI handles natively)
 
 ### Pending Todos
 
@@ -70,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T00:22:25Z
-Stopped at: Completed 22-01-PLAN.md
+Last session: 2026-03-07T00:28:56Z
+Stopped at: Completed 22-02-PLAN.md
 Resume file: None
