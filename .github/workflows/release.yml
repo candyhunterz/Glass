@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-x86_64-pc-windows-msvc
+
+      - name: Verify version matches tag
+        shell: bash
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix
+
+      - name: Add WiX to PATH
+        shell: bash
+        run: echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $GITHUB_PATH
+
+      - name: Build MSI installer
+        run: cargo wix --no-build --nocapture
+
+      - name: Upload MSI to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/wix/*.msi
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            | Platform | Download |
+            |----------|----------|
+            | Windows  | `.msi` installer |
+            | macOS    | `.dmg` disk image |
+            | Linux    | `.deb` package |
+
+            > **macOS users:** If blocked by Gatekeeper, run `xattr -cr /Applications/Glass.app` or right-click > Open.
+
+  build-macos:
+    name: Build macOS Installer
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-aarch64-apple-darwin
+
+      - name: Verify version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build DMG installer
+        run: bash packaging/macos/build-dmg.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Upload DMG to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/macos/*.dmg
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            | Platform | Download |
+            |----------|----------|
+            | Windows  | `.msi` installer |
+            | macOS    | `.dmg` disk image |
+            | Linux    | `.deb` package |
+
+            > **macOS users:** If blocked by Gatekeeper, run `xattr -cr /Applications/Glass.app` or right-click > Open.
+
+  build-linux:
+    name: Build Linux Installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-x86_64-unknown-linux-gnu
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxi-dev libxtst-dev
+
+      - name: Verify version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build deb package
+        run: cargo deb --no-build
+
+      - name: Upload deb to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/debian/*.deb
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            | Platform | Download |
+            |----------|----------|
+            | Windows  | `.msi` installer |
+            | macOS    | `.dmg` disk image |
+            | Linux    | `.deb` package |
+
+            > **macOS users:** If blocked by Gatekeeper, run `xattr -cr /Applications/Glass.app` or right-click > Open.
