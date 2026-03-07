@@ -71,7 +71,14 @@
   Plans:
   - [ ] 22-01-PLAN.md -- Platform compilation fixes (windows-sys gating, spawn_pty shell detection, shell integration injection, font defaults)
   - [ ] 22-02-PLAN.md -- Surface format logging, ScaleFactorChanged handler, CI workflow, cross-compilation validation
-- [ ] Phase 23: Tabs -- not started
+- [ ] Phase 23: Tabs (3 plans)
+  **Goal:** Implement a wgpu-rendered tab bar with full tab lifecycle management. Each tab owns an independent terminal session with its own PTY, Term, BlockManager, HistoryDb, and SnapshotStore.
+  **Requirements:** [TAB-01, TAB-02, TAB-03, TAB-04, TAB-05]
+  **Plans:** 3 plans
+  Plans:
+  - [ ] 23-01-PLAN.md -- SessionMux tab CRUD methods and Tab title field
+  - [ ] 23-02-PLAN.md -- TabBarRenderer and spawn_pty working_directory parameter
+  - [ ] 23-03-PLAN.md -- Full main.rs integration: keyboard shortcuts, rendering, session lifecycle
 - [ ] Phase 24: Split Panes -- not started
 
 ## Progress
@@ -100,5 +107,5 @@
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 21. Session Extraction & Platform Foundation | v2.0 | 3/3 | Complete | 2026-03-06 |
 | 22. Cross-Platform Validation | 2/2 | Complete    | 2026-03-07 | -- |
-| 23. Tabs | v2.0 | 0/? | Not Started | -- |
+| 23. Tabs | v2.0 | 0/3 | Not Started | -- |
 | 24. Split Panes | v2.0 | 0/? | Not Started | -- |
