@@ -74,7 +74,7 @@
 - [x] **Phase 27: Config Validation & Hot-Reload** - Config error reporting and live config changes without restart (completed 2026-03-07)
 - [x] **Phase 28: Platform Packaging & CI Release** - Platform-native installers and automated release workflow (completed 2026-03-07)
 - [x] **Phase 29: Auto-Update** - Background update checking and one-click update from GitHub Releases (completed 2026-03-07)
-- [ ] **Phase 30: Documentation & Distribution** - Public docs site, README overhaul, and package manager listings
+- [x] **Phase 30: Documentation & Distribution** - Public docs site, README overhaul, and package manager listings (completed 2026-03-07)
 
 ## Phase Details
 
@@ -147,7 +147,7 @@ Plans:
   3. The GitHub README includes screenshots, install instructions for all three platforms, feature overview, and CI badges
   4. Running `winget install glass` on Windows installs the latest release
   5. Running `brew install --cask glass` on macOS installs the latest release
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 30-01-PLAN.md -- mdBook documentation site with all content pages
@@ -190,4 +190,4 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 27. Config Validation & Hot-Reload | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 28. Platform Packaging & CI Release | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 29. Auto-Update | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 30. Documentation & Distribution | 2/3 | In Progress|  | - |
+| 30. Documentation & Distribution | 3/3 | Complete   | 2026-03-07 | - |

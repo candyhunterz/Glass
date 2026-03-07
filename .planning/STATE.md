@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: completed
-stopped_at: Completed 30-01-PLAN.md
-last_updated: "2026-03-07T20:50:01.186Z"
+stopped_at: Completed 30-02-PLAN.md
+last_updated: "2026-03-07T20:52:37.777Z"
 last_activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 11
-  completed_plans: 10
+  completed_plans: 11
   percent: 82
 ---
 
@@ -77,6 +77,7 @@ Recent decisions affecting v2.1:
 - Winget multi-file manifest v1.6.0 format; Homebrew cask targets custom tap (notarization deferred)
 - Package manager manifests use <GITHUB_USER>/<SHA256> placeholders for release-time substitution
 - [Phase 30]: mdBook with navy theme; config reference sourced from GlassConfig struct; GitHub URLs as placeholders
+- [Phase 30]: GitHub Pages deployment uses two-job workflow (build + deploy) with peaceiris/actions-mdbook@v2
 
 ### Pending Todos
 
@@ -90,6 +91,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T20:50:01.184Z
-Stopped at: Completed 30-01-PLAN.md
+Last session: 2026-03-07T20:52:37.583Z
+Stopped at: Completed 30-02-PLAN.md
 Resume file: None
