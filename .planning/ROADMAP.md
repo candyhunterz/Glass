@@ -72,7 +72,7 @@
 
 - [x] **Phase 26: Performance Profiling & Optimization** - Establish baselines, instrument hot paths, and optimize based on data (completed 2026-03-07)
 - [x] **Phase 27: Config Validation & Hot-Reload** - Config error reporting and live config changes without restart (completed 2026-03-07)
-- [ ] **Phase 28: Platform Packaging & CI Release** - Platform-native installers and automated release workflow
+- [x] **Phase 28: Platform Packaging & CI Release** - Platform-native installers and automated release workflow (completed 2026-03-07)
 - [ ] **Phase 29: Auto-Update** - Background update checking and one-click update from GitHub Releases
 - [ ] **Phase 30: Documentation & Distribution** - Public docs site, README overhaul, and package manager listings
 
@@ -117,7 +117,7 @@ Plans:
   2. Opening the DMG on macOS provides a drag-to-Applications bundle that launches correctly
   3. Installing the .deb package on Ubuntu/Debian makes `glass` available system-wide
   4. Pushing a `v*` git tag triggers a CI workflow that builds all three installers and publishes them as GitHub Release assets
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 28-01-PLAN.md -- Platform packaging configs (WiX MSI, macOS DMG bundle, Linux deb metadata)
@@ -179,6 +179,6 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 25. TerminalExit Multi-Pane Fix | v2.0 | 1/1 | Complete | 2026-03-07 |
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 27. Config Validation & Hot-Reload | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 28. Platform Packaging & CI Release | 1/2 | In Progress|  | - |
+| 28. Platform Packaging & CI Release | 2/2 | Complete   | 2026-03-07 | - |
 | 29. Auto-Update | v2.1 | 0/? | Not started | - |
 | 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |
