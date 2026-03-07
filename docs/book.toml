@@ -1,0 +1,16 @@
+[book]
+title = "Glass Terminal"
+description = "GPU-accelerated terminal emulator with command structure awareness"
+authors = ["Glass Contributors"]
+language = "en"
+src = "src"
+
+# git-repository-url = "https://github.com/<GITHUB_USER>/glass"
+# edit-url-template = "https://github.com/<GITHUB_USER>/glass/edit/main/docs/{path}"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
