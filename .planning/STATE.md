@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
-status: in-progress
-stopped_at: Completed 24-01-PLAN.md
-last_updated: "2026-03-07T03:04:41Z"
-last_activity: 2026-03-07 -- Completed 24-01 (SplitTree Layout Engine)
+status: executing
+stopped_at: Completed 24-02-PLAN.md
+last_updated: "2026-03-07T03:14:29.072Z"
+last_activity: 2026-03-07 -- Completed 24-02 (Tab Restructure and Per-Pane Rendering)
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 10
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 24 of 24 -- Split Panes
-Plan: 1 of 3
+Plan: 2 of 3
 Status: In Progress
-Last activity: 2026-03-07 -- Completed 24-01 (SplitTree Layout Engine)
+Last activity: 2026-03-07 -- Completed 24-02 (Tab Restructure and Per-Pane Rendering)
 
 ## Performance Metrics
 
@@ -72,6 +72,11 @@ See PROJECT.md Key Decisions table for full history.
 - [24-01] Usable-space-first gap accounting: subtract 2px gap before ratio split
 - [24-01] Manhattan distance for find_neighbor across nested splits
 - [24-01] resize_ratio finds nearest ancestor Split matching direction
+- [24-02] Single-pane path uses existing draw_frame for zero regression risk
+- [24-02] Multi-pane rendering uses viewport offsets + TextBounds clipping (not wgpu scissor_rect)
+- [24-02] SplitNode.split_leaf in-place mutation for splitting focused pane
+- [24-02] close_pane sets focused_pane to first_leaf of remaining tree
+- [24-02] Divider rects computed by pairwise gap detection between pane viewports
 
 ### Pending Todos
 
@@ -86,6 +91,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T03:04:41Z
-Stopped at: Completed 24-01-PLAN.md
+Last session: 2026-03-07T03:14:29Z
+Stopped at: Completed 24-02-PLAN.md
 Resume file: None
