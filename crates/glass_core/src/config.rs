@@ -158,6 +158,114 @@ impl GlassConfig {
 mod tests {
     use super::*;
 
+    // === ConfigError + load_validated tests ===
+
+    #[test]
+    fn load_validated_malformed_toml_returns_error() {
+        let result = GlassConfig::load_validated("invalid {{{{");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn load_validated_type_mismatch_returns_error_with_line() {
+        let result = GlassConfig::load_validated("font_size = \"not_a_number\"");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.line, Some(1));
+        // Message should contain some field context
+        assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn load_validated_valid_toml_returns_ok() {
+        let result = GlassConfig::load_validated("font_family = \"Cascadia\"\nfont_size = 16.0");
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.font_family, "Cascadia");
+        assert_eq!(config.font_size, 16.0);
+    }
+
+    #[test]
+    fn load_validated_empty_returns_default() {
+        let result = GlassConfig::load_validated("");
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.font_family, default_font_family());
+        assert_eq!(config.font_size, 14.0);
+    }
+
+    #[test]
+    fn config_error_display_with_line_col() {
+        let err = ConfigError {
+            message: "expected string".to_string(),
+            line: Some(3),
+            column: Some(5),
+            snippet: None,
+        };
+        let display = format!("{}", err);
+        assert_eq!(display, "Config error (line 3, col 5): expected string");
+    }
+
+    #[test]
+    fn config_error_display_without_line_col() {
+        let err = ConfigError {
+            message: "something went wrong".to_string(),
+            line: None,
+            column: None,
+            snippet: None,
+        };
+        let display = format!("{}", err);
+        assert_eq!(display, "Config error: something went wrong");
+    }
+
+    #[test]
+    fn font_changed_same_font_different_shell() {
+        let a = GlassConfig {
+            shell: Some("bash".to_string()),
+            ..GlassConfig::default()
+        };
+        let b = GlassConfig {
+            shell: Some("zsh".to_string()),
+            ..GlassConfig::default()
+        };
+        assert!(!a.font_changed(&b));
+    }
+
+    #[test]
+    fn font_changed_different_font_size() {
+        let a = GlassConfig::default();
+        let b = GlassConfig {
+            font_size: 18.0,
+            ..GlassConfig::default()
+        };
+        assert!(a.font_changed(&b));
+    }
+
+    #[test]
+    fn font_changed_different_font_family() {
+        let a = GlassConfig::default();
+        let b = GlassConfig {
+            font_family: "JetBrains Mono".to_string(),
+            ..GlassConfig::default()
+        };
+        assert!(a.font_changed(&b));
+    }
+
+    #[test]
+    fn glass_config_partial_eq() {
+        let a = GlassConfig::default();
+        let b = GlassConfig::default();
+        assert_eq!(a, b);
+
+        let c = GlassConfig {
+            font_size: 20.0,
+            ..GlassConfig::default()
+        };
+        assert_ne!(a, c);
+    }
+
     #[test]
     fn load_full_config() {
         let toml = "font_family = \"Cascadia Code\"\nfont_size = 16.0\nshell = \"bash\"";
