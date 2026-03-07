@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: completed
-stopped_at: Completed 29-02-PLAN.md
-last_updated: "2026-03-07T20:28:52.055Z"
-last_activity: 2026-03-07 -- Plan 29-02 complete (update UI integration)
+stopped_at: Completed 30-03-PLAN.md
+last_updated: "2026-03-07T20:48:00.000Z"
+last_activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 11
+  completed_plans: 9
   percent: 100
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 29 - Auto-Update
+**Current focus:** Phase 30 - Documentation & Distribution
 
 ## Current Position
 
-Phase: 29 of 30 (Auto-Update)
-Plan: 2 of 2 in current phase
+Phase: 30 of 30 (Documentation & Distribution)
+Plan: 3 of 3 in current phase
 Status: Complete
-Last activity: 2026-03-07 -- Plan 29-02 complete (update UI integration)
+Last activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
 
-Progress: [██████████] Phase 29: 2/2 plans complete (100%)
+Progress: [████████░░] Phase 30: 3/3 plans complete (82% overall)
 
 ## Performance Metrics
 
@@ -74,6 +74,8 @@ Recent decisions affecting v2.1:
 - Center-text status bar notification with character-width centering for update display
 - Update notification uses bright yellow-gold (255,200,50) for visibility
 - Ctrl+Shift+U in is_glass_shortcut block for platform-consistent keybind
+- Winget multi-file manifest v1.6.0 format; Homebrew cask targets custom tap (notarization deferred)
+- Package manager manifests use <GITHUB_USER>/<SHA256> placeholders for release-time substitution
 
 ### Pending Todos
 
@@ -87,6 +89,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T20:24:00Z
-Stopped at: Completed 29-02-PLAN.md
+Last session: 2026-03-07T20:48:00Z
+Stopped at: Completed 30-03-PLAN.md
 Resume file: None

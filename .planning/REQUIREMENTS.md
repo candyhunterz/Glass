@@ -25,8 +25,8 @@ Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
 - [x] **PKG-02**: DMG bundle for macOS with proper Info.plist and app structure
 - [x] **PKG-03**: .deb package for Linux (Debian/Ubuntu)
 - [x] **PKG-04**: GitHub Releases CI workflow building and publishing installers on tag
-- [ ] **PKG-05**: Winget package manifest for Windows package manager
-- [ ] **PKG-06**: Homebrew cask formula for macOS package manager
+- [x] **PKG-05**: Winget package manifest for Windows package manager
+- [x] **PKG-06**: Homebrew cask formula for macOS package manager
 
 ### Auto-Update
 
@@ -81,8 +81,8 @@ Deferred to future milestones.
 | PKG-02 | Phase 28 | Complete |
 | PKG-03 | Phase 28 | Complete |
 | PKG-04 | Phase 28 | Complete |
-| PKG-05 | Phase 30 | Pending |
-| PKG-06 | Phase 30 | Pending |
+| PKG-05 | Phase 30 | Complete |
+| PKG-06 | Phase 30 | Complete |
 | UPDT-01 | Phase 29 | Complete |
 | UPDT-02 | Phase 29 | Complete |
 | UPDT-03 | Phase 29 | Complete |
