@@ -85,44 +85,92 @@ impl SessionMux {
     ///
     /// The new tab becomes active. Returns its `TabId`.
     pub fn add_tab(&mut self, session: Session) -> TabId {
-        todo!()
+        let tab_id = TabId::new(self.next_id);
+        let session_id = session.id;
+        let title = session.title.clone();
+        self.next_id += 1;
+
+        let insert_pos = if self.tabs.is_empty() {
+            0
+        } else {
+            self.active_tab + 1
+        };
+
+        self.tabs.insert(
+            insert_pos,
+            Tab {
+                id: tab_id,
+                session_id,
+                title,
+            },
+        );
+        self.sessions.insert(session_id, session);
+        self.active_tab = insert_pos;
+
+        tab_id
     }
 
     /// Close the tab at `index`, returning the removed `Session` if valid.
     ///
     /// Adjusts `active_tab` if the closed tab was at or before it.
     pub fn close_tab(&mut self, index: usize) -> Option<Session> {
-        todo!()
+        if index >= self.tabs.len() {
+            return None;
+        }
+
+        let tab = self.tabs.remove(index);
+        let session = self.sessions.remove(&tab.session_id);
+
+        // Adjust active_tab after removal
+        if self.tabs.is_empty() {
+            self.active_tab = 0;
+        } else if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        } else if index < self.active_tab {
+            self.active_tab -= 1;
+        }
+
+        session
     }
 
     /// Activate the tab at `index`. No-op if index is out of bounds.
     pub fn activate_tab(&mut self, index: usize) {
-        todo!()
+        if index < self.tabs.len() {
+            self.active_tab = index;
+        }
     }
 
     /// Cycle to the next tab with wraparound.
     pub fn next_tab(&mut self) {
-        todo!()
+        if !self.tabs.is_empty() {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+        }
     }
 
     /// Cycle to the previous tab with wraparound.
     pub fn prev_tab(&mut self) {
-        todo!()
+        if !self.tabs.is_empty() {
+            if self.active_tab == 0 {
+                self.active_tab = self.tabs.len() - 1;
+            } else {
+                self.active_tab -= 1;
+            }
+        }
     }
 
     /// Return the number of tabs.
     pub fn tab_count(&self) -> usize {
-        todo!()
+        self.tabs.len()
     }
 
     /// Return the index of the currently active tab.
     pub fn active_tab_index(&self) -> usize {
-        todo!()
+        self.active_tab
     }
 
     /// Return a slice of all tabs in order.
     pub fn tabs(&self) -> &[Tab] {
-        todo!()
+        &self.tabs
     }
 }
 
