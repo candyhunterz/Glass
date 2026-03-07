@@ -4,7 +4,7 @@ milestone: v2.1
 milestone_name: Packaging & Polish
 status: completed
 stopped_at: Completed 30-02-PLAN.md
-last_updated: "2026-03-07T20:52:37.777Z"
+last_updated: "2026-03-07T20:55:25.033Z"
 last_activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
 progress:
   total_phases: 5
