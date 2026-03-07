@@ -99,6 +99,6 @@
 | 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 21. Session Extraction & Platform Foundation | v2.0 | 3/3 | Complete | 2026-03-06 |
-| 22. Cross-Platform Validation | v2.0 | 0/2 | Not Started | -- |
+| 22. Cross-Platform Validation | 1/2 | In Progress|  | -- |
 | 23. Tabs | v2.0 | 0/? | Not Started | -- |
 | 24. Split Panes | v2.0 | 0/? | Not Started | -- |
