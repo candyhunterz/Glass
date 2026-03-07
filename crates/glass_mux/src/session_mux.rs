@@ -33,6 +33,7 @@ impl SessionMux {
         let tab = Tab {
             id: TabId::new(0),
             session_id,
+            title: session.title.clone(),
         };
         let mut sessions = HashMap::new();
         sessions.insert(session_id, session);
@@ -79,19 +80,206 @@ impl SessionMux {
         self.next_id += 1;
         id
     }
+
+    /// Add a new tab with the given session, inserted after the active tab.
+    ///
+    /// The new tab becomes active. Returns its `TabId`.
+    pub fn add_tab(&mut self, session: Session) -> TabId {
+        todo!()
+    }
+
+    /// Close the tab at `index`, returning the removed `Session` if valid.
+    ///
+    /// Adjusts `active_tab` if the closed tab was at or before it.
+    pub fn close_tab(&mut self, index: usize) -> Option<Session> {
+        todo!()
+    }
+
+    /// Activate the tab at `index`. No-op if index is out of bounds.
+    pub fn activate_tab(&mut self, index: usize) {
+        todo!()
+    }
+
+    /// Cycle to the next tab with wraparound.
+    pub fn next_tab(&mut self) {
+        todo!()
+    }
+
+    /// Cycle to the previous tab with wraparound.
+    pub fn prev_tab(&mut self) {
+        todo!()
+    }
+
+    /// Return the number of tabs.
+    pub fn tab_count(&self) -> usize {
+        todo!()
+    }
+
+    /// Return the index of the currently active tab.
+    pub fn active_tab_index(&self) -> usize {
+        todo!()
+    }
+
+    /// Return a slice of all tabs in order.
+    pub fn tabs(&self) -> &[Tab] {
+        todo!()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::types::SessionId;
+
+    /// Create a SessionMux with `n` tabs for testing tab index logic.
+    ///
+    /// Sessions are not real (the HashMap will be empty), but tabs are
+    /// properly constructed. This allows testing index-management methods
+    /// without needing the complex Session type.
+    fn test_mux(n: usize) -> SessionMux {
+        let tabs: Vec<Tab> = (0..n)
+            .map(|i| Tab {
+                id: TabId::new(i as u64),
+                session_id: SessionId::new(i as u64),
+                title: format!("Tab {}", i),
+            })
+            .collect();
+        SessionMux {
+            sessions: HashMap::new(),
+            tabs,
+            active_tab: 0,
+            next_id: n as u64,
+        }
+    }
 
     #[test]
     fn next_session_id_increments() {
-        // SessionId generation produces distinct, incrementing IDs
         let id1 = SessionId::new(0);
         let id2 = SessionId::new(1);
         assert_ne!(id1, id2);
         assert_eq!(id1.val(), 0);
         assert_eq!(id2.val(), 1);
+    }
+
+    #[test]
+    fn tab_count_returns_correct_count() {
+        let mux = test_mux(3);
+        assert_eq!(mux.tab_count(), 3);
+    }
+
+    #[test]
+    fn tab_count_empty() {
+        let mux = test_mux(0);
+        assert_eq!(mux.tab_count(), 0);
+    }
+
+    #[test]
+    fn tabs_returns_slice() {
+        let mux = test_mux(3);
+        let tabs = mux.tabs();
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs[0].title, "Tab 0");
+        assert_eq!(tabs[2].title, "Tab 2");
+    }
+
+    #[test]
+    fn active_tab_index_default() {
+        let mux = test_mux(3);
+        assert_eq!(mux.active_tab_index(), 0);
+    }
+
+    #[test]
+    fn activate_tab_sets_active() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(2);
+        assert_eq!(mux.active_tab_index(), 2);
+    }
+
+    #[test]
+    fn activate_tab_invalid_noop() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(1);
+        mux.activate_tab(99); // out of bounds
+        assert_eq!(mux.active_tab_index(), 1); // unchanged
+    }
+
+    #[test]
+    fn next_tab_cycles_forward() {
+        let mut mux = test_mux(3);
+        mux.next_tab();
+        assert_eq!(mux.active_tab_index(), 1);
+        mux.next_tab();
+        assert_eq!(mux.active_tab_index(), 2);
+    }
+
+    #[test]
+    fn next_tab_wraps_around() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(2);
+        mux.next_tab();
+        assert_eq!(mux.active_tab_index(), 0);
+    }
+
+    #[test]
+    fn prev_tab_cycles_backward() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(2);
+        mux.prev_tab();
+        assert_eq!(mux.active_tab_index(), 1);
+    }
+
+    #[test]
+    fn prev_tab_wraps_around() {
+        let mut mux = test_mux(3);
+        mux.prev_tab();
+        assert_eq!(mux.active_tab_index(), 2);
+    }
+
+    #[test]
+    fn close_tab_removes_and_adjusts_active() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(2);
+        // Close middle tab (index 1), active was 2 -> should become 1
+        let removed = mux.close_tab(1);
+        assert!(removed.is_none()); // no real sessions in test_mux
+        assert_eq!(mux.tab_count(), 2);
+        assert_eq!(mux.active_tab_index(), 1);
+    }
+
+    #[test]
+    fn close_tab_out_of_bounds() {
+        let mut mux = test_mux(3);
+        let removed = mux.close_tab(99);
+        assert!(removed.is_none());
+        assert_eq!(mux.tab_count(), 3);
+    }
+
+    #[test]
+    fn close_tab_last_remaining() {
+        let mut mux = test_mux(1);
+        let _removed = mux.close_tab(0);
+        assert_eq!(mux.tab_count(), 0);
+        assert_eq!(mux.active_tab_index(), 0);
+    }
+
+    #[test]
+    fn close_tab_active_at_end_adjusts() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(2);
+        // Close the active (last) tab
+        let _removed = mux.close_tab(2);
+        assert_eq!(mux.tab_count(), 2);
+        // active_tab should clamp to new last index
+        assert_eq!(mux.active_tab_index(), 1);
+    }
+
+    #[test]
+    fn tab_has_title_field() {
+        let tab = Tab {
+            id: TabId::new(0),
+            session_id: SessionId::new(0),
+            title: "My Tab".to_string(),
+        };
+        assert_eq!(tab.title, "My Tab");
     }
 }
