@@ -71,7 +71,6 @@ pollster.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
-windows-sys.workspace = true
 alacritty_terminal.workspace = true
 arboard.workspace = true
 memory-stats.workspace = true
@@ -83,6 +82,9 @@ tokio = { workspace = true }
 chrono.workspace = true
 glass_pipes = { path = "crates/glass_pipes" }
 glass_mux = { path = "crates/glass_mux" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1.0"

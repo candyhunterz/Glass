@@ -88,10 +88,19 @@ fn default_auto_expand() -> bool {
     true
 }
 
+fn default_font_family() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "Consolas" }
+    #[cfg(target_os = "macos")]
+    { "Menlo" }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    { "Monospace" }
+}
+
 impl Default for GlassConfig {
     fn default() -> Self {
         Self {
-            font_family: "Consolas".into(),
+            font_family: default_font_family().into(),
             font_size: 14.0,
             shell: None,
             history: None,
@@ -163,14 +172,14 @@ mod tests {
         let toml = "font_size = 18.0";
         let config = GlassConfig::load_from_str(toml);
         assert_eq!(config.font_size, 18.0);
-        assert_eq!(config.font_family, "Consolas"); // default
+        assert_eq!(config.font_family, default_font_family()); // default
         assert_eq!(config.shell, None); // default
     }
 
     #[test]
     fn load_empty_config() {
         let config = GlassConfig::load_from_str("");
-        assert_eq!(config.font_family, "Consolas");
+        assert_eq!(config.font_family, default_font_family());
         assert_eq!(config.font_size, 14.0);
         assert_eq!(config.shell, None);
     }
@@ -178,7 +187,7 @@ mod tests {
     #[test]
     fn load_malformed_toml_returns_defaults() {
         let config = GlassConfig::load_from_str("invalid {{{{");
-        assert_eq!(config.font_family, "Consolas");
+        assert_eq!(config.font_family, default_font_family());
         assert_eq!(config.font_size, 14.0);
         assert_eq!(config.shell, None);
     }
