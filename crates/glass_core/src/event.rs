@@ -76,6 +76,8 @@ pub enum AppEvent {
         config: Box<crate::config::GlassConfig>,
         error: Option<crate::config::ConfigError>,
     },
+    /// A newer version of Glass is available for download.
+    UpdateAvailable(crate::updater::UpdateInfo),
 }
 
 #[cfg(test)]
