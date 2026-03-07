@@ -79,7 +79,14 @@
   - [ ] 23-01-PLAN.md -- SessionMux tab CRUD methods and Tab title field
   - [ ] 23-02-PLAN.md -- TabBarRenderer and spawn_pty working_directory parameter
   - [ ] 23-03-PLAN.md -- Full main.rs integration: keyboard shortcuts, rendering, session lifecycle
-- [ ] Phase 24: Split Panes -- not started
+- [ ] Phase 24: Split Panes (3 plans)
+  **Goal:** Implement horizontal and vertical split panes within tabs using a binary tree layout engine, scissor-clipped per-pane rendering, and full input routing.
+  **Requirements:** [SPLIT-01, SPLIT-02, SPLIT-03, SPLIT-04, SPLIT-05, SPLIT-06, SPLIT-07, SPLIT-08, SPLIT-09, SPLIT-10, SPLIT-11]
+  **Plans:** 3 plans
+  Plans:
+  - [ ] 24-01-PLAN.md -- SplitTree layout engine with TDD (tree construction, layout computation, navigation, removal, resize)
+  - [ ] 24-02-PLAN.md -- Tab restructuring for SplitNode and per-pane scissor-clipped rendering
+  - [ ] 24-03-PLAN.md -- Input routing (keyboard splits, focus navigation, mouse click, PTY resize) and pane lifecycle
 
 ## Progress
 
@@ -106,6 +113,6 @@
 | 19. MCP + Config + Polish | v1.3 | 1/1 | Complete | 2026-03-06 |
 | 20. Config Gate + Dead Code Cleanup | v1.3 | 2/2 | Complete | 2026-03-06 |
 | 21. Session Extraction & Platform Foundation | v2.0 | 3/3 | Complete | 2026-03-06 |
-| 22. Cross-Platform Validation | 2/2 | Complete    | 2026-03-07 | -- |
-| 23. Tabs | 3/3 | Complete    | 2026-03-07 | -- |
-| 24. Split Panes | v2.0 | 0/? | Not Started | -- |
+| 22. Cross-Platform Validation | v2.0 | 2/2 | Complete | 2026-03-07 |
+| 23. Tabs | v2.0 | 3/3 | Complete | 2026-03-07 |
+| 24. Split Panes | v2.0 | 0/3 | Not Started | -- |
