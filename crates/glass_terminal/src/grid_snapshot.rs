@@ -171,7 +171,7 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
     let content = term.renderable_content();
     let colors = content.colors;
 
-    let mut cells = Vec::new();
+    let mut cells = Vec::with_capacity(term.columns() * term.screen_lines());
     for indexed in content.display_iter {
         let cell: &Cell = &indexed.cell;
         let mut fg = resolve_color(cell.fg, colors, defaults, cell.flags);
