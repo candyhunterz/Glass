@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
-status: completed
-stopped_at: Completed 30-02-PLAN.md
-last_updated: "2026-03-07T20:55:25.033Z"
-last_activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
+status: shipped
+stopped_at: Milestone v2.1 complete
+last_updated: "2026-03-07T22:00:00.000Z"
+last_activity: 2026-03-07 -- Milestone v2.1 shipped
 progress:
   total_phases: 5
   completed_phases: 5
   total_plans: 11
   completed_plans: 11
-  percent: 82
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 30 - Documentation & Distribution
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 30 of 30 (Documentation & Distribution)
-Plan: 3 of 3 in current phase
-Status: Complete
-Last activity: 2026-03-07 -- Plan 30-03 complete (package manager manifests)
-
-Progress: [████████░░] Phase 30: 3/3 plans complete (82% overall)
+Milestone: v2.1 Packaging & Polish -- SHIPPED
+All 6 milestones complete (30 phases, 71 plans)
+Last activity: 2026-03-07 -- Milestone v2.1 archived
 
 ## Performance Metrics
 
@@ -39,9 +36,9 @@ Progress: [████████░░] Phase 30: 3/3 plans complete (82% ove
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
-- v2.0: 6 plans in ~23 min (~4 min/plan)
-- v2.1: 7 plans in ~23 min (~3 min/plan)
-- Total: 62 plans across 29 phases in 3 days
+- v2.0: 12 plans in ~23 min (~4 min/plan)
+- v2.1: 11 plans in ~23 min (~3 min/plan)
+- Total: 71 plans across 30 phases in 4 days
 
 ## Accumulated Context
 
@@ -49,48 +46,20 @@ Progress: [████████░░] Phase 30: 3/3 plans complete (82% ove
 
 See PROJECT.md Key Decisions table for full history.
 
-Recent decisions affecting v2.1:
-- UpgradeCode GUID D5F79758-7183-4EBE-9B63-DADD19B1D42C is permanent for Windows MSI upgrades
-- macOS minimum version 11.0 (Big Sur), bundle ID com.glass.terminal
-- packaging/ directory structure for platform-specific files
-- SessionMux multi-session architecture means config hot-reload must propagate to ALL sessions/panes
-- Cross-platform CI matrix already exists (Windows/macOS/Linux) -- extend for release builds
-- notify 8.2 already in workspace -- reuse for config file watching
-- Feature-gated perf instrumentation: cfg_attr(feature = "perf") for zero-overhead when disabled
-- Only instrument outer functions (not resolve_color/per-cell) to avoid tracing overhead in tight loops
-- OscScanner::scan uses trace level since it fires per PTY read
-- Record cold start honestly at 522ms (4.4% over 500ms target) -- transparency over vanity metrics
-- PERFORMANCE.md as single source of truth for performance baselines and measurement methodology
-- Used toml span() API for byte-offset-to-line/col conversion in ConfigError
-- Direct f32 comparison in font_changed() since values are parsed from TOML, not computed
-- Box<GlassConfig> in ConfigReloaded variant to keep AppEvent size reasonable
-- Watch parent directory (not config file) to handle atomic saves from vim/VSCode
-- Error overlay follows SearchOverlayRenderer pattern for architectural consistency
-- Release workflow: three parallel jobs with no inter-job dependencies; softprops/action-gh-release handles race condition
-- Version verification in all CI release jobs prevents Cargo.toml/tag mismatch
-- ureq 3.x read_to_string + serde_json::from_str for GitHub API parsing (no json feature needed)
-- tempfile::tempdir with mem::forget for MSI download (prevents cleanup before msiexec reads file)
-- Background update checker follows config_watcher pattern: named thread + EventLoopProxy
-- Center-text status bar notification with character-width centering for update display
-- Update notification uses bright yellow-gold (255,200,50) for visibility
-- Ctrl+Shift+U in is_glass_shortcut block for platform-consistent keybind
-- Winget multi-file manifest v1.6.0 format; Homebrew cask targets custom tap (notarization deferred)
-- Package manager manifests use <GITHUB_USER>/<SHA256> placeholders for release-time substitution
-- [Phase 30]: mdBook with navy theme; config reference sourced from GlassConfig struct; GitHub URLs as placeholders
-- [Phase 30]: GitHub Pages deployment uses two-job workflow (build + deploy) with peaceiris/actions-mdbook@v2
-
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-- ScaleFactorChanged is log-only (tech debt) -- Phase 27 config hot-reload should address font recalculation
-- macOS code signing deferred -- unsigned DMG triggers Gatekeeper; document xattr workaround
+- macOS code signing deferred -- unsigned DMG triggers Gatekeeper
+- Windows code signing deferred -- SmartScreen warnings
 - pruner.rs max_size_mb not enforced (minor, count/age pruning sufficient)
+- ScaleFactorChanged is log-only (no dynamic font metric recalculation)
+- Package manager manifests have placeholder values needing replacement at publish time
 
 ## Session Continuity
 
-Last session: 2026-03-07T20:52:37.583Z
-Stopped at: Completed 30-02-PLAN.md
+Last session: 2026-03-07
+Stopped at: Milestone v2.1 shipped
 Resume file: None

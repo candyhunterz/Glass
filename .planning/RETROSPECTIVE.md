@@ -2,6 +2,57 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v2.1 -- Packaging & Polish
+
+**Shipped:** 2026-03-07
+**Phases:** 5 | **Plans:** 11 | **Sessions:** ~2
+
+### What Was Built
+- Criterion benchmark infrastructure with feature-gated tracing instrumentation and PERFORMANCE.md baselines (522ms cold start, 3-7us latency, 86MB memory)
+- Config validation with structured errors (line/column/snippet from toml span() API) and load_validated() replacing unwrap-style config loading
+- Config hot-reload via notify file watcher: ConfigReloaded event, font rebuild (update_font), error overlay renderer
+- Platform-native installers: Windows MSI (cargo-wix with stable UpgradeCode), macOS DMG (hdiutil with Info.plist), Linux .deb (cargo-deb)
+- GitHub Actions release workflow with parallel cross-platform builds triggered on v* tag push
+- Background auto-update checker (ureq + semver against GitHub Releases) with status bar notification and Ctrl+Shift+U update apply
+- mdBook documentation site (16 pages) with GitHub Pages deployment, project README with badges
+- Winget multi-file manifest (v1.6.0) and Homebrew cask formula for package manager distribution
+
+### What Worked
+- Config watcher reused notify 8.2 already in workspace (from FS watcher in v1.2) -- zero new dependency friction
+- Update checker followed config_watcher pattern (named thread + EventLoopProxy) -- consistent architecture
+- Error overlay followed SearchOverlayRenderer pattern -- architectural consistency across overlay types
+- Release workflow parallel jobs with no inter-job dependencies worked cleanly with softprops/action-gh-release
+- Audit found only low-severity issues (doc URL hardcoding, DMG filename pattern) -- no blockers
+- Recording cold start honestly at 522ms (vs 500ms target) set a good precedent for transparent baselines
+
+### What Was Inefficient
+- Installation docs hardcoded `anthropics/glass` as repo owner instead of actual user -- caught by audit but should have been parameterized from the start
+- Package manager manifests contain multiple placeholders (<GITHUB_USER>, <SHA256>) requiring manual substitution at publish time -- could have been templated
+- README screenshot placeholder left in -- documentation published without visual content
+- Nyquist validation still partial across all 5 phases -- 6th consecutive milestone with this gap
+
+### Patterns Established
+- Feature-gated instrumentation: cfg_attr(feature = "perf") for zero-overhead tracing in release builds
+- Watch parent directory (not config file) to handle atomic saves from editors (vim, VSCode)
+- Box<T> in enum variants to keep AppEvent size reasonable when carrying large config structs
+- Version verification in CI release jobs to prevent Cargo.toml/tag mismatch
+- tempfile with mem::forget for platform-specific download-then-execute flows (Windows MSI)
+- Center-text status bar rendering for transient notifications
+
+### Key Lessons
+1. Reuse existing patterns (config_watcher, SearchOverlay) when adding new features -- consistency reduces bugs and review cost
+2. Parameterize repository-specific values from day one -- hardcoded owner/URL breaks on fork or transfer
+3. Package manager manifests should use build-time substitution, not manual placeholders
+4. Performance targets should include measurement methodology alongside numbers -- PERFORMANCE.md as single source of truth
+5. Feature-gated instrumentation is the right pattern for profiling infrastructure -- zero cost when disabled
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~2 sessions in 1 day
+- Notable: 11 plans in ~23 min, averaging ~3 min/plan (fastest per-plan velocity; packaging/docs plans are largely config/content generation)
+
+---
+
 ## Milestone: v2.0 -- Cross-Platform & Tabs
 
 **Shipped:** 2026-03-07
@@ -253,6 +304,7 @@
 | v1.2 | ~4 | 5 | Dual mechanism design, re-verification after gap closure, parallel phase execution |
 | v1.3 | ~3 | 6 | Audit-driven gap closure phase, dead code removal as explicit phase, three-layer config gating |
 | v2.0 | ~3 | 5 | Multi-session architecture, binary tree TDD, asset existence verification |
+| v2.1 | ~2 | 5 | Feature-gated instrumentation, pattern reuse (watcher/overlay), honest baselines |
 
 ### Cumulative Quality
 
@@ -263,6 +315,7 @@
 | v1.2 | 234+ (full workspace) | Partial (Nyquist gaps in phases 10-14) | 2 |
 | v1.3 | 376+ (full workspace) | Partial (Phase 17 verified, 5 phases partial) | 2 |
 | v2.0 | 436 (full workspace) | Partial (Nyquist partial across phases 21-25) | 4 |
+| v2.1 | 436 (full workspace) | Partial (Nyquist partial across phases 26-30) | 6 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -271,7 +324,8 @@
 3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
 5. Gap closure plans are reliable -- confirmed in v1.1, v1.2, v1.3, v2.0; plan for them proactively
-6. Nyquist validation is persistently skipped -- 5 milestones with partial coverage; needs workflow integration, not just reminders
-7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0 -- always run audit before marking milestone complete
+6. Nyquist validation is persistently skipped -- 6 milestones with partial coverage; needs workflow integration, not just reminders
+7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0, v2.1 -- always run audit before marking milestone complete
 8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs in v1.3, config_dir/data_dir in v2.0)
 9. Verify asset existence alongside code paths -- code referencing non-existent files passes compilation but fails at runtime (glass.fish in v2.0)
+10. Reuse existing architectural patterns when adding new features -- consistency reduces bugs (v2.1: watcher/overlay/event patterns)

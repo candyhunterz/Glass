@@ -1,5 +1,33 @@
 # Milestones
 
+## v2.1 Packaging & Polish (Shipped: 2026-03-07)
+
+**Phases completed:** 5 phases, 11 plans
+**Lines of code:** 36,692 Rust (up from 17,868)
+**Timeline:** 2026-03-07 (1 day)
+**Git range:** feat(26-01) to feat(30-03)
+**Files changed:** 86 files, +8,793 / -77 lines
+
+**Delivered:** Production-ready distribution with performance baselines, config hot-reload, platform-native installers, auto-update, public documentation, and package manager listings across Windows, macOS, and Linux.
+
+**Key accomplishments:**
+- Criterion benchmark infrastructure with feature-gated tracing instrumentation and PERFORMANCE.md baselines (522ms cold start, 3-7us input latency, 86MB idle memory)
+- Config validation with structured errors (line/column/snippet) and live hot-reload via notify file watcher with font rebuild and error overlay
+- Platform-native installers: Windows MSI (cargo-wix), macOS DMG (hdiutil), Linux .deb (cargo-deb) with stable UpgradeCode
+- GitHub Actions release workflow triggered on v* tags with parallel cross-platform builds and automated GitHub Releases upload
+- Background auto-update checker against GitHub Releases with semver comparison, status bar notification, and Ctrl+Shift+U one-click update
+- mdBook documentation site (16 pages) with GitHub Pages deployment, project README with badges, winget manifest, and Homebrew cask
+
+**Tech debt (from audit):**
+- Cold start 522ms (4.4% over 500ms target, within measurement variance)
+- README screenshot placeholder (`<!-- TODO: Add screenshot -->`)
+- Installation docs hardcode `anthropics/glass` instead of actual repo owner
+- Homebrew DMG filename pattern needs verification against build script
+- `<GITHUB_USER>` and `<SHA256>` placeholders need replacement at publish time
+- macOS code signing and Windows code signing deferred to future milestone
+
+---
+
 ## v2.0 Cross-Platform & Tabs (Shipped: 2026-03-07)
 
 **Phases completed:** 5 phases, 12 plans

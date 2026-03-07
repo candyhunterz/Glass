@@ -64,20 +64,19 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ Independent PTY/history/snapshot per tab and pane -- v2.0
 - ✓ Pane-aware TerminalExit handler (close_pane vs close_tab based on pane count) -- v2.0
 
+- ✓ Criterion benchmarks for cold start, input latency, and idle memory with feature-gated tracing -- v2.1
+- ✓ Config validation with structured errors (line/column/snippet) and load_validated() -- v2.1
+- ✓ Config hot-reload via notify file watcher with font rebuild and error overlay -- v2.1
+- ✓ Platform-native installers: Windows MSI, macOS DMG, Linux .deb -- v2.1
+- ✓ GitHub Actions release workflow triggered on v* tags with parallel cross-platform builds -- v2.1
+- ✓ Background auto-update checker with status bar notification and Ctrl+Shift+U update apply -- v2.1
+- ✓ mdBook documentation site (16 pages) with GitHub Pages deployment -- v2.1
+- ✓ README overhaul with installation, features, and CI badges -- v2.1
+- ✓ Winget manifest and Homebrew cask for package manager distribution -- v2.1
+
 ### Active
 
-<!-- Current scope: v2.1 Packaging & Polish -->
-
-- [ ] Platform installers (MSI, DMG, deb/rpm/AppImage/Flatpak)
-- [ ] Auto-update mechanism
-- [ ] Performance profiling and optimization pass
-- [ ] Public documentation site and README
-- [ ] Config validation and error reporting
-- [ ] Config hot-reload
-
-## Current Milestone: v2.1 Packaging & Polish
-
-**Goal:** Production-ready distribution, performance tuning, config polish, and public documentation across all three platforms.
+<!-- No active milestone -- use /gsd:new-milestone to start next -->
 
 ### Deferred (Future Milestones)
 
@@ -112,10 +111,11 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v2.0 with 17,868 LOC Rust across 12 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux + root binary).
-Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4.
+Shipped v2.1 with 36,692 LOC Rust across 12 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux + root binary).
+Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
-Built across 5 milestones (25 phases, 60 plans) in 4 days. 436 tests passing.
+Built across 6 milestones (30 phases, 71 plans) in 4 days. 436 tests passing.
+Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
 Known tech debt:
 - pruner.rs max_size_mb not enforced (count and age pruning work)
@@ -124,6 +124,11 @@ Known tech debt:
 - config_dir() and data_dir() exported but never consumed
 - ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Nyquist validation partial across most phases
+- Cold start 522ms (4.4% over 500ms target, within measurement variance)
+- README screenshot placeholder
+- Installation docs hardcode `anthropics/glass` repo owner
+- Package manager manifests have placeholder values for publish-time substitution
+- macOS/Windows code signing deferred
 
 ## Constraints
 
@@ -179,6 +184,16 @@ Known tech debt:
 | Tab owns SplitNode tree | Each tab has independent pane layout | ✓ Good -- clean ownership, no shared state |
 | find_shell_integration() auto-injection | Source shell script into PTY at spawn time | ✓ Good -- works for bash/zsh/fish/pwsh |
 | fish event handlers (not precmd/preexec) | fish uses fish_prompt/fish_preexec events natively | ✓ Good -- cooperates with Starship/Tide |
+| Feature-gated perf instrumentation | cfg_attr(feature = "perf") for zero-overhead when disabled | ✓ Good -- no runtime cost in release builds |
+| Record cold start honestly at 522ms | Transparency over vanity metrics; 4.4% over target within noise | ✓ Good -- honest baselines |
+| Watch parent directory for config | Handles atomic saves from vim/VSCode that replace the file | ✓ Good -- reliable detection |
+| Error overlay follows SearchOverlay pattern | Architectural consistency with existing overlay system | ✓ Good -- clean integration |
+| Release workflow: parallel jobs, no inter-job deps | softprops/action-gh-release handles race condition | ✓ Good -- fast pipeline |
+| ureq 3 + serde_json for GitHub API | Lightweight HTTP client, no async needed for background thread | ✓ Good -- simple, correct |
+| tempfile with mem::forget for MSI download | Prevents cleanup before msiexec reads the file | ✓ Good -- Windows-specific workaround |
+| Center-text status bar for update notification | Visible without disrupting terminal content | ✓ Good -- clear UX |
+| Winget multi-file manifest v1.6.0 | Standard format accepted by winget-pkgs repo | ✓ Good -- publishable |
+| Homebrew cask targets custom tap | Notarization deferred; tap avoids homebrew-cask review | ✓ Good -- practical distribution |
 
 ---
-*Last updated: 2026-03-07 after v2.1 milestone started*
+*Last updated: 2026-03-07 after v2.1 milestone complete*
