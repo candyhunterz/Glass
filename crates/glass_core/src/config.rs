@@ -134,6 +134,11 @@ impl Default for GlassConfig {
 }
 
 impl GlassConfig {
+    /// Returns the path to `~/.glass/config.toml`, or None if home dir is unavailable.
+    pub fn config_path() -> Option<std::path::PathBuf> {
+        dirs::home_dir().map(|h| h.join(".glass").join("config.toml"))
+    }
+
     /// Load configuration from `~/.glass/config.toml`.
     ///
     /// Returns `Self::default()` if the file is missing, unreadable, or malformed.

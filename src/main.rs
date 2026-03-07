@@ -156,6 +156,10 @@ struct Processor {
     config: GlassConfig,
     /// Instant captured at program start for cold start measurement.
     cold_start: std::time::Instant,
+    /// Current config parse error, if any. Displayed as an overlay banner.
+    config_error: Option<glass_core::config::ConfigError>,
+    /// Whether the config file watcher has been spawned (only once).
+    watcher_spawned: bool,
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -537,6 +541,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                 first_frame_logged: false,
             },
         );
+
+        // Spawn config file watcher (once)
+        if !self.watcher_spawned {
+            self.watcher_spawned = true;
+            if let Some(config_path) = GlassConfig::config_path() {
+                glass_core::config_watcher::spawn_config_watcher(
+                    config_path,
+                    self.proxy.clone(),
+                );
+            }
+        }
     }
 
     /// Handle per-window OS events.
@@ -733,6 +748,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                         &dividers,
                         Some(&status_clone),
                         Some(&tab_display),
+                    );
+                }
+
+                // Config error overlay: render a red banner on top of everything
+                if let Some(ref config_err) = self.config_error {
+                    ctx.frame_renderer.draw_config_error_overlay(
+                        ctx.renderer.device(),
+                        ctx.renderer.queue(),
+                        &view,
+                        sc.width,
+                        sc.height,
+                        config_err,
                     );
                 }
 
@@ -1818,8 +1845,51 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
             }
             AppEvent::ConfigReloaded { config, error } => {
-                // Placeholder: full handler added in Task 2
-                let _ = (config, error);
+                if let Some(err) = error {
+                    tracing::warn!("Config reload error: {}", err);
+                    self.config_error = Some(err);
+                    // Request redraw on all windows to show error overlay
+                    for ctx in self.windows.values() {
+                        ctx.window.request_redraw();
+                    }
+                } else {
+                    // Clear any previous error
+                    self.config_error = None;
+
+                    let new_config = *config;
+                    let font_changed = self.config.font_changed(&new_config);
+
+                    if font_changed {
+                        for ctx in self.windows.values_mut() {
+                            let scale = ctx.window.scale_factor() as f32;
+                            ctx.frame_renderer.update_font(
+                                &new_config.font_family,
+                                new_config.font_size,
+                                scale,
+                            );
+                            // Recalculate terminal grid size for all sessions
+                            let size = ctx.window.inner_size();
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.window.request_redraw();
+                        }
+                    }
+
+                    // Swap config (applies non-visual changes like history thresholds)
+                    self.config = new_config;
+                    tracing::info!("Config reloaded successfully (font_changed={})", font_changed);
+
+                    // Request redraw to clear error overlay even if font didn't change
+                    if !font_changed {
+                        for ctx in self.windows.values() {
+                            ctx.window.request_redraw();
+                        }
+                    }
+                }
             }
             AppEvent::GitInfo { window_id, session_id, info } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
@@ -1974,6 +2044,8 @@ fn main() {
                 modifiers: ModifiersState::empty(),
                 config,
                 cold_start,
+                config_error: None,
+                watcher_spawned: false,
             };
 
             event_loop

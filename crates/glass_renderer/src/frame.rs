@@ -106,6 +106,30 @@ impl FrameRenderer {
         self.grid_renderer.cell_size()
     }
 
+    /// Rebuild font metrics and all dependent sub-renderers after a font change.
+    ///
+    /// Called when the user changes font_family or font_size in config.toml.
+    /// Rebuilds GridRenderer (cell metrics), then updates BlockRenderer,
+    /// SearchOverlayRenderer, StatusBarRenderer, and TabBarRenderer.
+    pub fn update_font(
+        &mut self,
+        font_family: &str,
+        font_size: f32,
+        scale_factor: f32,
+    ) {
+        self.grid_renderer = GridRenderer::new(
+            &mut self.glyph_cache.font_system,
+            font_family,
+            font_size,
+            scale_factor,
+        );
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        self.block_renderer = BlockRenderer::new(cell_width, cell_height);
+        self.search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
+        self.status_bar = StatusBarRenderer::new(cell_height);
+        self.tab_bar = TabBarRenderer::new(cell_width, cell_height);
+    }
+
     /// Returns a reference to the tab bar renderer (for hit testing).
     pub fn tab_bar(&self) -> &TabBarRenderer {
         &self.tab_bar
@@ -890,6 +914,112 @@ impl FrameRenderer {
                 &mut pass,
             ) {
                 tracing::warn!("Multi-pane text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
+    /// Draw a config error overlay banner on top of existing frame content.
+    ///
+    /// Renders a dark red rect at the top of the viewport with the error message.
+    /// Uses LoadOp::Load to preserve the existing frame content underneath.
+    /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
+    pub fn draw_config_error_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        error: &glass_core::config::ConfigError,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        let overlay = crate::config_error_overlay::ConfigErrorOverlay::new(cell_width, cell_height);
+        let error_rects = overlay.build_error_rects(width as f32);
+        let error_labels = overlay.build_error_text(error, width as f32);
+
+        // Reuse self.rect_renderer -- safe because this runs after the main draw
+        self.rect_renderer.prepare(device, queue, &error_rects, width, height);
+
+        // Build error text buffer
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut error_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+        if let Some(label) = error_labels.first() {
+            error_buffer.set_size(
+                &mut self.glyph_cache.font_system,
+                Some(width as f32),
+                Some(cell_height),
+            );
+            error_buffer.set_text(
+                &mut self.glyph_cache.font_system,
+                &label.text,
+                &Attrs::new()
+                    .family(Family::Name(font_family))
+                    .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                Shaping::Advanced,
+                None,
+            );
+            error_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+        }
+
+        let error_text_areas: Vec<TextArea<'_>> = error_labels.iter().take(1).map(|label| {
+            TextArea {
+                buffer: &error_buffer,
+                left: label.x,
+                top: label.y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                custom_glyphs: &[],
+            }
+        }).collect();
+
+        self.glyph_cache.viewport.update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device, queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            error_text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Config error overlay text prepare error: {:?}", e);
+        }
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("config_error_overlay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer.render(&mut pass, error_rects.len() as u32);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Config error overlay text render error: {:?}", e);
             }
         }
         queue.submit([encoder.finish()]);
