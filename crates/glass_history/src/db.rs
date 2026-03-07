@@ -4,6 +4,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 
 /// Current schema version. Bump when adding migrations.
+#[cfg(test)]
 const SCHEMA_VERSION: i64 = 2;
 
 /// A command execution record with all metadata.
