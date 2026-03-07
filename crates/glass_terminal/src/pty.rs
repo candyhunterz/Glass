@@ -88,7 +88,30 @@ fn convert_osc_to_shell(osc: crate::osc_scanner::OscEvent) -> ShellEvent {
     }
 }
 
-/// Spawn a PowerShell PTY via ConPTY and start the dedicated reader thread
+/// Return the platform-appropriate default shell program.
+///
+/// - Windows: probes for `pwsh` (PowerShell 7), falls back to `powershell` (5.1)
+/// - Unix: reads `$SHELL`, falls back to `/bin/sh`
+fn default_shell_program() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if std::process::Command::new("pwsh")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            "pwsh".to_owned()
+        } else {
+            "powershell".to_owned()
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())
+    }
+}
+
+/// Spawn a PTY and start the dedicated reader thread
 /// with integrated OscScanner for shell integration.
 ///
 /// Returns:
@@ -101,8 +124,8 @@ fn convert_osc_to_shell(osc: crate::osc_scanner::OscEvent) -> ShellEvent {
 /// sending ShellEvent variants to the winit event loop for block/status tracking.
 ///
 /// If `shell_override` is `Some`, that shell program is used directly (e.g. "powershell",
-/// "bash"). If `None`, the default detection logic runs: pwsh 7 if available, else
-/// Windows PowerShell 5.1.
+/// "bash"). If `None`, the default detection logic runs: on Windows, pwsh 7 if available
+/// else PowerShell 5.1; on Unix, `$SHELL` or `/bin/sh`.
 pub fn spawn_pty(
     event_proxy: EventProxy,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
@@ -111,13 +134,11 @@ pub fn spawn_pty(
     max_output_capture_kb: u32,
     pipes_enabled: bool,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
-    // Use configured shell if provided, otherwise detect pwsh vs powershell
+    // Use configured shell if provided, otherwise detect platform default
     let shell_program = if let Some(shell) = shell_override {
         shell.to_owned()
-    } else if std::process::Command::new("pwsh").arg("--version").output().is_ok() {
-        "pwsh".to_owned()
     } else {
-        "powershell".to_owned()
+        default_shell_program()
     };
 
     let options = TtyOptions {
@@ -145,7 +166,7 @@ pub fn spawn_pty(
         cell_height: 16,
     };
 
-    let mut pty = tty::new(&options, window_size, 0).expect("Failed to spawn ConPTY (pwsh)");
+    let mut pty = tty::new(&options, window_size, 0).expect("Failed to spawn PTY");
 
     let term_size = TermSize { columns: 80, lines: 24 };
     let term_config = TermConfig {

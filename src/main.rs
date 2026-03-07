@@ -232,7 +232,7 @@ impl ApplicationHandler<AppEvent> for Processor {
         let session_id = SessionId::new(0);
         let event_proxy = EventProxy::new(self.proxy.clone(), window.id(), session_id);
 
-        // Spawn shell via ConPTY with a dedicated reader thread + OscScanner
+        // Spawn shell via PTY with a dedicated reader thread + OscScanner
         let max_output_kb = self.config.history.as_ref()
             .map(|h| h.max_output_capture_kb)
             .unwrap_or(50);
@@ -263,21 +263,34 @@ impl ApplicationHandler<AppEvent> for Processor {
             screen_lines: num_lines as usize,
         });
 
-        tracing::info!("PTY spawned — PowerShell is running");
+        tracing::info!("PTY spawned — shell is running");
 
         // Auto-inject shell integration (platform-aware)
-        let shell_name = self.config.shell.as_deref().unwrap_or("");
-        let is_powershell = shell_name.is_empty()
-            || shell_name.contains("pwsh")
-            || shell_name.to_lowercase().contains("powershell");
-        if is_powershell {
-            if let Some(path) = find_shell_integration(shell_name) {
-                let cmd = format!(". '{}'\r\n", path.display());
-                let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(cmd.into_bytes())));
-                tracing::info!("Auto-injecting shell integration: {}", path.display());
+        let effective_shell = self.config.shell.as_deref()
+            .unwrap_or("")
+            .to_owned();
+        let effective_shell_for_integration = if effective_shell.is_empty() {
+            glass_mux::platform::default_shell()
+        } else {
+            effective_shell.clone()
+        };
+
+        if let Some(path) = find_shell_integration(&effective_shell_for_integration) {
+            let inject_cmd = if effective_shell_for_integration.contains("fish") {
+                format!("source {}\r\n", path.display())
+            } else if effective_shell_for_integration.contains("pwsh")
+                || effective_shell_for_integration.to_lowercase().contains("powershell")
+            {
+                format!(". '{}'\r\n", path.display())
             } else {
-                tracing::warn!("Shell integration script not found for shell: {}", if shell_name.is_empty() { "default" } else { shell_name });
-            }
+                // bash, zsh, and other POSIX shells
+                format!("source '{}'\r\n", path.display())
+            };
+            let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
+            tracing::info!("Auto-injecting shell integration: {}", path.display());
+        } else {
+            tracing::warn!("Shell integration script not found for shell: {}",
+                if effective_shell_for_integration.is_empty() { "default" } else { &effective_shell_for_integration });
         }
 
         let default_colors = DefaultColors::default();
@@ -1249,7 +1262,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 /// - Installed: `<exe_dir>/shell-integration/<script>`
 /// - Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
 fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
-    let script_name = if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") || shell_name.is_empty() {
+    let script_name = if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") {
         "glass.ps1"
     } else if shell_name.contains("zsh") {
         "glass.zsh"
