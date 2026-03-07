@@ -1,0 +1,34 @@
+# Glass Terminal - Winget Default Locale Manifest
+# This is a template for submitting to microsoft/winget-pkgs.
+# Update PackageVersion for each release before submitting a PR.
+
+PackageIdentifier: Glass.Terminal
+PackageVersion: "0.1.0"
+PackageLocale: en-US
+Publisher: Glass Contributors
+PackageName: Glass Terminal
+License: MIT
+ShortDescription: "GPU-accelerated terminal emulator with command structure awareness"
+Description: |-
+  Glass is a GPU-accelerated terminal emulator built in Rust that understands
+  command structure. It passively watches, indexes, and snapshots everything,
+  surfacing intelligence only when you need it.
+
+  Features:
+  - Command blocks: automatic detection of command boundaries with collapsible output
+  - Full-text search across all terminal history with instant results
+  - Undo support: revert commands with Ctrl+Z
+  - Pipe inspection: examine intermediate pipeline stages
+  - Tabs and panes with split-view support
+  - MCP server for AI tool integration
+  - GPU-accelerated rendering via wgpu
+  - Cross-platform: Windows, macOS, Linux
+Tags:
+  - Terminal
+  - Console
+  - Command-Line
+  - GPU
+  - Developer-Tools
+  - Rust
+ManifestType: defaultLocale
+ManifestVersion: "1.6.0"

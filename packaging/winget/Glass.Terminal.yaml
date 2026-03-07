@@ -1,0 +1,9 @@
+# Glass Terminal - Winget Version Manifest
+# This is a template for submitting to microsoft/winget-pkgs.
+# Update PackageVersion for each release before submitting a PR.
+
+PackageIdentifier: Glass.Terminal
+PackageVersion: "0.1.0"
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: "1.6.0"
