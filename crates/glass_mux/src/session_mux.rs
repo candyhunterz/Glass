@@ -240,6 +240,32 @@ impl SessionMux {
     pub fn tabs_mut(&mut self) -> &mut Vec<Tab> {
         &mut self.tabs
     }
+
+    /// Set the focused pane in the active tab. No-op if the session
+    /// doesn't exist in the tab's split tree.
+    pub fn set_focused_pane(&mut self, session_id: SessionId) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            if tab.root.contains(session_id) {
+                tab.focused_pane = session_id;
+            }
+        }
+    }
+
+    /// Resize the split ratio of the nearest ancestor Split matching
+    /// `direction` around the focused pane. Delta is typically +/- 0.05.
+    pub fn resize_focused_split(&mut self, direction: SplitDirection, delta: f32) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            let focused = tab.focused_pane;
+            tab.root.resize_ratio(focused, direction, delta);
+        }
+    }
+
+    /// Return the number of panes in the active tab.
+    pub fn active_tab_pane_count(&self) -> usize {
+        self.tabs.get(self.active_tab)
+            .map(|t| t.pane_count())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -446,6 +472,120 @@ mod tests {
         let mux = test_mux(2);
         let root = mux.active_tab_root().unwrap();
         assert_eq!(root.leaf_count(), 1);
+    }
+
+    // ---- SPLIT-11: Closing last pane closes tab ----
+
+    #[test]
+    fn close_pane_last_pane_closes_tab() {
+        // Create a real SessionMux with 2 tabs, each having 1 pane
+        let sid1 = SessionId::new(0);
+        let sid2 = SessionId::new(1);
+        let tab1 = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Leaf(sid1),
+            focused_pane: sid1,
+            title: "Tab 0".into(),
+        };
+        let tab2 = Tab {
+            id: TabId::new(1),
+            root: SplitNode::Leaf(sid2),
+            focused_pane: sid2,
+            title: "Tab 1".into(),
+        };
+        let mut mux = SessionMux {
+            sessions: HashMap::new(),
+            tabs: vec![tab1, tab2],
+            active_tab: 0,
+            next_id: 2,
+        };
+        assert_eq!(mux.tab_count(), 2);
+
+        // Close the last (only) pane in tab 0 -> should close the tab
+        let _removed = mux.close_pane(sid1);
+        assert_eq!(mux.tab_count(), 1);
+        // Remaining tab should be tab2
+        assert_eq!(mux.tabs()[0].title, "Tab 1");
+    }
+
+    #[test]
+    fn close_pane_two_pane_split_leaves_single_pane() {
+        // Create a tab with a horizontal split (2 panes)
+        let sid1 = SessionId::new(10);
+        let sid2 = SessionId::new(11);
+        let tab = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Split {
+                direction: SplitDirection::Horizontal,
+                left: Box::new(SplitNode::Leaf(sid1)),
+                right: Box::new(SplitNode::Leaf(sid2)),
+                ratio: 0.5,
+            },
+            focused_pane: sid2,
+            title: "Split Tab".into(),
+        };
+        let mut mux = SessionMux {
+            sessions: HashMap::new(),
+            tabs: vec![tab],
+            active_tab: 0,
+            next_id: 12,
+        };
+        assert_eq!(mux.tab_count(), 1);
+        assert_eq!(mux.tabs()[0].pane_count(), 2);
+
+        // Close one pane -> tab remains with 1 pane
+        let _removed = mux.close_pane(sid2);
+        assert_eq!(mux.tab_count(), 1);
+        assert_eq!(mux.tabs()[0].pane_count(), 1);
+        // Focus should move to sid1
+        assert_eq!(mux.focused_session_id(), Some(sid1));
+    }
+
+    // ---- SessionMux helper methods ----
+
+    #[test]
+    fn set_focused_pane_changes_focus() {
+        let sid1 = SessionId::new(10);
+        let sid2 = SessionId::new(11);
+        let tab = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Split {
+                direction: SplitDirection::Horizontal,
+                left: Box::new(SplitNode::Leaf(sid1)),
+                right: Box::new(SplitNode::Leaf(sid2)),
+                ratio: 0.5,
+            },
+            focused_pane: sid1,
+            title: "test".into(),
+        };
+        let mut mux = SessionMux {
+            sessions: HashMap::new(),
+            tabs: vec![tab],
+            active_tab: 0,
+            next_id: 12,
+        };
+        assert_eq!(mux.focused_session_id(), Some(sid1));
+        mux.set_focused_pane(sid2);
+        assert_eq!(mux.focused_session_id(), Some(sid2));
+    }
+
+    #[test]
+    fn set_focused_pane_invalid_noop() {
+        let sid1 = SessionId::new(10);
+        let tab = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Leaf(sid1),
+            focused_pane: sid1,
+            title: "test".into(),
+        };
+        let mut mux = SessionMux {
+            sessions: HashMap::new(),
+            tabs: vec![tab],
+            active_tab: 0,
+            next_id: 11,
+        };
+        mux.set_focused_pane(SessionId::new(99)); // not in tree
+        assert_eq!(mux.focused_session_id(), Some(sid1)); // unchanged
     }
 
     #[test]

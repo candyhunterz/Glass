@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
 use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
-use glass_mux::{Session, SessionMux, SearchOverlay, ViewportLayout};
+use glass_mux::{FocusDirection, Session, SessionMux, SearchOverlay, SplitDirection, ViewportLayout};
 use glass_renderer::{DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport};
 use glass_renderer::tab_bar::TabDisplayInfo;
 use glass_terminal::{
@@ -246,6 +246,55 @@ fn compute_dividers(pane_layouts: &[(SessionId, ViewportLayout)]) -> Vec<Divider
         }
     }
     dividers
+}
+
+/// Resize all panes' PTYs in the active tab with per-pane cell dimensions.
+///
+/// Computes container viewport (accounting for tab bar + status bar),
+/// then for each pane: compute per-pane num_cols and num_lines from the
+/// pane viewport dimensions divided by cell size, and send PTY resize.
+fn resize_all_panes(
+    session_mux: &mut SessionMux,
+    frame_renderer: &FrameRenderer,
+    window_width: u32,
+    window_height: u32,
+) {
+    let (cell_w, cell_h) = frame_renderer.cell_size();
+
+    // Container viewport: subtract tab bar (top) and status bar (bottom)
+    let container = ViewportLayout {
+        x: 0,
+        y: cell_h as u32,
+        width: window_width,
+        height: window_height.saturating_sub((cell_h as u32) * 2),
+    };
+
+    // Compute pane layouts from the active tab's split tree
+    let pane_layouts: Vec<(SessionId, ViewportLayout)> = session_mux
+        .active_tab_root()
+        .map(|root| root.compute_layout(&container))
+        .unwrap_or_default();
+
+    // Resize each pane's PTY with per-pane dimensions
+    for (sid, vp) in &pane_layouts {
+        let pane_cols = (vp.width as f32 / cell_w).floor().max(1.0) as u16;
+        let pane_lines = (vp.height as f32 / cell_h).floor().max(1.0) as u16;
+
+        let pane_size = WindowSize {
+            num_lines: pane_lines,
+            num_cols: pane_cols,
+            cell_width: cell_w as u16,
+            cell_height: cell_h as u16,
+        };
+
+        if let Some(session) = session_mux.session_mut(*sid) {
+            let _ = session.pty_sender.send(PtyMsg::Resize(pane_size));
+            session.term.lock().resize(TermDimensions {
+                columns: pane_cols as usize,
+                screen_lines: pane_lines as usize,
+            });
+        }
+    }
 }
 
 /// Create a new terminal session with PTY, shell integration, history DB, and snapshot store.
@@ -707,28 +756,51 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
                 ctx.renderer.resize(size.width, size.height);
 
-                // Compute terminal grid size from font metrics.
-                // Subtract 2 lines for the status bar + tab bar.
                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+
+                // Active tab: use per-pane resize for correct split dimensions (SPLIT-09)
+                if ctx.session_mux.active_tab_pane_count() > 1 {
+                    resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                } else {
+                    // Single-pane active tab: full window dimensions minus chrome
+                    let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                    let num_lines =
+                        ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
+                    let full_size = WindowSize {
+                        num_lines,
+                        num_cols,
+                        cell_width: cell_w as u16,
+                        cell_height: cell_h as u16,
+                    };
+                    if let Some(session) = ctx.session_mux.focused_session_mut() {
+                        let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                        session.term.lock().resize(TermDimensions {
+                            columns: num_cols as usize,
+                            screen_lines: num_lines as usize,
+                        });
+                    }
+                }
+
+                // Background tabs: resize with full window dimensions
+                // (they will recompute when activated)
                 let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
                 let num_lines =
                     ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
-
-                // Notify PTY of the new terminal size with real cell dimensions
-                let new_window_size = WindowSize {
+                let full_size = WindowSize {
                     num_lines,
                     num_cols,
                     cell_width: cell_w as u16,
                     cell_height: cell_h as u16,
                 };
-
-                // Resize ALL sessions (not just active) so background tabs are ready
-                let session_ids: Vec<_> = ctx.session_mux.tabs().iter()
-                    .flat_map(|t| t.session_ids())
+                let active_idx = ctx.session_mux.active_tab_index();
+                let bg_session_ids: Vec<_> = ctx.session_mux.tabs().iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != active_idx)
+                    .flat_map(|(_, t)| t.session_ids())
                     .collect();
-                for sid in session_ids {
+                for sid in bg_session_ids {
                     if let Some(session) = ctx.session_mux.session_mut(sid) {
-                        let _ = session.pty_sender.send(PtyMsg::Resize(new_window_size));
+                        let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
                         session.term.lock().resize(TermDimensions {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
@@ -835,7 +907,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let mode = *ctx.session().term.lock().mode();
 
-                    // Tab management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
+                    // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
                     if glass_mux::is_glass_shortcut(modifiers) {
                         match &event.logical_key {
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
@@ -854,15 +926,72 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
-                                let idx = ctx.session_mux.active_tab_index();
-                                if let Some(session) = ctx.session_mux.close_tab(idx) {
-                                    cleanup_session(session);
+                                // Close pane if multiple panes, otherwise close tab
+                                if ctx.session_mux.active_tab_pane_count() > 1 {
+                                    // Close focused pane
+                                    if let Some(focused_id) = ctx.session_mux.focused_session_id() {
+                                        let tab_count_before = ctx.session_mux.tab_count();
+                                        if let Some(session) = ctx.session_mux.close_pane(focused_id) {
+                                            cleanup_session(session);
+                                        }
+                                        // If close_pane closed the tab (shouldn't happen with >1 pane, but guard)
+                                        if ctx.session_mux.tab_count() < tab_count_before {
+                                            if ctx.session_mux.tab_count() == 0 {
+                                                self.windows.remove(&window_id);
+                                                event_loop.exit();
+                                                return;
+                                            }
+                                        }
+                                        // Resize remaining panes' PTYs
+                                        let size = ctx.window.inner_size();
+                                        resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                    }
+                                } else {
+                                    // Single pane: close the entire tab
+                                    let idx = ctx.session_mux.active_tab_index();
+                                    if let Some(session) = ctx.session_mux.close_tab(idx) {
+                                        cleanup_session(session);
+                                    }
+                                    if ctx.session_mux.tab_count() == 0 {
+                                        self.windows.remove(&window_id);
+                                        event_loop.exit();
+                                        return;
+                                    }
                                 }
-                                if ctx.session_mux.tab_count() == 0 {
-                                    self.windows.remove(&window_id);
-                                    event_loop.exit();
-                                    return;
-                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
+                                // Horizontal split (new pane to the right)
+                                let cwd = ctx.session().status.cwd().to_string();
+                                let session_id = ctx.session_mux.next_session_id();
+                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                                let size = ctx.window.inner_size();
+                                let session = create_session(
+                                    &self.proxy, window_id, session_id, &self.config,
+                                    Some(std::path::Path::new(&cwd)), cell_w, cell_h,
+                                    size.width, size.height, 1,
+                                );
+                                ctx.session_mux.split_pane(SplitDirection::Horizontal, session);
+                                // Resize all panes' PTYs with per-pane dimensions
+                                resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
+                                // Vertical split (new pane below)
+                                let cwd = ctx.session().status.cwd().to_string();
+                                let session_id = ctx.session_mux.next_session_id();
+                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                                let size = ctx.window.inner_size();
+                                let session = create_session(
+                                    &self.proxy, window_id, session_id, &self.config,
+                                    Some(std::path::Path::new(&cwd)), cell_w, cell_h,
+                                    size.width, size.height, 1,
+                                );
+                                ctx.session_mux.split_pane(SplitDirection::Vertical, session);
+                                // Resize all panes' PTYs with per-pane dimensions
+                                resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -1020,6 +1149,57 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
+                    // Alt+Arrow: move focus between panes
+                    // Alt+Shift+Arrow: resize split ratio
+                    if modifiers.alt_key() && !modifiers.control_key() {
+                        let arrow_dir = match &event.logical_key {
+                            Key::Named(NamedKey::ArrowLeft) => Some(FocusDirection::Left),
+                            Key::Named(NamedKey::ArrowRight) => Some(FocusDirection::Right),
+                            Key::Named(NamedKey::ArrowUp) => Some(FocusDirection::Up),
+                            Key::Named(NamedKey::ArrowDown) => Some(FocusDirection::Down),
+                            _ => None,
+                        };
+
+                        if let Some(dir) = arrow_dir {
+                            if modifiers.shift_key() {
+                                // Alt+Shift+Arrow: resize split ratio
+                                let (split_dir, delta) = match dir {
+                                    FocusDirection::Left => (SplitDirection::Horizontal, -0.05f32),
+                                    FocusDirection::Right => (SplitDirection::Horizontal, 0.05f32),
+                                    FocusDirection::Up => (SplitDirection::Vertical, -0.05f32),
+                                    FocusDirection::Down => (SplitDirection::Vertical, 0.05f32),
+                                };
+                                ctx.session_mux.resize_focused_split(split_dir, delta);
+                                // Resize all panes' PTYs with new dimensions
+                                let size = ctx.window.inner_size();
+                                resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                ctx.window.request_redraw();
+                                return;
+                            } else {
+                                // Alt+Arrow: move focus
+                                if ctx.session_mux.active_tab_pane_count() > 1 {
+                                    let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                                    let sc = ctx.renderer.surface_config();
+                                    let container = ViewportLayout {
+                                        x: 0,
+                                        y: cell_h as u32,
+                                        width: sc.width,
+                                        height: sc.height.saturating_sub((cell_h as u32) * 2),
+                                    };
+                                    if let Some(focused) = ctx.session_mux.focused_session_id() {
+                                        if let Some(root) = ctx.session_mux.active_tab_root() {
+                                            if let Some(target) = root.find_neighbor(focused, dir, &container) {
+                                                ctx.session_mux.set_focused_pane(target);
+                                                ctx.window.request_redraw();
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) =
@@ -1054,6 +1234,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                             ctx.window.request_redraw();
                         }
                         return; // Don't fall through to pipeline hit test
+                    }
+                }
+
+                // Multi-pane click focus: if click is in a different pane, change focus
+                if ctx.session_mux.active_tab_pane_count() > 1 {
+                    if let Some((click_x, click_y)) = ctx.session().cursor_position {
+                        let (_, cell_h) = ctx.frame_renderer.cell_size();
+                        let sc = ctx.renderer.surface_config();
+                        let container = ViewportLayout {
+                            x: 0,
+                            y: cell_h as u32,
+                            width: sc.width,
+                            height: sc.height.saturating_sub((cell_h as u32) * 2),
+                        };
+                        if let Some(root) = ctx.session_mux.active_tab_root() {
+                            let pane_layouts = root.compute_layout(&container);
+                            let focused_id = ctx.session_mux.focused_session_id();
+                            // Find which pane contains the click
+                            let clicked_pane = pane_layouts.iter().find(|(_, vp)| {
+                                let cx = click_x as u32;
+                                let cy = click_y as u32;
+                                cx >= vp.x && cx < vp.x + vp.width
+                                    && cy >= vp.y && cy < vp.y + vp.height
+                            });
+                            if let Some((target_id, _)) = clicked_pane {
+                                if focused_id != Some(*target_id) {
+                                    ctx.session_mux.set_focused_pane(*target_id);
+                                    ctx.window.request_redraw();
+                                    // Don't return -- still allow pipeline hit test below
+                                }
+                            }
+                        }
                     }
                 }
 
