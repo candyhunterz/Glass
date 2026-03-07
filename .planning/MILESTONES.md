@@ -1,5 +1,33 @@
 # Milestones
 
+## v2.0 Cross-Platform & Tabs (Shipped: 2026-03-07)
+
+**Phases completed:** 5 phases, 12 plans
+**Lines of code:** 17,868 Rust (up from 14,822)
+**Timeline:** 2026-03-06 to 2026-03-07 (2 days)
+**Git range:** feat(21-01) to feat(shell)
+**Files changed:** 29 files, +4,265 / -1,091 lines
+
+**Delivered:** Multi-session terminal architecture with tab bar, split panes, cross-platform compilation, and shell integration for all major shells (bash, zsh, fish, PowerShell).
+
+**Key accomplishments:**
+- glass_mux crate with SessionMux multiplexer, Session struct, and platform cfg-gated helpers (default_shell, is_glass_shortcut)
+- SessionId newtype routing through AppEvent/EventProxy for multi-session event dispatch
+- Cross-platform compilation (Windows/macOS/Linux) with CI matrix, platform-aware font defaults, and shell detection
+- Shell integration for bash, zsh, fish, and PowerShell with auto-injection via find_shell_integration()
+- Tab system with TabBarRenderer (GPU rect/text), keyboard shortcuts (Ctrl+Shift+T/W), mouse click, CWD inheritance
+- Binary tree split pane layout engine (SplitTree) with compute_layout, remove_leaf, find_neighbor, resize_ratio (26 TDD tests)
+- Per-pane scissor-clipped rendering with viewport offsets, focus accent borders, and divider drawing
+- Pane-aware TerminalExit handler routing PTY exit to close_pane or close_tab based on pane count
+
+**Tech debt (from audit):**
+- default_shell_program() duplicated in pty.rs and platform.rs
+- config_dir() and data_dir() exported but never consumed (orphaned API)
+- ScaleFactorChanged is log-only -- no dynamic font metric recalculation
+- Human visual verification pending for split pane rendering, focus borders, resize, mouse click
+
+---
+
 ## v1.3 Pipe Visualization (Shipped: 2026-03-06)
 
 **Phases completed:** 6 phases, 11 plans

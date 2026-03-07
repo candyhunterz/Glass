@@ -2,6 +2,57 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v2.0 -- Cross-Platform & Tabs
+
+**Shipped:** 2026-03-07
+**Phases:** 5 | **Plans:** 12 | **Sessions:** ~3
+
+### What Was Built
+- glass_mux crate with SessionMux multiplexer, Session struct (15 fields from WindowContext), and platform cfg-gated helpers
+- SessionId newtype routing through all AppEvent variants and EventProxy for multi-session event dispatch
+- Cross-platform compilation (Windows/macOS/Linux) with 3-platform CI matrix, platform-aware shell detection and font defaults
+- Shell integration auto-injection for bash, zsh, fish, and PowerShell via find_shell_integration()
+- Tab system with GPU-rendered tab bar (TabBarRenderer), Ctrl+Shift+T/W shortcuts, mouse click activation, CWD inheritance
+- Binary tree split pane layout engine (SplitTree) with compute_layout, remove_leaf, find_neighbor, resize_ratio (26 TDD tests)
+- Per-pane scissor-clipped rendering with viewport offsets, focus accent borders, and divider drawing
+- Pane-aware TerminalExit handler routing PTY exit to close_pane or close_tab based on pane count
+
+### What Worked
+- SessionMux extraction (Phase 21) as separate crate kept glass_terminal untouched -- clean boundary
+- Phase 25 gap closure pattern (again!) caught TerminalExit pane-awareness gap that audit identified
+- Binary tree TDD approach (26 tests before integration) made split pane rendering integration smooth
+- Single-pane rendering path preserved for zero regression risk -- multi-pane only activates when splits exist
+- Platform cfg-gating compiled correctly on first try for all 3 platforms (CI validated)
+- fish shell integration gap caught during re-audit and fixed before milestone completion
+
+### What Was Inefficient
+- default_shell_program() duplicated in pty.rs and platform.rs -- glass_terminal can't depend on glass_mux (circular), so inline copy was necessary but is tech debt
+- config_dir() and data_dir() built speculatively in platform.rs but never consumed -- orphaned API
+- ScaleFactorChanged handler is log-only -- FrameRenderer lacks dynamic DPI recalculation
+- glass.fish not created during Phase 22 despite code referencing it -- caught only on re-audit
+- ROADMAP heading said "Phases 21-24" even though Phase 25 existed -- heading accuracy drifted
+
+### Patterns Established
+- SessionId newtype with Copy + Hash for zero-cost routing through event dispatch
+- SplitNode binary tree with in-place split_leaf mutation and first_leaf fallback on close
+- Viewport offset + TextBounds clipping for multi-pane rendering (not wgpu scissor rects)
+- Pairwise gap detection for divider rect computation between adjacent pane viewports
+- fish event handlers (fish_prompt, fish_preexec) for shell integration without precmd/preexec
+
+### Key Lessons
+1. Gap closure is now a 5-milestone proven pattern -- Phase 25 and glass.fish fix both caught by audit
+2. Asset existence should be verified alongside code paths -- glass.fish code existed but the file didn't
+3. Binary tree TDD before integration is the right split pane strategy -- 26 tests gave confidence for the rendering work
+4. Viewport offset rendering is simpler than GPU scissor rects for terminal panes
+5. Platform cfg-gating works well at compile time -- prefer cfg attributes over runtime checks
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~3 sessions across 2 days
+- Notable: 12 plans in ~23 min averaged (~4 min/plan), fastest milestone yet due to well-established patterns and smaller individual plan scope
+
+---
+
 ## Milestone: v1.2 -- Command-Level Undo
 
 **Shipped:** 2026-03-06
@@ -201,6 +252,7 @@
 | v1.1 | ~5 | 5 | Added gap closure pattern, cross-crate integration testing |
 | v1.2 | ~4 | 5 | Dual mechanism design, re-verification after gap closure, parallel phase execution |
 | v1.3 | ~3 | 6 | Audit-driven gap closure phase, dead code removal as explicit phase, three-layer config gating |
+| v2.0 | ~3 | 5 | Multi-session architecture, binary tree TDD, asset existence verification |
 
 ### Cumulative Quality
 
@@ -210,6 +262,7 @@
 | v1.1 | 88+ (phase 5 alone) | Partial (Nyquist gaps in phases 5-9) | 4 |
 | v1.2 | 234+ (full workspace) | Partial (Nyquist gaps in phases 10-14) | 2 |
 | v1.3 | 376+ (full workspace) | Partial (Phase 17 verified, 5 phases partial) | 2 |
+| v2.0 | 436 (full workspace) | Partial (Nyquist partial across phases 21-25) | 4 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -217,7 +270,8 @@
 2. Roadmap checkbox state drifts consistently -- needs automated verification
 3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
-5. Gap closure plans are reliable -- confirmed in v1.1 (Phase 6) and v1.2 (Phase 13); plan for them proactively
-6. Nyquist validation is persistently skipped -- 4 milestones with partial coverage; needs workflow integration, not just reminders
-7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3 -- always run audit before marking milestone complete
-8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs removed after 1 milestone)
+5. Gap closure plans are reliable -- confirmed in v1.1, v1.2, v1.3, v2.0; plan for them proactively
+6. Nyquist validation is persistently skipped -- 5 milestones with partial coverage; needs workflow integration, not just reminders
+7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0 -- always run audit before marking milestone complete
+8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs in v1.3, config_dir/data_dir in v2.0)
+9. Verify asset existence alongside code paths -- code referencing non-existent files passes compilation but fails at runtime (glass.fish in v2.0)

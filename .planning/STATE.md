@@ -1,33 +1,32 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.0
-milestone_name: Cross-Platform & Tabs
-status: completed
-stopped_at: Completed 25-01-PLAN.md
-last_updated: "2026-03-07T04:59:56.546Z"
-last_activity: 2026-03-07 -- Completed 25-01 (TerminalExit Multi-Pane Fix)
+milestone: none
+milestone_name: none
+status: between_milestones
+stopped_at: v2.0 milestone completed
+last_updated: "2026-03-07T09:00:00.000Z"
+last_activity: 2026-03-07 -- Completed v2.0 milestone (Cross-Platform & Tabs)
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 12
-  completed_plans: 12
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-06)
+See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 25 complete -- TerminalExit Multi-Pane Fix
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 25 of 25 -- TerminalExit Multi-Pane Fix
-Plan: 1 of 1
-Status: Complete
-Last activity: 2026-03-07 -- Completed 25-01 (TerminalExit Multi-Pane Fix)
+Milestone: v2.0 shipped 2026-03-07
+Status: Between milestones
+Last activity: 2026-03-07 -- Completed v2.0 (Cross-Platform & Tabs)
 
 ## Performance Metrics
 
@@ -45,45 +44,7 @@ Last activity: 2026-03-07 -- Completed 25-01 (TerminalExit Multi-Pane Fix)
 ### Decisions
 
 See PROJECT.md Key Decisions table for full history.
-
-- [21-01] Copied SearchOverlay into glass_mux for per-session ownership
-- [21-01] SessionId/TabId use u64 wrapper (no uuid dependency needed)
-- [21-01] Platform helpers use cfg-gated function definitions per OS
-- [21-02] SessionId defined in glass_core::event (not glass_mux) to avoid circular crate dependency
-- [21-02] TerminalDirty excluded from session_id (any dirty triggers full redraw)
-- [21-03] glass_mux re-exports glass_core::event::SessionId (unified type, no duplication)
-- [21-03] Clone visible blocks and StatusState in render path for borrow-checker compliance
-- [21-03] OverlayAction enum pattern for search overlay key handling
-- [22-01] Inline default_shell_program() in pty.rs to avoid glass_terminal depending on glass_mux
-- [22-01] Use not(any(windows, macos)) for Linux font default to cover other Unix-likes
-- [22-01] Resolve effective shell via glass_mux::platform::default_shell() before find_shell_integration
-- [22-02] Local PTY token constants matching upstream per-platform values (avoids pub(crate) dependency)
-- [22-02] ScaleFactorChanged logs warning only (FrameRenderer lacks dynamic DPI update)
-- [22-02] Cross-compilation validated per-crate (C deps need target CC toolchain, CI handles natively)
-- [23-01] Tab title cloned from session.title at creation (not live-linked)
-- [23-01] add_tab inserts after active tab (browser convention)
-- [23-01] Test helper uses synthetic tabs without real Session instances
-- [23-02] Tab bar color hierarchy: bar bg 30/255, inactive 35/255, active 50/255
-- [23-02] 1px gap between tab rects for visual separation
-- [23-02] cell_width stored on TabBarRenderer for future text centering
-- [23-03] Subtract 2 lines for terminal size (status bar + tab bar)
-- [23-03] Resize all sessions on window resize (not just active tab)
-- [23-03] TerminalExit closes only affected tab by session_id lookup
-- [23-03] create_session/cleanup_session extracted as reusable helpers
-- [24-01] Usable-space-first gap accounting: subtract 2px gap before ratio split
-- [24-01] Manhattan distance for find_neighbor across nested splits
-- [24-01] resize_ratio finds nearest ancestor Split matching direction
-- [24-02] Single-pane path uses existing draw_frame for zero regression risk
-- [24-02] Multi-pane rendering uses viewport offsets + TextBounds clipping (not wgpu scissor_rect)
-- [24-02] SplitNode.split_leaf in-place mutation for splitting focused pane
-- [24-02] close_pane sets focused_pane to first_leaf of remaining tree
-- [24-02] Divider rects computed by pairwise gap detection between pane viewports
-- [24-03] Ctrl+Shift+W disambiguated: close pane if multi-pane, close tab if single pane
-- [24-03] Per-pane PTY resize uses pane viewport dimensions / cell size (not full window)
-- [24-03] Block decoration reflow triggered on resize to prevent stale decorations
-- [Phase 24]: Ctrl+Shift+W disambiguated: close pane if multi-pane, close tab if single pane
-- [25-01] TerminalExit handler mirrors Ctrl+Shift+W pane-count logic (close_pane for multi-pane, close_tab for single)
-- [25-01] Use session_id from TerminalExit event directly for tab lookup (not focused_session_id)
+v2.0 decisions archived -- see milestones/v2.0-ROADMAP.md for phase-level details.
 
 ### Pending Todos
 
@@ -91,13 +52,10 @@ None.
 
 ### Blockers/Concerns
 
-- Research flag: Bash DEBUG trap reliability across bash versions needs testing
-- Research flag: Expanded stage output for long captures may need virtual scrolling
-- Known tech debt: pruner.rs max_size_mb not enforced
-- Known tech debt: PipeStage.is_tty vestigial after classify.rs removal
+None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T04:56:05Z
-Stopped at: Completed 25-01-PLAN.md
+Last session: 2026-03-07
+Stopped at: v2.0 milestone completed
 Resume file: None

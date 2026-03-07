@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for PowerShell and Bash emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output.
+Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for Bash, Zsh, Fish, and PowerShell emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output. Multiple terminal sessions run in tabs with a GPU-rendered tab bar, and tabs can be split horizontally or vertically into independent panes with a binary tree layout engine.
 
 ## Core Value
 
@@ -52,32 +52,25 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ pipe_stages DB table with schema migration and retention cascade -- v1.3
 - ✓ GlassPipeInspect MCP tool and GlassContext pipeline stats -- v1.3
 - ✓ [pipes] config section with enabled gate, max_capture_mb, auto_expand -- v1.3
+- ✓ SessionMux multiplexer with Session struct and platform cfg-gated helpers -- v2.0
+- ✓ SessionId newtype routing through AppEvent/EventProxy for multi-session dispatch -- v2.0
+- ✓ Cross-platform compilation (Windows/macOS/Linux) with 3-platform CI matrix -- v2.0
+- ✓ Platform-aware shell detection and font defaults -- v2.0
+- ✓ Shell integration for bash, zsh, fish, and PowerShell with auto-injection -- v2.0
+- ✓ Tab bar with GPU-rendered rects/text, Ctrl+Shift+T/W shortcuts, mouse click, CWD inheritance -- v2.0
+- ✓ Binary tree split pane layout engine (SplitTree) with TDD (26 tests) -- v2.0
+- ✓ Per-pane scissor-clipped rendering with viewport offsets, focus borders, dividers -- v2.0
+- ✓ Split pane keyboard shortcuts (Ctrl+Shift+D/E), focus navigation (Alt+Arrow), resize (Alt+Shift+Arrow) -- v2.0
+- ✓ Independent PTY/history/snapshot per tab and pane -- v2.0
+- ✓ Pane-aware TerminalExit handler (close_pane vs close_tab based on pane count) -- v2.0
 
 ### Active
 
-- [ ] macOS support (Metal, FSEvents, Cmd shortcuts, zsh/bash/fish)
-- [ ] Linux support (Vulkan/GL, inotify, Wayland+X11, XDG, bash/zsh/fish)
-- [ ] Platform PTY abstraction (ConPTY vs forkpty)
-- [ ] CI cross-compilation and per-platform test matrix
-- [ ] Tab bar with keyboard shortcuts
-- [ ] Vertical and horizontal split panes
-- [ ] Independent PTY/history/snapshot per tab/pane
-
-## Current Milestone: v2.0 Cross-Platform & Tabs
-
-**Goal:** Port Glass to macOS and Linux, and add tabbed/split-pane terminal sessions.
-
-**Target features:**
-- macOS support (Metal backend, FSEvents, native .app, Cmd shortcuts)
-- Linux support (Vulkan/GL backend, inotify, Wayland+X11, XDG conventions)
-- Platform PTY abstraction layer
-- Tab bar with new/close/switch shortcuts
-- Vertical and horizontal split panes
-- Independent PTY, history, and snapshot context per session
+(No active requirements -- next milestone not yet defined)
 
 ### Deferred (Future Milestones)
 
-- Block collapse/expand, URL detection, block keyboard navigation -- UI polish, not v2.0
+- Block collapse/expand, URL detection, block keyboard navigation -- UI polish
 - Config hot reload -- deferred to Packaging & Polish milestone
 - Blob compression with zstd -- storage optimization, not critical yet
 - Diff view before undo -- undo enhancement
@@ -85,6 +78,8 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - Undo/redo chain navigation -- undo enhancement
 - File modification timeline queries -- history enhancement
 - Multi-command batch undo -- undo enhancement
+- macOS runtime validation (Metal backend, FSEvents, Cmd shortcuts) -- compiles but not runtime-tested
+- Linux runtime validation (Vulkan/GL, inotify, Wayland+X11) -- compiles but not runtime-tested
 
 ### Out of Scope
 
@@ -106,15 +101,17 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v1.3 with 28,885 LOC Rust across 11 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp + root binary).
+Shipped v2.0 with 17,868 LOC Rust across 12 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux + root binary).
 Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4.
-Windows 11 first -- ConPTY for PTY, DX12 for GPU rendering.
-Built across 4 milestones (20 phases, 48 plans) in 3 days.
+Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
+Built across 5 milestones (25 phases, 60 plans) in 4 days. 436 tests passing.
 
 Known tech debt:
 - pruner.rs max_size_mb not enforced (count and age pruning work)
-- PTY throughput not benchmarked quantitatively
 - PipeStage.is_tty vestigial after classify.rs removal
+- default_shell_program() duplicated in pty.rs and platform.rs
+- config_dir() and data_dir() exported but never consumed
+- ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Nyquist validation partial across most phases
 
 ## Constraints
@@ -163,6 +160,14 @@ Known tech debt:
 | Pipeline overlays (not grid rows) for stage rendering | Consistent with existing overlay architecture | ✓ Good -- no grid disruption |
 | GLASS_PIPES_DISABLED env var for shell IPC | Shells can't read TOML config; env var is universal | ✓ Good -- clean three-layer gate |
 | Separate pipe_stages DB table with FK cascade | Independent lifecycle from commands, clean pruning | ✓ Good -- schema v2 migration works |
+| SessionMux as separate glass_mux crate | Clean boundary: session state vs terminal rendering | ✓ Good -- enables multi-session without touching glass_terminal |
+| SessionId newtype with Copy/Hash | Cheap routing key, pattern-matched in event dispatch | ✓ Good -- zero-cost abstraction |
+| Platform cfg-gating (windows/macos/unix) | Compile-time elimination of platform code | ✓ Good -- all 3 platforms compile |
+| Binary tree for split layout | Recursive splits, natural sibling collapse on close | ✓ Good -- 26 TDD tests, clean API |
+| Scissor-clip per-pane rendering | Reuse single FrameRenderer with viewport offset | ✓ Good -- no per-pane GPU pipeline needed |
+| Tab owns SplitNode tree | Each tab has independent pane layout | ✓ Good -- clean ownership, no shared state |
+| find_shell_integration() auto-injection | Source shell script into PTY at spawn time | ✓ Good -- works for bash/zsh/fish/pwsh |
+| fish event handlers (not precmd/preexec) | fish uses fish_prompt/fish_preexec events natively | ✓ Good -- cooperates with Starship/Tide |
 
 ---
-*Last updated: 2026-03-06 after v2.0 milestone started*
+*Last updated: 2026-03-07 after v2.0 milestone completed*
