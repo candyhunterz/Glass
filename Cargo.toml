@@ -57,6 +57,9 @@ windows-sys   = { version = "0.59", features = ["Win32_System_Console"] }
 name = "glass"
 version = "0.1.0"
 edition = "2021"
+authors = ["Glass Contributors"]
+license = "MIT"
+description = "GPU-accelerated terminal emulator with command structure awareness"
 
 [features]
 perf = ["glass_terminal/perf", "glass_renderer/perf", "dep:tracing-chrome"]

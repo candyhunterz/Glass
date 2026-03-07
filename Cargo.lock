@@ -1221,6 +1221,7 @@ name = "glass_core"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "notify",
  "serde",
  "toml",
  "tracing",
