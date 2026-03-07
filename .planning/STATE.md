@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
-status: completed
-stopped_at: Completed 27-02-PLAN.md
-last_updated: "2026-03-07T18:21:04.413Z"
-last_activity: 2026-03-07 -- Phase 27 Plan 02 complete (config hot-reload)
+status: in-progress
+stopped_at: Completed 28-01-PLAN.md
+last_updated: "2026-03-07T18:38:00Z"
+last_activity: 2026-03-07 -- Phase 28 Plan 01 complete (platform packaging configs)
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
-  percent: 100
+  total_plans: 6
+  completed_plans: 5
+  percent: 83
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 27 - Config Validation & Hot-Reload
+**Current focus:** Phase 28 - Platform Packaging & CI Release
 
 ## Current Position
 
-Phase: 27 of 30 (Config Validation & Hot-Reload)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 27 Complete
-Last activity: 2026-03-07 -- Phase 27 Plan 02 complete (config hot-reload)
+Phase: 28 of 30 (Platform Packaging & CI Release)
+Plan: 1 of 2 in current phase
+Status: Plan 28-01 Complete
+Last activity: 2026-03-07 -- Phase 28 Plan 01 complete (platform packaging configs)
 
-Progress: [██████████] Phase 27: 2/2 plans complete (100%)
+Progress: [█████░░░░░] Phase 28: 1/2 plans complete (50%)
 
 ## Performance Metrics
 
@@ -40,8 +40,8 @@ Progress: [██████████] Phase 27: 2/2 plans complete (100%)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
 - v2.0: 6 plans in ~23 min (~4 min/plan)
-- v2.1: 4 plans in ~16 min (~4 min/plan)
-- Total: 59 plans across 27 phases in 3 days
+- v2.1: 5 plans in ~19 min (~4 min/plan)
+- Total: 60 plans across 28 phases in 3 days
 
 ## Accumulated Context
 
@@ -50,6 +50,9 @@ Progress: [██████████] Phase 27: 2/2 plans complete (100%)
 See PROJECT.md Key Decisions table for full history.
 
 Recent decisions affecting v2.1:
+- UpgradeCode GUID D5F79758-7183-4EBE-9B63-DADD19B1D42C is permanent for Windows MSI upgrades
+- macOS minimum version 11.0 (Big Sur), bundle ID com.glass.terminal
+- packaging/ directory structure for platform-specific files
 - SessionMux multi-session architecture means config hot-reload must propagate to ALL sessions/panes
 - Cross-platform CI matrix already exists (Windows/macOS/Linux) -- extend for release builds
 - notify 8.2 already in workspace -- reuse for config file watching
@@ -76,6 +79,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T18:15:38Z
-Stopped at: Completed 27-02-PLAN.md
+Last session: 2026-03-07T18:38:00Z
+Stopped at: Completed 28-01-PLAN.md
 Resume file: None

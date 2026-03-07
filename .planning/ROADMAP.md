@@ -117,7 +117,7 @@ Plans:
   2. Opening the DMG on macOS provides a drag-to-Applications bundle that launches correctly
   3. Installing the .deb package on Ubuntu/Debian makes `glass` available system-wide
   4. Pushing a `v*` git tag triggers a CI workflow that builds all three installers and publishes them as GitHub Release assets
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 - [ ] 28-01-PLAN.md -- Platform packaging configs (WiX MSI, macOS DMG bundle, Linux deb metadata)
@@ -179,6 +179,6 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 25. TerminalExit Multi-Pane Fix | v2.0 | 1/1 | Complete | 2026-03-07 |
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 27. Config Validation & Hot-Reload | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 28. Platform Packaging & CI Release | v2.1 | 0/2 | Not started | - |
+| 28. Platform Packaging & CI Release | 1/2 | In Progress|  | - |
 | 29. Auto-Update | v2.1 | 0/? | Not started | - |
 | 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |

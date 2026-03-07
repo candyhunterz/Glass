@@ -21,9 +21,9 @@ Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
 
 ### Packaging
 
-- [ ] **PKG-01**: MSI installer for Windows via cargo-wix with stable UpgradeCode
-- [ ] **PKG-02**: DMG bundle for macOS with proper Info.plist and app structure
-- [ ] **PKG-03**: .deb package for Linux (Debian/Ubuntu)
+- [x] **PKG-01**: MSI installer for Windows via cargo-wix with stable UpgradeCode
+- [x] **PKG-02**: DMG bundle for macOS with proper Info.plist and app structure
+- [x] **PKG-03**: .deb package for Linux (Debian/Ubuntu)
 - [ ] **PKG-04**: GitHub Releases CI workflow building and publishing installers on tag
 - [ ] **PKG-05**: Winget package manifest for Windows package manager
 - [ ] **PKG-06**: Homebrew cask formula for macOS package manager
@@ -77,9 +77,9 @@ Deferred to future milestones.
 | CONF-01 | Phase 27 | Complete |
 | CONF-02 | Phase 27 | Complete |
 | CONF-03 | Phase 27 | Complete |
-| PKG-01 | Phase 28 | Pending |
-| PKG-02 | Phase 28 | Pending |
-| PKG-03 | Phase 28 | Pending |
+| PKG-01 | Phase 28 | Complete |
+| PKG-02 | Phase 28 | Complete |
+| PKG-03 | Phase 28 | Complete |
 | PKG-04 | Phase 28 | Pending |
 | PKG-05 | Phase 30 | Pending |
 | PKG-06 | Phase 30 | Pending |
