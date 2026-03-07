@@ -1379,11 +1379,32 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::TerminalExit { window_id, session_id } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
-                    // Find and close the tab with this session_id
+                    // Find the tab containing this session
                     let tab_idx = ctx.session_mux.tabs().iter().position(|t| t.session_ids().contains(&session_id));
                     if let Some(idx) = tab_idx {
-                        if let Some(session) = ctx.session_mux.close_tab(idx) {
-                            cleanup_session(session);
+                        let pane_count = ctx.session_mux.tabs()[idx].pane_count();
+                        if pane_count > 1 {
+                            // Multi-pane tab: close only the exited pane
+                            let tab_count_before = ctx.session_mux.tab_count();
+                            if let Some(session) = ctx.session_mux.close_pane(session_id) {
+                                cleanup_session(session);
+                            }
+                            // Guard: if close_pane collapsed the tab (shouldn't with >1 pane)
+                            if ctx.session_mux.tab_count() < tab_count_before {
+                                if ctx.session_mux.tab_count() == 0 {
+                                    self.windows.remove(&window_id);
+                                    event_loop.exit();
+                                    return;
+                                }
+                            }
+                            // Resize remaining panes' PTYs
+                            let size = ctx.window.inner_size();
+                            resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                        } else {
+                            // Single pane: close the entire tab
+                            if let Some(session) = ctx.session_mux.close_tab(idx) {
+                                cleanup_session(session);
+                            }
                         }
                     }
                     if ctx.session_mux.tab_count() == 0 {
