@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
-status: completed
-stopped_at: Completed 23-03-PLAN.md
-last_updated: "2026-03-07T01:36:42.344Z"
-last_activity: 2026-03-07 -- Completed 23-03 (Tab Bar Integration & Full Tab Lifecycle)
+status: in-progress
+stopped_at: Completed 24-01-PLAN.md
+last_updated: "2026-03-07T03:04:41Z"
+last_activity: 2026-03-07 -- Completed 24-01 (SplitTree Layout Engine)
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 11
+  completed_plans: 9
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 23 in progress -- Tabs
+**Current focus:** Phase 24 in progress -- Split Panes
 
 ## Current Position
 
-Phase: 23 of 24 -- Tabs
-Plan: 3 of 3
-Status: Phase 23 Complete
-Last activity: 2026-03-07 -- Completed 23-03 (Tab Bar Integration & Full Tab Lifecycle)
+Phase: 24 of 24 -- Split Panes
+Plan: 1 of 3
+Status: In Progress
+Last activity: 2026-03-07 -- Completed 24-01 (SplitTree Layout Engine)
 
 ## Performance Metrics
 
@@ -36,8 +36,8 @@ Last activity: 2026-03-07 -- Completed 23-03 (Tab Bar Integration & Full Tab Lif
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
-- v2.0: 5 plans in ~21 min (~4 min/plan)
-- Total: 53 plans across 23 phases in 3 days
+- v2.0: 6 plans in ~23 min (~4 min/plan)
+- Total: 54 plans across 24 phases in 3 days
 
 ## Accumulated Context
 
@@ -69,6 +69,9 @@ See PROJECT.md Key Decisions table for full history.
 - [23-03] Resize all sessions on window resize (not just active tab)
 - [23-03] TerminalExit closes only affected tab by session_id lookup
 - [23-03] create_session/cleanup_session extracted as reusable helpers
+- [24-01] Usable-space-first gap accounting: subtract 2px gap before ratio split
+- [24-01] Manhattan distance for find_neighbor across nested splits
+- [24-01] resize_ratio finds nearest ancestor Split matching direction
 
 ### Pending Todos
 
@@ -83,6 +86,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T01:40:00Z
-Stopped at: Completed 23-03-PLAN.md
+Last session: 2026-03-07T03:04:41Z
+Stopped at: Completed 24-01-PLAN.md
 Resume file: None

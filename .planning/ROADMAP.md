@@ -115,4 +115,4 @@
 | 21. Session Extraction & Platform Foundation | v2.0 | 3/3 | Complete | 2026-03-06 |
 | 22. Cross-Platform Validation | v2.0 | 2/2 | Complete | 2026-03-07 |
 | 23. Tabs | v2.0 | 3/3 | Complete | 2026-03-07 |
-| 24. Split Panes | v2.0 | 0/3 | Not Started | -- |
+| 24. Split Panes | 1/3 | In Progress|  | -- |
