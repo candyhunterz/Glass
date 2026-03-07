@@ -101,3 +101,19 @@ windows-sys = { workspace = true }
 serde_json = "1.0"
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
+
+[package.metadata.deb]
+maintainer = "Glass Contributors"
+copyright = "2026, Glass Contributors"
+license-file = ["LICENSE", "0"]
+depends = "$auto"
+extended-description = """\
+Glass is a GPU-accelerated terminal emulator that understands command structure. \
+It renders each command's output as a visually distinct block with exit code, \
+duration, and status information."""
+section = "x11"
+priority = "optional"
+assets = [
+    ["target/release/glass", "usr/bin/", "755"],
+    ["packaging/linux/glass.desktop", "usr/share/applications/", "644"],
+]

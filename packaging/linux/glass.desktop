@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Glass Terminal
+Comment=GPU-accelerated terminal emulator with command structure awareness
+Exec=glass
+Icon=utilities-terminal
+Terminal=true
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;console;shell;
