@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: completed
-stopped_at: Completed 29-01-PLAN.md
-last_updated: "2026-03-07T18:42:17.457Z"
-last_activity: 2026-03-07 -- Phase 28 complete (CI release workflow)
+stopped_at: Completed 29-02-PLAN.md
+last_updated: "2026-03-07T20:24:00.000Z"
+last_activity: 2026-03-07 -- Phase 29 complete (auto-update UI integration)
 progress:
   total_phases: 5
   completed_phases: 3
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-07)
 ## Current Position
 
 Phase: 29 of 30 (Auto-Update)
-Plan: 1 of 2 in current phase
-Status: In Progress
-Last activity: 2026-03-07 -- Plan 29-01 complete (update checker core)
+Plan: 2 of 2 in current phase
+Status: Complete
+Last activity: 2026-03-07 -- Plan 29-02 complete (update UI integration)
 
-Progress: [█████░░░░░] Phase 29: 1/2 plans complete (50%)
+Progress: [██████████] Phase 29: 2/2 plans complete (100%)
 
 ## Performance Metrics
 
@@ -40,8 +40,8 @@ Progress: [█████░░░░░] Phase 29: 1/2 plans complete (50%)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
 - v2.0: 6 plans in ~23 min (~4 min/plan)
-- v2.1: 6 plans in ~20 min (~3 min/plan)
-- Total: 61 plans across 28 phases in 3 days
+- v2.1: 7 plans in ~23 min (~3 min/plan)
+- Total: 62 plans across 29 phases in 3 days
 
 ## Accumulated Context
 
@@ -71,6 +71,9 @@ Recent decisions affecting v2.1:
 - ureq 3.x read_to_string + serde_json::from_str for GitHub API parsing (no json feature needed)
 - tempfile::tempdir with mem::forget for MSI download (prevents cleanup before msiexec reads file)
 - Background update checker follows config_watcher pattern: named thread + EventLoopProxy
+- Center-text status bar notification with character-width centering for update display
+- Update notification uses bright yellow-gold (255,200,50) for visibility
+- Ctrl+Shift+U in is_glass_shortcut block for platform-consistent keybind
 
 ### Pending Todos
 
@@ -84,6 +87,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T20:17:25Z
-Stopped at: Completed 29-01-PLAN.md
+Last session: 2026-03-07T20:24:00Z
+Stopped at: Completed 29-02-PLAN.md
 Resume file: None

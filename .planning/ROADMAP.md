@@ -73,7 +73,7 @@
 - [x] **Phase 26: Performance Profiling & Optimization** - Establish baselines, instrument hot paths, and optimize based on data (completed 2026-03-07)
 - [x] **Phase 27: Config Validation & Hot-Reload** - Config error reporting and live config changes without restart (completed 2026-03-07)
 - [x] **Phase 28: Platform Packaging & CI Release** - Platform-native installers and automated release workflow (completed 2026-03-07)
-- [ ] **Phase 29: Auto-Update** - Background update checking and one-click update from GitHub Releases
+- [x] **Phase 29: Auto-Update** - Background update checking and one-click update from GitHub Releases (completed 2026-03-07)
 - [ ] **Phase 30: Documentation & Distribution** - Public docs site, README overhaul, and package manager listings
 
 ## Phase Details
@@ -131,7 +131,7 @@ Plans:
   1. Glass checks GitHub Releases for newer versions in the background on startup without blocking the terminal
   2. When a newer version exists, the status bar shows a visible notification with the available version number
   3. On Windows, the user can trigger an MSI-based upgrade from the notification; on macOS, a DMG download; on Linux, a notification with instructions
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 29-01-PLAN.md -- Core updater module with version checking, asset selection, and apply logic
@@ -184,5 +184,5 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 27. Config Validation & Hot-Reload | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 28. Platform Packaging & CI Release | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 29. Auto-Update | 1/2 | In Progress|  | - |
+| 29. Auto-Update | 2/2 | Complete   | 2026-03-07 | - |
 | 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |

@@ -31,7 +31,7 @@ Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
 ### Auto-Update
 
 - [x] **UPDT-01**: Background update check on startup against GitHub Releases
-- [ ] **UPDT-02**: Status bar notification when update is available
+- [x] **UPDT-02**: Status bar notification when update is available
 - [x] **UPDT-03**: One-click update apply (MSI upgrade on Windows, DMG replacement on macOS, notify on Linux)
 
 ### Documentation
@@ -84,7 +84,7 @@ Deferred to future milestones.
 | PKG-05 | Phase 30 | Pending |
 | PKG-06 | Phase 30 | Pending |
 | UPDT-01 | Phase 29 | Complete |
-| UPDT-02 | Phase 29 | Pending |
+| UPDT-02 | Phase 29 | Complete |
 | UPDT-03 | Phase 29 | Complete |
 | DOCS-01 | Phase 30 | Pending |
 | DOCS-02 | Phase 30 | Pending |
