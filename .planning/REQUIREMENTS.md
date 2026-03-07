@@ -69,34 +69,32 @@ Deferred to future milestones.
 
 ## Traceability
 
-Which phases cover which requirements. Updated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PERF-01 | Pending | Pending |
-| PERF-02 | Pending | Pending |
-| PERF-03 | Pending | Pending |
-| CONF-01 | Pending | Pending |
-| CONF-02 | Pending | Pending |
-| CONF-03 | Pending | Pending |
-| PKG-01 | Pending | Pending |
-| PKG-02 | Pending | Pending |
-| PKG-03 | Pending | Pending |
-| PKG-04 | Pending | Pending |
-| PKG-05 | Pending | Pending |
-| PKG-06 | Pending | Pending |
-| UPDT-01 | Pending | Pending |
-| UPDT-02 | Pending | Pending |
-| UPDT-03 | Pending | Pending |
-| DOCS-01 | Pending | Pending |
-| DOCS-02 | Pending | Pending |
-| DOCS-03 | Pending | Pending |
+| PERF-01 | Phase 26 | Pending |
+| PERF-02 | Phase 26 | Pending |
+| PERF-03 | Phase 26 | Pending |
+| CONF-01 | Phase 27 | Pending |
+| CONF-02 | Phase 27 | Pending |
+| CONF-03 | Phase 27 | Pending |
+| PKG-01 | Phase 28 | Pending |
+| PKG-02 | Phase 28 | Pending |
+| PKG-03 | Phase 28 | Pending |
+| PKG-04 | Phase 28 | Pending |
+| PKG-05 | Phase 30 | Pending |
+| PKG-06 | Phase 30 | Pending |
+| UPDT-01 | Phase 29 | Pending |
+| UPDT-02 | Phase 29 | Pending |
+| UPDT-03 | Phase 29 | Pending |
+| DOCS-01 | Phase 30 | Pending |
+| DOCS-02 | Phase 30 | Pending |
+| DOCS-03 | Phase 30 | Pending |
 
 **Coverage:**
 - v2.1 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18
+- Mapped to phases: 18
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-07*
-*Last updated: 2026-03-07 after initial definition*
+*Last updated: 2026-03-07 after roadmap creation*
