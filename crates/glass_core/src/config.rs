@@ -1,11 +1,34 @@
 use serde::Deserialize;
+use std::fmt;
+
+/// Structured error from config validation, including location info when available.
+#[derive(Debug, Clone)]
+pub struct ConfigError {
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    pub snippet: Option<String>,
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.line, self.column) {
+            (Some(line), Some(col)) => {
+                write!(f, "Config error (line {}, col {}): {}", line, col, self.message)
+            }
+            _ => write!(f, "Config error: {}", self.message),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 /// Glass terminal configuration, loaded from `~/.glass/config.toml`.
 ///
 /// All fields have sensible defaults. Missing fields in the TOML file
 /// are filled from the `Default` implementation. A missing or malformed
 /// config file silently falls back to all defaults (no crash, no error dialog).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct GlassConfig {
     pub font_family: String,
@@ -23,7 +46,7 @@ pub struct GlassConfig {
 }
 
 /// History-related configuration in the `[history]` TOML section.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HistorySection {
     /// Maximum output capture size in kilobytes. Default 50.
     #[serde(default = "default_max_output_capture_kb")]
@@ -35,7 +58,7 @@ fn default_max_output_capture_kb() -> u32 {
 }
 
 /// Snapshot-related configuration in the `[snapshot]` TOML section.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SnapshotSection {
     /// Whether snapshot capture is enabled. Default true.
     #[serde(default = "default_snapshot_enabled")]
@@ -65,7 +88,7 @@ fn default_retention_days() -> u32 {
 }
 
 /// Pipe visualization configuration in the `[pipes]` TOML section.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PipesSection {
     /// Whether pipe stage capture is enabled. Default true.
     #[serde(default = "default_pipes_enabled")]
@@ -151,6 +174,34 @@ impl GlassConfig {
                 Self::default()
             }
         }
+    }
+
+    /// Parse a TOML string into a `GlassConfig`, returning a structured error on failure.
+    ///
+    /// Unlike `load_from_str()`, this returns `Err(ConfigError)` with line/column info
+    /// so callers can display actionable error messages to the user.
+    pub fn load_validated(s: &str) -> Result<Self, ConfigError> {
+        toml::from_str(s).map_err(|e| {
+            let message = e.message().to_string();
+            let (line, column, snippet) = if let Some(span) = e.span() {
+                let prefix = &s[..span.start];
+                let line = prefix.chars().filter(|&c| c == '\n').count() + 1;
+                let last_newline = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let column = span.start - last_newline + 1;
+                let snippet = s.lines().nth(line - 1).map(|l| l.to_string());
+                (Some(line), Some(column), snippet)
+            } else {
+                (None, None, None)
+            };
+            ConfigError { message, line, column, snippet }
+        })
+    }
+
+    /// Returns true if font-related settings differ between two configs.
+    ///
+    /// Used by the config watcher to decide whether a font rebuild is needed.
+    pub fn font_changed(&self, other: &GlassConfig) -> bool {
+        self.font_family != other.font_family || self.font_size != other.font_size
     }
 }
 
