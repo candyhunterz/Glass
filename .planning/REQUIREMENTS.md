@@ -1,0 +1,102 @@
+# Requirements: Glass
+
+**Defined:** 2026-03-07
+**Core Value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
+
+## v2.1 Requirements
+
+Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
+
+### Performance
+
+- [ ] **PERF-01**: Automated criterion benchmarks for cold start, input latency, and idle memory
+- [ ] **PERF-02**: Tracing instrumentation on hot paths (PTY read, render loop, event dispatch)
+- [ ] **PERF-03**: Performance optimization pass based on profiling results (startup time, memory, rendering throughput)
+
+### Configuration
+
+- [ ] **CONF-01**: Config validation with actionable error messages on malformed config.toml
+- [ ] **CONF-02**: Config hot-reload watching config.toml for changes and applying without restart
+- [ ] **CONF-03**: In-terminal error overlay displaying config parse errors instead of silent failure
+
+### Packaging
+
+- [ ] **PKG-01**: MSI installer for Windows via cargo-wix with stable UpgradeCode
+- [ ] **PKG-02**: DMG bundle for macOS with proper Info.plist and app structure
+- [ ] **PKG-03**: .deb package for Linux (Debian/Ubuntu)
+- [ ] **PKG-04**: GitHub Releases CI workflow building and publishing installers on tag
+- [ ] **PKG-05**: Winget package manifest for Windows package manager
+- [ ] **PKG-06**: Homebrew cask formula for macOS package manager
+
+### Auto-Update
+
+- [ ] **UPDT-01**: Background update check on startup against GitHub Releases
+- [ ] **UPDT-02**: Status bar notification when update is available
+- [ ] **UPDT-03**: One-click update apply (MSI upgrade on Windows, DMG replacement on macOS, notify on Linux)
+
+### Documentation
+
+- [ ] **DOCS-01**: mdBook documentation site with feature guides (undo, pipes, MCP, search, config)
+- [ ] **DOCS-02**: GitHub Pages deployment for docs site
+- [ ] **DOCS-03**: README overhaul with screenshots, install instructions, feature overview, and badges
+
+## Future Requirements
+
+Deferred to future milestones.
+
+### Packaging
+
+- **PKG-F01**: AppImage for Linux (portable format)
+- **PKG-F02**: RPM package for Fedora/RHEL
+- **PKG-F03**: Flatpak (risky for terminal emulators due to sandbox restrictions on PTY/filesystem)
+- **PKG-F04**: macOS code signing and notarization
+- **PKG-F05**: Windows code signing (SmartScreen)
+
+### Performance
+
+- **PERF-F01**: CI performance regression detection (automated benchmark comparison on PRs)
+- **PERF-F02**: GPU profiling with wgpu-profiler
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Snap package | Snap sandbox conflicts with PTY access and filesystem operations |
+| Flatpak (v2.1) | Portal API restrictions on terminal emulator core operations; needs runtime investigation |
+| Built-in theme engine | One dark/one light theme sufficient; theme marketplace explicitly out of scope |
+| Cloud-based update server | GitHub Releases sufficient; avoids hosting costs and complexity |
+| Automatic silent updates | Users must consent to updates; no silent binary replacement |
+
+## Traceability
+
+Which phases cover which requirements. Updated during roadmap creation.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| PERF-01 | Pending | Pending |
+| PERF-02 | Pending | Pending |
+| PERF-03 | Pending | Pending |
+| CONF-01 | Pending | Pending |
+| CONF-02 | Pending | Pending |
+| CONF-03 | Pending | Pending |
+| PKG-01 | Pending | Pending |
+| PKG-02 | Pending | Pending |
+| PKG-03 | Pending | Pending |
+| PKG-04 | Pending | Pending |
+| PKG-05 | Pending | Pending |
+| PKG-06 | Pending | Pending |
+| UPDT-01 | Pending | Pending |
+| UPDT-02 | Pending | Pending |
+| UPDT-03 | Pending | Pending |
+| DOCS-01 | Pending | Pending |
+| DOCS-02 | Pending | Pending |
+| DOCS-03 | Pending | Pending |
+
+**Coverage:**
+- v2.1 requirements: 18 total
+- Mapped to phases: 0
+- Unmapped: 18
+
+---
+*Requirements defined: 2026-03-07*
+*Last updated: 2026-03-07 after initial definition*
