@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
-status: executing
-stopped_at: Completed 24-02-PLAN.md
-last_updated: "2026-03-07T03:14:29.072Z"
-last_activity: 2026-03-07 -- Completed 24-02 (Tab Restructure and Per-Pane Rendering)
+status: completed
+stopped_at: Completed 24-03-PLAN.md
+last_updated: "2026-03-07T03:36:43.724Z"
+last_activity: 2026-03-07 -- Completed 24-03 (Split Pane Interaction)
 progress:
   total_phases: 4
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 11
-  completed_plans: 10
+  completed_plans: 11
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-06)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 24 in progress -- Split Panes
+**Current focus:** Phase 24 complete -- Split Panes
 
 ## Current Position
 
 Phase: 24 of 24 -- Split Panes
-Plan: 2 of 3
-Status: In Progress
-Last activity: 2026-03-07 -- Completed 24-02 (Tab Restructure and Per-Pane Rendering)
+Plan: 3 of 3
+Status: Complete
+Last activity: 2026-03-07 -- Completed 24-03 (Split Pane Interaction)
 
 ## Performance Metrics
 
@@ -77,6 +77,10 @@ See PROJECT.md Key Decisions table for full history.
 - [24-02] SplitNode.split_leaf in-place mutation for splitting focused pane
 - [24-02] close_pane sets focused_pane to first_leaf of remaining tree
 - [24-02] Divider rects computed by pairwise gap detection between pane viewports
+- [24-03] Ctrl+Shift+W disambiguated: close pane if multi-pane, close tab if single pane
+- [24-03] Per-pane PTY resize uses pane viewport dimensions / cell size (not full window)
+- [24-03] Block decoration reflow triggered on resize to prevent stale decorations
+- [Phase 24]: Ctrl+Shift+W disambiguated: close pane if multi-pane, close tab if single pane
 
 ### Pending Todos
 
@@ -91,6 +95,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T03:14:29Z
-Stopped at: Completed 24-02-PLAN.md
+Last session: 2026-03-07T03:36:39.350Z
+Stopped at: Completed 24-03-PLAN.md
 Resume file: None
