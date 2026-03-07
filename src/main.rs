@@ -160,6 +160,8 @@ struct Processor {
     config_error: Option<glass_core::config::ConfigError>,
     /// Whether the config file watcher has been spawned (only once).
     watcher_spawned: bool,
+    /// Available update info, if a newer version was found.
+    update_info: Option<glass_core::updater::UpdateInfo>,
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -542,7 +544,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             },
         );
 
-        // Spawn config file watcher (once)
+        // Spawn config file watcher and update checker (once)
         if !self.watcher_spawned {
             self.watcher_spawned = true;
             if let Some(config_path) = GlassConfig::config_path() {
@@ -551,6 +553,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.proxy.clone(),
                 );
             }
+            glass_core::updater::spawn_update_checker(
+                env!("CARGO_PKG_VERSION"),
+                self.proxy.clone(),
+            );
         }
     }
 
@@ -651,6 +657,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
+                    let update_text = self.update_info.as_ref().map(|info| {
+                        format!("Update v{} available (Ctrl+Shift+U)", info.latest)
+                    });
+
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -662,6 +672,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&status_clone),
                         search_overlay_data.as_ref(),
                         Some(&tab_display),
+                        update_text.as_deref(),
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -738,6 +749,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Compute divider rects from gaps between pane viewports
                     let dividers = compute_dividers(&pane_layouts);
 
+                    let update_text = self.update_info.as_ref().map(|info| {
+                        format!("Update v{} available (Ctrl+Shift+U)", info.latest)
+                    });
+
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -748,6 +763,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         &dividers,
                         Some(&status_clone),
                         Some(&tab_display),
+                        update_text.as_deref(),
                     );
                 }
 
@@ -1112,6 +1128,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("u") =>
+                            {
+                                // Ctrl+Shift+U: Apply available update
+                                if let Some(ref info) = self.update_info {
+                                    if let Err(e) = glass_core::updater::apply_update(info) {
+                                        tracing::warn!("Failed to apply update: {}", e);
+                                    }
+                                }
                                 return;
                             }
                             Key::Character(c)
@@ -1908,10 +1935,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::UpdateAvailable(info) => {
                 tracing::info!(
-                    "Update available: {} -> {} ({})",
-                    info.current, info.latest, info.download_url
+                    "Update available: v{} -> v{} ({})",
+                    info.current, info.latest, info.release_url
                 );
-                // TODO(29-02): Store update info and show notification in status bar
+                self.update_info = Some(info);
+                // Request redraw on all windows to show notification
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
             }
         }
     }
@@ -2053,6 +2084,7 @@ fn main() {
                 cold_start,
                 config_error: None,
                 watcher_spawned: false,
+                update_info: None,
             };
 
             event_loop
