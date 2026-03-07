@@ -3,14 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: executing
-stopped_at: Completed 26-02-PLAN.md
-last_updated: "2026-03-07T17:36:10.447Z"
-last_activity: 2026-03-07 -- Phase 26 Plan 02 complete (performance baseline & optimization)
+stopped_at: Completed 27-01-PLAN.md
+last_updated: "2026-03-07T17:59:21Z"
+last_activity: 2026-03-07 -- Phase 27 Plan 01 complete (config validation)
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
+  percent: 75
 ---
 
 # Project State
@@ -20,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 26 - Performance Profiling & Optimization
+**Current focus:** Phase 27 - Config Validation & Hot-Reload
 
 ## Current Position
 
-Phase: 26 of 30 (Performance Profiling & Optimization)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 26 Complete
-Last activity: 2026-03-07 -- Phase 26 Plan 02 complete (performance baseline & optimization)
+Phase: 27 of 30 (Config Validation & Hot-Reload)
+Plan: 1 of 2 in current phase
+Status: Executing Phase 27
+Last activity: 2026-03-07 -- Phase 27 Plan 01 complete (config validation)
 
-Progress: [██████████] Phase 26: 2/2 plans complete (100%)
+Progress: [█████░░░░░] Phase 27: 1/2 plans complete (50%)
 
 ## Performance Metrics
 
@@ -39,8 +40,8 @@ Progress: [██████████] Phase 26: 2/2 plans complete (100%)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
 - v2.0: 6 plans in ~23 min (~4 min/plan)
-- v2.1: 2 plans in ~6 min (~3 min/plan)
-- Total: 57 plans across 26 phases in 3 days
+- v2.1: 3 plans in ~8 min (~3 min/plan)
+- Total: 58 plans across 27 phases in 3 days
 
 ## Accumulated Context
 
@@ -57,6 +58,8 @@ Recent decisions affecting v2.1:
 - OscScanner::scan uses trace level since it fires per PTY read
 - Record cold start honestly at 522ms (4.4% over 500ms target) -- transparency over vanity metrics
 - PERFORMANCE.md as single source of truth for performance baselines and measurement methodology
+- Used toml span() API for byte-offset-to-line/col conversion in ConfigError
+- Direct f32 comparison in font_changed() since values are parsed from TOML, not computed
 
 ### Pending Todos
 
@@ -70,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T17:36:00.000Z
-Stopped at: Completed 26-02-PLAN.md
+Last session: 2026-03-07T17:59:21Z
+Stopped at: Completed 27-01-PLAN.md
 Resume file: None

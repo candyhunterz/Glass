@@ -15,8 +15,8 @@ Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
 
 ### Configuration
 
-- [ ] **CONF-01**: Config validation with actionable error messages on malformed config.toml
-- [ ] **CONF-02**: Config hot-reload watching config.toml for changes and applying without restart
+- [x] **CONF-01**: Config validation with actionable error messages on malformed config.toml
+- [x] **CONF-02**: Config hot-reload watching config.toml for changes and applying without restart
 - [ ] **CONF-03**: In-terminal error overlay displaying config parse errors instead of silent failure
 
 ### Packaging
@@ -74,8 +74,8 @@ Deferred to future milestones.
 | PERF-01 | Phase 26 | Complete |
 | PERF-02 | Phase 26 | Complete |
 | PERF-03 | Phase 26 | Complete |
-| CONF-01 | Phase 27 | Pending |
-| CONF-02 | Phase 27 | Pending |
+| CONF-01 | Phase 27 | Complete |
+| CONF-02 | Phase 27 | Complete |
 | CONF-03 | Phase 27 | Pending |
 | PKG-01 | Phase 28 | Pending |
 | PKG-02 | Phase 28 | Pending |

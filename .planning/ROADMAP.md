@@ -102,7 +102,7 @@ Plans:
   2. Editing font_family or font_size in config.toml while Glass is running applies the change to all open panes within 1 second
   3. A config parse error during hot-reload displays an in-terminal overlay instead of silently failing or crashing
   4. Non-visual config changes (history thresholds, snapshot settings) are applied without triggering a font rebuild
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 - [ ] 27-01-PLAN.md -- Config validation with structured errors, config diffing, and notify dependency
@@ -174,7 +174,7 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 24. Split Panes | v2.0 | 3/3 | Complete | 2026-03-07 |
 | 25. TerminalExit Multi-Pane Fix | v2.0 | 1/1 | Complete | 2026-03-07 |
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 27. Config Validation & Hot-Reload | v2.1 | 0/2 | Not started | - |
+| 27. Config Validation & Hot-Reload | 1/2 | In Progress|  | - |
 | 28. Platform Packaging & CI Release | v2.1 | 0/? | Not started | - |
 | 29. Auto-Update | v2.1 | 0/? | Not started | - |
 | 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |
