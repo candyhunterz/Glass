@@ -126,6 +126,8 @@ pub enum PipelineHit {
 pub struct BlockManager {
     blocks: Vec<Block>,
     current: Option<usize>,
+    /// Last known terminal column count; used to detect reflow-inducing resizes.
+    last_columns: usize,
 }
 
 impl BlockManager {
@@ -133,7 +135,19 @@ impl BlockManager {
         Self {
             blocks: Vec::new(),
             current: None,
+            last_columns: 0,
         }
+    }
+
+    /// Notify the block manager that the terminal was resized.
+    /// If the column count changed, block line positions are stale due to
+    /// reflow — clear all blocks so shell integration can recreate them.
+    pub fn notify_resize(&mut self, columns: usize) {
+        if self.last_columns != 0 && columns != self.last_columns {
+            self.blocks.clear();
+            self.current = None;
+        }
+        self.last_columns = columns;
     }
 
     /// Process an OSC event and update block state.

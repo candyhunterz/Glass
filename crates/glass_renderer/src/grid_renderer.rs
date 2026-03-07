@@ -169,8 +169,7 @@ impl GridRenderer {
         let metrics = Metrics::new(physical_font_size, self.cell_height);
         let viewport_width = snapshot.columns as f32 * self.cell_width;
 
-        buffers.clear();
-        buffers.reserve(snapshot.screen_lines);
+        buffers.reserve(buffers.len() + snapshot.screen_lines);
         let line_offset = snapshot.display_offset as i32;
 
         for line_idx in 0..snapshot.screen_lines {

@@ -195,6 +195,7 @@ impl FrameRenderer {
         self.rect_renderer.prepare(device, queue, &rect_instances, width, height);
 
         // 3. Build text buffers and text areas for grid content
+        self.text_buffers.clear();
         self.grid_renderer.build_text_buffers(
             &mut self.glyph_cache.font_system,
             snapshot,

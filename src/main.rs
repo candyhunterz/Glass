@@ -293,6 +293,7 @@ fn resize_all_panes(
                 columns: pane_cols as usize,
                 screen_lines: pane_lines as usize,
             });
+            session.block_manager.notify_resize(pane_cols as usize);
         }
     }
 }
@@ -778,6 +779,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
                         });
+                        session.block_manager.notify_resize(num_cols as usize);
                     }
                 }
 
@@ -805,6 +807,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
                         });
+                        session.block_manager.notify_resize(num_cols as usize);
                     }
                 }
 
