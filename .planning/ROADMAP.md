@@ -147,7 +147,12 @@ Plans:
   3. The GitHub README includes screenshots, install instructions for all three platforms, feature overview, and CI badges
   4. Running `winget install glass` on Windows installs the latest release
   5. Running `brew install --cask glass` on macOS installs the latest release
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 30-01-PLAN.md -- mdBook documentation site with all content pages
+- [ ] 30-02-PLAN.md -- GitHub Pages deployment workflow and README
+- [ ] 30-03-PLAN.md -- Winget and Homebrew package manager manifests
 
 ## Progress
 
@@ -184,5 +189,5 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 27. Config Validation & Hot-Reload | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 28. Platform Packaging & CI Release | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 29. Auto-Update | 2/2 | Complete    | 2026-03-07 | - |
-| 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |
+| 29. Auto-Update | v2.1 | 2/2 | Complete | 2026-03-07 |
+| 30. Documentation & Distribution | v2.1 | 0/3 | Not started | - |
