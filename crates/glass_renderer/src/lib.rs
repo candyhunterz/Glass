@@ -1,6 +1,7 @@
 //! glass_renderer — wgpu GPU surface and rendering
 
 pub mod block_renderer;
+pub mod config_error_overlay;
 pub mod frame;
 pub mod glyph_cache;
 pub mod grid_renderer;
@@ -11,6 +12,7 @@ pub mod surface;
 pub mod tab_bar;
 
 pub use block_renderer::{BlockLabel, BlockRenderer};
+pub use config_error_overlay::{ConfigErrorOverlay, ConfigErrorTextLabel};
 pub use frame::{DividerRect, FrameRenderer, PaneViewport};
 pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;

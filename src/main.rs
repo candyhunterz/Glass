@@ -1817,6 +1817,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
             }
+            AppEvent::ConfigReloaded { config, error } => {
+                // Placeholder: full handler added in Task 2
+                let _ = (config, error);
+            }
             AppEvent::GitInfo { window_id, session_id, info } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     {

@@ -69,6 +69,13 @@ pub enum AppEvent {
     /// Processing (ANSI stripping, binary detection, truncation) happens on the
     /// main thread to avoid glass_terminal depending on glass_history.
     CommandOutput { window_id: winit::window::WindowId, session_id: SessionId, raw_output: Vec<u8> },
+    /// Config file changed on disk. Sent by the config watcher thread.
+    /// When `error` is Some, `config` holds GlassConfig::default() (not applied).
+    /// When `error` is None, `config` holds the successfully parsed new config.
+    ConfigReloaded {
+        config: Box<crate::config::GlassConfig>,
+        error: Option<crate::config::ConfigError>,
+    },
 }
 
 #[cfg(test)]
