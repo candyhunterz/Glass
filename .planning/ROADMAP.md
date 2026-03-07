@@ -71,7 +71,7 @@
 **Milestone Goal:** Production-ready distribution, performance tuning, config polish, and public documentation across all three platforms.
 
 - [x] **Phase 26: Performance Profiling & Optimization** - Establish baselines, instrument hot paths, and optimize based on data (completed 2026-03-07)
-- [ ] **Phase 27: Config Validation & Hot-Reload** - Config error reporting and live config changes without restart
+- [x] **Phase 27: Config Validation & Hot-Reload** - Config error reporting and live config changes without restart (completed 2026-03-07)
 - [ ] **Phase 28: Platform Packaging & CI Release** - Platform-native installers and automated release workflow
 - [ ] **Phase 29: Auto-Update** - Background update checking and one-click update from GitHub Releases
 - [ ] **Phase 30: Documentation & Distribution** - Public docs site, README overhaul, and package manager listings
@@ -102,7 +102,7 @@ Plans:
   2. Editing font_family or font_size in config.toml while Glass is running applies the change to all open panes within 1 second
   3. A config parse error during hot-reload displays an in-terminal overlay instead of silently failing or crashing
   4. Non-visual config changes (history thresholds, snapshot settings) are applied without triggering a font rebuild
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 27-01-PLAN.md -- Config validation with structured errors, config diffing, and notify dependency
@@ -174,7 +174,7 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 24. Split Panes | v2.0 | 3/3 | Complete | 2026-03-07 |
 | 25. TerminalExit Multi-Pane Fix | v2.0 | 1/1 | Complete | 2026-03-07 |
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 27. Config Validation & Hot-Reload | 1/2 | In Progress|  | - |
+| 27. Config Validation & Hot-Reload | 2/2 | Complete   | 2026-03-07 | - |
 | 28. Platform Packaging & CI Release | v2.1 | 0/? | Not started | - |
 | 29. Auto-Update | v2.1 | 0/? | Not started | - |
 | 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |
