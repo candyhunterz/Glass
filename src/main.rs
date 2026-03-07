@@ -1924,10 +1924,30 @@ fn main() {
 
     match cli.command {
         None => {
-            // Initialize structured logging for terminal mode (stdout)
-            tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-                .init();
+            // Initialize structured logging for terminal mode.
+            // When the `perf` feature is enabled, also write a Chrome trace file
+            // (glass-trace.json) for visualization in Perfetto / chrome://tracing.
+            #[cfg(feature = "perf")]
+            let _trace_guard = {
+                use tracing_chrome::ChromeLayerBuilder;
+                use tracing_subscriber::prelude::*;
+                let (chrome_layer, guard) = ChromeLayerBuilder::new()
+                    .file("glass-trace.json".to_string())
+                    .build();
+                tracing_subscriber::registry()
+                    .with(chrome_layer)
+                    .with(tracing_subscriber::fmt::layer()
+                        .with_filter(tracing_subscriber::EnvFilter::from_default_env()))
+                    .init();
+                guard // must outlive program -- stored in _trace_guard
+            };
+
+            #[cfg(not(feature = "perf"))]
+            {
+                tracing_subscriber::fmt()
+                    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                    .init();
+            }
 
             // No subcommand: launch the terminal GUI (default behavior)
             tracing::info!("Glass starting");

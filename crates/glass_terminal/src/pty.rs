@@ -230,6 +230,7 @@ pub fn spawn_pty(
 /// This replaces alacritty_terminal's EventLoop to intercept PTY bytes
 /// through the OscScanner before they reach the VTE parser. The overall
 /// structure closely follows alacritty's event_loop.rs for correctness.
+#[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
 fn glass_pty_loop(
     mut pty: tty::Pty,
     terminal: Arc<FairMutex<Term<EventProxy>>>,
@@ -360,6 +361,7 @@ fn glass_pty_loop(
 /// before bytes are fed to the VTE parser. Shell integration events
 /// are sent to the main thread via the app proxy.
 #[inline]
+#[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
 fn pty_read_with_scan(
     pty: &mut tty::Pty,
     terminal: &Arc<FairMutex<Term<EventProxy>>>,

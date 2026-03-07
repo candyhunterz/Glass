@@ -166,6 +166,7 @@ fn default_named_color(name: NamedColor) -> Rgb {
 }
 
 /// Extract a renderable snapshot from the terminal under a brief lock.
+#[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
 pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridSnapshot {
     let content = term.renderable_content();
     let colors = content.colors;

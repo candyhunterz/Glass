@@ -117,6 +117,7 @@ impl FrameRenderer {
     /// The caller is responsible for presenting the frame texture.
     ///
     /// When `blocks` is empty and `status` is None, this behaves identically to Phase 2.
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
     pub fn draw_frame(
         &mut self,
         device: &wgpu::Device,
@@ -596,6 +597,7 @@ impl FrameRenderer {
     /// drawn globally. The focused pane gets a subtle accent border.
     ///
     /// `panes`: Vec of (viewport, snapshot, blocks, is_focused) for each pane.
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
     pub fn draw_multi_pane_frame(
         &mut self,
         device: &wgpu::Device,

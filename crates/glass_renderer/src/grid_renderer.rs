@@ -81,6 +81,7 @@ impl GridRenderer {
     ///
     /// Creates a RectInstance for each cell whose background differs from the
     /// default background, plus a cursor rectangle based on cursor shape.
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
     pub fn build_rects(&self, snapshot: &GridSnapshot, default_bg: Rgb) -> Vec<RectInstance> {
         let mut rects = Vec::with_capacity(snapshot.cells.len() / 4); // estimate ~25% non-default bg
         let line_offset = snapshot.display_offset as i32;
@@ -159,6 +160,7 @@ impl GridRenderer {
     /// The caller must pass a `&mut Vec<Buffer>` that will own the Buffers.
     /// Returns a vector of TextAreas that borrow from those Buffers.
     /// The Buffers Vec must outlive the returned TextAreas.
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
     pub fn build_text_buffers(
         &self,
         font_system: &mut FontSystem,

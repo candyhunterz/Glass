@@ -78,6 +78,7 @@ impl OscScanner {
     }
 
     /// Scan a chunk of bytes and return any recognized OSC events.
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all, level = "trace"))]
     pub fn scan(&mut self, data: &[u8]) -> Vec<OscEvent> {
         let mut events = Vec::new();
 
