@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: completed
-stopped_at: Completed 28-02-PLAN.md
+stopped_at: Completed 29-01-PLAN.md
 last_updated: "2026-03-07T18:42:17.457Z"
 last_activity: 2026-03-07 -- Phase 28 complete (CI release workflow)
 progress:
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-07)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 28 - Platform Packaging & CI Release
+**Current focus:** Phase 29 - Auto-Update
 
 ## Current Position
 
-Phase: 28 of 30 (Platform Packaging & CI Release)
-Plan: 2 of 2 in current phase
-Status: Phase 28 Complete
-Last activity: 2026-03-07 -- Phase 28 complete (CI release workflow)
+Phase: 29 of 30 (Auto-Update)
+Plan: 1 of 2 in current phase
+Status: In Progress
+Last activity: 2026-03-07 -- Plan 29-01 complete (update checker core)
 
-Progress: [██████████] Phase 28: 2/2 plans complete (100%)
+Progress: [█████░░░░░] Phase 29: 1/2 plans complete (50%)
 
 ## Performance Metrics
 
@@ -68,6 +68,9 @@ Recent decisions affecting v2.1:
 - Error overlay follows SearchOverlayRenderer pattern for architectural consistency
 - Release workflow: three parallel jobs with no inter-job dependencies; softprops/action-gh-release handles race condition
 - Version verification in all CI release jobs prevents Cargo.toml/tag mismatch
+- ureq 3.x read_to_string + serde_json::from_str for GitHub API parsing (no json feature needed)
+- tempfile::tempdir with mem::forget for MSI download (prevents cleanup before msiexec reads file)
+- Background update checker follows config_watcher pattern: named thread + EventLoopProxy
 
 ### Pending Todos
 
@@ -81,6 +84,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T18:38:52Z
-Stopped at: Completed 28-02-PLAN.md
+Last session: 2026-03-07T20:17:25Z
+Stopped at: Completed 29-01-PLAN.md
 Resume file: None
