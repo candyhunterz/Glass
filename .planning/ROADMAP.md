@@ -131,7 +131,11 @@ Plans:
   1. Glass checks GitHub Releases for newer versions in the background on startup without blocking the terminal
   2. When a newer version exists, the status bar shows a visible notification with the available version number
   3. On Windows, the user can trigger an MSI-based upgrade from the notification; on macOS, a DMG download; on Linux, a notification with instructions
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 29-01-PLAN.md -- Core updater module with version checking, asset selection, and apply logic
+- [ ] 29-02-PLAN.md -- Status bar notification UI and main.rs wiring
 
 ### Phase 30: Documentation & Distribution
 **Goal**: New users can discover, install, learn, and configure Glass through public documentation and package managers
@@ -179,6 +183,6 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 25. TerminalExit Multi-Pane Fix | v2.0 | 1/1 | Complete | 2026-03-07 |
 | 26. Performance Profiling & Optimization | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 27. Config Validation & Hot-Reload | v2.1 | 2/2 | Complete | 2026-03-07 |
-| 28. Platform Packaging & CI Release | 2/2 | Complete    | 2026-03-07 | - |
-| 29. Auto-Update | v2.1 | 0/? | Not started | - |
+| 28. Platform Packaging & CI Release | v2.1 | 2/2 | Complete | 2026-03-07 |
+| 29. Auto-Update | v2.1 | 0/2 | Not started | - |
 | 30. Documentation & Distribution | v2.1 | 0/? | Not started | - |
