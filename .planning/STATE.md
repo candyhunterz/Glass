@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Cross-Platform & Tabs
-status: in-progress
-stopped_at: Completed 23-02-PLAN.md
-last_updated: "2026-03-07T00:57:05Z"
-last_activity: 2026-03-07 -- Completed 23-02 (Tab Bar Renderer & PTY Working Directory)
+status: completed
+stopped_at: Completed 23-03-PLAN.md
+last_updated: "2026-03-07T01:40:00Z"
+last_activity: 2026-03-07 -- Completed 23-03 (Tab Bar Integration & Full Tab Lifecycle)
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-03-06)
 ## Current Position
 
 Phase: 23 of 24 -- Tabs
-Plan: 2 of 3
-Status: Plan 02 Complete
-Last activity: 2026-03-07 -- Completed 23-02 (Tab Bar Renderer & PTY Working Directory)
+Plan: 3 of 3
+Status: Phase 23 Complete
+Last activity: 2026-03-07 -- Completed 23-03 (Tab Bar Integration & Full Tab Lifecycle)
 
 ## Performance Metrics
 
@@ -36,8 +36,8 @@ Last activity: 2026-03-07 -- Completed 23-02 (Tab Bar Renderer & PTY Working Dir
 - v1.1: 12 plans in ~4.5 hours (~20 min/plan)
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
-- v2.0: 4 plans in ~13 min (~3 min/plan)
-- Total: 52 plans across 22 phases in 3 days
+- v2.0: 5 plans in ~21 min (~4 min/plan)
+- Total: 53 plans across 23 phases in 3 days
 
 ## Accumulated Context
 
@@ -65,6 +65,10 @@ See PROJECT.md Key Decisions table for full history.
 - [23-02] Tab bar color hierarchy: bar bg 30/255, inactive 35/255, active 50/255
 - [23-02] 1px gap between tab rects for visual separation
 - [23-02] cell_width stored on TabBarRenderer for future text centering
+- [23-03] Subtract 2 lines for terminal size (status bar + tab bar)
+- [23-03] Resize all sessions on window resize (not just active tab)
+- [23-03] TerminalExit closes only affected tab by session_id lookup
+- [23-03] create_session/cleanup_session extracted as reusable helpers
 
 ### Pending Todos
 
@@ -79,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T00:57:05Z
-Stopped at: Completed 23-02-PLAN.md
+Last session: 2026-03-07T01:40:00Z
+Stopped at: Completed 23-03-PLAN.md
 Resume file: None
