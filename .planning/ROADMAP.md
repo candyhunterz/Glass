@@ -87,7 +87,7 @@
   2. Enabling the `perf` cargo feature produces a flamegraph/trace file showing time spent in PTY read, render loop, and event dispatch
   3. Cold start, input latency, and idle memory meet or exceed documented targets (<500ms, <5ms, <120MB) after optimization
   4. Performance baseline numbers are recorded and committed for future regression comparison
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 - [ ] 26-01-PLAN.md -- Criterion benchmark infrastructure and feature-gated tracing instrumentation
@@ -169,7 +169,7 @@ Phases execute in numeric order: 26 -> 27 -> 28 -> 29 -> 30
 | 23. Tabs | v2.0 | 3/3 | Complete | 2026-03-07 |
 | 24. Split Panes | v2.0 | 3/3 | Complete | 2026-03-07 |
 | 25. TerminalExit Multi-Pane Fix | v2.0 | 1/1 | Complete | 2026-03-07 |
-| 26. Performance Profiling & Optimization | v2.1 | 0/2 | In progress | - |
+| 26. Performance Profiling & Optimization | 1/2 | In Progress|  | - |
 | 27. Config Validation & Hot-Reload | v2.1 | 0/? | Not started | - |
 | 28. Platform Packaging & CI Release | v2.1 | 0/? | Not started | - |
 | 29. Auto-Update | v2.1 | 0/? | Not started | - |

@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
-status: ready_to_plan
-stopped_at: Roadmap created, ready to plan Phase 26
-last_updated: "2026-03-07T12:00:00.000Z"
-last_activity: 2026-03-07 -- v2.1 roadmap created (5 phases, 18 requirements)
+status: executing
+stopped_at: Completed 26-01-PLAN.md
+last_updated: "2026-03-07T17:23:30.302Z"
+last_activity: 2026-03-07 -- Phase 26 Plan 01 complete (benchmark infra + tracing)
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 2
+  completed_plans: 1
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-03-07)
 ## Current Position
 
 Phase: 26 of 30 (Performance Profiling & Optimization)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-03-07 -- v2.1 roadmap created (5 phases, 18 requirements)
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-03-07 -- Phase 26 Plan 01 complete (benchmark infra + tracing)
 
 Progress: [████████████████████░░░░░░░░░░] v1.0-v2.0 complete, v2.1 starting
 
@@ -39,7 +39,8 @@ Progress: [████████████████████░░░
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
 - v2.0: 6 plans in ~23 min (~4 min/plan)
-- Total: 55 plans across 25 phases in 3 days
+- v2.1: 1 plan in ~4 min (~4 min/plan)
+- Total: 56 plans across 25 phases in 3 days
 
 ## Accumulated Context
 
@@ -51,6 +52,9 @@ Recent decisions affecting v2.1:
 - SessionMux multi-session architecture means config hot-reload must propagate to ALL sessions/panes
 - Cross-platform CI matrix already exists (Windows/macOS/Linux) -- extend for release builds
 - notify 8.2 already in workspace -- reuse for config file watching
+- Feature-gated perf instrumentation: cfg_attr(feature = "perf") for zero-overhead when disabled
+- Only instrument outer functions (not resolve_color/per-cell) to avoid tracing overhead in tight loops
+- OscScanner::scan uses trace level since it fires per PTY read
 
 ### Pending Todos
 
@@ -64,6 +68,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07
-Stopped at: v2.1 roadmap created, ready to plan Phase 26
+Last session: 2026-03-07T17:23:30.300Z
+Stopped at: Completed 26-01-PLAN.md
 Resume file: None
