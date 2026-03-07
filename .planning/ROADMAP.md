@@ -122,4 +122,4 @@
 | 22. Cross-Platform Validation | v2.0 | 2/2 | Complete | 2026-03-07 |
 | 23. Tabs | v2.0 | 3/3 | Complete | 2026-03-07 |
 | 24. Split Panes | v2.0 | 3/3 | Complete | 2026-03-07 |
-| 25. TerminalExit Multi-Pane Fix | 1/1 | Complete   | 2026-03-07 | -- |
+| 25. TerminalExit Multi-Pane Fix | 1/1 | Complete    | 2026-03-07 | -- |
