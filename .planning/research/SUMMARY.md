@@ -1,170 +1,187 @@
 # Project Research Summary
 
-**Project:** Glass v2.0 -- Cross-Platform & Tabs/Split Panes
-**Domain:** GPU-accelerated terminal emulator (Rust, wgpu) expanding from Windows-only to macOS/Linux with multiplexed sessions
-**Researched:** 2026-03-06
+**Project:** Glass v2.1 -- Packaging & Polish
+**Domain:** Platform packaging, auto-update, config hot-reload, performance profiling, and documentation for a 12-crate Rust GPU-accelerated terminal emulator
+**Researched:** 2026-03-07
 **Confidence:** HIGH
 
 ## Executive Summary
 
-Glass v2.0 extends an existing, well-architected Windows terminal emulator (11 crates, 28,885 LOC, validated through v1.3) to macOS and Linux while adding tabs and split panes. The most important discovery from research is that the existing stack is already cross-platform -- every major dependency (alacritty_terminal, wgpu, winit, rusqlite, notify, arboard) compiles and runs on all three platforms with zero new crate dependencies beyond `uuid` for session identification. The cross-platform work is primarily cfg-gated code changes (shell detection, keyboard modifier mapping, config paths), not architectural rewrites.
+Glass v2.1 is a polish milestone for an already functional and daily-drivable terminal emulator (17,868 LOC, 436 tests, 12 crates). The goal is distribution readiness: platform-native installers (MSI, DMG, deb), automatic update checking via GitHub Releases, config hot-reload (following the pattern Alacritty established as baseline expectation), a performance profiling pass with real benchmarks, and a documentation site. The existing architecture is well-suited for these additions -- the event-driven `AppEvent`/`EventLoopProxy` pattern already handles cross-thread communication, `notify` 8.2 is already a workspace dependency, and `tracing` spans are already throughout the codebase.
 
-The recommended approach is a four-phase build: (1) extract the single-session assumption into a SessionMux abstraction and add platform cfg gates, (2) validate cross-platform PTY/rendering/input on macOS and Linux, (3) implement tabs with a wgpu-rendered tab bar, (4) add split panes with binary tree layout and scissor-rect viewport rendering. This ordering is dictated by strict dependency chains -- tabs require session extraction, splits require tabs, and all UI work requires cross-platform rendering to be validated first.
+The recommended approach is: use `cargo-packager` as the primary cross-platform packaging tool (from the Tauri team, handles MSI/DMG/deb/AppImage), `self_update` 0.42 for GitHub Releases-based auto-update (no custom update server needed), reuse the existing `notify` watcher with debouncing for config hot-reload, and layer `tracing-flame` behind a cargo feature flag for profiling. Only 2 new runtime crates are needed (`self_update`, `notify-debouncer-mini`); everything else is dev tooling or CI-only CLI tools. mdBook handles the documentation site, deployed to GitHub Pages.
 
-The primary risks are behavioral differences between ConPTY and Unix forkpty (signal handling, process lifecycle, EOF semantics), wgpu backend surface format mismatches across Metal/Vulkan/DX12, and macOS keyboard modifier confusion (Cmd vs Ctrl). All three are well-understood problems with documented solutions from Alacritty and WezTerm. The highest-impact risk is zombie PTY processes from improper session cleanup in the multi-session model -- this demands a Session struct with explicit Drop-based lifecycle management designed from Phase 1.
+The key risks are: (1) config hot-reload causing font rebuild cascades without proper debouncing and diff-based application -- editors generate 2-5 filesystem events per save, and rebuilding glyphon's FontSystem on each one causes flicker and potential panics; (2) MSI UpgradeCode must be hardcoded and committed from the very first release or all future Windows upgrades break irreparably; (3) macOS Gatekeeper blocks unsigned DMGs downloaded from the internet, requiring an Apple Developer account and CI-integrated code signing; (4) Windows file locking prevents replacing the running executable, requiring MSI-based upgrade flow rather than direct binary replacement. All of these are well-understood problems with documented solutions.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The existing Glass stack requires exactly one new dependency: `uuid 1.x` for session IDs. Every other crate already supports all target platforms. The key insight is that `alacritty_terminal 0.25.1` already provides cross-platform PTY via its `tty` module -- there is no need for `portable-pty` or any other PTY crate. Shell detection, keyboard mapping, and config path logic are the only platform-conditional code needed.
+The v2.1 stack adds minimal new runtime dependencies to the existing validated 12-crate workspace. See [STACK.md](STACK.md) for full details.
 
-**Core technologies (unchanged):**
-- **alacritty_terminal 0.25.1**: PTY abstraction -- already handles ConPTY (Windows), forkpty (macOS/Linux) behind `tty::new()`
-- **wgpu 28.0.0**: GPU rendering -- Metal (macOS), Vulkan (Linux), DX12 (Windows) auto-selected via `Backends::all()`
-- **winit 0.30.13**: Windowing -- Cocoa (macOS), X11+Wayland (Linux), Win32 (Windows)
-- **glyphon 0.10.0**: Text rendering -- platform-agnostic, wgpu-based
-- **rusqlite 0.38.0 (bundled)**: History/metadata storage -- bundled SQLite compiles everywhere
+**Core technologies:**
+- **cargo-packager 0.11.8** (CLI, not runtime): Cross-platform installer generation (MSI, DMG, deb, AppImage) from Cargo.toml metadata. From CrabNebula/Tauri team.
+- **self_update 0.42.0** (runtime): GitHub Releases-based binary self-update. Handles platform detection, archive extraction, binary replacement, version comparison. Dramatically simpler than hosting a custom update server.
+- **notify 8.2 + notify-debouncer-mini 0.7** (runtime): Config file watching with proper debouncing. notify is already in the workspace; only the debouncer is new.
+- **tracing-chrome 0.7.2** (optional, dev): Chrome/Perfetto trace output from existing tracing spans. Zero overhead when feature-disabled.
+- **criterion 0.5** (dev-only): Statistical microbenchmarks for cold start, key latency, FTS5 queries.
+- **mdBook 0.5.2** (CLI): Rust ecosystem standard for documentation sites. GitHub Pages deployment.
+- **cargo-generate-rpm 0.20.0** (CLI): RPM generation (cargo-packager does not cover RPM).
 
-**New dependency:**
-- **uuid 1.x**: Session IDs for tab/pane scoping of history, snapshots, and events (~20KB, pure Rust)
-
-**Explicitly rejected:** portable-pty (redundant with alacritty_terminal), nix/libc (already transitive), crossterm (Glass renders via wgpu, not terminal), tauri/egui (tab bar is simple GPU quads+text), slab/slotmap (uuid sufficient for pane count).
+**Total new runtime crates: 2.** Binary size impact: ~200-220 KB (mostly from reqwest in self_update).
 
 ### Expected Features
 
+See [FEATURES.md](FEATURES.md) for full feature landscape and competitor analysis.
+
 **Must have (table stakes):**
-- macOS: Cmd key shortcuts (C/V/T/W/Q/N/1-9), Option-as-Meta, Retina/HiDPI, zsh shell integration, platform config paths
-- Linux: Wayland + X11 support, Vulkan/GL backends, XDG directory compliance, Ctrl+Shift+C/V shortcuts
-- Tabs: Tab bar with new/close/switch, keyboard shortcuts, per-tab independent PTY/state, tab titles from CWD
-- Splits: Horizontal/vertical splits, keyboard create/navigate/resize, independent PTY per pane, focus indicator, dividers
+- Platform-native installers: MSI (Windows), DMG (macOS), deb + AppImage (Linux)
+- GitHub Releases CI with automated binary upload on tag push
+- Config validation with user-visible error messages (not just tracing logs)
+- Config hot-reload for visual settings (font_family, font_size) -- Alacritty set this expectation in 2018
+- README overhaul with screenshots and install instructions
+- Documentation site (mdBook on GitHub Pages)
+- Performance profiling pass with documented baseline metrics
 
-**Should have (differentiators -- Glass's competitive advantage):**
-- Per-pane block UI, command history, and undo (no competitor has this)
-- Cross-pane/tab search (find a command across all sessions)
-- New tab/pane inherits CWD from current pane
-- Pane zoom toggle (tmux-style maximize)
+**Should have (differentiators):**
+- Auto-update check from GitHub Releases -- genuine gap in the Rust terminal space (Alacritty, WezTerm have none)
+- Hot-reload for ALL settings (history, snapshot, pipes) -- no competitor does this fully
+- `glass config --validate` CLI command
+- Winget and Homebrew listings
 
-**Defer (v2.x+):**
-- Fish shell integration (P2), tab drag reorder (P2), mouse pane resize (P2), macOS .app bundle (P2)
-- Detachable sessions, session save/restore, startup layout config, tab groups (v3+)
-
-**Anti-features (explicitly avoid):** Tmux integration mode, native platform tab bars (NSTabView/GTK), per-pane shell picker GUI, unlimited layout nesting depth, session persistence across restarts.
+**Defer (v2.2+):**
+- AUR package, portable mode, crash log handler
+- Code signing (MSI + DMG) -- budget Apple Developer account, defer implementation
+- Flatpak/Snap (sandbox breaks PTY access -- explicitly an anti-feature for terminals)
 
 ### Architecture Approach
 
-The architecture introduces one new crate (`glass_mux`) containing SessionMux, Session, SplitTree, Tab, and ViewportLayout. The core pattern is "shared renderer, independent sessions" -- one FrameRenderer/GlyphCache per window (FontSystem is expensive at ~35ms to create), but each pane owns its own PTY, Term, BlockManager, HistoryDb, and SnapshotStore. Rendering uses wgpu scissor rects to clip each session into its viewport sub-region within a single render pass. Events gain a SessionId field to route PTY thread output to the correct session. All platform-specific code uses `#[cfg(target_os)]` gates rather than trait abstractions -- the number of conditional points is small (~5 functions) and alacritty_terminal/wgpu/winit already abstract the hard parts.
+The v2.1 features integrate into the existing event-driven architecture with minimal structural change. See [ARCHITECTURE.md](ARCHITECTURE.md) for component diagrams and data flows.
 
 **Major components:**
-1. **SessionMux** (NEW) -- Tab/pane tree, focus tracking, session lifecycle, viewport layout computation
-2. **Session** (NEW, extracted from WindowContext) -- Single terminal: PTY + Term + BlockManager + HistoryDb + SnapshotStore
-3. **SplitTree** (NEW) -- Binary tree enum for recursive H/V splits with ratio, layout computation, directional navigation
-4. **FrameRenderer** (MODIFIED) -- New `draw_frame_viewport()` method with scissor rect for pane-scoped rendering
-5. **AppEvent** (MODIFIED) -- All PTY-originated variants gain SessionId for routing
-6. **spawn_pty** (MODIFIED) -- cfg-gated shell detection (zsh on macOS, $SHELL on Linux, pwsh on Windows)
+1. **Config hot-reload** (modify `glass_core/config.rs`) -- ConfigWatcher thread using notify, sends `AppEvent::ConfigChanged` through EventLoopProxy, diff-based application to avoid unnecessary font rebuilds
+2. **Auto-update** (new crate `glass_update`) -- UpdateChecker backed by self_update, background tokio check on startup, `AppEvent::UpdateAvailable` for status bar notification, `glass update` CLI subcommand
+3. **Packaging** (CI/build infrastructure only) -- `release.yml` workflow triggered by `v*` tags, `packaging/` directory with WiX XML, Info.plist, .desktop files
+4. **Performance profiling** (scattered instrumentation) -- `#[tracing::instrument]` on hot paths, `tracing-flame` behind `perf` cargo feature, criterion benchmarks in dev-dependencies
+
+**Key architectural patterns to follow:**
+- Event-driven config propagation (extend existing AppEvent pattern)
+- Feature-gated optional components (profiling behind cargo features)
+- Background check with user-triggered action (updates)
+- Diff-then-apply for config changes (avoid rebuilding FontSystem when only history thresholds change)
 
 ### Critical Pitfalls
 
-1. **ConPTY vs forkpty behavioral differences** -- Signal handling (SIGWINCH/SIGHUP/SIGCHLD vs API calls), EOF semantics, and process group lifetime differ fundamentally. Prevention: keep using alacritty_terminal's abstraction, add Unix signal handlers for child reaping, add 5-second watchdog for PTY reader thread shutdown.
+See [PITFALLS.md](PITFALLS.md) for full pitfall analysis with recovery strategies.
 
-2. **wgpu surface format mismatches across backends** -- DX12 returns Bgra8UnormSrgb, Metal may return Bgra8Unorm (no sRGB), Vulkan varies. Prevention: explicitly negotiate texture format from `caps.formats` rather than blindly taking `[0]`. Test colors on all three platforms early.
-
-3. **macOS Cmd vs Ctrl keyboard confusion** -- Cmd+C must copy (not SIGINT), Ctrl+C must send SIGINT. Prevention: build a `platform_action_modifier()` helper using winit's `meta_key()` on macOS, `control_key()` elsewhere. Cmd must never reach the PTY as a terminal escape.
-
-4. **Zombie PTY processes from multi-session lifecycle** -- Each closed tab must clean up PTY process, reader thread, Term, DB connections. Prevention: Session struct with Drop impl that sends shutdown, kills child after timeout, joins thread with 2-second deadline.
-
-5. **Shell integration script incompatibilities** -- zsh uses precmd/preexec (not PROMPT_COMMAND), fish uses entirely different event system, macOS ships bash 3.2 (no bash 4+ features). Prevention: write separate scripts per shell, use `add-zsh-hook` for zsh, test on macOS default zsh specifically.
+1. **Config reload cascade without debouncing** -- Editors generate 2-5 FS events per save. Without debouncing, each triggers a FontSystem rebuild causing flicker and panics. Fix: 300-500ms debounce window + diff old vs new config to skip font rebuild when only non-visual fields changed.
+2. **MSI UpgradeCode not locked from day one** -- Windows Installer uses this GUID to detect previous installations. If it changes between versions, users get duplicate entries in Add/Remove Programs with no retroactive fix. Fix: Hardcode GUID in `wix/main.wxs`, commit to git, never change it.
+3. **Windows file locking prevents binary replacement** -- Running `.exe` holds a file lock. Direct overwrite fails. Fix: Use MSI upgrade path on Windows (download MSI, launch msiexec, exit Glass). Only use direct binary replacement on Linux standalone.
+4. **macOS Gatekeeper blocks unsigned DMGs** -- Downloaded unsigned apps show "damaged" error. Fix: Apple Developer account + rcodesign in CI for signing and notarization alongside DMG creation.
+5. **Font change only updates focused pane** -- Glass has tabs with split panes. Naive implementation updates only the active pane, leaving others with stale font metrics. Fix: Iterate ALL sessions in SessionMux, resize every pane's terminal grid, send resize to every PTY.
 
 ## Implications for Roadmap
 
 Based on research, suggested phase structure:
 
-### Phase 1: Session Extraction and Platform Foundation
-**Rationale:** Everything depends on Session being extracted from WindowContext and SessionMux being the routing layer. Cross-platform cfg gates must exist before any platform testing. This is the architectural foundation that unblocks all subsequent phases.
-**Delivers:** glass_mux crate with Session/SessionMux/SplitTree structs, SessionId in AppEvent, refactored WindowContext using SessionMux in single-session mode, cfg-gated shell detection, platform config/data paths via dirs crate, shell integration scripts for zsh and bash (Linux).
-**Addresses:** Platform PTY abstraction, Unix shell detection, platform config paths, independent PTY per pane (architecture only)
-**Avoids:** Pitfall 1 (PTY semantic differences -- validate with per-platform tests), Pitfall 3 (Cmd/Ctrl mapping -- platform shortcut abstraction), Pitfall 5 (shell integration -- per-shell scripts), Pitfall 8 (config paths)
-**Test gate:** Glass runs identically to v1.3 on Windows through the new SessionMux layer (zero user-visible change).
+### Phase 1: Performance Profiling Instrumentation
+**Rationale:** Must establish baselines BEFORE any optimization work. Zero new crates -- just adding tracing spans and an optional subscriber. Lowest risk, highest information value.
+**Delivers:** Flamegraph capability, criterion benchmark suite, documented baseline metrics (cold start, key latency, PTY throughput, FTS5 query time)
+**Addresses:** Performance profiling pass (P1 feature)
+**Uses:** tracing (existing), tracing-flame (optional dep), criterion (dev dep), cargo-flamegraph (CLI)
+**Avoids:** "Optimizing the wrong thing" pitfall -- profiling without baselines
 
-### Phase 2: Cross-Platform Validation
-**Rationale:** Must validate rendering, input, and PTY on macOS/Linux before adding UI complexity (tabs/splits). Finding surface format bugs or keyboard issues after building a tab bar wastes effort.
-**Delivers:** Glass launches and runs on macOS (Metal, Cmd shortcuts, zsh, Retina) and Linux (Vulkan/GL, Wayland+X11, XDG paths). Cross-platform CI pipeline.
-**Addresses:** wgpu backend auto-selection, macOS Cmd key mappings, HiDPI/Retina rendering, Wayland+X11 support, Option-as-Meta, cross-platform CI
-**Avoids:** Pitfall 2 (surface format mismatches -- test early), Pitfall 6 (Wayland vs X11 clipboard/window), Pitfall 9 (notify behavior differences), Pitfall 11 (CI matrix cost -- Linux-heavy strategy)
-**Test gate:** Glass runs on all three platforms with correct rendering, keyboard, clipboard, shell integration, and file watching.
+### Phase 2: Config Validation and Hot-Reload
+**Rationale:** Modifies `glass_core` which is a shared dependency -- do it before adding new crates. Config validation is prerequisite for safe hot-reload. High user value (table stakes feature).
+**Delivers:** Structured config validation errors shown to user, file watcher with debouncing, diff-based config application, font rebuild across all panes
+**Addresses:** Config validation (P1), config hot-reload for visual settings (P1), full config hot-reload (P2)
+**Uses:** notify 8.2 (existing), notify-debouncer-mini 0.7 (new), existing AppEvent/EventLoopProxy
+**Avoids:** Reload cascade pitfall, torn reads pitfall, multi-pane miss pitfall
 
-### Phase 3: Tabs
-**Rationale:** Tabs are simpler than splits (no viewport subdivision) and validate the SessionMux design with real multi-session usage. Tab bar UI is a prerequisite for the split pane visual frame.
-**Delivers:** wgpu-rendered tab bar, Ctrl+Shift+T/W new/close tab, Ctrl+Tab/Shift+Tab cycle, Ctrl+1-9 jump, per-tab independent PTY/Term/BlockManager/History, tab title from CWD/process.
-**Addresses:** Tab bar UI, independent PTY per tab, per-pane block UI + history (differentiator), keyboard shortcuts for tab management
-**Avoids:** Pitfall 4 (zombie PTY from tab close -- Session Drop impl), Pitfall integration gotcha (BlockManager per session, History DB session_id scoping)
-**Test gate:** Create/close/switch 50 tabs rapidly with zero zombie processes, zero resource leaks, independent history per tab.
+### Phase 3: Packaging and CI Release Workflow
+**Rationale:** Pure infrastructure -- no runtime code changes. Must exist before auto-update (which queries GitHub Releases). Unblocks distribution.
+**Delivers:** MSI installer, DMG bundle, deb package, tar.gz archives, automated release workflow on git tag
+**Addresses:** Platform installers (P1), GitHub Releases CI (P1)
+**Uses:** cargo-packager 0.11.8, cargo-wix 0.3.9 (fallback), cargo-deb 3.6.3 (fallback), cargo-generate-rpm 0.20.0
+**Avoids:** UpgradeCode pitfall (lock GUID immediately), macOS notarization pitfall (sign alongside DMG creation)
 
-### Phase 4: Split Panes
-**Rationale:** Splits require all prior infrastructure (session extraction, multi-session rendering, event routing, tab container). Binary tree layout builds on the SplitTree designed in Phase 1.
-**Delivers:** Horizontal/vertical splits via keyboard, Alt+Arrow focus navigation, Alt+Shift+Arrow resize, pane dividers, focused pane border highlight, PTY resize on split, pane close with parent collapse.
-**Addresses:** Split pane rendering, layout engine, pane focus switching, pane resize, independent PTY per pane
-**Avoids:** Pitfall 10 (viewport off-by-one -- character-cell-first dimension calculation, wgpu scissor rects)
-**Test gate:** Nested splits in both directions, correct resize cascading, no viewport gaps/overlaps, mouse click to focus.
+### Phase 4: Auto-Update Mechanism
+**Rationale:** Depends on Phase 3 (needs GitHub Releases with downloadable artifacts). New crate `glass_update`. Genuine competitive differentiator.
+**Delivers:** `glass update` CLI command, background version check on startup, status bar notification, install-method-aware update flow
+**Addresses:** Auto-update check (P2 feature, but high differentiator value)
+**Uses:** self_update 0.42.0 (new runtime dep), existing tokio runtime, existing AppEvent system
+**Avoids:** Windows file locking pitfall (MSI upgrade path), startup blocking pitfall (async check with 24hr cooldown)
+
+### Phase 5: Documentation and README
+**Rationale:** Documents the finished product. Can partially overlap with Phase 4. Content is most accurate when features are complete.
+**Delivers:** mdBook site on GitHub Pages (install guide, config reference, shell integration, MCP docs), README overhaul with screenshots
+**Addresses:** Documentation site (P1), README overhaul (P1)
+**Uses:** mdBook 0.5.2, GitHub Pages deployment
+
+### Phase 6: Package Manager Listings (Optional)
+**Rationale:** Depends on Phase 3 (installer URLs from GitHub Releases). Low effort, medium value. Can be deferred.
+**Delivers:** Winget manifest, Homebrew tap
+**Addresses:** Winget listing (P2), Homebrew tap (P2)
 
 ### Phase Ordering Rationale
 
-- Phase 1 before 2: Session extraction is a refactor on Windows (safe, testable) that creates the abstraction layer needed for multi-platform and multi-session work.
-- Phase 2 before 3/4: Cross-platform must be validated before adding UI complexity. A surface format bug discovered during split pane development is 3x harder to debug than during single-session platform bring-up.
-- Phase 3 before 4: Tabs validate SessionMux with real usage (spawn, route, cleanup) without the added complexity of viewport subdivision. Splits layer cleanly on top of working tabs.
-- Shell integration scripts can be developed in parallel with any phase since they are standalone shell code.
+- **Profiling before everything:** Data-driven decisions for the rest of the milestone. If profiling reveals a critical bottleneck, it informs architecture decisions in subsequent phases.
+- **Config hot-reload before packaging:** Modifies glass_core (shared dependency). Better to stabilize internal changes before adding external distribution infrastructure.
+- **Packaging before auto-update:** Auto-update queries GitHub Releases for artifacts that packaging produces. Hard dependency.
+- **Docs last:** Content accuracy requires features to be complete. Shell integration docs need installer paths. Config reference needs hot-reload behavior documented.
 
 ### Research Flags
 
 Phases likely needing deeper research during planning:
-- **Phase 2 (Cross-Platform Validation):** Wayland-specific issues (clipboard persistence, CSD vs SSD, IME) are poorly documented and need hands-on testing. macOS App Nap, NSWindow tabbingMode suppression, and fullscreen behavior need investigation.
-- **Phase 4 (Split Panes):** Viewport scissor-rect rendering with glyphon text is not well-documented. May need to prototype the draw_frame_viewport approach early to validate the scissor clipping works correctly with wgpu's text rendering pipeline.
+- **Phase 2 (Config Hot-Reload):** Multi-pane propagation is complex -- need to trace all config access sites (15+ in main.rs) and ensure each handles runtime changes. The renderer font rebuild path needs careful design.
+- **Phase 3 (Packaging):** WiX template customization, macOS code signing secrets in CI, and cross-platform CI matrix each have platform-specific gotchas. Test MSI upgrade flow end-to-end.
+- **Phase 4 (Auto-Update):** Windows-specific binary replacement strategy, install-method detection logic, and GitHub API rate limiting (60/hr unauthenticated) need detailed design.
 
 Phases with standard patterns (skip research-phase):
-- **Phase 1 (Session Extraction):** Pure refactoring of existing code into new structs. Well-understood Rust patterns (extract struct, add indirection layer). WezTerm's mux architecture provides a validated reference.
-- **Phase 3 (Tabs):** Tab bar rendering is straightforward (colored rectangles + text with glyphon). Tab management is a Vec with an index. Standard patterns from every terminal emulator.
+- **Phase 1 (Profiling):** tracing + tracing-flame + criterion is a thoroughly documented pattern. Just add spans and benchmarks.
+- **Phase 5 (Documentation):** mdBook + GitHub Pages is boilerplate. Content writing, not technical research.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All existing deps verified cross-platform on docs.rs. Only one new dep (uuid). alacritty_terminal cross-platform PTY verified against source. |
-| Features | HIGH | Feature landscape derived from 5 competitor terminals (Alacritty, Ghostty, Kitty, WezTerm, Windows Terminal) with official documentation. |
-| Architecture | HIGH | SessionMux pattern validated against WezTerm's Mux architecture. Binary tree splits are the industry standard (WezTerm, tmux). Renderer viewport approach uses standard wgpu scissor rects. |
-| Pitfalls | HIGH | Pitfalls verified against Glass source code, wgpu issue tracker, and real-world bug reports from similar projects. Phase-specific warnings are concrete and actionable. |
+| Stack | HIGH | All crate versions verified on crates.io. Minimal new runtime dependencies (2 crates). Existing workspace deps reused. |
+| Features | MEDIUM-HIGH | Feature landscape well-mapped against Alacritty/WezTerm/Kitty/Ghostty. Auto-update as differentiator is validated (no Rust terminal has it). |
+| Architecture | HIGH | Extends existing event-driven patterns. No fundamental architecture changes. Build order dependencies are clear. |
+| Pitfalls | HIGH | Based on codebase analysis (specific line numbers in main.rs/config.rs), platform behavior (Windows file locking, macOS Gatekeeper), and ecosystem experience. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **Wayland clipboard persistence:** arboard handles basic Wayland clipboard but data is lost when Glass exits. May need `wl-clip-persist` integration or a background clipboard thread. Validate during Phase 2.
-- **IME support on Linux:** winit's IME event handling on Wayland (text-input-v3) is not well-documented. CJK input may not work without explicit event forwarding. Needs hands-on testing.
-- **macOS .app bundle and notarization:** Required for real distribution but deferred to post-v2.0. Needs Apple Developer Account ($99/year) and CI pipeline setup. Budget 1-2 days when addressed.
-- **Fish shell integration:** Deferred to v2.x. Fish syntax is completely unlike bash/zsh and requires a separate script. Not blocking for launch since zsh (macOS) and bash (Linux) cover the majority.
-- **Thread scaling at 20+ sessions:** Each PTY gets a std::thread for its reader loop. At 20+ simultaneous sessions, consider async PTY I/O or a thread pool. Not a v2.0 concern but a future scalability consideration.
-- **HiDPI scale factor plumbing:** winit provides `scale_factor()` and glyphon needs it for glyph sizing. The exact integration path through Glass's font/rendering pipeline needs validation during Phase 2.
+- **wgpu-profiler compatibility with wgpu 28.0:** Need to verify before committing to GPU-specific profiling. If incompatible, CPU profiling via tracing-flame is sufficient for v2.1.
+- **macOS code signing budget:** Requires $99/year Apple Developer account. Decision needed on whether to defer (ship with "xattr -d" workaround instructions) or invest now.
+- **Windows code signing:** Unsigned MSI triggers SmartScreen warnings. SSL.com eSigner is an option but adds cost and CI complexity. Acceptable to defer.
+- **GitHub API rate limiting for update checks:** 60 requests/hr unauthenticated. Need a cooldown cache strategy (check at most once per 24hrs, cache result to disk).
+- **ScaleFactorChanged handler:** Currently log-only (known tech debt). Config hot-reload implementation should address DPI-change font recalculation as part of the font rebuild path.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [alacritty_terminal::tty docs (docs.rs)](https://docs.rs/alacritty_terminal/0.25.1/alacritty_terminal/tty/index.html) -- cross-platform PTY module
-- [alacritty_terminal Cargo.toml (GitHub)](https://github.com/alacritty/alacritty/blob/master/alacritty_terminal/Cargo.toml) -- platform-specific deps
-- [winit ModifiersState docs](https://rust-windowing.github.io/winit/winit/keyboard/struct.ModifiersState.html) -- META/meta_key() for Cmd on macOS
-- [WezTerm Multiplexer Architecture (DeepWiki)](https://deepwiki.com/wezterm/wezterm/2.2-multiplexer-architecture) -- tab/split binary tree pattern
-- [wgpu Backends documentation (docs.rs)](https://docs.rs/wgpu/latest/wgpu/struct.Backends.html) -- backend auto-selection
-- Glass source code analysis -- pty.rs, surface.rs, input.rs, main.rs
+- [cargo-packager (crates.io)](https://crates.io/crates/cargo-packager) -- v0.11.8, multi-format installer generation
+- [self_update (GitHub)](https://github.com/jaemk/self_update) -- v0.42.0, GitHub Releases auto-update backend
+- [notify (crates.io)](https://crates.io/crates/notify) -- v8.2.0, already in Glass workspace
+- [notify-debouncer-mini (crates.io)](https://crates.io/crates/notify-debouncer-mini) -- v0.7.0, debounced file watching
+- [tracing-chrome (crates.io)](https://crates.io/crates/tracing-chrome) -- v0.7.2, Chrome/Perfetto trace output
+- [mdBook (crates.io)](https://crates.io/crates/mdbook) -- v0.5.2, documentation site generator
+- [cargo-wix (GitHub)](https://github.com/volks73/cargo-wix) -- v0.3.9, MSI generation
+- [cargo-deb (crates.io)](https://crates.io/crates/cargo-deb) -- v3.6.3, Debian package generation
+- [cargo-generate-rpm (crates.io)](https://crates.io/crates/cargo-generate-rpm) -- v0.20.0, RPM generation
+- [Microsoft MSI UpgradeCode docs](https://learn.microsoft.com/en-us/windows/win32/msi/changing-the-product-code) -- MSI upgrade semantics
+- [Alacritty (GitHub)](https://github.com/alacritty/alacritty) -- Reference terminal for packaging and config hot-reload patterns
+- Glass codebase: `crates/glass_core/src/config.rs`, `src/main.rs`, `crates/glass_core/src/event.rs`
 
 ### Secondary (MEDIUM confidence)
-- [Cross-Platform Rust Graphics with wgpu (BrightCoding)](https://www.blog.brightcoding.dev/2025/09/30/cross-platform-rust-graphics-with-wgpu-one-api-to-rule-vulkan-metal-d3d12-opengl-webgpu/) -- wgpu cross-platform patterns
-- [Ghostty features and keybind reference](https://ghostty.org/docs/features) -- competitor analysis
-- [Kitty layouts and overview](https://sw.kovidgoyal.net/kitty/overview/) -- competitor analysis
-- [macOS Code Signing guides (multiple sources)](https://gist.github.com/rsms/929c9c2fec231f0cf843a1a746a416f5) -- notarization pipeline
-- [wgpu Metal shader issues #4456, #4399](https://github.com/gfx-rs/wgpu/issues/4456) -- known Metal compilation edge cases
-
-### Tertiary (LOW confidence)
-- [Wayland vs X11 in 2025 (dasroot.net)](https://dasroot.net/posts/2025/11/wayland-vs-x11/) -- display server ecosystem state (opinionated)
-- Thread scaling recommendations for 20+ PTY sessions -- based on general async Rust patterns, not terminal-specific benchmarks
+- [apple-codesign (rcodesign)](https://gregoryszorc.com/blog/2022/08/08/achieving-a-completely-open-source-implementation-of-apple-code-signing-and-notarization/) -- Pure-Rust macOS code signing
+- [wgpu-profiler (docs.rs)](https://docs.rs/wgpu-profiler) -- GPU timing for wgpu (compatibility with wgpu 28.0 unverified)
+- [winget-releaser (GitHub)](https://github.com/vedantmgoyal9/winget-releaser) -- Winget manifest automation
+- [Flatpak Rust packaging](https://belmoussaoui.com/blog/8-how-to-flatpak-a-rust-application/) -- Manual manifest approach (not recommended for terminals)
 
 ---
-*Research completed: 2026-03-06*
+*Research completed: 2026-03-07*
 *Ready for roadmap: yes*

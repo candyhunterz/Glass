@@ -1,219 +1,206 @@
-# Stack Research: Cross-Platform & Tabs
+# Stack Research: v2.1 Packaging & Polish
 
-**Project:** Glass v2.0 -- Cross-Platform (macOS/Linux) & Tabs/Split Panes
-**Researched:** 2026-03-06
-**Confidence:** HIGH (primary deps already cross-platform; changes are cfg-gated code, not new heavy crates)
+**Project:** Glass v2.1 -- Platform Installers, Auto-Update, Config Hot-Reload, Profiling, Docs
+**Researched:** 2026-03-07
+**Confidence:** HIGH (well-established Rust packaging ecosystem, verified versions via crates.io)
 
 ## Scope
 
-This document covers ONLY what is needed for v2.0: macOS/Linux PTY support, wgpu backend auto-selection, platform keyboard mapping, and tab/split pane session management. The existing validated stack (11 crates, 28,885 LOC) is unchanged.
+This document covers ONLY what is needed for v2.1. The existing validated stack (12 crates, 17,868 LOC, 436 tests) is unchanged. This research addresses five new capability areas:
+
+1. Platform installers (MSI, DMG, deb, rpm, AppImage, Flatpak)
+2. Auto-update mechanism
+3. Config hot-reload
+4. Performance profiling tooling
+5. Documentation site
 
 ---
 
-## Key Finding: alacritty_terminal Already Handles Cross-Platform PTY
+## Recommended Stack
 
-The most important discovery: **Glass does NOT need portable-pty or any new PTY crate.** The existing `alacritty_terminal 0.25.1` already provides cross-platform PTY support through its `tty` module:
+### Packaging & Distribution (Build-Time Tools -- NOT Runtime Dependencies)
 
-- **Windows:** ConPTY via `windows-sys` + `miow` (current implementation)
-- **macOS/Linux:** Unix PTY via `rustix-openpty` + `signal-hook` (same `tty::new()` API)
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| cargo-packager (CLI) | 0.11.8 | Cross-platform installer generation | Single tool generates MSI (WiX), DMG, deb, AppImage, NSIS. From CrabNebula (Tauri team). Configured via `[package.metadata.packager]` in Cargo.toml -- no separate config file needed. Supports code signing. |
+| cargo-wix (CLI) | 0.3.9 | MSI-specific generation (fallback) | More mature MSI tooling than cargo-packager's WiX support. Use only if cargo-packager's MSI output is insufficient. |
+| cargo-deb (CLI) | 3.6.3 | Debian package generation (fallback) | Most mature deb packager in Rust ecosystem. Use if cargo-packager's deb output needs customization beyond what it supports. |
+| cargo-generate-rpm (CLI) | 0.20.0 | RPM package generation | cargo-packager does not generate RPM. This is the standard Rust RPM generator. |
 
-Glass's `pty.rs` calls `alacritty_terminal::tty::new()` which compiles to the correct platform implementation automatically. The `Pty`, `EventedPty`, `EventedReadWrite`, and `ChildEvent` types are all cross-platform abstractions within alacritty_terminal.
+**Key decision: Use cargo-packager as primary, with per-format fallbacks.**
 
-**What needs to change in pty.rs:** Only the shell detection logic. Currently hardcoded to detect `pwsh`/`powershell`. On Unix, detect `$SHELL` or fall back to `/bin/bash`.
+cargo-packager handles MSI + DMG + deb + AppImage in one tool. For RPM, add cargo-generate-rpm. For Flatpak, use flatpak-builder directly (no Rust crate needed -- it's a manifest + build system, not a library).
 
----
+**These are all `cargo install` CLI tools, NOT Cargo.toml dependencies.** They run in CI and are invoked as build steps, not compiled into Glass.
 
-## Existing Stack: Already Cross-Platform (No Changes Needed)
+### Auto-Update (Runtime Dependency)
 
-| Technology | Version | macOS | Linux | Notes |
-|------------|---------|-------|-------|-------|
-| alacritty_terminal | =0.25.1 | YES (rustix-openpty) | YES (rustix-openpty) | PTY abstraction is built-in |
-| wgpu | 28.0.0 | YES (Metal) | YES (Vulkan/GL) | Backend auto-selection via `Backends::all()` |
-| winit | 0.30.13 | YES (Cocoa) | YES (X11 + Wayland) | Both X11 and Wayland enabled by default |
-| tokio | 1.50.0 | YES | YES | Fully cross-platform async runtime |
-| rusqlite | 0.38.0 (bundled) | YES | YES | Bundled SQLite compiles everywhere |
-| notify | 8.2 | YES (FSEvents) | YES (inotify) | Platform backends selected at compile time |
-| blake3 | 1.8.3 | YES | YES | Pure Rust + optional SIMD |
-| glyphon | 0.10.0 | YES | YES | wgpu-based text rendering, platform-agnostic |
-| arboard | 3 | YES (NSPasteboard) | YES (X11 sel/Wayland) | Cross-platform clipboard |
-| dirs | 6 | YES | YES | XDG on Linux, ~/Library on macOS |
-| ignore | 0.4 | YES | YES | .gitignore parsing is platform-agnostic |
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| self_update | 0.42.0 | In-place binary self-update from GitHub Releases | Most mature Rust self-update crate (0.42.0, actively maintained). Supports GitHub Releases backend natively. Handles: version comparison, asset download by platform/target triple, binary replacement, optional progress callbacks. 2.5M+ downloads. |
 
-**Observation:** Every existing dependency is already cross-platform. The v1.0-v1.3 stack was well-chosen.
+**Why self_update over cargo-packager-updater:**
 
----
+cargo-packager-updater (0.2.3) is designed to work with cargo-packager's signing infrastructure and update server. It requires hosting your own update endpoint that serves signed update manifests. self_update works directly with GitHub Releases -- just upload platform-specific archives to a release and self_update finds and downloads the right one by naming convention.
 
-## Changes Required (Not New Dependencies)
+For a project distributing via GitHub Releases, self_update is dramatically simpler. No update server, no signing infrastructure, no custom manifest format. Just: tag a release, upload binaries, self_update handles the rest.
 
-### 1. wgpu Backend Selection
+**Integration point:** Add a `glass update` CLI subcommand (via existing clap infrastructure) that checks GitHub Releases for a newer version and replaces the binary in-place.
 
-**Current code** (`surface.rs` line 22-28):
-```rust
-let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-    #[cfg(target_os = "windows")]
-    backends: wgpu::Backends::DX12,
-    #[cfg(not(target_os = "windows"))]
-    backends: wgpu::Backends::all(),
-    ..Default::default()
-});
-```
+### Config Hot-Reload (Runtime Dependency)
 
-**This is already correct.** The `cfg` gate already exists. On macOS, `Backends::all()` will prefer Metal (the only available backend). On Linux, it will prefer Vulkan, falling back to GL if Vulkan drivers are unavailable. No code changes needed for backend selection.
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| notify | 8.2.0 | File system watching for config.toml changes | **Already in the project** (glass_snapshot uses it for FS watching). Reuse the same dependency. Provides cross-platform file watching: ReadDirectoryChangesW (Windows), FSEvents (macOS), inotify (Linux). |
+| notify-debouncer-mini | 0.7.0 | Debounced file watch events | Prevents multiple reloads from a single save operation. Text editors often write-rename-delete which triggers 2-4 events. Debouncer collapses these into one event. Built on top of notify, same maintainers. |
 
-**wgpu Cargo features to verify:** The default features of wgpu 28.0 include `metal`, `vulkan`, `dx12`, and `gles` -- all enabled by default. No feature flag changes needed in Cargo.toml.
+**No new watcher crate needed.** notify 8.2.0 is already a workspace dependency. The only addition is notify-debouncer-mini for debouncing (the snapshot watcher does its own ad-hoc debouncing -- config watching should use the proper debouncer).
 
-**Confidence:** HIGH -- verified via wgpu docs and crates.io feature list.
+**Integration pattern:**
+1. Watch `~/.glass/config.toml` via notify-debouncer-mini (100ms debounce)
+2. On change: re-parse TOML, validate, diff against current config
+3. Apply hot-reloadable fields (font_family, font_size, colors) via `AppEvent::ConfigChanged`
+4. Non-hot-reloadable fields (shell) log a warning: "restart required"
+5. Invalid config: log error, keep current config (never crash on bad config)
 
-### 2. Platform Keyboard Mapping (Cmd vs Ctrl)
+**What is hot-reloadable vs not:**
 
-**Current code** (`input.rs`) uses `modifiers.control_key()` for shortcuts like Ctrl+Shift+C/V.
+| Field | Hot-Reloadable | Why |
+|-------|---------------|-----|
+| font_family | YES | Rebuild glyphon font system, recompute metrics |
+| font_size | YES | Rebuild glyphon font system, recompute metrics |
+| shell | NO | Requires new PTY process -- restart needed |
+| history.* | YES | Runtime parameters, no structural change |
+| snapshot.enabled | YES | Gate check is per-command |
+| snapshot.max_count | YES | Pruner reads on next run |
+| pipes.enabled | YES | Gate check is per-command |
 
-**winit 0.30.13 `ModifiersState`** provides:
-- `CONTROL` -- Ctrl key on all platforms
-- `META` -- Windows key on PC, **Command key on macOS**
-- `ALT` -- Alt key on PC, Option key on macOS
-- `SHIFT` -- Shift on all platforms
-- `SUPER` -- **Deprecated** in favor of `META`
+### Performance Profiling (Dev Dependencies Only)
 
-Methods: `control_key()`, `meta_key()`, `alt_key()`, `shift_key()`
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| tracing-chrome | 0.7.2 | Generate chrome://tracing JSON for frame-level profiling | Glass already uses tracing 0.1.44 and tracing-subscriber 0.3. tracing-chrome is a Layer that outputs to Chrome's trace format. Open in chrome://tracing or Perfetto for per-frame GPU/CPU visualization. Zero production overhead when not enabled. |
+| criterion | 0.5 | Statistical microbenchmarks | Standard Rust benchmarking framework. Use for cold-start time, key-to-screen latency, config parse time, FTS5 query time. Handles warmup, statistical analysis, regression detection. |
+| cargo-flamegraph (CLI) | 0.6 | CPU flame graphs | `cargo install flamegraph`. Wraps perf (Linux) / DTrace (macOS) / ETW (Windows via cargo-xctrace). Visualize where CPU time is spent during rendering, PTY I/O, etc. |
+| memory-stats | 1.2 | Runtime memory reporting | **Already in the project.** Used for idle memory measurement. Continue using for profiling pass. |
 
-**Approach:** Create a `platform_action_modifier()` helper:
-```rust
-/// Returns true if the platform's "action" modifier is pressed.
-/// Cmd on macOS, Ctrl on Windows/Linux.
-fn action_modifier(mods: ModifiersState) -> bool {
-    #[cfg(target_os = "macos")]
-    { mods.meta_key() }
-    #[cfg(not(target_os = "macos"))]
-    { mods.control_key() }
-}
-```
+**Profiling is dev-tooling, not shipped to users.** tracing-chrome should be behind a cargo feature flag (`profiling`) so it adds zero overhead in release builds. criterion goes in `[dev-dependencies]`.
 
-This affects: copy/paste (Cmd+C/V on macOS vs Ctrl+Shift+C/V), tab shortcuts (Cmd+T/W), split pane shortcuts. The Ctrl+letter -> ASCII control character encoding remains unchanged (it is terminal protocol, not platform convention).
-
-**Confidence:** HIGH -- verified `meta_key()` method exists in winit 0.30.13 ModifiersState via official docs.
-
-### 3. Shell Detection on Unix
-
-**Current code** (`pty.rs` line 115-121): Detects `pwsh` then falls back to `powershell`.
-
-**Unix approach:**
-```rust
-#[cfg(unix)]
-fn detect_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
-}
-
-#[cfg(windows)]
-fn detect_shell() -> String {
-    if Command::new("pwsh").arg("--version").output().is_ok() {
-        "pwsh".to_owned()
-    } else {
-        "powershell".to_owned()
-    }
-}
-```
-
-No new dependencies. Standard `$SHELL` environment variable is universal on Unix.
-
-### 4. Shell Integration Scripts
-
-**Existing:** `glass.bash` and `glass.ps1`
-
-**Needed for v2.0:**
-- `glass.zsh` -- zsh shell integration (macOS default shell)
-- `glass.fish` -- fish shell integration (popular on Linux)
-- Extend `glass.bash` to work on Linux (already POSIX-compatible, mostly works)
-
-**zsh differences from bash:** `precmd`/`preexec` hooks instead of `PROMPT_COMMAND`/`PS0`. The OSC 133 sequences are identical. This is shell script work, not Rust crate work.
-
-**fish differences:** `fish_prompt`/`fish_preexec` functions. Fish syntax differs significantly from bash/zsh but the OSC protocol is identical.
-
-### 5. windows-sys Dependency Gating
-
-**Current:** `windows-sys` is a workspace dependency used for UTF-8 console code page.
-
-**Change:** Gate it behind `cfg(windows)`:
+**Integration pattern for tracing-chrome:**
 ```toml
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+[features]
+profiling = ["tracing-chrome"]
+
+[dependencies]
+tracing-chrome = { version = "0.7.2", optional = true }
 ```
 
-Already partially done in some crates. Needs consistent application across the workspace.
+```rust
+#[cfg(feature = "profiling")]
+let _guard = {
+    let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+        .file("glass_trace.json")
+        .build();
+    tracing_subscriber::registry().with(chrome_layer).init();
+    guard
+};
+```
+
+### Documentation Site (External Tooling)
+
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| mdBook | 0.5.2 | Documentation site from Markdown | Official Rust documentation tool. Used by The Rust Programming Language book, rustc docs, wasm-bindgen docs. Generates static HTML from Markdown with search, theming, and sidebar navigation. Deployed to GitHub Pages with zero config. |
+
+**Why mdBook over alternatives:**
+
+| Alternative | Why Not |
+|-------------|---------|
+| Docusaurus | JavaScript/React -- wrong ecosystem for a Rust project. Heavyweight. |
+| Hugo/Zola | General-purpose static site generators. mdBook is purpose-built for technical documentation with code blocks, admonitions, and search. |
+| rustdoc | For API docs (already generated by `cargo doc`). mdBook is for user-facing documentation: installation, configuration, keybindings, shell integration. |
+
+**Structure:**
+```
+docs/
+  book.toml          # mdBook config
+  src/
+    SUMMARY.md        # Table of contents
+    installation.md   # Platform-specific install instructions
+    configuration.md  # config.toml reference
+    keybindings.md    # Keyboard shortcuts
+    shell-integration.md  # bash/zsh/fish/pwsh setup
+    history.md        # History & search features
+    snapshots.md      # Undo/snapshot features
+    mcp.md            # MCP server for AI integration
+    tabs-panes.md     # Tabs and split panes
+```
+
+**CI integration:** `mdbook build` in GitHub Actions, deploy to GitHub Pages on release tags.
 
 ---
 
-## New Code Required: Tab/Split Pane Session Management
+## New Cargo.toml Dependencies (Runtime)
 
-### No External Crate -- Build It
+```toml
+[workspace.dependencies]
+# Auto-update
+self_update = { version = "0.42", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "backends-github"] }
 
-After researching wezterm's mux architecture and evaluating available crates, the recommendation is to **build the tab/split system from scratch** (~500-800 LOC). Rationale:
+# Config hot-reload debouncing
+notify-debouncer-mini = "0.7"
 
-1. **No suitable crate exists.** Ratatui is for TUI apps (renders to terminal, not GPU). wezterm's `mux` crate is deeply coupled to wezterm internals and not published as a standalone library.
-
-2. **The data structures are simple.** Tabs are a `Vec<Tab>` with an active index. Split panes are a binary tree where leaves are terminal sessions and internal nodes are split direction + ratio.
-
-3. **Glass already has the hard parts.** PTY spawning, terminal emulation, and GPU rendering are solved. Tab/split management is lightweight orchestration on top.
-
-### Architecture (inspired by wezterm's mux)
-
-```
-SessionManager
-  |-- tabs: Vec<Tab>           // ordered list
-  |-- active_tab: usize        // index into tabs
-  |
-  Tab
-  |-- tree: SplitTree          // binary tree of panes
-  |-- active_pane: PaneId      // which pane has focus
-  |
-  SplitTree (enum)
-  |-- Leaf(Pane)               // terminal session
-  |-- Split { direction: H|V, ratio: f32, first: Box<SplitTree>, second: Box<SplitTree> }
-  |
-  Pane
-  |-- id: PaneId
-  |-- pty_sender: PtySender
-  |-- term: Arc<FairMutex<Term<EventProxy>>>
-  |-- block_manager: BlockManager
-  |-- history_db: HistoryDb     // independent per-session
-  |-- snapshot_store: SnapshotStore  // independent per-session
+# Performance profiling (optional)
+tracing-chrome = { version = "0.7.2", optional = true }
 ```
 
-**Key design decisions:**
+```toml
+# In glass_core or root binary Cargo.toml
+[dependencies]
+self_update = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+# notify already available via workspace
 
-| Decision | Choice | Why |
-|----------|--------|-----|
-| Tab data structure | `Vec<Tab>` with active index | Simple, O(1) switch, matches UI tab bar order |
-| Split data structure | Binary tree enum | Natural recursive splits. wezterm validated this approach at scale. |
-| PTY per pane | Yes, independent | Each pane needs its own shell process, terminal grid, and I/O thread |
-| History per pane | Shared DB, session-scoped queries | One SQLite database with a `session_id` column, not one DB per pane. Avoids file proliferation. |
-| Snapshot store per pane | Shared blob store, session-scoped metadata | Same CAS store (BLAKE3 dedup works across sessions), metadata table gains `session_id` |
-| Layout persistence | Defer to future milestone | Saving/restoring tab layouts is config hot-reload territory |
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 
-### Session ID Integration
+[features]
+profiling = ["tracing-chrome"]
+```
 
-Add `session_id: Uuid` to each Pane. Extend `commands` and `snapshots` tables with `session_id` column (nullable for backward compat with v1.x data). This allows:
-- Per-pane history queries in search overlay
-- Per-pane undo (don't undo commands from a different pane)
-- MCP context scoped to active pane
-
-**uuid crate:** Use `uuid = { version = "1", features = ["v4"] }` for random session IDs. Lightweight, widely used, no controversy.
+**Total new runtime crates: 2** (self_update, notify-debouncer-mini). Everything else is dev tooling or CLI tools installed separately.
 
 ---
 
-## New Dependencies for v2.0
+## CI/CD Pipeline Additions
 
-### Required
+### Release Workflow (new: `.github/workflows/release.yml`)
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| uuid | 1.x | Session IDs for tabs/panes | v4 random UUIDs for unique pane identification. Required to scope history/snapshots to individual sessions. 800M+ downloads, Rust ecosystem standard. |
+```yaml
+# Trigger: push tag v*
+# Matrix: windows-latest, macos-latest, ubuntu-latest
+# Steps per platform:
+#   1. cargo build --release
+#   2. Platform-specific packaging:
+#      - Windows: cargo packager --formats msi,nsis
+#      - macOS: cargo packager --formats dmg,app
+#      - Linux: cargo packager --formats deb,appimage
+#      - Linux: cargo generate-rpm
+#   3. Upload artifacts to GitHub Release
+```
 
-### That's It
+### Documentation Workflow (new: `.github/workflows/docs.yml`)
 
-One new crate. Everything else is code changes to existing crates.
+```yaml
+# Trigger: push to main (docs/** changed)
+# Steps:
+#   1. mdbook build docs/
+#   2. Deploy to GitHub Pages
+```
 
-**Confidence:** HIGH -- uuid is trivial, battle-tested, and the only genuinely new dependency.
+### Existing CI (unchanged)
+
+The existing `ci.yml` continues to run `cargo build --release` and `cargo test` on all three platforms. No changes needed.
 
 ---
 
@@ -221,78 +208,28 @@ One new crate. Everything else is code changes to existing crates.
 
 | Temptation | Why Not |
 |------------|---------|
-| **portable-pty** | alacritty_terminal 0.25.1 already provides cross-platform PTY via `tty::new()`. Adding portable-pty would create a redundant abstraction layer, add wezterm coupling, and require rewriting the entire PTY loop. |
-| **nix crate** | Provides Unix syscall wrappers. alacritty_terminal already handles forkpty internally via rustix-openpty. Direct nix usage is unnecessary. |
-| **libc (direct)** | Already a transitive dependency of alacritty_terminal. No need to add as direct dependency for PTY work. |
-| **mio** | polling crate (already used by alacritty_terminal) handles the event loop. mio would be redundant. |
-| **crossterm** | For TUI apps writing to a terminal. Glass IS a terminal -- it renders via wgpu, not terminal escape sequences. |
-| **signal-hook (direct)** | Already a dependency of alacritty_terminal on Unix. Child process signal handling is internal to the tty module. |
-| **tauri/egui for tab bar** | The tab bar is a simple GPU-rendered strip. Glass already renders text with glyphon and quads with wgpu. No UI framework needed. |
-| **slab / slotmap** | For pane ID allocation. A simple `u64` counter or `Uuid` is sufficient for the expected number of panes (< 100). |
+| **cargo-packager-updater** (0.2.3) | Requires hosting an update server with signed manifests. Overkill for GitHub Releases distribution. self_update works directly with GitHub Releases. |
+| **Tauri** | Glass is not a webview app. Tauri's packaging is tightly coupled to its webview + IPC model. cargo-packager (extracted from Tauri) gives packaging without the webview baggage. |
+| **Squirrel/Sparkle** | Native update frameworks for Windows/macOS. Would require FFI bindings, platform-specific code, and a separate update server. self_update is pure Rust and cross-platform. |
+| **config-rs crate** | Over-engineered for Glass's needs. Glass loads a single TOML file. serde + toml (already in the project) handles deserialization. Adding config-rs introduces layered config, environment variable overrides, and 12-factor patterns that add complexity without value. |
+| **hot-lib-reloader** | For hot-reloading Rust code (dylib swapping). Glass needs config hot-reload, not code hot-reload. Totally different problem. |
+| **pprof-rs** | Linux-only CPU profiler. cargo-flamegraph + tracing-chrome cover all platforms. |
+| **Tracy profiler** | Excellent but requires building a separate C++ viewer application and linking a C library. tracing-chrome outputs to Perfetto (browser-based) which is zero-install. |
+| **Snap packaging** | Snap's confinement model restricts filesystem and PTY access. Terminal emulators notoriously break under Snap confinement. Flatpak or AppImage are better choices for sandboxed Linux distribution. |
 
 ---
 
 ## Alternatives Considered
 
-| Category | Recommended | Alternative | Why Not |
-|----------|-------------|-------------|---------|
-| PTY abstraction | alacritty_terminal::tty (existing) | portable-pty 0.9 | Existing dep already cross-platform. portable-pty adds 15+ transitive deps and requires rewriting PTY loop. |
-| PTY abstraction | alacritty_terminal::tty | pseudoterminal crate | Newer, less proven (< 10K downloads). alacritty_terminal has years of battle-testing. |
-| wgpu backends | Default features (all backends) | Feature-gate per platform | Unnecessary complexity. wgpu auto-selects the best backend. Binary size cost of unused backends is negligible (they're compile-time selected). |
-| macOS Cmd key | `ModifiersState::meta_key()` | Raw platform keycode matching | meta_key() is the winit-sanctioned approach. Raw keycodes break on keyboard layout changes. |
-| Tab management | Custom Vec<Tab> + binary tree | ratatui Layout | ratatui renders to terminal (text mode). Glass renders via wgpu (GPU). Completely different rendering model. |
-| Tab management | Custom code | Extract wezterm mux crate | wezterm's mux is tightly coupled to its own Terminal type, Domain system, and Lua config. Extraction effort exceeds writing from scratch. |
-| Session IDs | uuid v4 | Incrementing u64 | UUIDs survive across process restarts without coordination. u64 counters reset on restart, risking ID collision in the database. |
-| Split layout | Binary tree enum | Grid/tile system | Binary tree naturally models recursive H/V splits. Grid systems are more complex and not needed for terminal splits. |
-
----
-
-## Platform-Specific Compilation Matrix
-
-| Crate | Windows | macOS | Linux | Notes |
-|-------|---------|-------|-------|-------|
-| windows-sys | YES | no | no | Gate with `cfg(windows)` |
-| Signal handling | ConPTY events | signal-hook (via alacritty_terminal) | signal-hook (via alacritty_terminal) | Transparent via tty module |
-| FS watching | ReadDirectoryChangesW | FSEvents | inotify | notify 8.2 handles all three |
-| Clipboard | WinAPI | NSPasteboard | X11 selections / Wayland | arboard 3 handles all |
-| Config dir | %APPDATA% | ~/Library/Application Support | $XDG_CONFIG_HOME | dirs 6 handles all |
-| Data dir | %LOCALAPPDATA% | ~/Library/Application Support | $XDG_DATA_HOME | dirs 6 handles all |
-
----
-
-## Cargo.toml Changes
-
-### Workspace Root
-
-```toml
-[workspace.dependencies]
-# ADD:
-uuid = { version = "1", features = ["v4"] }
-
-# CHANGE windows-sys to target-specific in crates that use it:
-# (Move from [dependencies] to [target.'cfg(windows)'.dependencies] in each crate)
-```
-
-### Per-Crate Changes
-
-**glass_terminal/Cargo.toml:**
-```toml
-# No changes -- alacritty_terminal handles platform PTY internally
-```
-
-**glass_renderer/Cargo.toml:**
-```toml
-# No changes -- wgpu backend selection is already cfg-gated in code
-```
-
-**Root binary Cargo.toml:**
-```toml
-[dependencies]
-uuid = { workspace = true }  # Session management
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }  # Move from unconditional
-```
+| Category | Recommended | Alternative | Why Not Alternative |
+|----------|-------------|-------------|---------------------|
+| Cross-platform packaging | cargo-packager 0.11.8 | cargo-bundle 0.6 | cargo-bundle is unmaintained (last release 2021). cargo-packager is its spiritual successor from the Tauri team. |
+| MSI generation | cargo-packager (primary) + cargo-wix (fallback) | WiX directly | cargo-packager wraps WiX. Only fall back to cargo-wix if advanced MSI customization is needed (custom dialog UI, merge modules). |
+| RPM generation | cargo-generate-rpm 0.20.0 | rpmbuild directly | cargo-generate-rpm reads metadata from Cargo.toml. rpmbuild requires writing a separate .spec file. |
+| Auto-update | self_update 0.42.0 | Custom reqwest + GitHub API | self_update handles: platform detection, archive extraction, binary replacement, version comparison. Reimplementing this is 500+ LOC of error-prone code. |
+| Config watching | notify 8.2 + debouncer-mini 0.7 | Polling loop | Polling wastes CPU. notify uses OS-native file watching (inotify/FSEvents/ReadDirectoryChangesW) -- zero CPU when idle. |
+| Profiling | tracing-chrome 0.7.2 | Tracy | Tracy is more powerful but requires C++ viewer and native library linking. tracing-chrome outputs JSON for Perfetto (browser). Good enough for an optimization pass; switch to Tracy only if deeper GPU analysis is needed. |
+| Docs site | mdBook 0.5.2 | Zola | Zola is a general static site generator. mdBook is purpose-built for documentation with search, code highlighting, and sidebar TOC out of the box. Less config, better fit. |
 
 ---
 
@@ -300,36 +237,92 @@ windows-sys = { workspace = true }  # Move from unconditional
 
 | Package | Compatible With | Notes |
 |---------|-----------------|-------|
-| alacritty_terminal =0.25.1 | macOS (aarch64, x86_64), Linux (aarch64, x86_64) | Verified: builds listed on docs.rs for all targets |
-| wgpu 28.0.0 | Metal (macOS), Vulkan (Linux), GL (Linux fallback) | All backend features enabled by default |
-| winit 0.30.13 | Cocoa (macOS), X11 + Wayland (Linux) | Both Linux backends enabled by default |
-| uuid 1.x | All platforms | Pure Rust, no platform dependencies |
-| notify 8.2 | FSEvents (macOS), inotify (Linux) | Platform backend selected at compile time |
+| self_update 0.42.0 | reqwest (async HTTP), zip/tar/flate2 | Pulls in reqwest as a dependency. Uses tokio runtime (already in project). |
+| notify-debouncer-mini 0.7.0 | notify 8.x | Built on top of notify. Must use compatible notify version -- 8.2.0 matches. |
+| tracing-chrome 0.7.2 | tracing 0.1.x, tracing-subscriber 0.3.x | Compatible with existing tracing stack. Implements tracing_subscriber::Layer. |
+| criterion 0.5 | Stable Rust | No compatibility concerns. Dev-dependency only. |
+| cargo-packager 0.11.8 | WiX Toolset v3/v4 (Windows), create-dmg (macOS) | CLI tool. Requires WiX installed on Windows CI runner (`choco install wixtoolset`). |
+| cargo-generate-rpm 0.20.0 | RPM 4.x | CLI tool. Requires rpmbuild on Linux CI runner. |
+| mdBook 0.5.2 | Stable Rust | CLI tool. `cargo install mdbook` or download pre-built binary. |
 
 ---
 
-## Compile & CI Impact
+## Compile & Dependency Impact
 
-| Change | Compile Impact | Binary Size | Notes |
-|--------|---------------|-------------|-------|
-| uuid crate | MINIMAL (~2s) | ~20 KB | Small, pure Rust |
-| Tab/split code (~800 LOC) | MODERATE | ~40 KB | New module in glass_core or new glass_session crate |
-| Shell integration scripts | NONE | N/A | Not compiled, shipped alongside binary |
-| Platform cfg gates | MINIMAL | Slight reduction per-platform | Dead code elimination removes unused platform paths |
-| **Total v2.0 addition** | **~60 KB code** | Minimal new deps. Primary work is cfg-gated code paths. |
+| Addition | New Transitive Deps | Compile Impact | Binary Size | Notes |
+|----------|---------------------|----------------|-------------|-------|
+| self_update | reqwest, hyper, rustls, zip, tar, flate2 | MODERATE (~15s) | ~200 KB | reqwest is the heavy one. Consider feature-gating behind `update` feature if cold compile time matters. |
+| notify-debouncer-mini | None (notify already present) | MINIMAL (~1s) | ~5 KB | Thin wrapper over notify. |
+| tracing-chrome (optional) | None | MINIMAL (~2s) | ~10 KB | Only compiled with `--features profiling`. |
+| criterion (dev-only) | plotters, statistical libs | MODERATE (~10s) | N/A | Dev-dependency only, not in release binary. |
+| **Total runtime addition** | ~30 new transitive crates (mostly from reqwest) | ~15-20s first compile | ~200-220 KB | Acceptable for auto-update capability. |
+
+**Mitigation for reqwest bloat:** Use `default-features = false` on self_update to avoid pulling in unnecessary backends. Only enable `backends-github`, `archive-tar`, `archive-zip`, and `compression-flate2`.
+
+---
+
+## Integration Points with Existing Architecture
+
+### Auto-Update Integration
+
+```
+glass update (clap subcommand)
+  -> self_update::backends::github::Update::configure()
+  -> Check latest GitHub Release tag vs current version
+  -> Download platform-specific archive (glass-v{version}-{target}.tar.gz)
+  -> Replace binary in-place
+  -> Print "Updated to vX.Y.Z. Restart Glass to use new version."
+```
+
+**Version embedding:** Use `env!("CARGO_PKG_VERSION")` (already available) for current version comparison.
+
+**Asset naming convention:** `glass-v{version}-x86_64-pc-windows-msvc.zip`, `glass-v{version}-aarch64-apple-darwin.tar.gz`, `glass-v{version}-x86_64-unknown-linux-gnu.tar.gz`
+
+### Config Hot-Reload Integration
+
+```
+App::new()
+  -> Spawn config watcher thread (notify-debouncer-mini)
+  -> Watch ~/.glass/config.toml
+  -> On change: parse + validate + diff
+  -> Send AppEvent::ConfigChanged(ConfigDelta) via EventProxy
+  -> App::handle_event matches ConfigChanged:
+     -> Update font system (glyphon rebuild)
+     -> Update renderer parameters
+     -> Log non-hot-reloadable changes
+```
+
+**Existing event infrastructure:** Glass already has `AppEvent` enum and `EventProxy` for cross-thread communication. Config changes slot into this pattern naturally.
+
+### Profiling Integration
+
+```
+GLASS_PROFILE=1 glass
+  -> Activates tracing-chrome layer
+  -> Writes glass_trace.json on exit
+  -> Open in chrome://tracing or Perfetto
+```
+
+**Existing tracing infrastructure:** Glass already uses `tracing::info!`, `tracing::debug!` etc. throughout the codebase. tracing-chrome captures these spans automatically -- no instrumentation code changes needed. Add `#[tracing::instrument]` to hot-path functions (render loop, PTY read, event dispatch) for detailed breakdown.
 
 ---
 
 ## Sources
 
-- [alacritty_terminal::tty docs (docs.rs)](https://docs.rs/alacritty_terminal/0.25.1/alacritty_terminal/tty/index.html) -- Cross-platform PTY module, verified macOS/Linux/Windows build targets (HIGH confidence)
-- [alacritty_terminal Cargo.toml (GitHub)](https://github.com/alacritty/alacritty/blob/master/alacritty_terminal/Cargo.toml) -- Platform-specific deps: rustix-openpty for Unix, windows-sys for Windows (HIGH confidence)
-- [wgpu cross-platform backends (blog.brightcoding.dev)](https://www.blog.brightcoding.dev/2025/09/30/cross-platform-rust-graphics-with-wgpu-one-api-to-rule-vulkan-metal-d3d12-opengl-webgpu/) -- Backend auto-selection documentation (MEDIUM confidence)
-- [winit ModifiersState (rust-windowing.github.io)](https://rust-windowing.github.io/winit/winit/keyboard/struct.ModifiersState.html) -- META constant = Command on macOS, `meta_key()` method verified (HIGH confidence)
-- [wezterm Multiplexer Architecture (deepwiki.com)](https://deepwiki.com/wezterm/wezterm/2.2-multiplexer-architecture) -- Tab/split binary tree pattern, PTY-per-pane model (HIGH confidence)
-- [portable-pty (crates.io)](https://crates.io/crates/portable-pty) -- Evaluated and rejected; alacritty_terminal already provides equivalent (HIGH confidence)
-- [notify crate (GitHub)](https://github.com/notify-rs/notify) -- FSEvents on macOS, inotify on Linux confirmed (HIGH confidence)
+- [cargo-packager (crates.io)](https://crates.io/crates/cargo-packager) -- v0.11.8 verified, format support confirmed (HIGH confidence)
+- [cargo-packager (GitHub)](https://github.com/crabnebula-dev/cargo-packager) -- README documents MSI, DMG, deb, AppImage, NSIS support (HIGH confidence)
+- [self_update (crates.io)](https://crates.io/crates/self_update) -- v0.42.0 verified (HIGH confidence)
+- [self_update (GitHub)](https://github.com/jaemk/self_update) -- GitHub Releases backend documented (HIGH confidence)
+- [cargo-packager-updater (crates.io)](https://crates.io/crates/cargo-packager-updater) -- v0.2.3, requires update server (HIGH confidence)
+- [notify-debouncer-mini (crates.io)](https://crates.io/crates/notify-debouncer-mini) -- v0.7.0, compatible with notify 8.x (HIGH confidence)
+- [notify (crates.io)](https://crates.io/crates/notify) -- v8.2.0 latest stable (HIGH confidence)
+- [tracing-chrome (crates.io)](https://crates.io/crates/tracing-chrome) -- v0.7.2 verified (HIGH confidence)
+- [mdBook (crates.io)](https://crates.io/crates/mdbook) -- v0.5.2 verified (HIGH confidence)
+- [cargo-deb (crates.io)](https://crates.io/crates/cargo-deb) -- v3.6.3, fallback for deb (HIGH confidence)
+- [cargo-generate-rpm (crates.io)](https://crates.io/crates/cargo-generate-rpm) -- v0.20.0, needed for RPM format (HIGH confidence)
+- [cargo-wix (crates.io)](https://crates.io/crates/cargo-wix) -- v0.3.9, MSI fallback (HIGH confidence)
+- [Flatpak Rust packaging (belmoussaoui.com)](https://belmoussaoui.com/blog/8-how-to-flatpak-a-rust-application/) -- Manual manifest approach documented (MEDIUM confidence)
 
 ---
-*Stack research for: Glass v2.0 Cross-Platform & Tabs*
-*Researched: 2026-03-06*
+*Stack research for: Glass v2.1 Packaging & Polish*
+*Researched: 2026-03-07*
