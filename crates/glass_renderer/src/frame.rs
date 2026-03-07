@@ -14,6 +14,7 @@ use crate::grid_renderer::GridRenderer;
 use crate::rect_renderer::RectRenderer;
 use crate::search_overlay_renderer::SearchOverlayRenderer;
 use crate::status_bar::StatusBarRenderer;
+use crate::tab_bar::TabBarRenderer;
 
 /// Display data for the search overlay, extracted from SearchOverlay state.
 /// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
@@ -34,6 +35,7 @@ pub struct FrameRenderer {
     block_renderer: BlockRenderer,
     search_overlay_renderer: SearchOverlayRenderer,
     status_bar: StatusBarRenderer,
+    tab_bar: TabBarRenderer,
     default_bg: Rgb,
     /// Reusable buffer storage to avoid per-frame allocation
     text_buffers: Vec<Buffer>,
@@ -81,6 +83,7 @@ impl FrameRenderer {
         let block_renderer = BlockRenderer::new(cell_width, cell_height);
         let search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
         let status_bar = StatusBarRenderer::new(cell_height);
+        let tab_bar = TabBarRenderer::new(cell_width, cell_height);
         let default_bg = Rgb { r: 26, g: 26, b: 26 };
 
         Self {
@@ -90,6 +93,7 @@ impl FrameRenderer {
             block_renderer,
             search_overlay_renderer,
             status_bar,
+            tab_bar,
             default_bg,
             text_buffers: Vec::new(),
             overlay_buffers: Vec::new(),
@@ -100,6 +104,11 @@ impl FrameRenderer {
     /// Returns (cell_width, cell_height) in physical pixels.
     pub fn cell_size(&self) -> (f32, f32) {
         self.grid_renderer.cell_size()
+    }
+
+    /// Returns a reference to the tab bar renderer (for hit testing).
+    pub fn tab_bar(&self) -> &TabBarRenderer {
+        &self.tab_bar
     }
 
     /// Draw a complete frame with terminal content.
@@ -119,6 +128,7 @@ impl FrameRenderer {
         blocks: &[&Block],
         status: Option<&StatusState>,
         search_overlay: Option<&SearchOverlayRenderData>,
+        tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -144,6 +154,12 @@ impl FrameRenderer {
         if status.is_some() {
             let status_rects = self.status_bar.build_status_rects(w, h);
             rect_instances.extend(status_rects);
+        }
+
+        // 1c2. Append tab bar rects (at top of viewport)
+        if let Some(tabs) = tab_bar_info {
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w);
+            rect_instances.extend(tab_rects);
         }
 
         // 1d. Append search overlay rects (backdrop, input box, result rows)
@@ -323,6 +339,31 @@ impl FrameRenderer {
                         status_label.right_color.b,
                         255,
                     ),
+                });
+            }
+        }
+
+        // Tab bar text buffers
+        if let Some(tabs) = tab_bar_info {
+            let tab_labels = self.tab_bar.build_tab_text(tabs, w);
+            for label in &tab_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(&mut self.glyph_cache.font_system, Some(w - label.x), Some(cell_height));
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
                 });
             }
         }

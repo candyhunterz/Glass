@@ -15,6 +15,7 @@ use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
 use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
 use glass_mux::{Session, SessionMux, SearchOverlay};
 use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
+use glass_renderer::tab_bar::TabDisplayInfo;
 use glass_terminal::{
     BlockManager, DefaultColors, EventProxy, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
     encode_key, query_git_status, snapshot_term,
@@ -177,6 +178,139 @@ fn shell_event_to_osc(event: &ShellEvent) -> OscEvent {
     }
 }
 
+/// Create a new terminal session with PTY, shell integration, history DB, and snapshot store.
+///
+/// Encapsulates all the setup needed when creating a new tab.
+fn create_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    window_id: WindowId,
+    session_id: SessionId,
+    config: &GlassConfig,
+    working_directory: Option<&std::path::Path>,
+    cell_w: f32,
+    cell_h: f32,
+    window_width: u32,
+    window_height: u32,
+    tab_bar_lines: u16,
+) -> Session {
+    let event_proxy = EventProxy::new(proxy.clone(), window_id, session_id);
+
+    let max_output_kb = config.history.as_ref()
+        .map(|h| h.max_output_capture_kb)
+        .unwrap_or(50);
+    let pipes_enabled = config.pipes.as_ref()
+        .map(|p| p.enabled)
+        .unwrap_or(true);
+    let (pty_sender, term) = glass_terminal::spawn_pty(
+        event_proxy,
+        proxy.clone(),
+        window_id,
+        config.shell.as_deref(),
+        working_directory,
+        max_output_kb,
+        pipes_enabled,
+    );
+
+    // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
+    let num_cols = (window_width as f32 / cell_w).floor().max(1.0) as u16;
+    let num_lines = ((window_height as f32 / cell_h).floor().max(2.0) as u16)
+        .saturating_sub(1 + tab_bar_lines);
+
+    let initial_size = WindowSize {
+        num_lines,
+        num_cols,
+        cell_width: cell_w as u16,
+        cell_height: cell_h as u16,
+    };
+    let _ = pty_sender.send(PtyMsg::Resize(initial_size));
+    term.lock().resize(TermDimensions {
+        columns: num_cols as usize,
+        screen_lines: num_lines as usize,
+    });
+
+    // Auto-inject shell integration
+    let effective_shell = config.shell.as_deref()
+        .unwrap_or("")
+        .to_owned();
+    let effective_shell_for_integration = if effective_shell.is_empty() {
+        glass_mux::platform::default_shell()
+    } else {
+        effective_shell.clone()
+    };
+
+    if let Some(path) = find_shell_integration(&effective_shell_for_integration) {
+        let inject_cmd = if effective_shell_for_integration.contains("fish") {
+            format!("source {}\r\n", path.display())
+        } else if effective_shell_for_integration.contains("pwsh")
+            || effective_shell_for_integration.to_lowercase().contains("powershell")
+        {
+            format!(". '{}'\r\n", path.display())
+        } else {
+            format!("source '{}'\r\n", path.display())
+        };
+        let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
+        tracing::info!("Auto-injecting shell integration: {}", path.display());
+    }
+
+    let default_colors = DefaultColors::default();
+
+    // Determine CWD for history/snapshot DB paths
+    let cwd = working_directory
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let history_db = match HistoryDb::open(&resolve_db_path(&cwd)) {
+        Ok(db) => Some(db),
+        Err(e) => {
+            tracing::warn!("Failed to open history database: {} -- history disabled", e);
+            None
+        }
+    };
+
+    let snapshot_store = {
+        let glass_dir = glass_snapshot::resolve_glass_dir(&cwd);
+        match glass_snapshot::SnapshotStore::open(&glass_dir) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                tracing::warn!("Failed to open snapshot store: {} -- snapshots disabled", e);
+                None
+            }
+        }
+    };
+
+    // Derive tab title from working directory
+    let title = working_directory
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| String::from("Glass"));
+
+    Session {
+        id: session_id,
+        pty_sender,
+        term,
+        default_colors,
+        block_manager: BlockManager::new(),
+        status: StatusState::default(),
+        history_db,
+        last_command_id: None,
+        command_started_wall: None,
+        search_overlay: None,
+        snapshot_store,
+        pending_command_text: None,
+        active_watcher: None,
+        pending_snapshot_id: None,
+        pending_parse_confidence: None,
+        cursor_position: None,
+        title,
+    }
+}
+
+/// Clean up a session by shutting down its PTY.
+fn cleanup_session(session: Session) {
+    let _ = session.pty_sender.send(PtyMsg::Shutdown);
+    // Session is dropped here, releasing all resources
+}
+
 impl ApplicationHandler<AppEvent> for Processor {
     /// Called at startup on desktop (Windows) and on app resume on mobile/web.
     ///
@@ -217,116 +351,29 @@ impl ApplicationHandler<AppEvent> for Processor {
         );
 
         // Compute initial terminal size from font metrics.
-        // Subtract 1 line for the status bar so the PTY resize reflects actual content area.
+        // Subtract 2 lines for the status bar + tab bar so the PTY resize reflects actual content area.
         let (cell_w, cell_h) = frame_renderer.cell_size();
         let size = window.inner_size();
         let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
-        let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1);
+        let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
 
         tracing::info!(
-            "Font metrics: cell={}x{} grid={}x{} (status bar reserves 1 line) scale={}",
+            "Font metrics: cell={}x{} grid={}x{} (status bar + tab bar reserve 2 lines) scale={}",
             cell_w, cell_h, num_cols, num_lines, scale_factor
         );
 
-        // Create SessionId for the first session and wire it into EventProxy
+        // Create the initial session using the helper
         let session_id = SessionId::new(0);
-        let event_proxy = EventProxy::new(self.proxy.clone(), window.id(), session_id);
-
-        // Spawn shell via PTY with a dedicated reader thread + OscScanner
-        let max_output_kb = self.config.history.as_ref()
-            .map(|h| h.max_output_capture_kb)
-            .unwrap_or(50);
-        let pipes_enabled = self.config.pipes.as_ref()
-            .map(|p| p.enabled)
-            .unwrap_or(true);
-        let (pty_sender, term) = glass_terminal::spawn_pty(
-            event_proxy,
-            self.proxy.clone(),
-            window.id(),
-            self.config.shell.as_deref(),
+        let session = create_session(
+            &self.proxy, window.id(), session_id, &self.config,
             None, // working_directory -- initial session uses current dir
-            max_output_kb,
-            pipes_enabled,
+            cell_w, cell_h, size.width, size.height, 1, // 1 tab bar line
         );
 
-        // Send initial resize with correct font-metrics-based cell dimensions
-        let initial_size = WindowSize {
-            num_lines,
-            num_cols,
-            cell_width: cell_w as u16,
-            cell_height: cell_h as u16,
-        };
-        let _ = pty_sender.send(PtyMsg::Resize(initial_size));
-
-        // Also resize the Term grid to match
-        term.lock().resize(TermDimensions {
-            columns: num_cols as usize,
-            screen_lines: num_lines as usize,
-        });
-
-        tracing::info!("PTY spawned — shell is running");
-
-        // Auto-inject shell integration (platform-aware)
-        let effective_shell = self.config.shell.as_deref()
-            .unwrap_or("")
-            .to_owned();
-        let effective_shell_for_integration = if effective_shell.is_empty() {
-            glass_mux::platform::default_shell()
-        } else {
-            effective_shell.clone()
-        };
-
-        if let Some(path) = find_shell_integration(&effective_shell_for_integration) {
-            let inject_cmd = if effective_shell_for_integration.contains("fish") {
-                format!("source {}\r\n", path.display())
-            } else if effective_shell_for_integration.contains("pwsh")
-                || effective_shell_for_integration.to_lowercase().contains("powershell")
-            {
-                format!(". '{}'\r\n", path.display())
-            } else {
-                // bash, zsh, and other POSIX shells
-                format!("source '{}'\r\n", path.display())
-            };
-            let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
-            tracing::info!("Auto-injecting shell integration: {}", path.display());
-        } else {
-            tracing::warn!("Shell integration script not found for shell: {}",
-                if effective_shell_for_integration.is_empty() { "default" } else { &effective_shell_for_integration });
-        }
-
-        let default_colors = DefaultColors::default();
-
-        // Open history database from initial cwd (non-fatal on failure)
-        let history_db = match HistoryDb::open(&resolve_db_path(&std::env::current_dir().unwrap_or_default())) {
-            Ok(db) => {
-                tracing::info!("History database opened");
-                Some(db)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to open history database: {} — history disabled", e);
-                None
-            }
-        };
-
-        // Open snapshot store from initial cwd (non-fatal on failure)
-        let snapshot_store = {
-            let glass_dir = glass_snapshot::resolve_glass_dir(
-                &std::env::current_dir().unwrap_or_default(),
-            );
-            match glass_snapshot::SnapshotStore::open(&glass_dir) {
-                Ok(store) => {
-                    tracing::info!("Snapshot store opened");
-                    Some(store)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to open snapshot store: {} — snapshots disabled", e);
-                    None
-                }
-            }
-        };
+        tracing::info!("PTY spawned -- shell is running");
 
         // Startup pruning: spawn background thread to clean old snapshots (STOR-01)
-        if snapshot_store.is_some() {
+        {
             let glass_dir = glass_snapshot::resolve_glass_dir(
                 &std::env::current_dir().unwrap_or_default(),
             );
@@ -357,26 +404,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                 .ok();
         }
 
-        // Build Session with all terminal state, then wrap in SessionMux
-        let session = Session {
-            id: session_id,
-            pty_sender,
-            term,
-            default_colors,
-            block_manager: BlockManager::new(),
-            status: StatusState::default(),
-            history_db,
-            last_command_id: None,
-            command_started_wall: None,
-            search_overlay: None,
-            snapshot_store,
-            pending_command_text: None,
-            active_watcher: None,
-            pending_snapshot_id: None,
-            pending_parse_confidence: None,
-            cursor_position: None,
-            title: String::from("Glass"),
-        };
         let session_mux = SessionMux::new(session);
 
         let id = window.id();
@@ -478,7 +505,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Convert owned blocks to references for draw_frame
                 let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
-                // Draw frame using FrameRenderer with block decorations and status bar
+                // Build tab display info for tab bar rendering
+                let tab_display: Vec<TabDisplayInfo> = ctx.session_mux.tabs().iter().enumerate().map(|(i, tab)| {
+                    TabDisplayInfo {
+                        title: tab.title.clone(),
+                        is_active: i == ctx.session_mux.active_tab_index(),
+                    }
+                }).collect();
+
+                // Draw frame using FrameRenderer with block decorations, status bar, and tab bar
                 ctx.frame_renderer.draw_frame(
                     ctx.renderer.device(),
                     ctx.renderer.queue(),
@@ -489,6 +524,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     &visible_block_refs,
                     Some(&status_clone),
                     search_overlay_data.as_ref(),
+                    Some(&tab_display),
                 );
 
                 frame.present();
@@ -513,11 +549,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                 ctx.renderer.resize(size.width, size.height);
 
                 // Compute terminal grid size from font metrics.
-                // Subtract 1 line for the status bar.
+                // Subtract 2 lines for the status bar + tab bar.
                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                 let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
                 let num_lines =
-                    ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1);
+                    ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
 
                 // Notify PTY of the new terminal size with real cell dimensions
                 let new_window_size = WindowSize {
@@ -526,15 +562,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                     cell_width: cell_w as u16,
                     cell_height: cell_h as u16,
                 };
-                {
-                    let session = ctx.session_mux.focused_session_mut().unwrap();
-                    let _ = session.pty_sender.send(PtyMsg::Resize(new_window_size));
 
-                    // Also resize the Term grid so content reflows (CORE-07)
-                    session.term.lock().resize(TermDimensions {
-                        columns: num_cols as usize,
-                        screen_lines: num_lines as usize,
-                    });
+                // Resize ALL sessions (not just active) so background tabs are ready
+                let session_ids: Vec<_> = ctx.session_mux.tabs().iter()
+                    .map(|t| t.session_id)
+                    .collect();
+                for sid in session_ids {
+                    if let Some(session) = ctx.session_mux.session_mut(sid) {
+                        let _ = session.pty_sender.send(PtyMsg::Resize(new_window_size));
+                        session.term.lock().resize(TermDimensions {
+                            columns: num_cols as usize,
+                            screen_lines: num_lines as usize,
+                        });
+                    }
                 }
 
                 // Request a redraw after resize so the surface is repainted immediately
@@ -635,6 +675,41 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     let mode = *ctx.session().term.lock().mode();
+
+                    // Tab management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
+                    if glass_mux::is_glass_shortcut(modifiers) {
+                        match &event.logical_key {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
+                                // New tab: inherit CWD from current session
+                                let cwd = ctx.session().status.cwd().to_string();
+                                let session_id = ctx.session_mux.next_session_id();
+                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                                let size = ctx.window.inner_size();
+                                let session = create_session(
+                                    &self.proxy, window_id, session_id, &self.config,
+                                    Some(std::path::Path::new(&cwd)), cell_w, cell_h,
+                                    size.width, size.height, 1,
+                                );
+                                ctx.session_mux.add_tab(session);
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
+                                let idx = ctx.session_mux.active_tab_index();
+                                if let Some(session) = ctx.session_mux.close_tab(idx) {
+                                    cleanup_session(session);
+                                }
+                                if ctx.session_mux.tab_count() == 0 {
+                                    self.windows.remove(&window_id);
+                                    event_loop.exit();
+                                    return;
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            _ => {} // Fall through to existing Ctrl+Shift shortcuts
+                        }
+                    }
 
                     // Check for Glass-handled keys first
                     if modifiers.control_key() && modifiers.shift_key() {
@@ -760,6 +835,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
+                    // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
+                    if modifiers.control_key() {
+                        if let Key::Named(NamedKey::Tab) = &event.logical_key {
+                            if modifiers.shift_key() {
+                                ctx.session_mux.prev_tab();
+                            } else {
+                                ctx.session_mux.next_tab();
+                            }
+                            ctx.window.request_redraw();
+                            return;
+                        }
+                    }
+
+                    // Ctrl+1-9 / Cmd+1-9: jump to tab by index
+                    if glass_mux::is_action_modifier(modifiers) {
+                        if let Key::Character(c) = &event.logical_key {
+                            if let Some(digit) = c.as_str().chars().next().and_then(|ch| ch.to_digit(10)) {
+                                if digit >= 1 && digit <= 9 {
+                                    ctx.session_mux.activate_tab((digit as usize) - 1);
+                                    ctx.window.request_redraw();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) =
@@ -781,6 +882,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                // Tab bar click handling
+                if let Some((x, y)) = ctx.session().cursor_position {
+                    let (_, cell_h) = ctx.frame_renderer.cell_size();
+                    if (y as f32) < cell_h {
+                        // Click is in tab bar region
+                        let viewport_w = ctx.window.inner_size().width as f32;
+                        if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
+                            x as f32, ctx.session_mux.tab_count(), viewport_w
+                        ) {
+                            ctx.session_mux.activate_tab(tab_idx);
+                            ctx.window.request_redraw();
+                        }
+                        return; // Don't fall through to pipeline hit test
+                    }
+                }
+
                 let needs_redraw = if let Some((_, y)) = ctx.session().cursor_position {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let size = ctx.window.inner_size();
@@ -819,6 +936,31 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Middle,
+                ..
+            } => {
+                if let Some((x, y)) = ctx.session().cursor_position {
+                    let (_, cell_h) = ctx.frame_renderer.cell_size();
+                    if (y as f32) < cell_h {
+                        let viewport_w = ctx.window.inner_size().width as f32;
+                        if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
+                            x as f32, ctx.session_mux.tab_count(), viewport_w
+                        ) {
+                            if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
+                                cleanup_session(session);
+                            }
+                            if ctx.session_mux.tab_count() == 0 {
+                                self.windows.remove(&window_id);
+                                event_loop.exit();
+                                return;
+                            }
+                            ctx.window.request_redraw();
+                        }
+                    }
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as i32,
@@ -846,16 +988,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            AppEvent::SetTitle { window_id, session_id: _, title } => {
-                if let Some(ctx) = self.windows.get(&window_id) {
-                    ctx.window.set_title(&title);
+            AppEvent::SetTitle { window_id, session_id, title } => {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    // Update window title only if this is the active tab
+                    if ctx.session_mux.focused_session_id() == Some(session_id) {
+                        ctx.window.set_title(&title);
+                    }
+                    // Update tab title in the mux
+                    if let Some(tab) = ctx.session_mux.tabs_mut()
+                        .iter_mut()
+                        .find(|t| t.session_id == session_id)
+                    {
+                        tab.title = title.clone();
+                    }
                 }
             }
-            AppEvent::TerminalExit { window_id, session_id: _ } => {
-                tracing::info!("Shell exited — closing window");
-                self.windows.remove(&window_id);
-                // Exit the event loop when the shell exits
-                event_loop.exit();
+            AppEvent::TerminalExit { window_id, session_id } => {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    // Find and close the tab with this session_id
+                    let tab_idx = ctx.session_mux.tabs().iter().position(|t| t.session_id == session_id);
+                    if let Some(idx) = tab_idx {
+                        if let Some(session) = ctx.session_mux.close_tab(idx) {
+                            cleanup_session(session);
+                        }
+                    }
+                    if ctx.session_mux.tab_count() == 0 {
+                        tracing::info!("Last tab closed -- exiting");
+                        self.windows.remove(&window_id);
+                        event_loop.exit();
+                    } else {
+                        ctx.window.request_redraw();
+                    }
+                }
             }
             AppEvent::Shell {
                 window_id,
@@ -1184,6 +1348,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                         };
                         let _ = spawn_git_query; // used below after session borrow ends
                     } // drop session borrow
+
+                    // Update tab title from CWD change
+                    if let ShellEvent::CurrentDirectory(ref path) = shell_event {
+                        let title = std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.clone());
+                        if let Some(tab) = ctx.session_mux.tabs_mut()
+                            .iter_mut()
+                            .find(|t| t.session_id == session_id)
+                        {
+                            tab.title = title;
+                        }
+                    }
 
                     // Spawn git query outside session borrow (needs self.proxy and window_id)
                     if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {

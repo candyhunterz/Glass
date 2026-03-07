@@ -172,6 +172,11 @@ impl SessionMux {
     pub fn tabs(&self) -> &[Tab] {
         &self.tabs
     }
+
+    /// Return a mutable reference to the tabs vector (for updating tab titles).
+    pub fn tabs_mut(&mut self) -> &mut Vec<Tab> {
+        &mut self.tabs
+    }
 }
 
 #[cfg(test)]
