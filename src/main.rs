@@ -565,7 +565,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Resize ALL sessions (not just active) so background tabs are ready
                 let session_ids: Vec<_> = ctx.session_mux.tabs().iter()
-                    .map(|t| t.session_id)
+                    .flat_map(|t| t.session_ids())
                     .collect();
                 for sid in session_ids {
                     if let Some(session) = ctx.session_mux.session_mut(sid) {
@@ -997,7 +997,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Update tab title in the mux
                     if let Some(tab) = ctx.session_mux.tabs_mut()
                         .iter_mut()
-                        .find(|t| t.session_id == session_id)
+                        .find(|t| t.session_ids().contains(&session_id))
                     {
                         tab.title = title.clone();
                     }
@@ -1006,7 +1006,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::TerminalExit { window_id, session_id } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Find and close the tab with this session_id
-                    let tab_idx = ctx.session_mux.tabs().iter().position(|t| t.session_id == session_id);
+                    let tab_idx = ctx.session_mux.tabs().iter().position(|t| t.session_ids().contains(&session_id));
                     if let Some(idx) = tab_idx {
                         if let Some(session) = ctx.session_mux.close_tab(idx) {
                             cleanup_session(session);
@@ -1357,7 +1357,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .unwrap_or_else(|| path.clone());
                         if let Some(tab) = ctx.session_mux.tabs_mut()
                             .iter_mut()
-                            .find(|t| t.session_id == session_id)
+                            .find(|t| t.session_ids().contains(&session_id))
                         {
                             tab.title = title;
                         }

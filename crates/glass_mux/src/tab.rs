@@ -1,16 +1,32 @@
-//! Tab representation (stub for Phase 23).
+//! Tab representation with split pane support.
 
+use crate::split_tree::SplitNode;
 use crate::types::{SessionId, TabId};
 
-/// A tab holding a reference to its session.
+/// A tab holding a split pane tree.
 ///
-/// Each tab maps 1:1 to a session. The title is derived from the
-/// session's CWD or process name and displayed in the tab bar.
+/// Each tab contains a `SplitNode` root representing one or more panes
+/// arranged in a binary tree. The `focused_pane` tracks which pane
+/// currently receives input.
 pub struct Tab {
     /// Unique identifier for this tab.
     pub id: TabId,
-    /// The session displayed in this tab.
-    pub session_id: SessionId,
+    /// Root of the split pane tree. Each leaf holds a SessionId.
+    pub root: SplitNode,
+    /// The currently focused pane's session ID.
+    pub focused_pane: SessionId,
     /// Display title for this tab (e.g. CWD basename or process name).
     pub title: String,
+}
+
+impl Tab {
+    /// Collect all session IDs from all leaf panes in this tab.
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        self.root.session_ids()
+    }
+
+    /// Return the number of panes in this tab.
+    pub fn pane_count(&self) -> usize {
+        self.root.leaf_count()
+    }
 }

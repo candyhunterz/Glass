@@ -1,18 +1,19 @@
 //! Session multiplexer for managing multiple terminal sessions.
 //!
 //! `SessionMux` wraps one or more sessions, providing tab-based navigation
-//! and focus management. In Phase 21, only single-session mode is used.
+//! and focus management. Tabs hold split pane trees via `SplitNode`.
 
 use std::collections::HashMap;
 
 use crate::session::Session;
+use crate::split_tree::SplitNode;
 use crate::tab::Tab;
-use crate::types::{SessionId, TabId};
+use crate::types::{SessionId, SplitDirection, TabId};
 
 /// Multiplexer that manages terminal sessions organized into tabs.
 ///
-/// In single-session mode (Phase 21), this holds exactly one tab with one session.
-/// Future phases will add multi-tab and split-pane support.
+/// Each tab holds a `SplitNode` tree of panes. The focused pane in the
+/// active tab receives keyboard input.
 pub struct SessionMux {
     /// All sessions indexed by their unique ID.
     sessions: HashMap<SessionId, Session>,
@@ -27,12 +28,13 @@ pub struct SessionMux {
 impl SessionMux {
     /// Create a new `SessionMux` with a single session.
     ///
-    /// The session's ID is used as the first tab's session reference.
+    /// The session becomes the sole pane in the first tab.
     pub fn new(session: Session) -> Self {
         let session_id = session.id;
         let tab = Tab {
             id: TabId::new(0),
-            session_id,
+            root: SplitNode::Leaf(session_id),
+            focused_pane: session_id,
             title: session.title.clone(),
         };
         let mut sessions = HashMap::new();
@@ -49,13 +51,13 @@ impl SessionMux {
     /// Get an immutable reference to the focused session.
     pub fn focused_session(&self) -> Option<&Session> {
         let tab = self.tabs.get(self.active_tab)?;
-        self.sessions.get(&tab.session_id)
+        self.sessions.get(&tab.focused_pane)
     }
 
     /// Get a mutable reference to the focused session.
     pub fn focused_session_mut(&mut self) -> Option<&mut Session> {
-        let session_id = self.tabs.get(self.active_tab)?.session_id;
-        self.sessions.get_mut(&session_id)
+        let focused_pane = self.tabs.get(self.active_tab)?.focused_pane;
+        self.sessions.get_mut(&focused_pane)
     }
 
     /// Look up a session by its ID.
@@ -71,7 +73,7 @@ impl SessionMux {
     /// Get the SessionId of the currently focused session.
     pub fn focused_session_id(&self) -> Option<SessionId> {
         let tab = self.tabs.get(self.active_tab)?;
-        Some(tab.session_id)
+        Some(tab.focused_pane)
     }
 
     /// Generate the next unique SessionId.
@@ -100,7 +102,8 @@ impl SessionMux {
             insert_pos,
             Tab {
                 id: tab_id,
-                session_id,
+                root: SplitNode::Leaf(session_id),
+                focused_pane: session_id,
                 title,
             },
         );
@@ -110,8 +113,10 @@ impl SessionMux {
         tab_id
     }
 
-    /// Close the tab at `index`, returning the removed `Session` if valid.
+    /// Close the tab at `index`, returning the removed sessions.
     ///
+    /// Removes ALL sessions referenced by the tab's split tree.
+    /// Returns the first session (for backward compatibility) or None.
     /// Adjusts `active_tab` if the closed tab was at or before it.
     pub fn close_tab(&mut self, index: usize) -> Option<Session> {
         if index >= self.tabs.len() {
@@ -119,7 +124,16 @@ impl SessionMux {
         }
 
         let tab = self.tabs.remove(index);
-        let session = self.sessions.remove(&tab.session_id);
+
+        // Remove all sessions in the tab's split tree
+        let session_ids = tab.session_ids();
+        let mut first_session = None;
+        for (i, sid) in session_ids.iter().enumerate() {
+            let removed = self.sessions.remove(sid);
+            if i == 0 {
+                first_session = removed;
+            }
+        }
 
         // Adjust active_tab after removal
         if self.tabs.is_empty() {
@@ -130,7 +144,56 @@ impl SessionMux {
             self.active_tab -= 1;
         }
 
-        session
+        first_session
+    }
+
+    /// Split the focused pane in the active tab.
+    ///
+    /// Replaces the focused Leaf with a Split node where left=old session,
+    /// right=new session. Sets focused_pane to new session. Returns new session_id.
+    pub fn split_pane(&mut self, direction: SplitDirection, new_session: Session) -> SessionId {
+        let new_id = new_session.id;
+        self.sessions.insert(new_id, new_session);
+
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            let target = tab.focused_pane;
+            tab.root.split_leaf(target, direction, new_id);
+            tab.focused_pane = new_id;
+        }
+
+        new_id
+    }
+
+    /// Remove a pane from the active tab's split tree.
+    ///
+    /// If the tree becomes empty (last pane), closes the entire tab.
+    /// Otherwise updates focused_pane to the first leaf of the remaining tree.
+    /// Returns the removed session.
+    pub fn close_pane(&mut self, session_id: SessionId) -> Option<Session> {
+        let tab = self.tabs.get_mut(self.active_tab)?;
+
+        // Take ownership of the root to call remove_leaf (which consumes self)
+        let old_root = std::mem::replace(&mut tab.root, SplitNode::Leaf(session_id));
+        match old_root.remove_leaf(session_id) {
+            Some(new_root) => {
+                // Update focused_pane to first leaf of remaining tree
+                let new_focus = new_root.first_leaf();
+                tab.root = new_root;
+                tab.focused_pane = new_focus;
+                self.sessions.remove(&session_id)
+            }
+            None => {
+                // Last pane removed -- close the entire tab
+                // Restore the root temporarily (close_tab will remove it)
+                tab.root = SplitNode::Leaf(session_id);
+                self.close_tab(self.active_tab)
+            }
+        }
+    }
+
+    /// Return the active tab's SplitNode root for layout computation.
+    pub fn active_tab_root(&self) -> Option<&SplitNode> {
+        self.tabs.get(self.active_tab).map(|t| &t.root)
     }
 
     /// Activate the tab at `index`. No-op if index is out of bounds.
@@ -187,14 +250,17 @@ mod tests {
     /// Create a SessionMux with `n` tabs for testing tab index logic.
     ///
     /// Sessions are not real (the HashMap will be empty), but tabs are
-    /// properly constructed. This allows testing index-management methods
-    /// without needing the complex Session type.
+    /// properly constructed with SplitNode::Leaf roots.
     fn test_mux(n: usize) -> SessionMux {
         let tabs: Vec<Tab> = (0..n)
-            .map(|i| Tab {
-                id: TabId::new(i as u64),
-                session_id: SessionId::new(i as u64),
-                title: format!("Tab {}", i),
+            .map(|i| {
+                let sid = SessionId::new(i as u64);
+                Tab {
+                    id: TabId::new(i as u64),
+                    root: SplitNode::Leaf(sid),
+                    focused_pane: sid,
+                    title: format!("Tab {}", i),
+                }
             })
             .collect();
         SessionMux {
@@ -328,11 +394,82 @@ mod tests {
 
     #[test]
     fn tab_has_title_field() {
+        let sid = SessionId::new(0);
         let tab = Tab {
             id: TabId::new(0),
-            session_id: SessionId::new(0),
+            root: SplitNode::Leaf(sid),
+            focused_pane: sid,
             title: "My Tab".to_string(),
         };
         assert_eq!(tab.title, "My Tab");
+    }
+
+    // ---- SPLIT-08: Tab with SplitNode tracks focused_pane correctly ----
+
+    #[test]
+    fn tab_session_ids_single_pane() {
+        let sid = SessionId::new(42);
+        let tab = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Leaf(sid),
+            focused_pane: sid,
+            title: "test".into(),
+        };
+        assert_eq!(tab.session_ids(), vec![sid]);
+        assert_eq!(tab.pane_count(), 1);
+    }
+
+    #[test]
+    fn tab_session_ids_after_split() {
+        let sid1 = SessionId::new(1);
+        let sid2 = SessionId::new(2);
+        let tab = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Split {
+                direction: SplitDirection::Horizontal,
+                left: Box::new(SplitNode::Leaf(sid1)),
+                right: Box::new(SplitNode::Leaf(sid2)),
+                ratio: 0.5,
+            },
+            focused_pane: sid2,
+            title: "test".into(),
+        };
+        let ids = tab.session_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&sid1));
+        assert!(ids.contains(&sid2));
+        assert_eq!(tab.pane_count(), 2);
+    }
+
+    #[test]
+    fn active_tab_root_returns_split_node() {
+        let mux = test_mux(2);
+        let root = mux.active_tab_root().unwrap();
+        assert_eq!(root.leaf_count(), 1);
+    }
+
+    #[test]
+    fn focused_session_uses_focused_pane() {
+        // Create a tab with 2 panes, focused_pane on the second
+        let sid1 = SessionId::new(10);
+        let sid2 = SessionId::new(11);
+        let tab = Tab {
+            id: TabId::new(0),
+            root: SplitNode::Split {
+                direction: SplitDirection::Horizontal,
+                left: Box::new(SplitNode::Leaf(sid1)),
+                right: Box::new(SplitNode::Leaf(sid2)),
+                ratio: 0.5,
+            },
+            focused_pane: sid2,
+            title: "test".into(),
+        };
+        let mux = SessionMux {
+            sessions: HashMap::new(),
+            tabs: vec![tab],
+            active_tab: 0,
+            next_id: 12,
+        };
+        assert_eq!(mux.focused_session_id(), Some(sid2));
     }
 }

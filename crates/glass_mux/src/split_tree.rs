@@ -125,6 +125,54 @@ impl SplitNode {
         }
     }
 
+    /// Collect all leaf session IDs in this tree (left-to-right order).
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        match self {
+            SplitNode::Leaf(id) => vec![*id],
+            SplitNode::Split { left, right, .. } => {
+                let mut ids = left.session_ids();
+                ids.extend(right.session_ids());
+                ids
+            }
+        }
+    }
+
+    /// Return the first (leftmost/topmost) leaf session ID.
+    pub fn first_leaf(&self) -> SessionId {
+        match self {
+            SplitNode::Leaf(id) => *id,
+            SplitNode::Split { left, .. } => left.first_leaf(),
+        }
+    }
+
+    /// Replace the leaf matching `target` with a Split node containing the
+    /// old leaf on the left and a new leaf (`new_id`) on the right.
+    /// Returns true if the replacement was performed.
+    pub fn split_leaf(
+        &mut self,
+        target: SessionId,
+        direction: SplitDirection,
+        new_id: SessionId,
+    ) -> bool {
+        match self {
+            SplitNode::Leaf(id) if *id == target => {
+                let old_id = *id;
+                *self = SplitNode::Split {
+                    direction,
+                    left: Box::new(SplitNode::Leaf(old_id)),
+                    right: Box::new(SplitNode::Leaf(new_id)),
+                    ratio: 0.5,
+                };
+                true
+            }
+            SplitNode::Leaf(_) => false,
+            SplitNode::Split { left, right, .. } => {
+                left.split_leaf(target, direction, new_id)
+                    || right.split_leaf(target, direction, new_id)
+            }
+        }
+    }
+
     /// Check if this tree contains a leaf with the given session ID.
     pub fn contains(&self, id: SessionId) -> bool {
         match self {
