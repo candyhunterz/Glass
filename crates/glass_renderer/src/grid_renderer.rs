@@ -262,20 +262,55 @@ impl GridRenderer {
         viewport_width: u32,
         viewport_height: u32,
     ) -> Vec<TextArea<'a>> {
+        self.build_text_areas_offset(buffers, viewport_width, viewport_height, 0.0, 0.0)
+    }
+
+    /// Build rects with a pixel offset applied to all positions.
+    ///
+    /// Used for split pane rendering where each pane's content is offset
+    /// to its viewport position within the window.
+    pub fn build_rects_offset(
+        &self,
+        snapshot: &GridSnapshot,
+        default_bg: Rgb,
+        x_offset: f32,
+        y_offset: f32,
+    ) -> Vec<RectInstance> {
+        let mut rects = self.build_rects(snapshot, default_bg);
+        for rect in &mut rects {
+            rect.pos[0] += x_offset;
+            rect.pos[1] += y_offset;
+        }
+        rects
+    }
+
+    /// Create TextAreas from pre-built Buffers with a pixel offset.
+    ///
+    /// Used for split pane rendering where text must be positioned within
+    /// a viewport sub-region. TextBounds are set to the viewport rect.
+    pub fn build_text_areas_offset<'a>(
+        &self,
+        buffers: &'a [Buffer],
+        viewport_width: u32,
+        viewport_height: u32,
+        x_offset: f32,
+        y_offset: f32,
+    ) -> Vec<TextArea<'a>> {
+        let bounds = TextBounds {
+            left: x_offset as i32,
+            top: y_offset as i32,
+            right: (x_offset as u32 + viewport_width) as i32,
+            bottom: (y_offset as u32 + viewport_height) as i32,
+        };
         buffers
             .iter()
             .enumerate()
             .map(|(line_idx, buffer)| TextArea {
                 buffer,
-                left: 0.0,
-                top: line_idx as f32 * self.cell_height,
-                scale: 1.0, // already using physical pixel metrics
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: viewport_width as i32,
-                    bottom: viewport_height as i32,
-                },
+                left: x_offset,
+                top: y_offset + line_idx as f32 * self.cell_height,
+                scale: 1.0,
+                bounds,
                 default_color: GlyphonColor::rgba(204, 204, 204, 255),
                 custom_glyphs: &[],
             })

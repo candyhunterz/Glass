@@ -11,7 +11,7 @@ pub mod surface;
 pub mod tab_bar;
 
 pub use block_renderer::{BlockLabel, BlockRenderer};
-pub use frame::FrameRenderer;
+pub use frame::{DividerRect, FrameRenderer, PaneViewport};
 pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;
 pub use rect_renderer::{RectInstance, RectRenderer};

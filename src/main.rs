@@ -13,11 +13,11 @@ use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
 use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
-use glass_mux::{Session, SessionMux, SearchOverlay};
-use glass_renderer::{FontSystem, FrameRenderer, GlassRenderer};
+use glass_mux::{Session, SessionMux, SearchOverlay, ViewportLayout};
+use glass_renderer::{DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport};
 use glass_renderer::tab_bar::TabDisplayInfo;
 use glass_terminal::{
-    BlockManager, DefaultColors, EventProxy, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
+    Block, BlockManager, DefaultColors, EventProxy, GridSnapshot, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
     encode_key, query_git_status, snapshot_term,
 };
 use winit::application::ApplicationHandler;
@@ -176,6 +176,76 @@ fn shell_event_to_osc(event: &ShellEvent) -> OscEvent {
             temp_path: temp_path.clone(),
         },
     }
+}
+
+/// Compute divider rectangles from the gaps between pane viewports.
+///
+/// Dividers fill the 2px gaps left by ViewportLayout::split() between adjacent panes.
+fn compute_dividers(pane_layouts: &[(SessionId, ViewportLayout)]) -> Vec<DividerRect> {
+    use glass_mux::layout::DIVIDER_GAP;
+
+    let mut dividers = Vec::new();
+    for i in 0..pane_layouts.len() {
+        for j in (i + 1)..pane_layouts.len() {
+            let (_, a) = &pane_layouts[i];
+            let (_, b) = &pane_layouts[j];
+
+            // Check for horizontal gap (a is left of b, same vertical range overlap)
+            if a.x + a.width + DIVIDER_GAP == b.x {
+                let top = a.y.max(b.y);
+                let bottom = (a.y + a.height).min(b.y + b.height);
+                if bottom > top {
+                    dividers.push(DividerRect {
+                        x: a.x + a.width,
+                        y: top,
+                        width: DIVIDER_GAP,
+                        height: bottom - top,
+                    });
+                }
+            }
+
+            // Check for vertical gap (a is above b, same horizontal range overlap)
+            if a.y + a.height + DIVIDER_GAP == b.y {
+                let left = a.x.max(b.x);
+                let right = (a.x + a.width).min(b.x + b.width);
+                if right > left {
+                    dividers.push(DividerRect {
+                        x: left,
+                        y: a.y + a.height,
+                        width: right - left,
+                        height: DIVIDER_GAP,
+                    });
+                }
+            }
+
+            // Also check reverse (b left/above a)
+            if b.x + b.width + DIVIDER_GAP == a.x {
+                let top = a.y.max(b.y);
+                let bottom = (a.y + a.height).min(b.y + b.height);
+                if bottom > top {
+                    dividers.push(DividerRect {
+                        x: b.x + b.width,
+                        y: top,
+                        width: DIVIDER_GAP,
+                        height: bottom - top,
+                    });
+                }
+            }
+            if b.y + b.height + DIVIDER_GAP == a.y {
+                let left = a.x.max(b.x);
+                let right = (a.x + a.width).min(b.x + b.width);
+                if right > left {
+                    dividers.push(DividerRect {
+                        x: left,
+                        y: b.y + b.height,
+                        width: right - left,
+                        height: DIVIDER_GAP,
+                    });
+                }
+            }
+        }
+    }
+    dividers
 }
 
 /// Create a new terminal session with PTY, shell integration, history DB, and snapshot store.
@@ -465,35 +535,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
-                // Lock Term briefly for snapshot only, then release
-                let snapshot = {
-                    let session = ctx.session();
-                    let term = session.term.lock();
-                    snapshot_term(&term, &session.default_colors)
-                };
-
-                // Extract all session data needed for rendering into owned values.
-                // This avoids borrow conflicts between session_mux and renderer/frame_renderer.
-                let (visible_blocks, search_overlay_data, status_clone) = {
-                    let session = ctx.session_mux.focused_session().unwrap();
-                    let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
-                    let vb: Vec<_> = session.block_manager.visible_blocks(
-                        viewport_abs_start,
-                        snapshot.screen_lines,
-                    ).into_iter().cloned().collect();
-                    let sod = session.search_overlay.as_ref().map(|overlay| {
-                        let data = overlay.extract_display_data();
-                        glass_renderer::frame::SearchOverlayRenderData {
-                            query: data.query,
-                            results: data.results.iter().map(|r| {
-                                (r.command.clone(), r.exit_code, r.timestamp.clone(), r.output_preview.clone())
-                            }).collect(),
-                            selected: data.selected,
-                        }
-                    });
-                    let sc = session.status.clone();
-                    (vb, sod, sc)
-                };
+                // Determine if we have multiple panes in the active tab
+                let pane_count = ctx.session_mux.active_tab_root()
+                    .map(|r| r.leaf_count())
+                    .unwrap_or(1);
 
                 // Get surface texture
                 let Some(frame) = ctx.renderer.get_current_texture() else {
@@ -501,9 +546,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                 };
                 let view = frame.texture.create_view(&Default::default());
                 let sc = ctx.renderer.surface_config();
-
-                // Convert owned blocks to references for draw_frame
-                let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
                 // Build tab display info for tab bar rendering
                 let tab_display: Vec<TabDisplayInfo> = ctx.session_mux.tabs().iter().enumerate().map(|(i, tab)| {
@@ -513,19 +555,136 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }).collect();
 
-                // Draw frame using FrameRenderer with block decorations, status bar, and tab bar
-                ctx.frame_renderer.draw_frame(
-                    ctx.renderer.device(),
-                    ctx.renderer.queue(),
-                    &view,
-                    sc.width,
-                    sc.height,
-                    &snapshot,
-                    &visible_block_refs,
-                    Some(&status_clone),
-                    search_overlay_data.as_ref(),
-                    Some(&tab_display),
-                );
+                if pane_count <= 1 {
+                    // Single-pane path: use existing draw_frame for backward compatibility
+                    let snapshot = {
+                        let session = ctx.session();
+                        let term = session.term.lock();
+                        snapshot_term(&term, &session.default_colors)
+                    };
+
+                    let (visible_blocks, search_overlay_data, status_clone) = {
+                        let session = ctx.session_mux.focused_session().unwrap();
+                        let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+                        let vb: Vec<_> = session.block_manager.visible_blocks(
+                            viewport_abs_start,
+                            snapshot.screen_lines,
+                        ).into_iter().cloned().collect();
+                        let sod = session.search_overlay.as_ref().map(|overlay| {
+                            let data = overlay.extract_display_data();
+                            glass_renderer::frame::SearchOverlayRenderData {
+                                query: data.query,
+                                results: data.results.iter().map(|r| {
+                                    (r.command.clone(), r.exit_code, r.timestamp.clone(), r.output_preview.clone())
+                                }).collect(),
+                                selected: data.selected,
+                            }
+                        });
+                        let sc = session.status.clone();
+                        (vb, sod, sc)
+                    };
+
+                    let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
+
+                    ctx.frame_renderer.draw_frame(
+                        ctx.renderer.device(),
+                        ctx.renderer.queue(),
+                        &view,
+                        sc.width,
+                        sc.height,
+                        &snapshot,
+                        &visible_block_refs,
+                        Some(&status_clone),
+                        search_overlay_data.as_ref(),
+                        Some(&tab_display),
+                    );
+                } else {
+                    // Multi-pane path: compute layout, snapshot all panes, render with offsets
+                    let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
+
+                    // Container viewport: subtract tab bar (top) and status bar (bottom)
+                    let container = ViewportLayout {
+                        x: 0,
+                        y: cell_h as u32,
+                        width: sc.width,
+                        height: sc.height.saturating_sub((cell_h as u32) * 2),
+                    };
+
+                    // Compute pane layouts from the active tab's split tree
+                    let focused_id = ctx.session_mux.focused_session_id();
+                    let pane_layouts: Vec<(SessionId, ViewportLayout)> = ctx.session_mux
+                        .active_tab_root()
+                        .map(|root| root.compute_layout(&container))
+                        .unwrap_or_default();
+
+                    // Pre-extract PaneRenderData: snapshot + blocks for each pane (owned)
+                    struct PaneData {
+                        viewport: ViewportLayout,
+                        snapshot: GridSnapshot,
+                        blocks: Vec<Block>,
+                        is_focused: bool,
+                    }
+
+                    let pane_data: Vec<PaneData> = pane_layouts.iter().map(|(sid, vp)| {
+                        let session = ctx.session_mux.session(*sid).unwrap();
+                        let term = session.term.lock();
+                        let snapshot = snapshot_term(&term, &session.default_colors);
+                        drop(term);
+                        let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+                        let blocks: Vec<_> = session.block_manager.visible_blocks(
+                            viewport_abs_start,
+                            snapshot.screen_lines,
+                        ).into_iter().cloned().collect();
+                        PaneData {
+                            viewport: vp.clone(),
+                            snapshot,
+                            blocks,
+                            is_focused: focused_id == Some(*sid),
+                        }
+                    }).collect();
+
+                    // Extract status from focused session
+                    let status_clone = ctx.session_mux.focused_session()
+                        .map(|s| s.status.clone())
+                        .unwrap_or_default();
+
+                    // Build pane render tuples with references
+                    let block_refs: Vec<Vec<&Block>> = pane_data.iter()
+                        .map(|pd| pd.blocks.iter().collect())
+                        .collect();
+
+                    let panes: Vec<(PaneViewport, &GridSnapshot, &[&Block], bool)> = pane_data.iter()
+                        .enumerate()
+                        .map(|(i, pd)| {
+                            (
+                                PaneViewport {
+                                    x: pd.viewport.x,
+                                    y: pd.viewport.y,
+                                    width: pd.viewport.width,
+                                    height: pd.viewport.height,
+                                },
+                                &pd.snapshot,
+                                block_refs[i].as_slice(),
+                                pd.is_focused,
+                            )
+                        })
+                        .collect();
+
+                    // Compute divider rects from gaps between pane viewports
+                    let dividers = compute_dividers(&pane_layouts);
+
+                    ctx.frame_renderer.draw_multi_pane_frame(
+                        ctx.renderer.device(),
+                        ctx.renderer.queue(),
+                        &view,
+                        sc.width,
+                        sc.height,
+                        &panes,
+                        &dividers,
+                        Some(&status_clone),
+                        Some(&tab_display),
+                    );
+                }
 
                 frame.present();
 

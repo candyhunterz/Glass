@@ -588,8 +588,328 @@ impl FrameRenderer {
         }
     }
 
+    /// Draw a complete frame with multiple split panes.
+    ///
+    /// Each pane's grid content is rendered at its viewport offset with TextBounds
+    /// clipping. Dividers are drawn between panes. Status bar and tab bar are
+    /// drawn globally. The focused pane gets a subtle accent border.
+    ///
+    /// `panes`: Vec of (viewport, snapshot, blocks, is_focused) for each pane.
+    pub fn draw_multi_pane_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        panes: &[(PaneViewport, &GridSnapshot, &[&Block], bool)],
+        dividers: &[DividerRect],
+        status: Option<&StatusState>,
+        tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
+    ) {
+        let w = width as f32;
+        let h = height as f32;
+
+        // 1. Build rect instances for all panes (with viewport offsets)
+        let mut rect_instances: Vec<crate::rect_renderer::RectInstance> = Vec::new();
+
+        for (viewport, snapshot, _blocks, is_focused) in panes {
+            let pane_rects = self.grid_renderer.build_rects_offset(
+                snapshot,
+                self.default_bg,
+                viewport.x as f32,
+                viewport.y as f32,
+            );
+            rect_instances.extend(pane_rects);
+
+            // Focused pane accent border (1px cornflower blue)
+            if *is_focused && panes.len() > 1 {
+                let bx = viewport.x as f32;
+                let by = viewport.y as f32;
+                let bw = viewport.width as f32;
+                let bh = viewport.height as f32;
+                let border_color = [100.0 / 255.0, 149.0 / 255.0, 237.0 / 255.0, 1.0];
+                let t = 1.0;
+                // Top
+                rect_instances.push(crate::rect_renderer::RectInstance {
+                    pos: [bx, by, bw, t],
+                    color: border_color,
+                });
+                // Bottom
+                rect_instances.push(crate::rect_renderer::RectInstance {
+                    pos: [bx, by + bh - t, bw, t],
+                    color: border_color,
+                });
+                // Left
+                rect_instances.push(crate::rect_renderer::RectInstance {
+                    pos: [bx, by, t, bh],
+                    color: border_color,
+                });
+                // Right
+                rect_instances.push(crate::rect_renderer::RectInstance {
+                    pos: [bx + bw - t, by, t, bh],
+                    color: border_color,
+                });
+            }
+        }
+
+        // Divider rects between panes
+        for div in dividers {
+            rect_instances.push(crate::rect_renderer::RectInstance {
+                pos: [div.x as f32, div.y as f32, div.width as f32, div.height as f32],
+                color: [80.0 / 255.0, 80.0 / 255.0, 80.0 / 255.0, 1.0],
+            });
+        }
+
+        // Status bar background rect
+        if status.is_some() {
+            let status_rects = self.status_bar.build_status_rects(w, h);
+            rect_instances.extend(status_rects);
+        }
+
+        // Tab bar rects
+        if let Some(tabs) = tab_bar_info {
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w);
+            rect_instances.extend(tab_rects);
+        }
+
+        let total_rect_count = rect_instances.len() as u32;
+
+        // 2. Prepare rect renderer
+        self.rect_renderer.prepare(device, queue, &rect_instances, width, height);
+
+        // 3. Build text buffers for all panes
+        // We need separate buffer storage per pane since they have different offsets
+        self.text_buffers.clear();
+        let mut text_areas: Vec<TextArea<'_>> = Vec::new();
+        let mut pane_buffer_ranges: Vec<(usize, usize)> = Vec::new();
+
+        for (viewport, snapshot, _blocks, _is_focused) in panes {
+            let start = self.text_buffers.len();
+            self.grid_renderer.build_text_buffers(
+                &mut self.glyph_cache.font_system,
+                snapshot,
+                &mut self.text_buffers,
+            );
+            let end = self.text_buffers.len();
+            pane_buffer_ranges.push((start, end));
+
+            // We'll build text areas after all buffers are created
+            let _ = viewport; // used below
+        }
+
+        // Build text areas with offsets for each pane
+        for (i, (viewport, _snapshot, _blocks, _is_focused)) in panes.iter().enumerate() {
+            let (start, end) = pane_buffer_ranges[i];
+            let pane_buffers = &self.text_buffers[start..end];
+            let areas = self.grid_renderer.build_text_areas_offset(
+                pane_buffers,
+                viewport.width,
+                viewport.height,
+                viewport.x as f32,
+                viewport.y as f32,
+            );
+            text_areas.extend(areas);
+        }
+
+        // 3b. Build overlay text (status bar + tab bar)
+        self.overlay_buffers.clear();
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let (_cell_width, cell_height) = self.grid_renderer.cell_size();
+        let cell_width = _cell_width;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        struct OverlayMeta {
+            left: f32,
+            top: f32,
+            color: GlyphonColor,
+        }
+        let mut overlay_metas: Vec<OverlayMeta> = Vec::new();
+
+        // Status bar text
+        if let Some(status_state) = status {
+            let status_label = self.status_bar.build_status_text(
+                status_state.cwd(),
+                status_state.git_info(),
+                h,
+            );
+
+            // Left text (CWD)
+            {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(&mut self.glyph_cache.font_system, Some(w), Some(cell_height));
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &status_label.left_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.left_color.r, status_label.left_color.g,
+                            status_label.left_color.b, 255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: cell_width * 0.5,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.left_color.r, status_label.left_color.g,
+                        status_label.left_color.b, 255,
+                    ),
+                });
+            }
+
+            // Right text (git info)
+            if let Some(ref right_text) = status_label.right_text {
+                let right_text_width = right_text.len() as f32 * cell_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(&mut self.glyph_cache.font_system, Some(w), Some(cell_height));
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    right_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.right_color.r, status_label.right_color.g,
+                            status_label.right_color.b, 255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: w - right_text_width - cell_width * 0.5,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.right_color.r, status_label.right_color.g,
+                        status_label.right_color.b, 255,
+                    ),
+                });
+            }
+        }
+
+        // Tab bar text
+        if let Some(tabs) = tab_bar_info {
+            let tab_labels = self.tab_bar.build_tab_text(tabs, w);
+            for label in &tab_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(&mut self.glyph_cache.font_system, Some(w - label.x), Some(cell_height));
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Create TextAreas from overlay buffers
+        for (i, meta) in overlay_metas.iter().enumerate() {
+            text_areas.push(TextArea {
+                buffer: &self.overlay_buffers[i],
+                left: meta.left,
+                top: meta.top,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: meta.color,
+                custom_glyphs: &[],
+            });
+        }
+
+        // 4. Update viewport resolution
+        self.glyph_cache.viewport.update(queue, Resolution { width, height });
+
+        // 5. Prepare text renderer
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device, queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Multi-pane text prepare error: {:?}", e);
+        }
+
+        // 6. Render pass
+        let bg_r = self.default_bg.r as f64 / 255.0;
+        let bg_g = self.default_bg.g as f64 / 255.0;
+        let bg_b = self.default_bg.b as f64 / 255.0;
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("multi_pane_frame_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: bg_r, g: bg_g, b: bg_b, a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            // Draw all rects
+            self.rect_renderer.render(&mut pass, total_rect_count);
+
+            // Draw all text
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Multi-pane text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Free unused glyph atlas space between frames.
     pub fn trim(&mut self) {
         self.glyph_cache.trim();
     }
+}
+
+/// Viewport position and size for a single pane within a multi-pane layout.
+pub struct PaneViewport {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A divider rectangle between split panes.
+pub struct DividerRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
