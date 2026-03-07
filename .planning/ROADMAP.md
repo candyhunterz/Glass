@@ -6,7 +6,7 @@
 - [x] **v1.1 Structured Scrollback + MCP Server** -- Phases 5-9 (shipped 2026-03-05)
 - [x] **v1.2 Command-Level Undo** -- Phases 10-14 (shipped 2026-03-06)
 - [x] **v1.3 Pipe Visualization** -- Phases 15-20 (shipped 2026-03-06)
-- [ ] **v2.0 Cross-Platform & Tabs** -- Phases 21-24
+- [ ] **v2.0 Cross-Platform & Tabs** -- Phases 21-25
 
 ## Phases
 
@@ -87,6 +87,12 @@
   - [ ] 24-01-PLAN.md -- SplitTree layout engine with TDD (tree construction, layout computation, navigation, removal, resize)
   - [ ] 24-02-PLAN.md -- Tab restructuring for SplitNode and per-pane scissor-clipped rendering
   - [ ] 24-03-PLAN.md -- Input routing (keyboard splits, focus navigation, mouse click, PTY resize) and pane lifecycle
+- [ ] Phase 25: TerminalExit Multi-Pane Fix (1 plan)
+  **Goal:** Fix TerminalExit handler to use close_pane() for multi-pane tabs instead of close_tab(), completing SPLIT-11 satisfaction.
+  **Requirements:** [SPLIT-11]
+  **Gap Closure:** Closes gaps from v2.0 audit (1 requirement, 1 integration, 1 flow)
+  Plans:
+  - [ ] 25-01-PLAN.md -- Mirror Ctrl+Shift+W pane-count check in TerminalExit handler
 
 ## Progress
 
@@ -115,4 +121,5 @@
 | 21. Session Extraction & Platform Foundation | v2.0 | 3/3 | Complete | 2026-03-06 |
 | 22. Cross-Platform Validation | v2.0 | 2/2 | Complete | 2026-03-07 |
 | 23. Tabs | v2.0 | 3/3 | Complete | 2026-03-07 |
-| 24. Split Panes | 3/3 | Complete    | 2026-03-07 | -- |
+| 24. Split Panes | v2.0 | 3/3 | Complete | 2026-03-07 |
+| 25. TerminalExit Multi-Pane Fix | v2.0 | 0/1 | Pending | -- |
