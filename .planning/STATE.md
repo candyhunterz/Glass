@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.1
 milestone_name: Packaging & Polish
 status: executing
-stopped_at: Completed 26-01-PLAN.md
-last_updated: "2026-03-07T17:23:30.302Z"
-last_activity: 2026-03-07 -- Phase 26 Plan 01 complete (benchmark infra + tracing)
+stopped_at: Completed 26-02-PLAN.md
+last_updated: "2026-03-07T17:36:10.447Z"
+last_activity: 2026-03-07 -- Phase 26 Plan 02 complete (performance baseline & optimization)
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-03-07)
 ## Current Position
 
 Phase: 26 of 30 (Performance Profiling & Optimization)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-03-07 -- Phase 26 Plan 01 complete (benchmark infra + tracing)
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 26 Complete
+Last activity: 2026-03-07 -- Phase 26 Plan 02 complete (performance baseline & optimization)
 
-Progress: [████████████████████░░░░░░░░░░] v1.0-v2.0 complete, v2.1 starting
+Progress: [██████████] Phase 26: 2/2 plans complete (100%)
 
 ## Performance Metrics
 
@@ -39,8 +39,8 @@ Progress: [████████████████████░░░
 - v1.2: 13 plans in ~6 hours (~28 min/plan)
 - v1.3: 11 plans in ~2 hours (~11 min/plan)
 - v2.0: 6 plans in ~23 min (~4 min/plan)
-- v2.1: 1 plan in ~4 min (~4 min/plan)
-- Total: 56 plans across 25 phases in 3 days
+- v2.1: 2 plans in ~6 min (~3 min/plan)
+- Total: 57 plans across 26 phases in 3 days
 
 ## Accumulated Context
 
@@ -55,6 +55,8 @@ Recent decisions affecting v2.1:
 - Feature-gated perf instrumentation: cfg_attr(feature = "perf") for zero-overhead when disabled
 - Only instrument outer functions (not resolve_color/per-cell) to avoid tracing overhead in tight loops
 - OscScanner::scan uses trace level since it fires per PTY read
+- Record cold start honestly at 522ms (4.4% over 500ms target) -- transparency over vanity metrics
+- PERFORMANCE.md as single source of truth for performance baselines and measurement methodology
 
 ### Pending Todos
 
@@ -68,6 +70,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-07T17:23:30.300Z
-Stopped at: Completed 26-01-PLAN.md
+Last session: 2026-03-07T17:36:00.000Z
+Stopped at: Completed 26-02-PLAN.md
 Resume file: None

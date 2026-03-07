@@ -11,7 +11,7 @@ Requirements for Packaging & Polish milestone. Each maps to roadmap phases.
 
 - [x] **PERF-01**: Automated criterion benchmarks for cold start, input latency, and idle memory
 - [x] **PERF-02**: Tracing instrumentation on hot paths (PTY read, render loop, event dispatch)
-- [ ] **PERF-03**: Performance optimization pass based on profiling results (startup time, memory, rendering throughput)
+- [x] **PERF-03**: Performance optimization pass based on profiling results (startup time, memory, rendering throughput)
 
 ### Configuration
 
@@ -73,7 +73,7 @@ Deferred to future milestones.
 |-------------|-------|--------|
 | PERF-01 | Phase 26 | Complete |
 | PERF-02 | Phase 26 | Complete |
-| PERF-03 | Phase 26 | Pending |
+| PERF-03 | Phase 26 | Complete |
 | CONF-01 | Phase 27 | Pending |
 | CONF-02 | Phase 27 | Pending |
 | CONF-03 | Phase 27 | Pending |
