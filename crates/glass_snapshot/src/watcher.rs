@@ -27,13 +27,16 @@ pub struct FsWatcher {
 impl FsWatcher {
     /// Start watching `cwd` recursively, filtering events through `ignore` rules.
     pub fn new(cwd: &Path, ignore: IgnoreRules) -> Result<Self> {
+        // Canonicalize to resolve symlinks (e.g. macOS /var -> /private/var)
+        // so event paths match the ignore rules root.
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
         let (tx, rx) = mpsc::channel();
 
         let mut watcher = notify::recommended_watcher(move |res| {
             tx.send(res).ok();
         })?;
 
-        watcher.watch(cwd, RecursiveMode::Recursive)?;
+        watcher.watch(&cwd, RecursiveMode::Recursive)?;
 
         Ok(Self {
             _watcher: watcher,

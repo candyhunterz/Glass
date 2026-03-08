@@ -20,7 +20,10 @@ impl IgnoreRules {
     /// `target/`. If a `.glassignore` file exists in `cwd`, its patterns
     /// are loaded on top.
     pub fn load(cwd: &Path) -> Self {
-        let mut builder = GitignoreBuilder::new(cwd);
+        // Canonicalize to resolve symlinks (e.g. macOS /var -> /private/var)
+        // so paths from notify events match the gitignore root.
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let mut builder = GitignoreBuilder::new(&cwd);
 
         // Hardcoded exclusions
         builder.add_line(None, ".git/").ok();
