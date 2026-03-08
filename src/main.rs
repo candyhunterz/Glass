@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use clap::{Parser, Subcommand};
@@ -128,6 +129,8 @@ struct WindowContext {
     session_mux: SessionMux,
     /// Whether the first-frame cold start metric has been logged.
     first_frame_logged: bool,
+    /// Whether the left mouse button is currently held (for drag selection).
+    mouse_left_pressed: bool,
 }
 
 impl WindowContext {
@@ -541,6 +544,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 frame_renderer,
                 session_mux,
                 first_frame_logged: false,
+                mouse_left_pressed: false,
             },
         );
 
@@ -1272,17 +1276,56 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 ctx.session_mut().cursor_position = Some((position.x, position.y));
+
+                // Update selection during mouse drag
+                if ctx.mouse_left_pressed {
+                    let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                    let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
+                        cell_h
+                    } else {
+                        0.0
+                    };
+                    let px = position.x as f32;
+                    let py = position.y as f32 - grid_y_offset;
+                    if py >= 0.0 {
+                        let col = (px / cell_w) as usize;
+                        let row = (py / cell_h) as usize;
+                        let side = if (px % cell_w) < cell_w / 2.0 {
+                            Side::Left
+                        } else {
+                            Side::Right
+                        };
+                        let mut term = ctx.session().term.lock();
+                        let display_offset = term.grid().display_offset();
+                        let columns = term.columns();
+                        let screen_lines = term.screen_lines();
+                        let col = col.min(columns.saturating_sub(1));
+                        let row = row.min(screen_lines.saturating_sub(1));
+                        let point = alacritty_terminal::index::Point::new(
+                            Line(row as i32 - display_offset as i32),
+                            Column(col),
+                        );
+                        if let Some(ref mut sel) = term.selection {
+                            sel.update(point, side);
+                        }
+                        drop(term);
+                        ctx.window.request_redraw();
+                    }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                ctx.mouse_left_pressed = true;
+
                 // Tab bar click handling
                 if let Some((x, y)) = ctx.session().cursor_position {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     if (y as f32) < cell_h {
                         // Click is in tab bar region
+                        ctx.mouse_left_pressed = false;
                         let viewport_w = ctx.window.inner_size().width as f32;
                         if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
                             x as f32, ctx.session_mux.tab_count(), viewport_w
@@ -1326,6 +1369,44 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
+                // Start text selection at the clicked grid position
+                if let Some((x, y)) = ctx.session().cursor_position {
+                    let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                    let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
+                        cell_h
+                    } else {
+                        0.0
+                    };
+                    let px = x as f32;
+                    let py = y as f32 - grid_y_offset;
+                    if py >= 0.0 {
+                        let col = (px / cell_w) as usize;
+                        let row = (py / cell_h) as usize;
+                        let side = if (px % cell_w) < cell_w / 2.0 {
+                            Side::Left
+                        } else {
+                            Side::Right
+                        };
+                        let mut term = ctx.session().term.lock();
+                        let display_offset = term.grid().display_offset();
+                        let columns = term.columns();
+                        let screen_lines = term.screen_lines();
+                        let col = col.min(columns.saturating_sub(1));
+                        let row = row.min(screen_lines.saturating_sub(1));
+                        let point = alacritty_terminal::index::Point::new(
+                            Line(row as i32 - display_offset as i32),
+                            Column(col),
+                        );
+                        term.selection = Some(Selection::new(
+                            SelectionType::Simple,
+                            point,
+                            side,
+                        ));
+                        drop(term);
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 let needs_redraw = if let Some((_, y)) = ctx.session().cursor_position {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let size = ctx.window.inner_size();
@@ -1363,6 +1444,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if needs_redraw {
                     ctx.window.request_redraw();
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                ctx.mouse_left_pressed = false;
+                // Copy selection to clipboard on mouse release
+                clipboard_copy(&ctx.session().term);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

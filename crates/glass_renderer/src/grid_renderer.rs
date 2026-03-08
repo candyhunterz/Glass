@@ -4,6 +4,7 @@
 //! to the GPU rendering primitives: colored rectangles for backgrounds/cursor,
 //! and glyphon TextAreas for text content.
 
+use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, FontSystem, Metrics, Shaping, Style, TextArea, TextBounds, Weight};
@@ -150,6 +151,52 @@ impl GridRenderer {
             CursorShape::Hidden => {
                 // No cursor rect
             }
+        }
+
+        rects
+    }
+
+    /// Build selection highlight rectangles.
+    ///
+    /// Creates semi-transparent rectangles over selected cells based on the
+    /// selection range from the terminal.
+    pub fn build_selection_rects(
+        &self,
+        selection: &SelectionRange,
+        display_offset: usize,
+        columns: usize,
+    ) -> Vec<RectInstance> {
+        let mut rects = Vec::new();
+        let line_offset = display_offset as i32;
+        let selection_color = [0.26, 0.52, 0.96, 0.35]; // blue highlight
+
+        let start = selection.start;
+        let end = selection.end;
+
+        for line_val in start.line.0..=end.line.0 {
+            let col_start = if line_val == start.line.0 {
+                start.column.0
+            } else if selection.is_block {
+                start.column.0
+            } else {
+                0
+            };
+            let col_end = if line_val == end.line.0 {
+                end.column.0
+            } else if selection.is_block {
+                end.column.0
+            } else {
+                columns.saturating_sub(1)
+            };
+
+            let x = col_start as f32 * self.cell_width;
+            let y = (line_val + line_offset) as f32 * self.cell_height;
+            let w = (col_end - col_start + 1) as f32 * self.cell_width;
+
+            rects.push(RectInstance {
+                pos: [x, y, w, self.cell_height],
+                color: selection_color,
+            });
         }
 
         rects

@@ -159,21 +159,52 @@ impl FrameRenderer {
         let w = width as f32;
         let h = height as f32;
 
+        // Compute grid y-offset: shift content below tab bar when present
+        let grid_y_offset = if tab_bar_info.is_some() {
+            let (_, cell_height) = self.grid_renderer.cell_size();
+            cell_height
+        } else {
+            0.0
+        };
+
         // 1. Build rect instances (backgrounds + cursor)
-        let mut rect_instances = self.grid_renderer.build_rects(snapshot, self.default_bg);
+        let mut rect_instances = if grid_y_offset > 0.0 {
+            self.grid_renderer.build_rects_offset(snapshot, self.default_bg, 0.0, grid_y_offset)
+        } else {
+            self.grid_renderer.build_rects(snapshot, self.default_bg)
+        };
+
+        // 1a2. Append selection highlight rects
+        if let Some(ref sel) = snapshot.selection {
+            let mut sel_rects = self.grid_renderer.build_selection_rects(
+                sel,
+                snapshot.display_offset,
+                snapshot.columns,
+            );
+            if grid_y_offset > 0.0 {
+                for rect in &mut sel_rects {
+                    rect.pos[1] += grid_y_offset;
+                }
+            }
+            rect_instances.extend(sel_rects);
+        }
 
         // 1b. Append block decoration rects (separators, badges)
         // Block lines are absolute; convert viewport start to absolute coords.
         if !blocks.is_empty() {
             let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
-            let block_rects = self.block_renderer.build_block_rects(
+            let mut block_rects = self.block_renderer.build_block_rects(
                 blocks,
                 viewport_abs_start,
                 snapshot.screen_lines,
                 w,
             );
+            if grid_y_offset > 0.0 {
+                for rect in &mut block_rects {
+                    rect.pos[1] += grid_y_offset;
+                }
+            }
             rect_instances.extend(block_rects);
-
         }
 
         // 1c. Append status bar background rect
@@ -227,11 +258,21 @@ impl FrameRenderer {
             snapshot,
             &mut self.text_buffers,
         );
-        let mut text_areas: Vec<TextArea<'_>> = self.grid_renderer.build_text_areas(
-            &self.text_buffers,
-            width,
-            height,
-        );
+        let mut text_areas: Vec<TextArea<'_>> = if grid_y_offset > 0.0 {
+            self.grid_renderer.build_text_areas_offset(
+                &self.text_buffers,
+                width,
+                height,
+                0.0,
+                grid_y_offset,
+            )
+        } else {
+            self.grid_renderer.build_text_areas(
+                &self.text_buffers,
+                width,
+                height,
+            )
+        };
 
         // 3b. Build overlay text buffers for block labels and status bar.
         // Two-phase approach: first build all buffers (mutable), then create
@@ -281,11 +322,10 @@ impl FrameRenderer {
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
                     left: label.x,
-                    top: label.y,
+                    top: label.y + grid_y_offset,
                     color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
                 });
             }
-
         }
 
         // Status bar text buffers
@@ -689,6 +729,20 @@ impl FrameRenderer {
                 viewport.y as f32,
             );
             rect_instances.extend(pane_rects);
+
+            // Selection highlight rects
+            if let Some(ref sel) = snapshot.selection {
+                let mut sel_rects = self.grid_renderer.build_selection_rects(
+                    sel,
+                    snapshot.display_offset,
+                    snapshot.columns,
+                );
+                for rect in &mut sel_rects {
+                    rect.pos[0] += viewport.x as f32;
+                    rect.pos[1] += viewport.y as f32;
+                }
+                rect_instances.extend(sel_rects);
+            }
 
             // Focused pane accent border (1px cornflower blue)
             if *is_focused && panes.len() > 1 {

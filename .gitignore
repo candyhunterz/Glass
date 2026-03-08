@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Benchmark / profiling output
+bench-results.txt
+glass-trace.json
+flamegraph.svg
+perf.data
+
+# Glass local data
+.glass/
+.planning

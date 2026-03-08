@@ -5,6 +5,7 @@
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
+use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{RenderableCursor, Term, TermMode};
@@ -61,6 +62,7 @@ pub struct GridSnapshot {
     pub mode: TermMode,
     pub columns: usize,
     pub screen_lines: usize,
+    pub selection: Option<SelectionRange>,
 }
 
 /// Resolve a `Color` to an `Rgb` value using the terminal color palette.
@@ -200,6 +202,7 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
         mode: content.mode,
         columns: term.columns(),
         screen_lines: term.screen_lines(),
+        selection: content.selection,
     }
 }
 
