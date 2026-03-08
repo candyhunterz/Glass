@@ -221,9 +221,19 @@ mod tests {
 
     // --- Version comparison tests ---
 
+    /// Helper that returns assets for all platforms so version comparison tests
+    /// pass regardless of which CI runner executes them.
+    fn all_platform_assets() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("glass.msi", "https://example.com/glass.msi"),
+            ("glass.dmg", "https://example.com/glass.dmg"),
+            ("glass.deb", "https://example.com/glass.deb"),
+        ]
+    }
+
     #[test]
     fn newer_version_detected_as_update() {
-        let release = mock_release("v1.1.0", &[("glass.msi", "https://example.com/glass.msi")]);
+        let release = mock_release("v1.1.0", &all_platform_assets());
         let result = parse_update_from_response("1.0.0", &release).unwrap();
         assert!(result.is_some(), "Expected update available");
         let info = result.unwrap();
@@ -233,14 +243,14 @@ mod tests {
 
     #[test]
     fn equal_version_is_not_update() {
-        let release = mock_release("v1.0.0", &[("glass.msi", "https://example.com/glass.msi")]);
+        let release = mock_release("v1.0.0", &all_platform_assets());
         let result = parse_update_from_response("1.0.0", &release).unwrap();
         assert!(result.is_none(), "Equal version should not be an update");
     }
 
     #[test]
     fn older_remote_is_not_update() {
-        let release = mock_release("v0.9.0", &[("glass.msi", "https://example.com/glass.msi")]);
+        let release = mock_release("v0.9.0", &all_platform_assets());
         let result = parse_update_from_response("1.0.0", &release).unwrap();
         assert!(result.is_none(), "Older remote should not be an update");
     }
