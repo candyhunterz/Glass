@@ -48,7 +48,7 @@ See PROJECT.md Key Decisions table for full history.
 
 ### Pending Todos
 
-None.
+1 pending (Mouse drag-and-select for copy paste).
 
 ### Blockers/Concerns
 
