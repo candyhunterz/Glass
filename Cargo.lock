@@ -1196,6 +1196,7 @@ dependencies = [
  "chrono",
  "clap",
  "criterion",
+ "dirs",
  "glass_core",
  "glass_history",
  "glass_mcp",

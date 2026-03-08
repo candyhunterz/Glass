@@ -2400,7 +2400,127 @@ fn load_window_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(rgba.into_raw(), width, height).ok()
 }
 
+/// Install a panic hook that writes crash reports to ~/.glass/crash.log and
+/// opens a pre-filled GitHub issue in the browser.
+fn install_crash_handler() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Capture backtrace immediately
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        // Extract panic message
+        let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+
+        // Location
+        let location = if let Some(loc) = info.location() {
+            format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+        } else {
+            "unknown location".to_string()
+        };
+
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        let version = env!("CARGO_PKG_VERSION");
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        let backtrace_str = format!("{}", backtrace);
+
+        // Build crash report
+        let report = format!(
+            "=== CRASH REPORT ===\n\
+             Time: {}\n\
+             Version: {}\n\
+             OS: {} {}\n\
+             Panic: {}\n\
+             Location: {}\n\
+             \n\
+             Backtrace:\n\
+             {}\n\
+             ====================\n\n",
+            timestamp, version, os, arch, message, location, backtrace_str
+        );
+
+        // Write to ~/.glass/crash.log (append mode)
+        if let Some(home) = dirs::home_dir() {
+            let glass_dir = home.join(".glass");
+            let _ = std::fs::create_dir_all(&glass_dir);
+            let crash_log = glass_dir.join("crash.log");
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&crash_log)
+            {
+                use std::io::Write;
+                let _ = file.write_all(report.as_bytes());
+            }
+        }
+
+        // Print user-friendly message to stderr
+        eprintln!("Glass crashed. Log saved to ~/.glass/crash.log");
+
+        // Build GitHub issue URL
+        let title = format!("crash: {}", &message);
+        let body = if report.len() > 2000 {
+            &report[..2000]
+        } else {
+            &report
+        };
+        let encoded_title = url_encode(&title);
+        let encoded_body = url_encode(body);
+        let url = format!(
+            "https://github.com/candyhunterz/Glass/issues/new?title={}&body={}&labels=bug,crash",
+            encoded_title, encoded_body
+        );
+
+        // Open in browser
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &url])
+                .spawn();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open").arg(&url).spawn();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        }
+
+        // Run the default panic hook (prints the panic info)
+        default_hook(info);
+    }));
+}
+
+/// Percent-encode a string for use in a URL query parameter.
+fn url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            b' ' => result.push_str("%20"),
+            _ => {
+                result.push('%');
+                result.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
+                result.push(char::from(b"0123456789ABCDEF"[(byte & 0x0F) as usize]));
+            }
+        }
+    }
+    result
+}
+
 fn main() {
+    install_crash_handler();
+
     let cold_start = std::time::Instant::now();
 
     // FIRST: set UTF-8 console code page on Windows before any PTY creation (Pitfall 5)

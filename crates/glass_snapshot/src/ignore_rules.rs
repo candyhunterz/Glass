@@ -38,17 +38,51 @@ impl IgnoreRules {
 
         let matcher = builder.build().unwrap_or_else(|_| {
             // Fallback to empty matcher on error
-            GitignoreBuilder::new(cwd).build().unwrap()
+            GitignoreBuilder::new(&cwd).build().unwrap()
         });
 
         Self { matcher }
     }
 
     /// Check whether a given path should be ignored.
+    ///
+    /// The path is canonicalized to match the canonical root used by the
+    /// `ignore` crate. For paths that don't exist on disk, the longest
+    /// existing ancestor is canonicalized and the remaining components
+    /// are appended.
     pub fn is_ignored(&self, path: &Path) -> bool {
+        let canonical = self.canonicalize_path(path);
         self.matcher
-            .matched_path_or_any_parents(path, path.is_dir())
+            .matched_path_or_any_parents(&canonical, canonical.is_dir())
             .is_ignore()
+    }
+
+    /// Canonicalize a path, handling non-existent files by canonicalizing
+    /// the deepest existing ancestor and appending the remaining components.
+    fn canonicalize_path(&self, path: &Path) -> std::path::PathBuf {
+        // Fast path: the path exists and can be fully canonicalized.
+        if let Ok(canon) = path.canonicalize() {
+            return canon;
+        }
+        // Walk up to find the deepest existing ancestor, then append the rest.
+        let mut existing = path.to_path_buf();
+        let mut suffix = Vec::new();
+        while !existing.exists() {
+            if let Some(name) = existing.file_name() {
+                suffix.push(name.to_os_string());
+            } else {
+                return path.to_path_buf();
+            }
+            existing.pop();
+        }
+        if let Ok(mut canon) = existing.canonicalize() {
+            for component in suffix.into_iter().rev() {
+                canon.push(component);
+            }
+            canon
+        } else {
+            path.to_path_buf()
+        }
     }
 }
 

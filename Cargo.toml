@@ -90,6 +90,7 @@ glass_mcp = { path = "crates/glass_mcp" }
 glass_snapshot = { path = "crates/glass_snapshot" }
 tokio = { workspace = true }
 chrono.workspace = true
+dirs.workspace = true
 glass_pipes = { path = "crates/glass_pipes" }
 glass_mux = { path = "crates/glass_mux" }
 image = { version = "0.25", default-features = false, features = ["png"] }
