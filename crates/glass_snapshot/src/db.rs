@@ -58,8 +58,7 @@ impl SnapshotDb {
 
     /// Apply schema migrations based on PRAGMA user_version.
     fn migrate(conn: &Connection) -> Result<()> {
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version < 1 {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -100,9 +99,9 @@ impl SnapshotDb {
 
     /// Get a snapshot record by id.
     pub fn get_snapshot(&self, id: i64) -> Result<Option<SnapshotRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, command_id, cwd, created_at FROM snapshots WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, command_id, cwd, created_at FROM snapshots WHERE id = ?1")?;
         let mut rows = stmt.query_map(params![id], |row| {
             Ok(SnapshotRecord {
                 id: row.get(0)?,
@@ -201,19 +200,17 @@ impl SnapshotDb {
 
     /// Count total number of snapshots.
     pub fn count_snapshots(&self) -> Result<u64> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM snapshots",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))?;
         Ok(count as u64)
     }
 
     /// Delete all snapshots with created_at < epoch. Returns deleted IDs.
     pub fn delete_snapshots_before(&self, epoch: i64) -> Result<Vec<i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM snapshots WHERE created_at < ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM snapshots WHERE created_at < ?1")?;
         let ids: Vec<i64> = stmt
             .query_map(params![epoch], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -229,9 +226,9 @@ impl SnapshotDb {
 
     /// Get the N oldest snapshot IDs, ordered by created_at ASC.
     pub fn get_oldest_snapshot_ids(&self, limit: u32) -> Result<Vec<i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM snapshots ORDER BY created_at ASC LIMIT ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM snapshots ORDER BY created_at ASC LIMIT ?1")?;
         let ids: Vec<i64> = stmt
             .query_map(params![limit], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -240,12 +237,12 @@ impl SnapshotDb {
 
     /// Get all distinct blob hashes still referenced by snapshot_files.
     pub fn get_referenced_hashes(&self) -> Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT blob_hash FROM snapshot_files WHERE blob_hash IS NOT NULL",
-        )?;
-        let hashes: std::collections::HashSet<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<std::collections::HashSet<_>, _>>()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT blob_hash FROM snapshot_files WHERE blob_hash IS NOT NULL")?;
+        let hashes: std::collections::HashSet<String> =
+            stmt.query_map([], |row| row.get(0))?
+                .collect::<std::result::Result<std::collections::HashSet<_>, _>>()?;
         Ok(hashes)
     }
 
@@ -276,7 +273,10 @@ impl SnapshotDb {
 
     /// Get a parser snapshot by command_id (newest if multiple exist).
     /// Only returns snapshots that have at least one parser-sourced file.
-    pub fn get_parser_snapshot_by_command(&self, command_id: i64) -> Result<Option<SnapshotRecord>> {
+    pub fn get_parser_snapshot_by_command(
+        &self,
+        command_id: i64,
+    ) -> Result<Option<SnapshotRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.command_id, s.cwd, s.created_at
              FROM snapshots s
@@ -329,10 +329,7 @@ mod tests {
     fn test_schema_creation() {
         let (db, _dir) = test_db();
         // Verify snapshots table exists with correct columns
-        let mut stmt = db
-            .conn
-            .prepare("PRAGMA table_info(snapshots)")
-            .unwrap();
+        let mut stmt = db.conn.prepare("PRAGMA table_info(snapshots)").unwrap();
         let columns: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(1))
             .unwrap()
@@ -375,7 +372,10 @@ mod tests {
         // Reopen and verify
         {
             let db = SnapshotDb::open(&db_path).unwrap();
-            let snapshot = db.get_snapshot(1).unwrap().expect("should exist after reopen");
+            let snapshot = db
+                .get_snapshot(1)
+                .unwrap()
+                .expect("should exist after reopen");
             assert_eq!(snapshot.command_id, 1);
             assert_eq!(snapshot.cwd, "/home/user");
         }
@@ -434,8 +434,14 @@ mod tests {
     fn test_get_latest_parser_snapshot_none_when_only_watcher() {
         let (db, _dir) = test_db();
         let sid = db.create_snapshot(1, "/tmp").unwrap();
-        db.insert_snapshot_file(sid, Path::new("/tmp/a.txt"), Some("aaa"), Some(10), "watcher")
-            .unwrap();
+        db.insert_snapshot_file(
+            sid,
+            Path::new("/tmp/a.txt"),
+            Some("aaa"),
+            Some(10),
+            "watcher",
+        )
+        .unwrap();
         let result = db.get_latest_parser_snapshot().unwrap();
         assert!(result.is_none());
     }
@@ -444,8 +450,14 @@ mod tests {
     fn test_get_latest_parser_snapshot_returns_snapshot_with_parser_file() {
         let (db, _dir) = test_db();
         let sid = db.create_snapshot(1, "/tmp").unwrap();
-        db.insert_snapshot_file(sid, Path::new("/tmp/a.txt"), Some("aaa"), Some(10), "parser")
-            .unwrap();
+        db.insert_snapshot_file(
+            sid,
+            Path::new("/tmp/a.txt"),
+            Some("aaa"),
+            Some(10),
+            "parser",
+        )
+        .unwrap();
         let result = db.get_latest_parser_snapshot().unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, sid);
@@ -456,16 +468,34 @@ mod tests {
         let (db, _dir) = test_db();
         // Older snapshot with parser file
         let sid1 = db.create_snapshot(1, "/tmp").unwrap();
-        db.insert_snapshot_file(sid1, Path::new("/tmp/a.txt"), Some("aaa"), Some(10), "parser")
-            .unwrap();
+        db.insert_snapshot_file(
+            sid1,
+            Path::new("/tmp/a.txt"),
+            Some("aaa"),
+            Some(10),
+            "parser",
+        )
+        .unwrap();
         // Newer snapshot with only watcher files
         let sid2 = db.create_snapshot(2, "/tmp").unwrap();
-        db.insert_snapshot_file(sid2, Path::new("/tmp/b.txt"), Some("bbb"), Some(20), "watcher")
-            .unwrap();
+        db.insert_snapshot_file(
+            sid2,
+            Path::new("/tmp/b.txt"),
+            Some("bbb"),
+            Some(20),
+            "watcher",
+        )
+        .unwrap();
         // Newest snapshot with parser file
         let sid3 = db.create_snapshot(3, "/tmp").unwrap();
-        db.insert_snapshot_file(sid3, Path::new("/tmp/c.txt"), Some("ccc"), Some(30), "parser")
-            .unwrap();
+        db.insert_snapshot_file(
+            sid3,
+            Path::new("/tmp/c.txt"),
+            Some("ccc"),
+            Some(30),
+            "parser",
+        )
+        .unwrap();
 
         let result = db.get_latest_parser_snapshot().unwrap();
         assert!(result.is_some());
@@ -477,8 +507,14 @@ mod tests {
         let (db, _dir) = test_db();
         // command_id=0 means pending pre-exec snapshot
         let sid = db.create_snapshot(0, "/home/user").unwrap();
-        db.insert_snapshot_file(sid, Path::new("/home/user/file.rs"), Some("abc"), Some(100), "parser")
-            .unwrap();
+        db.insert_snapshot_file(
+            sid,
+            Path::new("/home/user/file.rs"),
+            Some("abc"),
+            Some(100),
+            "parser",
+        )
+        .unwrap();
         let result = db.get_latest_parser_snapshot().unwrap();
         assert!(result.is_some());
         let snap = result.unwrap();

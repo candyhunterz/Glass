@@ -90,16 +90,13 @@ impl HistoryDb {
 
     /// Apply schema migrations based on PRAGMA user_version.
     fn migrate(conn: &Connection) -> Result<()> {
-        let version: i64 =
-            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
 
         if version < 1 {
             // Phase 6: add output column to existing databases.
             // For fresh databases, the column already exists from create_schema,
             // so we check if it's missing before altering.
-            let has_output: bool = conn
-                .prepare("SELECT output FROM commands LIMIT 0")
-                .is_ok();
+            let has_output: bool = conn.prepare("SELECT output FROM commands LIMIT 0").is_ok();
 
             if !has_output {
                 conn.execute_batch("ALTER TABLE commands ADD COLUMN output TEXT;")?;
@@ -120,7 +117,7 @@ impl HistoryDb {
                     is_binary   INTEGER NOT NULL DEFAULT 0,
                     is_sampled  INTEGER NOT NULL DEFAULT 0
                 );
-                CREATE INDEX IF NOT EXISTS idx_pipe_stages_command ON pipe_stages(command_id);"
+                CREATE INDEX IF NOT EXISTS idx_pipe_stages_command ON pipe_stages(command_id);",
             )?;
             conn.pragma_update(None, "user_version", 2)?;
         }
@@ -207,7 +204,7 @@ impl HistoryDb {
     pub fn get_pipe_stages(&self, command_id: i64) -> Result<Vec<PipeStageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT stage_index, command, output, total_bytes, is_binary, is_sampled
-             FROM pipe_stages WHERE command_id = ?1 ORDER BY stage_index ASC"
+             FROM pipe_stages WHERE command_id = ?1 ORDER BY stage_index ASC",
         )?;
         let rows = stmt.query_map(params![command_id], |row| {
             Ok(PipeStageRow {
@@ -219,7 +216,8 @@ impl HistoryDb {
                 is_sampled: row.get(5)?,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     /// Delete a command record by id (from pipe_stages, FTS, and commands tables).
@@ -227,15 +225,9 @@ impl HistoryDb {
     pub fn delete_command(&self, id: i64) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         // Delete pipe_stages first (belt and suspenders with CASCADE)
-        tx.execute(
-            "DELETE FROM pipe_stages WHERE command_id = ?1",
-            params![id],
-        )?;
+        tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
         // Delete from FTS (standard FTS5 -- just DELETE by rowid)
-        tx.execute(
-            "DELETE FROM commands_fts WHERE rowid = ?1",
-            params![id],
-        )?;
+        tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
         let deleted = tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(deleted > 0)
@@ -243,9 +235,9 @@ impl HistoryDb {
 
     /// Return the total number of command records.
     pub fn command_count(&self) -> Result<u64> {
-        let count: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
         Ok(count as u64)
     }
 
@@ -269,10 +261,7 @@ impl HistoryDb {
     }
 
     /// Execute a filtered query combining FTS5 text search with SQL WHERE clauses.
-    pub fn filtered_query(
-        &self,
-        filter: &crate::query::QueryFilter,
-    ) -> Result<Vec<CommandRecord>> {
+    pub fn filtered_query(&self, filter: &crate::query::QueryFilter) -> Result<Vec<CommandRecord>> {
         crate::query::filtered_query(&self.conn, filter)
     }
 
@@ -653,7 +642,10 @@ mod tests {
             .conn()
             .prepare("SELECT 1 FROM pipe_stages LIMIT 0")
             .is_ok();
-        assert!(table_exists, "pipe_stages table should exist after migration");
+        assert!(
+            table_exists,
+            "pipe_stages table should exist after migration"
+        );
 
         // Verify user_version is now 2
         let version: i64 = db
@@ -718,7 +710,9 @@ mod tests {
     #[test]
     fn test_insert_and_get_pipe_stages() {
         let (db, _dir) = test_db();
-        let id = db.insert_command(&sample_record("cat file | grep foo | wc -l")).unwrap();
+        let id = db
+            .insert_command(&sample_record("cat file | grep foo | wc -l"))
+            .unwrap();
 
         let stages = vec![
             PipeStageRow {
@@ -752,7 +746,10 @@ mod tests {
         assert_eq!(retrieved.len(), 3);
         assert_eq!(retrieved[0].stage_index, 0);
         assert_eq!(retrieved[0].command, "cat file");
-        assert_eq!(retrieved[0].output, Some("line1\nline2\nfoo bar\n".to_string()));
+        assert_eq!(
+            retrieved[0].output,
+            Some("line1\nline2\nfoo bar\n".to_string())
+        );
         assert_eq!(retrieved[1].stage_index, 1);
         assert_eq!(retrieved[1].command, "grep foo");
         assert_eq!(retrieved[2].stage_index, 2);
@@ -815,7 +812,10 @@ mod tests {
         assert!(!retrieved[0].is_sampled);
 
         // Sampled
-        assert_eq!(retrieved[1].output, Some("head...\n[...500 bytes omitted...]\n...tail".to_string()));
+        assert_eq!(
+            retrieved[1].output,
+            Some("head...\n[...500 bytes omitted...]\n...tail".to_string())
+        );
         assert_eq!(retrieved[1].total_bytes, 1000);
         assert!(!retrieved[1].is_binary);
         assert!(retrieved[1].is_sampled);
@@ -837,48 +837,56 @@ mod tests {
 
         // Insert old command with pipe stages (2 days ago)
         let old_time = now - 2 * 86400;
-        let old_id = db.insert_command(&CommandRecord {
-            id: None,
-            command: "old pipeline".to_string(),
-            cwd: "/tmp".to_string(),
-            exit_code: Some(0),
-            started_at: old_time,
-            finished_at: old_time + 1,
-            duration_ms: 1000,
-            output: None,
-        }).unwrap();
-        db.insert_pipe_stages(old_id, &[
-            PipeStageRow {
+        let old_id = db
+            .insert_command(&CommandRecord {
+                id: None,
+                command: "old pipeline".to_string(),
+                cwd: "/tmp".to_string(),
+                exit_code: Some(0),
+                started_at: old_time,
+                finished_at: old_time + 1,
+                duration_ms: 1000,
+                output: None,
+            })
+            .unwrap();
+        db.insert_pipe_stages(
+            old_id,
+            &[PipeStageRow {
                 stage_index: 0,
                 command: "cat".to_string(),
                 output: Some("old data".to_string()),
                 total_bytes: 8,
                 is_binary: false,
                 is_sampled: false,
-            },
-        ]).unwrap();
+            }],
+        )
+        .unwrap();
 
         // Insert recent command with pipe stages
-        let recent_id = db.insert_command(&CommandRecord {
-            id: None,
-            command: "recent pipeline".to_string(),
-            cwd: "/tmp".to_string(),
-            exit_code: Some(0),
-            started_at: now,
-            finished_at: now + 1,
-            duration_ms: 1000,
-            output: None,
-        }).unwrap();
-        db.insert_pipe_stages(recent_id, &[
-            PipeStageRow {
+        let recent_id = db
+            .insert_command(&CommandRecord {
+                id: None,
+                command: "recent pipeline".to_string(),
+                cwd: "/tmp".to_string(),
+                exit_code: Some(0),
+                started_at: now,
+                finished_at: now + 1,
+                duration_ms: 1000,
+                output: None,
+            })
+            .unwrap();
+        db.insert_pipe_stages(
+            recent_id,
+            &[PipeStageRow {
                 stage_index: 0,
                 command: "grep".to_string(),
                 output: Some("recent data".to_string()),
                 total_bytes: 11,
                 is_binary: false,
                 is_sampled: false,
-            },
-        ]).unwrap();
+            }],
+        )
+        .unwrap();
 
         // Verify both have stages before pruning
         assert_eq!(db.get_pipe_stages(old_id).unwrap().len(), 1);
@@ -906,26 +914,30 @@ mod tests {
         // Insert commands with pipe stages and large output to force size-based pruning
         let mut ids = Vec::new();
         for i in 0..10 {
-            let id = db.insert_command(&CommandRecord {
-                id: None,
-                command: format!("pipeline cmd {}", i),
-                cwd: "/tmp".to_string(),
-                exit_code: Some(0),
-                started_at: now - (10 - i), // oldest first
-                finished_at: now - (10 - i) + 1,
-                duration_ms: 1000,
-                output: Some("x".repeat(1000)), // generate some size
-            }).unwrap();
-            db.insert_pipe_stages(id, &[
-                PipeStageRow {
+            let id = db
+                .insert_command(&CommandRecord {
+                    id: None,
+                    command: format!("pipeline cmd {}", i),
+                    cwd: "/tmp".to_string(),
+                    exit_code: Some(0),
+                    started_at: now - (10 - i), // oldest first
+                    finished_at: now - (10 - i) + 1,
+                    duration_ms: 1000,
+                    output: Some("x".repeat(1000)), // generate some size
+                })
+                .unwrap();
+            db.insert_pipe_stages(
+                id,
+                &[PipeStageRow {
                     stage_index: 0,
                     command: format!("stage of cmd {}", i),
                     output: Some("x".repeat(500)),
                     total_bytes: 500,
                     is_binary: false,
                     is_sampled: false,
-                },
-            ]).unwrap();
+                }],
+            )
+            .unwrap();
             ids.push(id);
         }
 
@@ -935,32 +947,41 @@ mod tests {
 
         // The oldest commands should have been pruned along with their pipe_stages
         let oldest_stages = db.get_pipe_stages(ids[0]).unwrap();
-        assert!(oldest_stages.is_empty(), "oldest command's pipe_stages should be deleted");
+        assert!(
+            oldest_stages.is_empty(),
+            "oldest command's pipe_stages should be deleted"
+        );
     }
 
     #[test]
     fn test_delete_command_cascades_pipe_stages() {
         let (db, _dir) = test_db();
-        let id = db.insert_command(&sample_record("pipeline to delete")).unwrap();
+        let id = db
+            .insert_command(&sample_record("pipeline to delete"))
+            .unwrap();
 
-        db.insert_pipe_stages(id, &[
-            PipeStageRow {
-                stage_index: 0,
-                command: "cat".to_string(),
-                output: Some("data".to_string()),
-                total_bytes: 4,
-                is_binary: false,
-                is_sampled: false,
-            },
-            PipeStageRow {
-                stage_index: 1,
-                command: "grep".to_string(),
-                output: Some("filtered".to_string()),
-                total_bytes: 8,
-                is_binary: false,
-                is_sampled: false,
-            },
-        ]).unwrap();
+        db.insert_pipe_stages(
+            id,
+            &[
+                PipeStageRow {
+                    stage_index: 0,
+                    command: "cat".to_string(),
+                    output: Some("data".to_string()),
+                    total_bytes: 4,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 1,
+                    command: "grep".to_string(),
+                    output: Some("filtered".to_string()),
+                    total_bytes: 8,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+            ],
+        )
+        .unwrap();
 
         // Verify stages exist
         assert_eq!(db.get_pipe_stages(id).unwrap().len(), 2);

@@ -13,13 +13,18 @@ use alacritty_terminal::term::{Term, TermMode};
 use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
 use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
-use glass_history::{resolve_db_path, db::{HistoryDb, CommandRecord}};
-use glass_mux::{FocusDirection, Session, SessionMux, SearchOverlay, SplitDirection, ViewportLayout};
-use glass_renderer::{DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport};
+use glass_history::{
+    db::{CommandRecord, HistoryDb},
+    resolve_db_path,
+};
+use glass_mux::{
+    FocusDirection, SearchOverlay, Session, SessionMux, SplitDirection, ViewportLayout,
+};
 use glass_renderer::tab_bar::TabDisplayInfo;
+use glass_renderer::{DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport};
 use glass_terminal::{
-    Block, BlockManager, DefaultColors, EventProxy, GridSnapshot, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
-    encode_key, query_git_status, snapshot_term,
+    encode_key, query_git_status, snapshot_term, Block, BlockManager, DefaultColors, EventProxy,
+    GridSnapshot, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -136,12 +141,16 @@ struct WindowContext {
 impl WindowContext {
     /// Get an immutable reference to the focused session.
     fn session(&self) -> &Session {
-        self.session_mux.focused_session().expect("no focused session")
+        self.session_mux
+            .focused_session()
+            .expect("no focused session")
     }
 
     /// Get a mutable reference to the focused session.
     fn session_mut(&mut self) -> &mut Session {
-        self.session_mux.focused_session_mut().expect("no focused session")
+        self.session_mux
+            .focused_session_mut()
+            .expect("no focused session")
     }
 }
 
@@ -178,8 +187,14 @@ fn shell_event_to_osc(event: &ShellEvent) -> OscEvent {
             exit_code: *exit_code,
         },
         ShellEvent::CurrentDirectory(path) => OscEvent::CurrentDirectory(path.clone()),
-        ShellEvent::PipelineStart { stage_count } => OscEvent::PipelineStart { stage_count: *stage_count },
-        ShellEvent::PipelineStage { index, total_bytes, temp_path } => OscEvent::PipelineStage {
+        ShellEvent::PipelineStart { stage_count } => OscEvent::PipelineStart {
+            stage_count: *stage_count,
+        },
+        ShellEvent::PipelineStage {
+            index,
+            total_bytes,
+            temp_path,
+        } => OscEvent::PipelineStage {
             index: *index,
             total_bytes: *total_bytes,
             temp_path: temp_path.clone(),
@@ -310,6 +325,7 @@ fn resize_all_panes(
 /// Create a new terminal session with PTY, shell integration, history DB, and snapshot store.
 ///
 /// Encapsulates all the setup needed when creating a new tab.
+#[allow(clippy::too_many_arguments)]
 fn create_session(
     proxy: &EventLoopProxy<AppEvent>,
     window_id: WindowId,
@@ -324,12 +340,12 @@ fn create_session(
 ) -> Session {
     let event_proxy = EventProxy::new(proxy.clone(), window_id, session_id);
 
-    let max_output_kb = config.history.as_ref()
+    let max_output_kb = config
+        .history
+        .as_ref()
         .map(|h| h.max_output_capture_kb)
         .unwrap_or(50);
-    let pipes_enabled = config.pipes.as_ref()
-        .map(|p| p.enabled)
-        .unwrap_or(true);
+    let pipes_enabled = config.pipes.as_ref().map(|p| p.enabled).unwrap_or(true);
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
         proxy.clone(),
@@ -342,8 +358,8 @@ fn create_session(
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
     let num_cols = (window_width as f32 / cell_w).floor().max(1.0) as u16;
-    let num_lines = ((window_height as f32 / cell_h).floor().max(2.0) as u16)
-        .saturating_sub(1 + tab_bar_lines);
+    let num_lines =
+        ((window_height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1 + tab_bar_lines);
 
     let initial_size = WindowSize {
         num_lines,
@@ -358,9 +374,7 @@ fn create_session(
     });
 
     // Auto-inject shell integration
-    let effective_shell = config.shell.as_deref()
-        .unwrap_or("")
-        .to_owned();
+    let effective_shell = config.shell.as_deref().unwrap_or("").to_owned();
     let effective_shell_for_integration = if effective_shell.is_empty() {
         glass_mux::platform::default_shell()
     } else {
@@ -371,7 +385,9 @@ fn create_session(
         let inject_cmd = if effective_shell_for_integration.contains("fish") {
             format!("source {}\r\n", path.display())
         } else if effective_shell_for_integration.contains("pwsh")
-            || effective_shell_for_integration.to_lowercase().contains("powershell")
+            || effective_shell_for_integration
+                .to_lowercase()
+                .contains("powershell")
         {
             format!(". '{}'\r\n", path.display())
         } else {
@@ -488,24 +504,34 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         tracing::info!(
             "Font metrics: cell={}x{} grid={}x{} (status bar + tab bar reserve 2 lines) scale={}",
-            cell_w, cell_h, num_cols, num_lines, scale_factor
+            cell_w,
+            cell_h,
+            num_cols,
+            num_lines,
+            scale_factor
         );
 
         // Create the initial session using the helper
         let session_id = SessionId::new(0);
         let session = create_session(
-            &self.proxy, window.id(), session_id, &self.config,
+            &self.proxy,
+            window.id(),
+            session_id,
+            &self.config,
             None, // working_directory -- initial session uses current dir
-            cell_w, cell_h, size.width, size.height, 1, // 1 tab bar line
+            cell_w,
+            cell_h,
+            size.width,
+            size.height,
+            1, // 1 tab bar line
         );
 
         tracing::info!("PTY spawned -- shell is running");
 
         // Startup pruning: spawn background thread to clean old snapshots (STOR-01)
         {
-            let glass_dir = glass_snapshot::resolve_glass_dir(
-                &std::env::current_dir().unwrap_or_default(),
-            );
+            let glass_dir =
+                glass_snapshot::resolve_glass_dir(&std::env::current_dir().unwrap_or_default());
             let snap_config = self.config.snapshot.clone();
             std::thread::Builder::new()
                 .name("Glass pruning".into())
@@ -521,11 +547,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(ref cfg) => (cfg.retention_days, cfg.max_count, cfg.max_size_mb),
                         None => (30, 1000, 500), // defaults matching SnapshotSection
                     };
-                    let pruner = glass_snapshot::Pruner::new(&store, retention_days, max_count, max_size_mb);
+                    let pruner =
+                        glass_snapshot::Pruner::new(&store, retention_days, max_count, max_size_mb);
                     match pruner.prune() {
                         Ok(result) => tracing::info!(
                             "Pruning complete: {} snapshots, {} blobs removed",
-                            result.snapshots_deleted, result.blobs_deleted,
+                            result.snapshots_deleted,
+                            result.blobs_deleted,
                         ),
                         Err(e) => tracing::warn!("Pruning failed: {}", e),
                     }
@@ -552,10 +580,7 @@ impl ApplicationHandler<AppEvent> for Processor {
         if !self.watcher_spawned {
             self.watcher_spawned = true;
             if let Some(config_path) = GlassConfig::config_path() {
-                glass_core::config_watcher::spawn_config_watcher(
-                    config_path,
-                    self.proxy.clone(),
-                );
+                glass_core::config_watcher::spawn_config_watcher(config_path, self.proxy.clone());
             }
             glass_core::updater::spawn_update_checker(
                 env!("CARGO_PKG_VERSION"),
@@ -611,7 +636,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Determine if we have multiple panes in the active tab
-                let pane_count = ctx.session_mux.active_tab_root()
+                let pane_count = ctx
+                    .session_mux
+                    .active_tab_root()
                     .map(|r| r.leaf_count())
                     .unwrap_or(1);
 
@@ -623,12 +650,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let sc = ctx.renderer.surface_config();
 
                 // Build tab display info for tab bar rendering
-                let tab_display: Vec<TabDisplayInfo> = ctx.session_mux.tabs().iter().enumerate().map(|(i, tab)| {
-                    TabDisplayInfo {
+                let tab_display: Vec<TabDisplayInfo> = ctx
+                    .session_mux
+                    .tabs()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tab)| TabDisplayInfo {
                         title: tab.title.clone(),
                         is_active: i == ctx.session_mux.active_tab_index(),
-                    }
-                }).collect();
+                    })
+                    .collect();
 
                 if pane_count <= 1 {
                     // Single-pane path: use existing draw_frame for backward compatibility
@@ -640,18 +671,31 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let (visible_blocks, search_overlay_data, status_clone) = {
                         let session = ctx.session_mux.focused_session().unwrap();
-                        let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
-                        let vb: Vec<_> = session.block_manager.visible_blocks(
-                            viewport_abs_start,
-                            snapshot.screen_lines,
-                        ).into_iter().cloned().collect();
+                        let viewport_abs_start = snapshot
+                            .history_size
+                            .saturating_sub(snapshot.display_offset);
+                        let vb: Vec<_> = session
+                            .block_manager
+                            .visible_blocks(viewport_abs_start, snapshot.screen_lines)
+                            .into_iter()
+                            .cloned()
+                            .collect();
                         let sod = session.search_overlay.as_ref().map(|overlay| {
                             let data = overlay.extract_display_data();
                             glass_renderer::frame::SearchOverlayRenderData {
                                 query: data.query,
-                                results: data.results.iter().map(|r| {
-                                    (r.command.clone(), r.exit_code, r.timestamp.clone(), r.output_preview.clone())
-                                }).collect(),
+                                results: data
+                                    .results
+                                    .iter()
+                                    .map(|r| {
+                                        (
+                                            r.command.clone(),
+                                            r.exit_code,
+                                            r.timestamp.clone(),
+                                            r.output_preview.clone(),
+                                        )
+                                    })
+                                    .collect(),
                                 selected: data.selected,
                             }
                         });
@@ -661,9 +705,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
-                    let update_text = self.update_info.as_ref().map(|info| {
-                        format!("Update v{} available (Ctrl+Shift+U)", info.latest)
-                    });
+                    let update_text = self
+                        .update_info
+                        .as_ref()
+                        .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
 
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
@@ -692,7 +737,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Compute pane layouts from the active tab's split tree
                     let focused_id = ctx.session_mux.focused_session_id();
-                    let pane_layouts: Vec<(SessionId, ViewportLayout)> = ctx.session_mux
+                    let pane_layouts: Vec<(SessionId, ViewportLayout)> = ctx
+                        .session_mux
                         .active_tab_root()
                         .map(|root| root.compute_layout(&container))
                         .unwrap_or_default();
@@ -705,35 +751,46 @@ impl ApplicationHandler<AppEvent> for Processor {
                         is_focused: bool,
                     }
 
-                    let pane_data: Vec<PaneData> = pane_layouts.iter().map(|(sid, vp)| {
-                        let session = ctx.session_mux.session(*sid).unwrap();
-                        let term = session.term.lock();
-                        let snapshot = snapshot_term(&term, &session.default_colors);
-                        drop(term);
-                        let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
-                        let blocks: Vec<_> = session.block_manager.visible_blocks(
-                            viewport_abs_start,
-                            snapshot.screen_lines,
-                        ).into_iter().cloned().collect();
-                        PaneData {
-                            viewport: vp.clone(),
-                            snapshot,
-                            blocks,
-                            is_focused: focused_id == Some(*sid),
-                        }
-                    }).collect();
+                    let pane_data: Vec<PaneData> = pane_layouts
+                        .iter()
+                        .map(|(sid, vp)| {
+                            let session = ctx.session_mux.session(*sid).unwrap();
+                            let term = session.term.lock();
+                            let snapshot = snapshot_term(&term, &session.default_colors);
+                            drop(term);
+                            let viewport_abs_start = snapshot
+                                .history_size
+                                .saturating_sub(snapshot.display_offset);
+                            let blocks: Vec<_> = session
+                                .block_manager
+                                .visible_blocks(viewport_abs_start, snapshot.screen_lines)
+                                .into_iter()
+                                .cloned()
+                                .collect();
+                            PaneData {
+                                viewport: vp.clone(),
+                                snapshot,
+                                blocks,
+                                is_focused: focused_id == Some(*sid),
+                            }
+                        })
+                        .collect();
 
                     // Extract status from focused session
-                    let status_clone = ctx.session_mux.focused_session()
+                    let status_clone = ctx
+                        .session_mux
+                        .focused_session()
                         .map(|s| s.status.clone())
                         .unwrap_or_default();
 
                     // Build pane render tuples with references
-                    let block_refs: Vec<Vec<&Block>> = pane_data.iter()
+                    let block_refs: Vec<Vec<&Block>> = pane_data
+                        .iter()
                         .map(|pd| pd.blocks.iter().collect())
                         .collect();
 
-                    let panes: Vec<(PaneViewport, &GridSnapshot, &[&Block], bool)> = pane_data.iter()
+                    let panes: Vec<(PaneViewport, &GridSnapshot, &[&Block], bool)> = pane_data
+                        .iter()
                         .enumerate()
                         .map(|(i, pd)| {
                             (
@@ -753,9 +810,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Compute divider rects from gaps between pane viewports
                     let dividers = compute_dividers(&pane_layouts);
 
-                    let update_text = self.update_info.as_ref().map(|info| {
-                        format!("Update v{} available (Ctrl+Shift+U)", info.latest)
-                    });
+                    let update_text = self
+                        .update_info
+                        .as_ref()
+                        .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
 
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
@@ -808,7 +866,12 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Active tab: use per-pane resize for correct split dimensions (SPLIT-09)
                 if ctx.session_mux.active_tab_pane_count() > 1 {
-                    resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                    resize_all_panes(
+                        &mut ctx.session_mux,
+                        &ctx.frame_renderer,
+                        size.width,
+                        size.height,
+                    );
                 } else {
                     // Single-pane active tab: full window dimensions minus chrome
                     let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
@@ -842,7 +905,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     cell_height: cell_h as u16,
                 };
                 let active_idx = ctx.session_mux.active_tab_index();
-                let bg_session_ids: Vec<_> = ctx.session_mux.tabs().iter()
+                let bg_session_ids: Vec<_> = ctx
+                    .session_mux
+                    .tabs()
+                    .iter()
                     .enumerate()
                     .filter(|(i, _)| *i != active_idx)
                     .flat_map(|(_, t)| t.session_ids())
@@ -883,7 +949,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Search overlay input interception -- must be FIRST to prevent PTY forwarding
                     // Uses an enum to capture what action to take, avoiding borrow conflicts
                     // between session_mux (for overlay) and window (for request_redraw).
-                    enum OverlayAction { None, Handled, Close }
+                    enum OverlayAction {
+                        None,
+                        Handled,
+                        Close,
+                    }
                     let overlay_action = {
                         let session = ctx.session_mux.focused_session_mut().unwrap();
                         if let Some(ref mut overlay) = session.search_overlay {
@@ -904,18 +974,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Scroll-to-block: find the block whose started_epoch matches
                                     // the selected search result's started_at timestamp.
                                     if overlay.selected < overlay.results.len() {
-                                        let result_epoch = overlay.results[overlay.selected].started_at;
+                                        let result_epoch =
+                                            overlay.results[overlay.selected].started_at;
                                         let all_blocks = session.block_manager.blocks();
-                                        let matched_block = all_blocks.iter().find(|b| {
-                                            b.started_epoch == Some(result_epoch)
-                                        });
+                                        let matched_block = all_blocks
+                                            .iter()
+                                            .find(|b| b.started_epoch == Some(result_epoch));
                                         if let Some(block) = matched_block {
                                             let target_line = block.prompt_start_line;
                                             let mut term = session.term.lock();
                                             let history_size = term.grid().history_size();
                                             let current_offset = term.grid().display_offset();
-                                            let target_offset = history_size.saturating_sub(target_line);
-                                            let delta = target_offset as i32 - current_offset as i32;
+                                            let target_offset =
+                                                history_size.saturating_sub(target_line);
+                                            let delta =
+                                                target_offset as i32 - current_offset as i32;
                                             if delta != 0 {
                                                 term.scroll_display(Scroll::Delta(delta));
                                             }
@@ -941,7 +1014,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         OverlayAction::Handled
                                     }
                                 }
-                                _ => OverlayAction::Handled // Swallow all other keys while overlay is open
+                                _ => OverlayAction::Handled, // Swallow all other keys while overlay is open
                             }
                         } else {
                             OverlayAction::None
@@ -967,9 +1040,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
                                 let session = create_session(
-                                    &self.proxy, window_id, session_id, &self.config,
-                                    Some(std::path::Path::new(&cwd)), cell_w, cell_h,
-                                    size.width, size.height, 1,
+                                    &self.proxy,
+                                    window_id,
+                                    session_id,
+                                    &self.config,
+                                    Some(std::path::Path::new(&cwd)),
+                                    cell_w,
+                                    cell_h,
+                                    size.width,
+                                    size.height,
+                                    1,
                                 );
                                 ctx.session_mux.add_tab(session);
                                 ctx.window.request_redraw();
@@ -981,20 +1061,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Close focused pane
                                     if let Some(focused_id) = ctx.session_mux.focused_session_id() {
                                         let tab_count_before = ctx.session_mux.tab_count();
-                                        if let Some(session) = ctx.session_mux.close_pane(focused_id) {
+                                        if let Some(session) =
+                                            ctx.session_mux.close_pane(focused_id)
+                                        {
                                             cleanup_session(session);
                                         }
                                         // If close_pane closed the tab (shouldn't happen with >1 pane, but guard)
-                                        if ctx.session_mux.tab_count() < tab_count_before {
-                                            if ctx.session_mux.tab_count() == 0 {
-                                                self.windows.remove(&window_id);
-                                                event_loop.exit();
-                                                return;
-                                            }
+                                        if ctx.session_mux.tab_count() < tab_count_before
+                                            && ctx.session_mux.tab_count() == 0
+                                        {
+                                            self.windows.remove(&window_id);
+                                            event_loop.exit();
+                                            return;
                                         }
                                         // Resize remaining panes' PTYs
                                         let size = ctx.window.inner_size();
-                                        resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                        resize_all_panes(
+                                            &mut ctx.session_mux,
+                                            &ctx.frame_renderer,
+                                            size.width,
+                                            size.height,
+                                        );
                                     }
                                 } else {
                                     // Single pane: close the entire tab
@@ -1018,13 +1105,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
                                 let session = create_session(
-                                    &self.proxy, window_id, session_id, &self.config,
-                                    Some(std::path::Path::new(&cwd)), cell_w, cell_h,
-                                    size.width, size.height, 1,
+                                    &self.proxy,
+                                    window_id,
+                                    session_id,
+                                    &self.config,
+                                    Some(std::path::Path::new(&cwd)),
+                                    cell_w,
+                                    cell_h,
+                                    size.width,
+                                    size.height,
+                                    1,
                                 );
-                                ctx.session_mux.split_pane(SplitDirection::Horizontal, session);
+                                ctx.session_mux
+                                    .split_pane(SplitDirection::Horizontal, session);
                                 // Resize all panes' PTYs with per-pane dimensions
-                                resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                resize_all_panes(
+                                    &mut ctx.session_mux,
+                                    &ctx.frame_renderer,
+                                    size.width,
+                                    size.height,
+                                );
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -1035,13 +1135,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
                                 let session = create_session(
-                                    &self.proxy, window_id, session_id, &self.config,
-                                    Some(std::path::Path::new(&cwd)), cell_w, cell_h,
-                                    size.width, size.height, 1,
+                                    &self.proxy,
+                                    window_id,
+                                    session_id,
+                                    &self.config,
+                                    Some(std::path::Path::new(&cwd)),
+                                    cell_w,
+                                    cell_h,
+                                    size.width,
+                                    size.height,
+                                    1,
                                 );
-                                ctx.session_mux.split_pane(SplitDirection::Vertical, session);
+                                ctx.session_mux
+                                    .split_pane(SplitDirection::Vertical, session);
                                 // Resize all panes' PTYs with per-pane dimensions
-                                resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                resize_all_panes(
+                                    &mut ctx.session_mux,
+                                    &ctx.frame_renderer,
+                                    size.width,
+                                    size.height,
+                                );
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -1052,28 +1165,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Check for Glass-handled keys first
                     if modifiers.control_key() && modifiers.shift_key() {
                         match &event.logical_key {
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("c") =>
-                            {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
                                 clipboard_copy(&ctx.session().term);
                                 return;
                             }
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("v") =>
-                            {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
                                 clipboard_paste(&ctx.session().pty_sender, mode);
                                 return;
                             }
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("f") =>
-                            {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
                                 ctx.session_mut().search_overlay = Some(SearchOverlay::new());
                                 ctx.window.request_redraw();
                                 return;
                             }
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("z") =>
-                            {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
                                 {
                                     let session = ctx.session_mux.focused_session_mut().unwrap();
                                     if let Some(ref store) = session.snapshot_store {
@@ -1081,28 +1186,52 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         match engine.undo_latest() {
                                             Ok(Some(result)) => {
                                                 // Count outcomes for summary line
-                                                let (mut restored, mut deleted, mut skipped, mut conflicts, mut errors) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                                                let (
+                                                    mut restored,
+                                                    mut deleted,
+                                                    mut skipped,
+                                                    mut conflicts,
+                                                    mut errors,
+                                                ) = (0u32, 0u32, 0u32, 0u32, 0u32);
                                                 for (path, outcome) in &result.files {
                                                     match outcome {
                                                         glass_snapshot::FileOutcome::Restored => {
                                                             restored += 1;
-                                                            tracing::info!("Undo: restored {}", path.display());
+                                                            tracing::info!(
+                                                                "Undo: restored {}",
+                                                                path.display()
+                                                            );
                                                         }
                                                         glass_snapshot::FileOutcome::Deleted => {
                                                             deleted += 1;
-                                                            tracing::info!("Undo: deleted {}", path.display());
+                                                            tracing::info!(
+                                                                "Undo: deleted {}",
+                                                                path.display()
+                                                            );
                                                         }
-                                                        glass_snapshot::FileOutcome::Conflict { .. } => {
+                                                        glass_snapshot::FileOutcome::Conflict {
+                                                            ..
+                                                        } => {
                                                             conflicts += 1;
-                                                            tracing::warn!("Undo: CONFLICT {}", path.display());
+                                                            tracing::warn!(
+                                                                "Undo: CONFLICT {}",
+                                                                path.display()
+                                                            );
                                                         }
                                                         glass_snapshot::FileOutcome::Error(e) => {
                                                             errors += 1;
-                                                            tracing::error!("Undo: error {}: {}", path.display(), e);
+                                                            tracing::error!(
+                                                                "Undo: error {}: {}",
+                                                                path.display(),
+                                                                e
+                                                            );
                                                         }
                                                         glass_snapshot::FileOutcome::Skipped => {
                                                             skipped += 1;
-                                                            tracing::info!("Undo: skipped {}", path.display());
+                                                            tracing::info!(
+                                                                "Undo: skipped {}",
+                                                                path.display()
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -1111,11 +1240,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                     restored, deleted, skipped, conflicts, errors,
                                                 );
                                                 // Remove [undo] label from the undone block (visual feedback).
-                                                let epoch_to_clear = session.block_manager.blocks().iter().rev()
+                                                let epoch_to_clear = session
+                                                    .block_manager
+                                                    .blocks()
+                                                    .iter()
+                                                    .rev()
                                                     .find(|b| b.has_snapshot)
                                                     .and_then(|b| b.started_epoch);
                                                 if let Some(ep) = epoch_to_clear {
-                                                    if let Some(b) = session.block_manager.find_block_by_epoch_mut(ep) {
+                                                    if let Some(b) = session
+                                                        .block_manager
+                                                        .find_block_by_epoch_mut(ep)
+                                                    {
                                                         b.has_snapshot = false;
                                                     }
                                                 }
@@ -1134,9 +1270,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                                 return;
                             }
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("u") =>
-                            {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("u") => {
                                 // Ctrl+Shift+U: Apply available update
                                 if let Some(ref info) = self.update_info {
                                     if let Err(e) = glass_core::updater::apply_update(info) {
@@ -1145,14 +1279,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 return;
                             }
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("p") =>
-                            {
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
                                 // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
                                 {
                                     let session = ctx.session_mux.focused_session_mut().unwrap();
-                                    if let Some(block) = session.block_manager.blocks_mut().iter_mut().rev()
-                                        .find(|b| b.pipeline_stage_count.unwrap_or(0) > 0 || b.pipeline_stage_commands.len() > 1)
+                                    if let Some(block) =
+                                        session.block_manager.blocks_mut().iter_mut().rev().find(
+                                            |b| {
+                                                b.pipeline_stage_count.unwrap_or(0) > 0
+                                                    || b.pipeline_stage_commands.len() > 1
+                                            },
+                                        )
                                     {
                                         block.toggle_pipeline_expanded();
                                     }
@@ -1165,10 +1302,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     // Shift+PageUp/Down: scrollback
-                    if modifiers.shift_key()
-                        && !modifiers.control_key()
-                        && !modifiers.alt_key()
-                    {
+                    if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
                         match &event.logical_key {
                             Key::Named(NamedKey::PageUp) => {
                                 ctx.session().term.lock().scroll_display(Scroll::PageUp);
@@ -1200,8 +1334,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Ctrl+1-9 / Cmd+1-9: jump to tab by index
                     if glass_mux::is_action_modifier(modifiers) {
                         if let Key::Character(c) = &event.logical_key {
-                            if let Some(digit) = c.as_str().chars().next().and_then(|ch| ch.to_digit(10)) {
-                                if digit >= 1 && digit <= 9 {
+                            if let Some(digit) =
+                                c.as_str().chars().next().and_then(|ch| ch.to_digit(10))
+                            {
+                                if (1..=9).contains(&digit) {
                                     ctx.session_mux.activate_tab((digit as usize) - 1);
                                     ctx.window.request_redraw();
                                     return;
@@ -1233,7 +1369,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.session_mux.resize_focused_split(split_dir, delta);
                                 // Resize all panes' PTYs with new dimensions
                                 let size = ctx.window.inner_size();
-                                resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                                resize_all_panes(
+                                    &mut ctx.session_mux,
+                                    &ctx.frame_renderer,
+                                    size.width,
+                                    size.height,
+                                );
                                 ctx.window.request_redraw();
                                 return;
                             } else {
@@ -1249,7 +1390,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     };
                                     if let Some(focused) = ctx.session_mux.focused_session_id() {
                                         if let Some(root) = ctx.session_mux.active_tab_root() {
-                                            if let Some(target) = root.find_neighbor(focused, dir, &container) {
+                                            if let Some(target) =
+                                                root.find_neighbor(focused, dir, &container)
+                                            {
                                                 ctx.session_mux.set_focused_pane(target);
                                                 ctx.window.request_redraw();
                                                 return;
@@ -1263,9 +1406,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
-                    if let Some(bytes) =
-                        encode_key(&event.logical_key, modifiers, mode)
-                    {
+                    if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
                         let _ = ctx
                             .session()
                             .pty_sender
@@ -1328,7 +1469,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         ctx.mouse_left_pressed = false;
                         let viewport_w = ctx.window.inner_size().width as f32;
                         if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
-                            x as f32, ctx.session_mux.tab_count(), viewport_w
+                            x as f32,
+                            ctx.session_mux.tab_count(),
+                            viewport_w,
                         ) {
                             ctx.session_mux.activate_tab(tab_idx);
                             ctx.window.request_redraw();
@@ -1355,8 +1498,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             let clicked_pane = pane_layouts.iter().find(|(_, vp)| {
                                 let cx = click_x as u32;
                                 let cy = click_y as u32;
-                                cx >= vp.x && cx < vp.x + vp.width
-                                    && cy >= vp.y && cy < vp.y + vp.height
+                                cx >= vp.x
+                                    && cx < vp.x + vp.width
+                                    && cy >= vp.y
+                                    && cy < vp.y + vp.height
                             });
                             if let Some((target_id, _)) = clicked_pane {
                                 if focused_id != Some(*target_id) {
@@ -1397,11 +1542,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Line(row as i32 - display_offset as i32),
                             Column(col),
                         );
-                        term.selection = Some(Selection::new(
-                            SelectionType::Simple,
-                            point,
-                            side,
-                        ));
+                        term.selection = Some(Selection::new(SelectionType::Simple, point, side));
                         drop(term);
                         ctx.window.request_redraw();
                     }
@@ -1416,7 +1557,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Hit test pipeline stage panel (bottom of viewport)
                     let session = ctx.session_mux.focused_session_mut().unwrap();
                     if let Some((block_idx, hit)) = session.block_manager.pipeline_hit_test(
-                        0.0, y as f32, cell_w, cell_h, viewport_h, status_bar_h,
+                        0.0,
+                        y as f32,
+                        cell_w,
+                        cell_h,
+                        viewport_h,
+                        status_bar_h,
                     ) {
                         match hit {
                             PipelineHit::StageRow(stage_idx) => {
@@ -1464,7 +1610,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if (y as f32) < cell_h {
                         let viewport_w = ctx.window.inner_size().width as f32;
                         if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
-                            x as f32, ctx.session_mux.tab_count(), viewport_w
+                            x as f32,
+                            ctx.session_mux.tab_count(),
+                            viewport_w,
                         ) {
                             if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
                                 cleanup_session(session);
@@ -1489,7 +1637,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 };
                 if lines != 0 {
                     // Positive delta = scroll up (into history), negative = scroll down
-                    ctx.session().term.lock().scroll_display(Scroll::Delta(lines));
+                    ctx.session()
+                        .term
+                        .lock()
+                        .scroll_display(Scroll::Delta(lines));
                     ctx.window.request_redraw();
                 }
             }
@@ -1506,14 +1657,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            AppEvent::SetTitle { window_id, session_id, title } => {
+            AppEvent::SetTitle {
+                window_id,
+                session_id,
+                title,
+            } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Update window title only if this is the active tab
                     if ctx.session_mux.focused_session_id() == Some(session_id) {
                         ctx.window.set_title(&title);
                     }
                     // Update tab title in the mux
-                    if let Some(tab) = ctx.session_mux.tabs_mut()
+                    if let Some(tab) = ctx
+                        .session_mux
+                        .tabs_mut()
                         .iter_mut()
                         .find(|t| t.session_ids().contains(&session_id))
                     {
@@ -1521,10 +1678,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
             }
-            AppEvent::TerminalExit { window_id, session_id } => {
+            AppEvent::TerminalExit {
+                window_id,
+                session_id,
+            } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Find the tab containing this session
-                    let tab_idx = ctx.session_mux.tabs().iter().position(|t| t.session_ids().contains(&session_id));
+                    let tab_idx = ctx
+                        .session_mux
+                        .tabs()
+                        .iter()
+                        .position(|t| t.session_ids().contains(&session_id));
                     if let Some(idx) = tab_idx {
                         let pane_count = ctx.session_mux.tabs()[idx].pane_count();
                         if pane_count > 1 {
@@ -1534,16 +1698,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 cleanup_session(session);
                             }
                             // Guard: if close_pane collapsed the tab (shouldn't with >1 pane)
-                            if ctx.session_mux.tab_count() < tab_count_before {
-                                if ctx.session_mux.tab_count() == 0 {
-                                    self.windows.remove(&window_id);
-                                    event_loop.exit();
-                                    return;
-                                }
+                            if ctx.session_mux.tab_count() < tab_count_before
+                                && ctx.session_mux.tab_count() == 0
+                            {
+                                self.windows.remove(&window_id);
+                                event_loop.exit();
+                                return;
                             }
                             // Resize remaining panes' PTYs
                             let size = ctx.window.inner_size();
-                            resize_all_panes(&mut ctx.session_mux, &ctx.frame_renderer, size.width, size.height);
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
                         } else {
                             // Single pane: close the entire tab
                             if let Some(session) = ctx.session_mux.close_tab(idx) {
@@ -1573,13 +1742,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     // Skip pipeline events entirely when pipes are disabled
-                    let pipes_enabled = self.config.pipes.as_ref()
+                    let pipes_enabled = self
+                        .config
+                        .pipes
+                        .as_ref()
                         .map(|p| p.enabled)
                         .unwrap_or(true);
-                    if !pipes_enabled {
-                        if matches!(shell_event, ShellEvent::PipelineStart { .. } | ShellEvent::PipelineStage { .. }) {
-                            return;
-                        }
+                    if !pipes_enabled
+                        && matches!(
+                            shell_event,
+                            ShellEvent::PipelineStart { .. } | ShellEvent::PipelineStage { .. }
+                        )
+                    {
+                        return;
                     }
 
                     {
@@ -1591,7 +1766,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Override auto-expand if config disables it (after handle_event sets pipeline_expanded)
                         if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
-                            let auto_expand = self.config.pipes.as_ref()
+                            let auto_expand = self
+                                .config
+                                .pipes
+                                .as_ref()
                                 .map(|p| p.auto_expand)
                                 .unwrap_or(true);
                             if !auto_expand {
@@ -1603,19 +1781,34 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Read temp files for pipeline stages and process through StageBuffer
                         if pipes_enabled {
-                            if let ShellEvent::PipelineStage { index, total_bytes: _, ref temp_path } = shell_event {
+                            if let ShellEvent::PipelineStage {
+                                index,
+                                total_bytes: _,
+                                ref temp_path,
+                            } = shell_event
+                            {
                                 match std::fs::read(temp_path) {
                                     Ok(raw_bytes) => {
-                                        let max_bytes = self.config.pipes.as_ref()
+                                        let max_bytes = self
+                                            .config
+                                            .pipes
+                                            .as_ref()
                                             .map(|p| (p.max_capture_mb as usize) * 1024 * 1024)
                                             .unwrap_or(10 * 1024 * 1024);
-                                        let policy = glass_pipes::BufferPolicy::new(max_bytes, 512 * 1024);
+                                        let policy =
+                                            glass_pipes::BufferPolicy::new(max_bytes, 512 * 1024);
                                         let mut stage_buf = glass_pipes::StageBuffer::new(policy);
                                         stage_buf.append(&raw_bytes);
                                         let finalized = stage_buf.finalize();
 
-                                        if let Some(block) = session.block_manager.current_block_mut() {
-                                            if let Some(stage) = block.pipeline_stages.iter_mut().find(|s| s.index == index) {
+                                        if let Some(block) =
+                                            session.block_manager.current_block_mut()
+                                        {
+                                            if let Some(stage) = block
+                                                .pipeline_stages
+                                                .iter_mut()
+                                                .find(|s| s.index == index)
+                                            {
                                                 stage.data = finalized;
                                                 stage.temp_path = None;
                                             }
@@ -1624,7 +1817,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         let _ = std::fs::remove_file(temp_path);
                                     }
                                     Err(e) => {
-                                        tracing::warn!("Failed to read pipeline stage {} from {}: {}", index, temp_path, e);
+                                        tracing::warn!(
+                                            "Failed to read pipeline stage {} from {}: {}",
+                                            index,
+                                            temp_path,
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -1642,7 +1840,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let blocks = session.block_manager.blocks();
                                 if let Some(block) = blocks.last() {
                                     let start = block.command_start_line;
-                                    let end = block.output_start_line
+                                    let end = block
+                                        .output_start_line
                                         .map(|o| o.max(start + 1))
                                         .unwrap_or(start + 1);
                                     let term_guard = session.term.lock();
@@ -1670,24 +1869,36 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             };
                             // Pre-exec snapshot: parse command, snapshot identified targets
-                            let snapshot_enabled = self.config.snapshot.as_ref()
+                            let snapshot_enabled = self
+                                .config
+                                .snapshot
+                                .as_ref()
                                 .map(|s| s.enabled)
                                 .unwrap_or(true);
                             if snapshot_enabled {
                                 if let Some(ref store) = session.snapshot_store {
                                     let cwd_path_snap = std::path::Path::new(session.status.cwd());
-                                    let parse_result = glass_snapshot::command_parser::parse_command(
-                                        &command_text, cwd_path_snap,
-                                    );
+                                    let parse_result =
+                                        glass_snapshot::command_parser::parse_command(
+                                            &command_text,
+                                            cwd_path_snap,
+                                        );
 
-                                    if parse_result.confidence != glass_snapshot::Confidence::ReadOnly
+                                    if parse_result.confidence
+                                        != glass_snapshot::Confidence::ReadOnly
                                         && !parse_result.targets.is_empty()
                                     {
                                         match store.create_snapshot(0, session.status.cwd()) {
                                             Ok(sid) => {
                                                 for target in &parse_result.targets {
-                                                    if let Err(e) = store.store_file(sid, target, "parser") {
-                                                        tracing::warn!("Pre-exec snapshot failed for {}: {}", target.display(), e);
+                                                    if let Err(e) =
+                                                        store.store_file(sid, target, "parser")
+                                                    {
+                                                        tracing::warn!(
+                                                            "Pre-exec snapshot failed for {}: {}",
+                                                            target.display(),
+                                                            e
+                                                        );
                                                     }
                                                 }
                                                 tracing::info!(
@@ -1695,18 +1906,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                     sid, parse_result.targets.len(), parse_result.confidence,
                                                 );
                                                 session.pending_snapshot_id = Some(sid);
-                                                session.pending_parse_confidence = Some(parse_result.confidence);
+                                                session.pending_parse_confidence =
+                                                    Some(parse_result.confidence);
                                                 // Mark current block as having a snapshot for [undo] label
-                                                if let Some(block) = session.block_manager.current_block_mut() {
+                                                if let Some(block) =
+                                                    session.block_manager.current_block_mut()
+                                                {
                                                     block.has_snapshot = true;
                                                 }
                                             }
-                                            Err(e) => tracing::warn!("Pre-exec snapshot creation failed: {}", e),
+                                            Err(e) => tracing::warn!(
+                                                "Pre-exec snapshot creation failed: {}",
+                                                e
+                                            ),
                                         }
                                     }
                                 }
                             } else {
-                                tracing::debug!("Pre-exec snapshot skipped: snapshots disabled in config");
+                                tracing::debug!(
+                                    "Pre-exec snapshot skipped: snapshots disabled in config"
+                                );
                             }
 
                             // Parse pipeline stages to extract per-stage command text.
@@ -1720,9 +1939,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(idx) = session.block_manager.current_block_index() {
                                 let pipeline = glass_pipes::parse_pipeline(pipe_text);
                                 if pipeline.stages.len() > 1 {
-                                    let stage_commands: Vec<String> = pipeline.stages.iter()
-                                        .map(|s| s.command.clone())
-                                        .collect();
+                                    let stage_commands: Vec<String> =
+                                        pipeline.stages.iter().map(|s| s.command.clone()).collect();
                                     if let Some(block) = session.block_manager.block_mut(idx) {
                                         block.pipeline_stage_commands = stage_commands;
                                     }
@@ -1734,16 +1952,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                             // Start filesystem watcher for this command's CWD
                             let cwd_path = std::path::Path::new(session.status.cwd());
                             let ignore = glass_snapshot::IgnoreRules::load(cwd_path);
-                            session.active_watcher = match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
-                                Ok(w) => {
-                                    tracing::debug!("FS watcher started for {}", cwd_path.display());
-                                    Some(w)
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to start FS watcher: {}", e);
-                                    None
-                                }
-                            };
+                            session.active_watcher =
+                                match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
+                                    Ok(w) => {
+                                        tracing::debug!(
+                                            "FS watcher started for {}",
+                                            cwd_path.display()
+                                        );
+                                        Some(w)
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to start FS watcher: {}", e);
+                                        None
+                                    }
+                                };
                         }
 
                         // Insert CommandRecord on CommandFinished
@@ -1754,17 +1976,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
                                     .map(|d| d.as_secs() as i64)
                                     .unwrap_or(0);
-                                let started_epoch = session.command_started_wall
-                                    .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+                                let started_epoch = session
+                                    .command_started_wall
+                                    .and_then(|t| {
+                                        t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok()
+                                    })
                                     .map(|d| d.as_secs() as i64)
                                     .unwrap_or(finished_epoch);
-                                let duration_ms = session.command_started_wall
+                                let duration_ms = session
+                                    .command_started_wall
                                     .and_then(|t| now.duration_since(t).ok())
                                     .map(|d| d.as_millis() as i64)
                                     .unwrap_or(0);
 
                                 // Use command text extracted earlier at CommandExecuted time.
-                                let command_text = session.pending_command_text.take().unwrap_or_default();
+                                let command_text =
+                                    session.pending_command_text.take().unwrap_or_default();
 
                                 let record = CommandRecord {
                                     id: None,
@@ -1817,7 +2044,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 }).collect();
 
                                                 if let Err(e) = db.insert_pipe_stages(id, &stages) {
-                                                    tracing::warn!("Failed to insert pipe stages: {}", e);
+                                                    tracing::warn!(
+                                                        "Failed to insert pipe stages: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }
@@ -1832,10 +2062,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                             session.command_started_wall = None;
 
                             // Update pre-exec snapshot with real command_id
-                            if let (Some(sid), Some(ref store)) = (session.pending_snapshot_id.take(), &session.snapshot_store) {
+                            if let (Some(sid), Some(ref store)) =
+                                (session.pending_snapshot_id.take(), &session.snapshot_store)
+                            {
                                 let command_id = session.last_command_id.unwrap_or(0);
                                 if let Err(e) = store.update_command_id(sid, command_id) {
-                                    tracing::warn!("Failed to update snapshot {} command_id: {}", sid, e);
+                                    tracing::warn!(
+                                        "Failed to update snapshot {} command_id: {}",
+                                        sid,
+                                        e
+                                    );
                                 }
                             }
                             session.pending_parse_confidence = None;
@@ -1851,8 +2087,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         match store.create_snapshot(command_id, &cwd) {
                                             Ok(snapshot_id) => {
                                                 for event in &events {
-                                                    if let Err(e) = store.store_file(snapshot_id, &event.path, "watcher") {
-                                                        tracing::warn!("Failed to store watcher file {}: {}", event.path.display(), e);
+                                                    if let Err(e) = store.store_file(
+                                                        snapshot_id,
+                                                        &event.path,
+                                                        "watcher",
+                                                    ) {
+                                                        tracing::warn!(
+                                                            "Failed to store watcher file {}: {}",
+                                                            event.path.display(),
+                                                            e
+                                                        );
                                                     }
                                                     // For Rename events, also store the destination path
                                                     if let glass_snapshot::WatcherEventKind::Rename { ref to } = event.kind {
@@ -1861,10 +2105,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         }
                                                     }
                                                 }
-                                                tracing::debug!("Stored {} watcher files in snapshot {}", events.len(), snapshot_id);
+                                                tracing::debug!(
+                                                    "Stored {} watcher files in snapshot {}",
+                                                    events.len(),
+                                                    snapshot_id
+                                                );
                                             }
                                             Err(e) => {
-                                                tracing::warn!("Failed to create watcher snapshot: {}", e);
+                                                tracing::warn!(
+                                                    "Failed to create watcher snapshot: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
@@ -1874,17 +2125,18 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // On CurrentDirectory events, update status and query git info
                         // Track whether we need to spawn a git query (can't spawn inside session borrow)
-                        let spawn_git_query = if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
-                            session.status.set_cwd(cwd.clone());
-                            if !session.status.git_query_pending {
-                                session.status.git_query_pending = true;
-                                true
+                        let spawn_git_query =
+                            if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
+                                session.status.set_cwd(cwd.clone());
+                                if !session.status.git_query_pending {
+                                    session.status.git_query_pending = true;
+                                    true
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
-                            }
-                        } else {
-                            false
-                        };
+                            };
                         let _ = spawn_git_query; // used below after session borrow ends
                     } // drop session borrow
 
@@ -1894,7 +2146,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| path.clone());
-                        if let Some(tab) = ctx.session_mux.tabs_mut()
+                        if let Some(tab) = ctx
+                            .session_mux
+                            .tabs_mut()
                             .iter_mut()
                             .find(|t| t.session_ids().contains(&session_id))
                         {
@@ -1933,17 +2187,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            AppEvent::CommandOutput { window_id, session_id, raw_output } => {
+            AppEvent::CommandOutput {
+                window_id,
+                session_id,
+                raw_output,
+            } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Process raw bytes: binary detection, ANSI stripping, truncation
-                    let max_kb = self.config.history.as_ref()
+                    let max_kb = self
+                        .config
+                        .history
+                        .as_ref()
                         .map(|h| h.max_output_capture_kb)
                         .unwrap_or(50);
                     let processed = glass_history::output::process_output(Some(raw_output), max_kb);
                     if let Some(output) = processed {
                         if let Some(session) = ctx.session_mux.session_mut(session_id) {
                             // Update the last command record with captured output
-                            if let (Some(ref db), Some(cmd_id)) = (&session.history_db, session.last_command_id) {
+                            if let (Some(ref db), Some(cmd_id)) =
+                                (&session.history_db, session.last_command_id)
+                            {
                                 match db.update_output(cmd_id, &output) {
                                     Ok(()) => {
                                         tracing::debug!(
@@ -1998,7 +2261,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Swap config (applies non-visual changes like history thresholds)
                     self.config = new_config;
-                    tracing::info!("Config reloaded successfully (font_changed={})", font_changed);
+                    tracing::info!(
+                        "Config reloaded successfully (font_changed={})",
+                        font_changed
+                    );
 
                     // Request redraw to clear error overlay even if font didn't change
                     if !font_changed {
@@ -2008,7 +2274,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
             }
-            AppEvent::GitInfo { window_id, session_id, info } => {
+            AppEvent::GitInfo {
+                window_id,
+                session_id,
+                info,
+            } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     {
                         if let Some(session) = ctx.session_mux.session_mut(session_id) {
@@ -2026,7 +2296,9 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::UpdateAvailable(info) => {
                 tracing::info!(
                     "Update available: v{} -> v{} ({})",
-                    info.current, info.latest, info.release_url
+                    info.current,
+                    info.latest,
+                    info.release_url
                 );
                 self.update_info = Some(info);
                 // Request redraw on all windows to show notification
@@ -2050,15 +2322,16 @@ impl ApplicationHandler<AppEvent> for Processor {
 /// - Installed: `<exe_dir>/shell-integration/<script>`
 /// - Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
 fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
-    let script_name = if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") {
-        "glass.ps1"
-    } else if shell_name.contains("zsh") {
-        "glass.zsh"
-    } else if shell_name.contains("fish") {
-        "glass.fish"
-    } else {
-        "glass.bash"
-    };
+    let script_name =
+        if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") {
+            "glass.ps1"
+        } else if shell_name.contains("zsh") {
+            "glass.zsh"
+        } else if shell_name.contains("fish") {
+            "glass.fish"
+        } else {
+            "glass.bash"
+        };
 
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -2138,8 +2411,10 @@ fn main() {
                     .build();
                 tracing_subscriber::registry()
                     .with(chrome_layer)
-                    .with(tracing_subscriber::fmt::layer()
-                        .with_filter(tracing_subscriber::EnvFilter::from_default_env()))
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+                    )
                     .init();
                 guard // must outlive program -- stored in _trace_guard
             };
@@ -2155,8 +2430,12 @@ fn main() {
             tracing::info!("Glass starting");
 
             let config = GlassConfig::load();
-            tracing::info!("Config: font_family={}, font_size={}, shell={:?}",
-                config.font_family, config.font_size, config.shell);
+            tracing::info!(
+                "Config: font_family={}, font_size={}, shell={:?}",
+                config.font_family,
+                config.font_size,
+                config.shell
+            );
 
             let event_loop = EventLoop::<AppEvent>::with_user_event()
                 .build()
@@ -2201,7 +2480,10 @@ fn main() {
                     let engine = glass_snapshot::UndoEngine::new(&store);
                     match engine.undo_command(command_id) {
                         Ok(Some(result)) => {
-                            println!("Undo complete for command {} ({:?} confidence):", command_id, result.confidence);
+                            println!(
+                                "Undo complete for command {} ({:?} confidence):",
+                                command_id, result.confidence
+                            );
                             for (path, outcome) in &result.files {
                                 let status = match outcome {
                                     glass_snapshot::FileOutcome::Restored => "restored",
@@ -2232,7 +2514,9 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Mcp { action: McpAction::Serve }) => {
+        Some(Commands::Mcp {
+            action: McpAction::Serve,
+        }) => {
             // MCP server mode: logging goes to stderr, stdout is reserved for JSON-RPC
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -2240,8 +2524,7 @@ fn main() {
                 .with_ansi(false)
                 .init();
 
-            let rt = tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             if let Err(e) = rt.block_on(glass_mcp::run_mcp_server()) {
                 eprintln!("MCP server error: {}", e);
                 std::process::exit(1);

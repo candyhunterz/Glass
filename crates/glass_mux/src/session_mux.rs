@@ -262,7 +262,8 @@ impl SessionMux {
 
     /// Return the number of panes in the active tab.
     pub fn active_tab_pane_count(&self) -> usize {
-        self.tabs.get(self.active_tab)
+        self.tabs
+            .get(self.active_tab)
             .map(|t| t.pane_count())
             .unwrap_or(0)
     }

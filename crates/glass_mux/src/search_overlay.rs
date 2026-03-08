@@ -48,6 +48,12 @@ pub struct SearchOverlay {
     pub search_pending: bool,
 }
 
+impl Default for SearchOverlay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchOverlay {
     /// Create a new empty search overlay.
     pub fn new() -> Self {
@@ -119,7 +125,7 @@ impl SearchOverlay {
                     .output
                     .as_deref()
                     .map(|o| {
-                        let cleaned = o.replace('\n', " ").replace('\r', " ");
+                        let cleaned = o.replace(['\n', '\r'], " ");
                         truncate_str(&cleaned, 80)
                     })
                     .unwrap_or_default();

@@ -32,8 +32,8 @@ pub struct BufferPolicy {
 impl Default for BufferPolicy {
     fn default() -> Self {
         Self {
-            max_bytes: 10 * 1024 * 1024,     // 10MB
-            sample_size: 512 * 1024,          // 512KB
+            max_bytes: 10 * 1024 * 1024, // 10MB
+            sample_size: 512 * 1024,     // 512KB
         }
     }
 }
@@ -76,7 +76,7 @@ fn is_binary_data(data: &[u8]) -> bool {
     let sample = &data[..data.len().min(8192)];
     let non_text = sample
         .iter()
-        .filter(|&&b| b < 0x08 || (b >= 0x0E && b <= 0x1F))
+        .filter(|&&b| b < 0x08 || (0x0E..=0x1F).contains(&b))
         .count();
     non_text as f64 / sample.len() as f64 > 0.30
 }
@@ -131,7 +131,9 @@ impl StageBuffer {
     pub fn finalize(self) -> FinalizedBuffer {
         // Check binary on head (first bytes of data)
         if is_binary_data(&self.head) {
-            return FinalizedBuffer::Binary { size: self.total_bytes };
+            return FinalizedBuffer::Binary {
+                size: self.total_bytes,
+            };
         }
 
         if self.overflow {
@@ -176,9 +178,7 @@ pub enum FinalizedBuffer {
         total_bytes: usize,
     },
     /// Binary data detected
-    Binary {
-        size: usize,
-    },
+    Binary { size: usize },
 }
 
 #[cfg(test)]
@@ -217,7 +217,11 @@ mod tests {
         assert_eq!(buf.total_bytes(), 1500);
         let result = buf.finalize();
         match result {
-            FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+            FinalizedBuffer::Sampled {
+                head,
+                tail,
+                total_bytes,
+            } => {
                 assert_eq!(head.len(), 256); // sample_size
                 assert_eq!(tail.len(), 256); // sample_size
                 assert_eq!(total_bytes, 1500);
@@ -243,7 +247,11 @@ mod tests {
         assert_eq!(buf.total_bytes(), 1500);
         let result = buf.finalize();
         match result {
-            FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+            FinalizedBuffer::Sampled {
+                head,
+                tail,
+                total_bytes,
+            } => {
                 assert_eq!(head.len(), 256);
                 assert_eq!(total_bytes, 1500);
                 // Head should be first 256 bytes (all 'A')
@@ -294,7 +302,7 @@ mod tests {
         // >30% non-text bytes (control chars in 0x01..0x07 range)
         let mut data = vec![0x01; 50]; // 50 non-text bytes
         data.extend_from_slice(&[0x41; 50]); // 50 printable bytes
-        // 50% non-text -> binary
+                                             // 50% non-text -> binary
         buf.append(&data);
         let result = buf.finalize();
         assert_eq!(result, FinalizedBuffer::Binary { size: 100 });
@@ -346,7 +354,7 @@ mod tests {
         let mut buf = StageBuffer::new(test_policy());
         // Push over the limit
         buf.append(&[0x41; 1100]); // Triggers overflow
-        // Now in overflow mode, append several chunks
+                                   // Now in overflow mode, append several chunks
         buf.append(&[0x42; 200]); // tail grows
         buf.append(&[0x43; 200]); // tail should roll, keeping latest 256
 

@@ -78,7 +78,11 @@ impl<'a> UndoEngine<'a> {
     ///
     /// Returns `Ok(Some((current_hash, expected_hash)))` if conflict detected,
     /// `Ok(None)` if no conflict.
-    fn check_conflict(&self, file_path: &Path, command_id: i64) -> Result<Option<(String, Option<String>)>> {
+    fn check_conflict(
+        &self,
+        file_path: &Path,
+        command_id: i64,
+    ) -> Result<Option<(String, Option<String>)>> {
         if !file_path.exists() {
             return Ok(None);
         }
@@ -91,9 +95,7 @@ impl<'a> UndoEngine<'a> {
         for ws in &watcher_snapshots {
             let ws_files = self.store.db().get_snapshot_files(ws.id)?;
             for wf in &ws_files {
-                if wf.source == "watcher"
-                    && wf.file_path == file_path.to_string_lossy().as_ref()
-                {
+                if wf.source == "watcher" && wf.file_path == file_path.to_string_lossy().as_ref() {
                     if let Some(ref watcher_hash) = wf.blob_hash {
                         if current_hash != *watcher_hash {
                             return Ok(Some((current_hash, Some(watcher_hash.clone()))));
@@ -111,13 +113,23 @@ impl<'a> UndoEngine<'a> {
     }
 
     /// Restore a single file from its snapshot record.
-    fn restore_file(&self, file_rec: &SnapshotFileRecord, command_id: i64) -> (PathBuf, FileOutcome) {
+    fn restore_file(
+        &self,
+        file_rec: &SnapshotFileRecord,
+        command_id: i64,
+    ) -> (PathBuf, FileOutcome) {
         let path = PathBuf::from(&file_rec.file_path);
 
         // Check for conflicts before restoring
         match self.check_conflict(&path, command_id) {
             Ok(Some((current_hash, expected_hash))) => {
-                return (path, FileOutcome::Conflict { current_hash, expected_hash });
+                return (
+                    path,
+                    FileOutcome::Conflict {
+                        current_hash,
+                        expected_hash,
+                    },
+                );
             }
             Err(e) => {
                 return (path, FileOutcome::Error(e.to_string()));
@@ -174,7 +186,10 @@ mod tests {
         let (store, _dir) = setup();
         let engine = UndoEngine::new(&store);
         let result = engine.undo_latest().unwrap();
-        assert!(result.is_none(), "Should return None when no snapshots exist");
+        assert!(
+            result.is_none(),
+            "Should return None when no snapshots exist"
+        );
     }
 
     #[test]
@@ -187,7 +202,9 @@ mod tests {
         std::fs::write(&file_path, b"original content").unwrap();
 
         // Create a parser snapshot capturing the original content
-        let sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &file_path, "parser").unwrap();
 
         // Simulate: command modifies the file
@@ -215,14 +232,16 @@ mod tests {
         let file_path = dir.path().join("new_file.txt");
 
         // Create a parser snapshot with NULL hash (file didn't exist before command)
-        let sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
-        store.db().insert_snapshot_file(
-            sid,
-            &file_path,
-            None, // NULL hash -- file didn't exist
-            None,
-            "parser",
-        ).unwrap();
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
+        store
+            .db()
+            .insert_snapshot_file(
+                sid, &file_path, None, // NULL hash -- file didn't exist
+                None, "parser",
+            )
+            .unwrap();
 
         // Simulate: command creates the file
         std::fs::write(&file_path, b"created by command").unwrap();
@@ -244,8 +263,13 @@ mod tests {
         let file_path = dir.path().join("ghost.txt");
 
         // Snapshot with NULL hash, file doesn't exist on disk either
-        let sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
-        store.db().insert_snapshot_file(sid, &file_path, None, None, "parser").unwrap();
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
+        store
+            .db()
+            .insert_snapshot_file(sid, &file_path, None, None, "parser")
+            .unwrap();
 
         assert!(!file_path.exists());
 
@@ -263,13 +287,19 @@ mod tests {
 
         // Pre-exec parser snapshot (original content)
         std::fs::write(&file_path, b"original").unwrap();
-        let sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &file_path, "parser").unwrap();
 
         // Watcher snapshot recording post-command state
-        let watcher_sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
+        let watcher_sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
         std::fs::write(&file_path, b"after command").unwrap();
-        store.store_file(watcher_sid, &file_path, "watcher").unwrap();
+        store
+            .store_file(watcher_sid, &file_path, "watcher")
+            .unwrap();
 
         // User modifies file AFTER the command (creating a conflict)
         std::fs::write(&file_path, b"user edit after command").unwrap();
@@ -278,7 +308,10 @@ mod tests {
         let result = engine.undo_latest().unwrap().expect("should have a result");
         assert_eq!(result.files.len(), 1);
         match &result.files[0].1 {
-            FileOutcome::Conflict { current_hash, expected_hash } => {
+            FileOutcome::Conflict {
+                current_hash,
+                expected_hash,
+            } => {
                 assert!(!current_hash.is_empty());
                 assert!(expected_hash.is_some());
             }
@@ -295,13 +328,19 @@ mod tests {
 
         // Pre-exec parser snapshot
         std::fs::write(&file_path, b"original").unwrap();
-        let sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &file_path, "parser").unwrap();
 
         // Watcher snapshot recording post-command state
-        let watcher_sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
+        let watcher_sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
         std::fs::write(&file_path, b"after command").unwrap();
-        store.store_file(watcher_sid, &file_path, "watcher").unwrap();
+        store
+            .store_file(watcher_sid, &file_path, "watcher")
+            .unwrap();
 
         // File still matches watcher hash (no user edit after command)
         // file_path already contains "after command"
@@ -333,7 +372,9 @@ mod tests {
         std::fs::write(&watcher_file, b"watcher original").unwrap();
 
         // Snapshot with both parser and watcher files
-        let sid = store.create_snapshot(1, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &parser_file, "parser").unwrap();
         store.store_file(sid, &watcher_file, "watcher").unwrap();
 
@@ -351,8 +392,14 @@ mod tests {
         assert!(matches!(outcome, FileOutcome::Restored));
 
         // Parser file restored, watcher file unchanged
-        assert_eq!(std::fs::read_to_string(&parser_file).unwrap(), "parser original");
-        assert_eq!(std::fs::read_to_string(&watcher_file).unwrap(), "watcher modified");
+        assert_eq!(
+            std::fs::read_to_string(&parser_file).unwrap(),
+            "parser original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&watcher_file).unwrap(),
+            "watcher modified"
+        );
     }
 
     #[test]
@@ -364,13 +411,18 @@ mod tests {
         std::fs::write(&file_path, b"original").unwrap();
 
         // Create a parser snapshot for command_id=42
-        let sid = store.create_snapshot(42, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(42, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &file_path, "parser").unwrap();
 
         // Simulate command modifying file
         std::fs::write(&file_path, b"modified").unwrap();
 
-        let result = engine.undo_command(42).unwrap().expect("should have result");
+        let result = engine
+            .undo_command(42)
+            .unwrap()
+            .expect("should have result");
         assert_eq!(result.command_id, 42);
         assert_eq!(result.files.len(), 1);
         assert!(matches!(result.files[0].1, FileOutcome::Restored));
@@ -398,18 +450,29 @@ mod tests {
         std::fs::write(&parser_file, b"parser orig").unwrap();
         std::fs::write(&watcher_file, b"watcher orig").unwrap();
 
-        let sid = store.create_snapshot(10, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(10, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &parser_file, "parser").unwrap();
         store.store_file(sid, &watcher_file, "watcher").unwrap();
 
         std::fs::write(&parser_file, b"parser mod").unwrap();
         std::fs::write(&watcher_file, b"watcher mod").unwrap();
 
-        let result = engine.undo_command(10).unwrap().expect("should have result");
+        let result = engine
+            .undo_command(10)
+            .unwrap()
+            .expect("should have result");
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].0, parser_file);
-        assert_eq!(std::fs::read_to_string(&parser_file).unwrap(), "parser orig");
-        assert_eq!(std::fs::read_to_string(&watcher_file).unwrap(), "watcher mod");
+        assert_eq!(
+            std::fs::read_to_string(&parser_file).unwrap(),
+            "parser orig"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&watcher_file).unwrap(),
+            "watcher mod"
+        );
     }
 
     #[test]
@@ -420,12 +483,17 @@ mod tests {
         let file_path = dir.path().join("del_test.txt");
         std::fs::write(&file_path, b"content").unwrap();
 
-        let sid = store.create_snapshot(77, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(77, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &file_path, "parser").unwrap();
 
         std::fs::write(&file_path, b"changed").unwrap();
 
-        let result = engine.undo_command(77).unwrap().expect("should have result");
+        let result = engine
+            .undo_command(77)
+            .unwrap()
+            .expect("should have result");
         assert_eq!(result.snapshot_id, sid);
 
         // Snapshot should be deleted after successful undo
@@ -442,7 +510,9 @@ mod tests {
         let file_path = dir.path().join("latest.txt");
         std::fs::write(&file_path, b"orig").unwrap();
 
-        let sid = store.create_snapshot(5, dir.path().to_str().unwrap()).unwrap();
+        let sid = store
+            .create_snapshot(5, dir.path().to_str().unwrap())
+            .unwrap();
         store.store_file(sid, &file_path, "parser").unwrap();
 
         std::fs::write(&file_path, b"mod").unwrap();

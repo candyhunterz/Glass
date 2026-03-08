@@ -81,8 +81,12 @@ pub struct PtySender {
 
 impl PtySender {
     pub fn send(&self, msg: PtyMsg) -> Result<(), String> {
-        self.sender.send(msg).map_err(|e| format!("PTY send error: {e}"))?;
-        self.poller.notify().map_err(|e| format!("PTY notify error: {e}"))
+        self.sender
+            .send(msg)
+            .map_err(|e| format!("PTY send error: {e}"))?;
+        self.poller
+            .notify()
+            .map_err(|e| format!("PTY notify error: {e}"))
     }
 }
 
@@ -96,7 +100,15 @@ fn convert_osc_to_shell(osc: crate::osc_scanner::OscEvent) -> ShellEvent {
         OscEvent::CommandFinished { exit_code } => ShellEvent::CommandFinished { exit_code },
         OscEvent::CurrentDirectory(path) => ShellEvent::CurrentDirectory(path),
         OscEvent::PipelineStart { stage_count } => ShellEvent::PipelineStart { stage_count },
-        OscEvent::PipelineStage { index, total_bytes, temp_path } => ShellEvent::PipelineStage { index, total_bytes, temp_path },
+        OscEvent::PipelineStage {
+            index,
+            total_bytes,
+            temp_path,
+        } => ShellEvent::PipelineStage {
+            index,
+            total_bytes,
+            temp_path,
+        },
     }
 }
 
@@ -182,7 +194,10 @@ pub fn spawn_pty(
 
     let mut pty = tty::new(&options, window_size, 0).expect("Failed to spawn PTY");
 
-    let term_size = TermSize { columns: 80, lines: 24 };
+    let term_size = TermSize {
+        columns: 80,
+        lines: 24,
+    };
     let term_config = TermConfig {
         scrolling_history: 10_000, // CORE-05: 10,000 lines scrollback
         ..TermConfig::default()
@@ -218,7 +233,16 @@ pub fn spawn_pty(
     std::thread::Builder::new()
         .name("Glass PTY reader".into())
         .spawn(move || {
-            glass_pty_loop(pty, term_clone, event_proxy, proxy, window_id, rx, poll, max_output_capture_kb);
+            glass_pty_loop(
+                pty,
+                term_clone,
+                event_proxy,
+                proxy,
+                window_id,
+                rx,
+                poll,
+                max_output_capture_kb,
+            );
         })
         .expect("Failed to spawn PTY reader thread");
 
@@ -231,6 +255,7 @@ pub fn spawn_pty(
 /// through the OscScanner before they reach the VTE parser. The overall
 /// structure closely follows alacritty's event_loop.rs for correctness.
 #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
+#[allow(clippy::too_many_arguments)]
 fn glass_pty_loop(
     mut pty: tty::Pty,
     terminal: Arc<FairMutex<Term<EventProxy>>>,
@@ -272,8 +297,14 @@ fn glass_pty_loop(
         let mut got_messages = false;
         loop {
             match rx.try_recv() {
-                Ok(PtyMsg::Input(data)) => { write_list.push_back(data); got_messages = true; }
-                Ok(PtyMsg::Resize(size)) => { pty.on_resize(size); got_messages = true; }
+                Ok(PtyMsg::Input(data)) => {
+                    write_list.push_back(data);
+                    got_messages = true;
+                }
+                Ok(PtyMsg::Resize(size)) => {
+                    pty.on_resize(size);
+                    got_messages = true;
+                }
                 Ok(PtyMsg::Shutdown) => break 'event_loop,
                 Err(_) => break,
             }
@@ -362,6 +393,7 @@ fn glass_pty_loop(
 /// are sent to the main thread via the app proxy.
 #[inline]
 #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
+#[allow(clippy::too_many_arguments)]
 fn pty_read_with_scan(
     pty: &mut tty::Pty,
     terminal: &Arc<FairMutex<Term<EventProxy>>>,
@@ -471,10 +503,7 @@ fn pty_read_with_scan(
 }
 
 /// Write pending data to the PTY.
-fn pty_write(
-    pty: &mut tty::Pty,
-    write_list: &mut VecDeque<Cow<'static, [u8]>>,
-) -> io::Result<()> {
+fn pty_write(pty: &mut tty::Pty, write_list: &mut VecDeque<Cow<'static, [u8]>>) -> io::Result<()> {
     while let Some(data) = write_list.front() {
         match pty.writer().write(data.as_ref()) {
             Ok(0) => break,

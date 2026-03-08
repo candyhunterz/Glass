@@ -1,10 +1,11 @@
 //! Integration tests for ConPTY escape sequence handling and PTY round-trip.
 
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 mod escape_seq_tests {
     use std::sync::{
-        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
     };
 
     use alacritty_terminal::event::EventListener;
@@ -41,7 +42,11 @@ mod escape_seq_tests {
     /// Prefer `pwsh` (PowerShell 7), fall back to `powershell` (Windows PowerShell 5.1).
     fn shell_program() -> &'static str {
         // Check if pwsh is available on PATH by attempting to resolve it
-        if std::process::Command::new("pwsh").arg("--version").output().is_ok() {
+        if std::process::Command::new("pwsh")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             "pwsh"
         } else {
             "powershell"
@@ -49,7 +54,10 @@ mod escape_seq_tests {
     }
 
     fn make_term_size() -> TestSize {
-        TestSize { columns: 80, lines: 24 }
+        TestSize {
+            columns: 80,
+            lines: 24,
+        }
     }
 
     /// Verify that ConPTY has ENABLE_VIRTUAL_TERMINAL_INPUT set.
@@ -78,7 +86,9 @@ mod escape_seq_tests {
         }
 
         let wakeup = Arc::new(AtomicBool::new(false));
-        let listener = TestListener { wakeup_received: Arc::clone(&wakeup) };
+        let listener = TestListener {
+            wakeup_received: Arc::clone(&wakeup),
+        };
 
         // Spawn a PTY with PowerShell (prefer pwsh/PS7, fall back to powershell/PS5.1)
         let options = alacritty_terminal::tty::Options {
@@ -89,9 +99,10 @@ mod escape_seq_tests {
             working_directory: None,
             drain_on_exit: true,
             escape_args: false,
-            env: std::collections::HashMap::from([
-                ("TERM".to_owned(), "xterm-256color".to_owned()),
-            ]),
+            env: std::collections::HashMap::from([(
+                "TERM".to_owned(),
+                "xterm-256color".to_owned(),
+            )]),
         };
 
         let window_size = make_window_size();
@@ -152,7 +163,9 @@ mod escape_seq_tests {
         }
 
         let count = Arc::new(AtomicUsize::new(0));
-        let listener = CountingListener { wakeup_count: Arc::clone(&count) };
+        let listener = CountingListener {
+            wakeup_count: Arc::clone(&count),
+        };
 
         let options = alacritty_terminal::tty::Options {
             shell: Some(alacritty_terminal::tty::Shell::new(
@@ -162,14 +175,15 @@ mod escape_seq_tests {
             working_directory: None,
             drain_on_exit: true,
             escape_args: false,
-            env: std::collections::HashMap::from([
-                ("TERM".to_owned(), "xterm-256color".to_owned()),
-            ]),
+            env: std::collections::HashMap::from([(
+                "TERM".to_owned(),
+                "xterm-256color".to_owned(),
+            )]),
         };
 
         let window_size = make_window_size();
-        let pty = alacritty_terminal::tty::new(&options, window_size, 0)
-            .expect("Failed to spawn ConPTY");
+        let pty =
+            alacritty_terminal::tty::new(&options, window_size, 0).expect("Failed to spawn ConPTY");
 
         let size = make_term_size();
         let term = Arc::new(alacritty_terminal::sync::FairMutex::new(

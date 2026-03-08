@@ -199,8 +199,8 @@ mod tests {
         buf.start_capture();
         buf.check_alt_screen(b"\x1b[?1049h"); // enter
         buf.check_alt_screen(b"\x1b[?1049l"); // leave
-        // Alt screen was entered during capture, finish still returns None
-        // because the alt_screen was active at some point
+                                              // Alt screen was entered during capture, finish still returns None
+                                              // because the alt_screen was active at some point
         assert_eq!(buf.finish(), None);
     }
 
@@ -241,7 +241,7 @@ mod tests {
         let result = buf.finish().unwrap();
         assert_eq!(result, b"1234567890");
         assert_eq!(buf.total_seen(), 15); // total_seen retains value after finish
-        // start_capture resets total_seen
+                                          // start_capture resets total_seen
         buf.start_capture();
         assert_eq!(buf.total_seen(), 0);
     }

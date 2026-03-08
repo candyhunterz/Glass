@@ -75,8 +75,8 @@ impl FsWatcher {
 mod tests {
     use super::*;
     use crate::types::WatcherEventKind;
-    use tempfile::TempDir;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     /// Small delay to let the OS deliver FS events to notify.
     fn wait_for_events() {
@@ -158,7 +158,10 @@ mod tests {
         wait_for_events();
 
         let events = watcher.drain_events();
-        assert!(!events.is_empty(), "Expected at least one event for file creation");
+        assert!(
+            !events.is_empty(),
+            "Expected at least one event for file creation"
+        );
 
         let paths: Vec<_> = events.iter().map(|e| e.path.clone()).collect();
         assert!(
@@ -186,7 +189,10 @@ mod tests {
         wait_for_events();
 
         let events = watcher.drain_events();
-        assert!(!events.is_empty(), "Expected at least one event for file modification");
+        assert!(
+            !events.is_empty(),
+            "Expected at least one event for file modification"
+        );
 
         let paths: Vec<_> = events.iter().map(|e| e.path.clone()).collect();
         assert!(
@@ -212,7 +218,10 @@ mod tests {
         wait_for_events();
 
         let events = watcher.drain_events();
-        assert!(!events.is_empty(), "Expected at least one event for file deletion");
+        assert!(
+            !events.is_empty(),
+            "Expected at least one event for file deletion"
+        );
 
         let paths: Vec<_> = events.iter().map(|e| e.path.clone()).collect();
         assert!(
@@ -244,7 +253,9 @@ mod tests {
 
         // No events for node_modules paths
         assert!(
-            !paths.iter().any(|p| p.to_string_lossy().contains("node_modules")),
+            !paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("node_modules")),
             "node_modules events should be filtered, got: {:?}",
             paths
         );

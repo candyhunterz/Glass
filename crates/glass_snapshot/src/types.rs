@@ -154,11 +154,13 @@ impl WatcherEvent {
         use notify::EventKind;
 
         let kind = match &event.kind {
-            EventKind::Create(CreateKind::File)
-            | EventKind::Create(CreateKind::Any) => WatcherEventKind::Create,
+            EventKind::Create(CreateKind::File) | EventKind::Create(CreateKind::Any) => {
+                WatcherEventKind::Create
+            }
 
-            EventKind::Modify(ModifyKind::Data(_))
-            | EventKind::Modify(ModifyKind::Any) => WatcherEventKind::Modify,
+            EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => {
+                WatcherEventKind::Modify
+            }
 
             EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
                 // For rename events, notify puts [from, to] in event.paths
@@ -170,8 +172,9 @@ impl WatcherEvent {
                 WatcherEventKind::Rename { to }
             }
 
-            EventKind::Remove(RemoveKind::File)
-            | EventKind::Remove(RemoveKind::Any) => WatcherEventKind::Delete,
+            EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Any) => {
+                WatcherEventKind::Delete
+            }
 
             // Ignore Access, Metadata-only, Other
             _ => return None,

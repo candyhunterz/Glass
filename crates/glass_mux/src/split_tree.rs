@@ -28,7 +28,12 @@ impl SplitNode {
     pub fn compute_layout(&self, container: &ViewportLayout) -> Vec<(SessionId, ViewportLayout)> {
         match self {
             SplitNode::Leaf(id) => vec![(*id, container.clone())],
-            SplitNode::Split { direction, left, right, ratio } => {
+            SplitNode::Split {
+                direction,
+                left,
+                right,
+                ratio,
+            } => {
                 let (left_rect, right_rect) = container.split(*direction, *ratio);
                 let mut result = left.compute_layout(&left_rect);
                 result.extend(right.compute_layout(&right_rect));
@@ -43,7 +48,12 @@ impl SplitNode {
         match self {
             SplitNode::Leaf(id) if id == target => None,
             SplitNode::Leaf(_) => Some(self),
-            SplitNode::Split { direction, left, right, ratio } => {
+            SplitNode::Split {
+                direction,
+                left,
+                right,
+                ratio,
+            } => {
                 let new_left = left.remove_leaf(target);
                 let new_right = right.remove_leaf(target);
                 match (new_left, new_right) {
@@ -70,12 +80,14 @@ impl SplitNode {
         container: &ViewportLayout,
     ) -> Option<SessionId> {
         let layouts = self.compute_layout(container);
-        let current_rect = layouts.iter()
+        let current_rect = layouts
+            .iter()
             .find(|(id, _)| *id == current)
             .map(|(_, vp)| vp)?;
 
         let (cx, cy) = current_rect.center();
-        layouts.iter()
+        layouts
+            .iter()
             .filter(|(id, _)| *id != current)
             .filter(|(_, vp)| {
                 let (nx, ny) = vp.center();
@@ -100,7 +112,12 @@ impl SplitNode {
     pub fn resize_ratio(&mut self, focused: SessionId, direction: SplitDirection, delta: f32) {
         match self {
             SplitNode::Leaf(_) => {} // no-op
-            SplitNode::Split { direction: d, left, right, ratio } => {
+            SplitNode::Split {
+                direction: d,
+                left,
+                right,
+                ratio,
+            } => {
                 if *d == direction {
                     // Check if focused is in this split's subtree
                     if left.contains(focused) || right.contains(focused) {
@@ -119,9 +136,7 @@ impl SplitNode {
     pub fn leaf_count(&self) -> usize {
         match self {
             SplitNode::Leaf(_) => 1,
-            SplitNode::Split { left, right, .. } => {
-                left.leaf_count() + right.leaf_count()
-            }
+            SplitNode::Split { left, right, .. } => left.leaf_count() + right.leaf_count(),
         }
     }
 
@@ -177,9 +192,7 @@ impl SplitNode {
     pub fn contains(&self, id: SessionId) -> bool {
         match self {
             SplitNode::Leaf(leaf_id) => *leaf_id == id,
-            SplitNode::Split { left, right, .. } => {
-                left.contains(id) || right.contains(id)
-            }
+            SplitNode::Split { left, right, .. } => left.contains(id) || right.contains(id),
         }
     }
 }
@@ -190,7 +203,12 @@ mod tests {
     use crate::layout::DIVIDER_GAP;
 
     fn container() -> ViewportLayout {
-        ViewportLayout { x: 0, y: 0, width: 1000, height: 800 }
+        ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 800,
+        }
     }
 
     fn sid(n: u64) -> SessionId {
@@ -347,7 +365,12 @@ mod tests {
 
     #[test]
     fn horizontal_gap_1000_half() {
-        let c = ViewportLayout { x: 0, y: 0, width: 1000, height: 600 };
+        let c = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 600,
+        };
         let node = SplitNode::Split {
             direction: SplitDirection::Horizontal,
             left: Box::new(SplitNode::Leaf(sid(1))),
@@ -367,7 +390,12 @@ mod tests {
 
     #[test]
     fn horizontal_gap_100_ratio_03() {
-        let c = ViewportLayout { x: 0, y: 0, width: 100, height: 50 };
+        let c = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
         let node = SplitNode::Split {
             direction: SplitDirection::Horizontal,
             left: Box::new(SplitNode::Leaf(sid(1))),
@@ -388,7 +416,12 @@ mod tests {
 
     #[test]
     fn vertical_gap_800_half() {
-        let c = ViewportLayout { x: 0, y: 0, width: 600, height: 800 };
+        let c = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 600,
+            height: 800,
+        };
         let node = SplitNode::Split {
             direction: SplitDirection::Vertical,
             left: Box::new(SplitNode::Leaf(sid(1))),
@@ -488,9 +521,15 @@ mod tests {
         };
         let c = container();
         // Left pane has Right neighbor
-        assert_eq!(node.find_neighbor(sid(1), FocusDirection::Right, &c), Some(sid(2)));
+        assert_eq!(
+            node.find_neighbor(sid(1), FocusDirection::Right, &c),
+            Some(sid(2))
+        );
         // Right pane has Left neighbor
-        assert_eq!(node.find_neighbor(sid(2), FocusDirection::Left, &c), Some(sid(1)));
+        assert_eq!(
+            node.find_neighbor(sid(2), FocusDirection::Left, &c),
+            Some(sid(1))
+        );
     }
 
     #[test]
@@ -503,9 +542,15 @@ mod tests {
         };
         let c = container();
         // Top pane has Down neighbor
-        assert_eq!(node.find_neighbor(sid(1), FocusDirection::Down, &c), Some(sid(2)));
+        assert_eq!(
+            node.find_neighbor(sid(1), FocusDirection::Down, &c),
+            Some(sid(2))
+        );
         // Bottom pane has Up neighbor
-        assert_eq!(node.find_neighbor(sid(2), FocusDirection::Up, &c), Some(sid(1)));
+        assert_eq!(
+            node.find_neighbor(sid(2), FocusDirection::Up, &c),
+            Some(sid(1))
+        );
     }
 
     #[test]
@@ -543,13 +588,25 @@ mod tests {
         let right_neighbor = root.find_neighbor(sid(1), FocusDirection::Right, &c);
         assert!(right_neighbor == Some(sid(2)) || right_neighbor == Some(sid(3)));
         // sid(2) going Left should find sid(1)
-        assert_eq!(root.find_neighbor(sid(2), FocusDirection::Left, &c), Some(sid(1)));
+        assert_eq!(
+            root.find_neighbor(sid(2), FocusDirection::Left, &c),
+            Some(sid(1))
+        );
         // sid(3) going Left should find sid(1)
-        assert_eq!(root.find_neighbor(sid(3), FocusDirection::Left, &c), Some(sid(1)));
+        assert_eq!(
+            root.find_neighbor(sid(3), FocusDirection::Left, &c),
+            Some(sid(1))
+        );
         // sid(2) going Down should find sid(3)
-        assert_eq!(root.find_neighbor(sid(2), FocusDirection::Down, &c), Some(sid(3)));
+        assert_eq!(
+            root.find_neighbor(sid(2), FocusDirection::Down, &c),
+            Some(sid(3))
+        );
         // sid(3) going Up should find sid(2)
-        assert_eq!(root.find_neighbor(sid(3), FocusDirection::Up, &c), Some(sid(2)));
+        assert_eq!(
+            root.find_neighbor(sid(3), FocusDirection::Up, &c),
+            Some(sid(2))
+        );
     }
 
     // ---- SPLIT-07: resize_ratio ----
@@ -643,10 +700,21 @@ mod tests {
         // Resize vertical split by focusing sid(2) in vertical direction
         root.resize_ratio(sid(2), SplitDirection::Vertical, 0.1);
         // Inner ratio should have changed
-        if let SplitNode::Split { right, ratio: outer_ratio, .. } = &root {
+        if let SplitNode::Split {
+            right,
+            ratio: outer_ratio,
+            ..
+        } = &root
+        {
             assert!((outer_ratio - 0.5).abs() < 0.001, "outer ratio unchanged");
-            if let SplitNode::Split { ratio: inner_ratio, .. } = right.as_ref() {
-                assert!((inner_ratio - 0.6).abs() < 0.001, "inner ratio should be 0.6");
+            if let SplitNode::Split {
+                ratio: inner_ratio, ..
+            } = right.as_ref()
+            {
+                assert!(
+                    (inner_ratio - 0.6).abs() < 0.001,
+                    "inner ratio should be 0.6"
+                );
             } else {
                 panic!("expected inner Split");
             }

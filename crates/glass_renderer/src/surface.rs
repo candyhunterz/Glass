@@ -49,7 +49,11 @@ impl GlassRenderer {
             .expect("Failed to create wgpu device");
 
         let adapter_info = adapter.get_info();
-        tracing::info!("GPU adapter: {} ({:?})", adapter_info.name, adapter_info.backend);
+        tracing::info!(
+            "GPU adapter: {} ({:?})",
+            adapter_info.name,
+            adapter_info.backend
+        );
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
@@ -57,7 +61,9 @@ impl GlassRenderer {
         tracing::info!("Available surface formats: {:?}", caps.formats);
 
         // Prefer sRGB format for consistent color rendering across platforms
-        let format = caps.formats.iter()
+        let format = caps
+            .formats
+            .iter()
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
@@ -103,9 +109,7 @@ impl GlassRenderer {
         };
 
         let view = frame.texture.create_view(&Default::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&Default::default());
+        let mut encoder = self.device.create_command_encoder(&Default::default());
 
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

@@ -16,9 +16,7 @@ use glass_history::db::{CommandRecord, HistoryDb};
 use glass_history::query::{self, QueryFilter};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
-};
+use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use serde::{Deserialize, Serialize};
 
@@ -55,7 +53,9 @@ pub struct HistoryParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ContextParams {
     /// Only include activity after this time (e.g. '1h', '2d', '2024-01-15').
-    #[schemars(description = "Only include activity after this time (e.g. '1h', '2d', '2024-01-15')")]
+    #[schemars(
+        description = "Only include activity after this time (e.g. '1h', '2d', '2024-01-15')"
+    )]
     pub after: Option<String>,
 }
 
@@ -163,7 +163,9 @@ impl GlassServer {
 
     /// Query Glass terminal command history with filters.
     /// Returns commands matching the specified criteria, ordered by most recent first.
-    #[tool(description = "Query Glass terminal command history with filters. Returns commands matching the specified criteria.")]
+    #[tool(
+        description = "Query Glass terminal command history with filters. Returns commands matching the specified criteria."
+    )]
     async fn glass_history(
         &self,
         Parameters(params): Parameters<HistoryParams>,
@@ -208,7 +210,9 @@ impl GlassServer {
 
     /// Get a summary of recent terminal activity including command counts,
     /// failure rate, and active directories.
-    #[tool(description = "Get a summary of recent terminal activity including command counts, failure rate, and active directories.")]
+    #[tool(
+        description = "Get a summary of recent terminal activity including command counts, failure rate, and active directories."
+    )]
     async fn glass_context(
         &self,
         Parameters(params): Parameters<ContextParams>,
@@ -236,15 +240,16 @@ impl GlassServer {
 
     /// Undo a file-modifying command by restoring files to their pre-command state.
     /// Returns per-file outcomes (restored, deleted, skipped, conflict, error).
-    #[tool(description = "Undo a file-modifying command by restoring files to their pre-command state. Returns per-file outcomes.")]
+    #[tool(
+        description = "Undo a file-modifying command by restoring files to their pre-command state. Returns per-file outcomes."
+    )]
     async fn glass_undo(
         &self,
         Parameters(params): Parameters<UndoParams>,
     ) -> Result<CallToolResult, McpError> {
         let glass_dir = self.glass_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let store =
-                glass_snapshot::SnapshotStore::open(&glass_dir).map_err(internal_err)?;
+            let store = glass_snapshot::SnapshotStore::open(&glass_dir).map_err(internal_err)?;
             let engine = glass_snapshot::UndoEngine::new(&store);
             engine.undo_command(params.command_id).map_err(internal_err)
         })
@@ -290,16 +295,18 @@ impl GlassServer {
 
     /// Inspect file contents from before a command executed.
     /// Returns the pre-command file contents for all files tracked in the snapshot.
-    #[tool(description = "Inspect file contents from before a command executed. Returns the pre-command file contents for all files tracked in the snapshot.")]
+    #[tool(
+        description = "Inspect file contents from before a command executed. Returns the pre-command file contents for all files tracked in the snapshot."
+    )]
     async fn glass_file_diff(
         &self,
         Parameters(params): Parameters<FileDiffParams>,
     ) -> Result<CallToolResult, McpError> {
         let glass_dir = self.glass_dir.clone();
-        let result = tokio::task::spawn_blocking(
-            move || -> Result<Vec<serde_json::Value>, McpError> {
-                let store = glass_snapshot::SnapshotStore::open(&glass_dir)
-                    .map_err(internal_err)?;
+        let result =
+            tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, McpError> {
+                let store =
+                    glass_snapshot::SnapshotStore::open(&glass_dir).map_err(internal_err)?;
                 let snapshots = store
                     .db()
                     .get_snapshots_by_command(params.command_id)
@@ -316,9 +323,7 @@ impl GlassServer {
                         }
                         let pre_content = match &file_rec.blob_hash {
                             Some(hash) => match store.blobs().read_blob(hash) {
-                                Ok(bytes) => {
-                                    Some(String::from_utf8_lossy(&bytes).into_owned())
-                                }
+                                Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
                                 Err(_) => None,
                             },
                             None => None, // File did not exist before command
@@ -332,10 +337,9 @@ impl GlassServer {
                     }
                 }
                 Ok(file_diffs)
-            },
-        )
-        .await
-        .map_err(internal_err)??;
+            })
+            .await
+            .map_err(internal_err)??;
 
         if result.is_empty() {
             let content = Content::text(format!(
@@ -344,8 +348,7 @@ impl GlassServer {
             ));
             Ok(CallToolResult::success(vec![content]))
         } else {
-            let response =
-                serde_json::json!({ "command_id": params.command_id, "files": result });
+            let response = serde_json::json!({ "command_id": params.command_id, "files": result });
             let content = Content::json(&response)?;
             Ok(CallToolResult::success(vec![content]))
         }
@@ -353,7 +356,9 @@ impl GlassServer {
 
     /// Inspect intermediate output from a pipeline stage.
     /// Returns captured output for each pipe stage of a command.
-    #[tool(description = "Inspect intermediate output from a pipeline stage. Returns captured output for each pipe stage of a command.")]
+    #[tool(
+        description = "Inspect intermediate output from a pipeline stage. Returns captured output for each pipe stage of a command."
+    )]
     async fn glass_pipe_inspect(
         &self,
         Parameters(params): Parameters<PipeInspectParams>,

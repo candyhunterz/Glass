@@ -92,9 +92,7 @@ fn tokenize(command_text: &str) -> Vec<String> {
     // Strip redirect operators and their targets before tokenizing,
     // since shlex treats > as a normal character
     let cleaned = strip_redirects(command_text);
-    shlex::split(&cleaned).unwrap_or_else(|| {
-        cleaned.split_whitespace().map(String::from).collect()
-    })
+    shlex::split(&cleaned).unwrap_or_else(|| cleaned.split_whitespace().map(String::from).collect())
 }
 
 /// Remove redirect operators and their targets from command text.
@@ -189,9 +187,7 @@ fn strip_redirects(text: &str) -> String {
 /// `/usr/bin/rm` -> `rm`, `./script.sh` -> `script.sh`
 fn base_command(cmd: &str) -> &str {
     // Handle both forward and back slashes
-    cmd.rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(cmd)
+    cmd.rsplit(['/', '\\']).next().unwrap_or(cmd)
 }
 
 /// Resolve a path argument against the working directory.
@@ -304,8 +300,8 @@ fn extract_redirect_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
 
 /// Known PowerShell aliases that don't match the Verb-Noun pattern.
 const PS_ALIASES: &[&str] = &[
-    "ri", "mi", "ci", "si", "gc", "gci", "gl", "gi", "sc", "clc", "sls",
-    "del", "erase", "rd", "rmdir", "move", "copy",
+    "ri", "mi", "ci", "si", "gc", "gci", "gl", "gi", "sc", "clc", "sls", "del", "erase", "rd",
+    "rmdir", "move", "copy",
 ];
 
 /// Check if a command is a PowerShell cmdlet (Verb-Noun pattern) or known alias.
@@ -727,10 +723,7 @@ fn parse_git_restore(args: &[String], cwd: &Path) -> ParseResult {
     }
 
     // Without --, files could be at the end after flags
-    let non_flag_args: Vec<&String> = args
-        .iter()
-        .filter(|a| !a.starts_with('-'))
-        .collect();
+    let non_flag_args: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let targets: Vec<PathBuf> = non_flag_args.iter().map(|a| resolve_path(a, cwd)).collect();
     ParseResult {
         targets: targets.clone(),
@@ -868,10 +861,7 @@ mod tests {
                 Confidence::ReadOnly,
                 "Expected ReadOnly for '{cmd}'"
             );
-            assert!(
-                result.targets.is_empty(),
-                "Expected no targets for '{cmd}'"
-            );
+            assert!(result.targets.is_empty(), "Expected no targets for '{cmd}'");
         }
     }
 
@@ -1005,7 +995,11 @@ mod tests {
 
     #[test]
     fn test_powershell_readonly_cmdlets() {
-        for cmd in &["Get-Content file.txt", "Get-ChildItem", "Test-Path file.txt"] {
+        for cmd in &[
+            "Get-Content file.txt",
+            "Get-ChildItem",
+            "Test-Path file.txt",
+        ] {
             let result = parse_command(cmd, &cwd());
             assert_eq!(
                 result.confidence,

@@ -111,7 +111,7 @@ pub fn filtered_query(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Com
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     let mut conditions: Vec<String> = Vec::new();
 
-    if filter.text.is_some() {
+    if let Some(text) = &filter.text {
         sql.push_str(
             "SELECT c.id, c.command, c.cwd, c.exit_code, c.started_at, \
              c.finished_at, c.duration_ms, c.output \
@@ -119,7 +119,6 @@ pub fn filtered_query(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Com
              JOIN commands c ON c.id = f.rowid",
         );
         // Escape FTS5 special characters by wrapping in double quotes
-        let text = filter.text.as_ref().unwrap();
         let escaped = format!("\"{}\"", text.replace('"', "\"\""));
         conditions.push("commands_fts MATCH ?".to_string());
         params.push(rusqlite::types::Value::Text(escaped));
@@ -193,7 +192,13 @@ mod tests {
         (db, dir)
     }
 
-    fn insert_record(db: &HistoryDb, command: &str, cwd: &str, exit_code: Option<i32>, started_at: i64) -> i64 {
+    fn insert_record(
+        db: &HistoryDb,
+        command: &str,
+        cwd: &str,
+        exit_code: Option<i32>,
+        started_at: i64,
+    ) -> i64 {
         let record = CommandRecord {
             id: None,
             command: command.to_string(),
@@ -307,7 +312,13 @@ mod tests {
     fn test_limit() {
         let (db, _dir) = test_db();
         for i in 0..5 {
-            insert_record(&db, &format!("cmd{}", i), "/home/user", Some(0), 1700000000 + i * 10);
+            insert_record(
+                &db,
+                &format!("cmd{}", i),
+                "/home/user",
+                Some(0),
+                1700000000 + i * 10,
+            );
         }
 
         let filter = QueryFilter {
@@ -321,7 +332,13 @@ mod tests {
     #[test]
     fn test_combined_filters() {
         let (db, _dir) = test_db();
-        insert_record(&db, "cargo build", "/home/user/project", Some(0), 1700000000);
+        insert_record(
+            &db,
+            "cargo build",
+            "/home/user/project",
+            Some(0),
+            1700000000,
+        );
         insert_record(&db, "cargo test", "/home/user/project", Some(1), 1700000010);
         insert_record(&db, "cargo build", "/tmp/other", Some(0), 1700000020);
         insert_record(&db, "git push", "/home/user/project", Some(0), 1700000030);
@@ -386,7 +403,13 @@ mod tests {
     #[test]
     fn test_fts5_special_characters_escaped() {
         let (db, _dir) = test_db();
-        insert_record(&db, "echo \"hello world\"", "/home/user", Some(0), 1700000000);
+        insert_record(
+            &db,
+            "echo \"hello world\"",
+            "/home/user",
+            Some(0),
+            1700000000,
+        );
         insert_record(&db, "normal command", "/home/user", Some(0), 1700000010);
 
         // Search with quotes -- should not crash

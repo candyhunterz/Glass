@@ -13,13 +13,13 @@ pub mod output_capture;
 pub mod pty;
 pub mod status;
 
-pub use block_manager::{Block, BlockManager, BlockState, PipelineHit, format_duration};
+pub use block_manager::{format_duration, Block, BlockManager, BlockState, PipelineHit};
 pub use event_proxy::EventProxy;
-pub use grid_snapshot::{DefaultColors, GridSnapshot, RenderedCell, resolve_color, snapshot_term};
+pub use grid_snapshot::{resolve_color, snapshot_term, DefaultColors, GridSnapshot, RenderedCell};
 pub use input::encode_key;
 pub use osc_scanner::{OscEvent, OscScanner};
 pub use pty::{spawn_pty, PtyMsg, PtySender};
-pub use status::{GitInfo, StatusState, query_git_status};
+pub use status::{query_git_status, GitInfo, StatusState};
 
 #[cfg(test)]
 mod tests;

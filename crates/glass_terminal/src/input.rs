@@ -42,9 +42,9 @@ pub fn encode_key(key: &Key, modifiers: ModifiersState, mode: TermMode) -> Optio
                     '[' | '3' => Some(vec![0x1b]),  // ESC
                     '\\' | '4' => Some(vec![0x1c]), // FS
                     ']' | '5' => Some(vec![0x1d]),  // GS
-                    '6' => Some(vec![0x1e]),         // RS
-                    '/' | '7' => Some(vec![0x1f]),   // US
-                    '8' => Some(vec![0x7f]),          // DEL
+                    '6' => Some(vec![0x1e]),        // RS
+                    '/' | '7' => Some(vec![0x1f]),  // US
+                    '8' => Some(vec![0x7f]),        // DEL
                     _ => None,
                 }
             }
@@ -77,10 +77,10 @@ fn encode_named_key(key: NamedKey, mods: ModifiersState, mode: TermMode) -> Opti
 
         // Simple keys
         NamedKey::Enter => Some(vec![0x0d]),     // CR
-        NamedKey::Tab => Some(vec![0x09]),        // HT
-        NamedKey::Backspace => Some(vec![0x7f]),  // DEL
-        NamedKey::Escape => Some(vec![0x1b]),     // ESC
-        NamedKey::Space => Some(vec![0x20]),      // Space
+        NamedKey::Tab => Some(vec![0x09]),       // HT
+        NamedKey::Backspace => Some(vec![0x7f]), // DEL
+        NamedKey::Escape => Some(vec![0x1b]),    // ESC
+        NamedKey::Space => Some(vec![0x20]),     // Space
 
         // Navigation keys (CSI tilde sequences)
         NamedKey::Home => Some(csi_tilde(1, modifier_param)),
@@ -123,7 +123,11 @@ fn modifier_code(mods: ModifiersState) -> u8 {
     if mods.control_key() {
         code |= 4;
     }
-    if code > 0 { code + 1 } else { 0 }
+    if code > 0 {
+        code + 1
+    } else {
+        0
+    }
 }
 
 /// Arrow key sequence: SS3 in app cursor mode (no mods), CSI otherwise.

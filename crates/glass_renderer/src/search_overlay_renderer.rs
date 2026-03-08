@@ -123,7 +123,11 @@ impl SearchOverlayRenderer {
             text: format!("Search: {}", query),
             x: input_x + padding,
             y: input_y + (input_h - self.cell_height) * 0.5,
-            color: Rgb { r: 230, g: 230, b: 230 },
+            color: Rgb {
+                r: 230,
+                g: 230,
+                b: 230,
+            },
         });
 
         // Result rows
@@ -131,15 +135,24 @@ impl SearchOverlayRenderer {
         let row_height = 2.2 * self.cell_height;
         let row_gap = 0.3 * self.cell_height;
 
-        for i in 0..visible_count {
-            let (ref command, exit_code, ref timestamp, ref preview) = results[i];
+        for (i, (command, exit_code, timestamp, preview)) in
+            results.iter().enumerate().take(visible_count)
+        {
             let row_y = row_start_y + i as f32 * (row_height + row_gap);
 
             // Line 1: command text
             let cmd_color = if i == selected {
-                Rgb { r: 240, g: 240, b: 240 } // Brighter when selected
+                Rgb {
+                    r: 240,
+                    g: 240,
+                    b: 240,
+                } // Brighter when selected
             } else {
-                Rgb { r: 204, g: 204, b: 204 }
+                Rgb {
+                    r: 204,
+                    g: 204,
+                    b: 204,
+                }
             };
             labels.push(SearchOverlayTextLabel {
                 text: command.clone(),
@@ -158,7 +171,11 @@ impl SearchOverlayRenderer {
                 text: meta_text,
                 x: input_x + padding,
                 y: row_y + 0.2 * self.cell_height + self.cell_height,
-                color: Rgb { r: 120, g: 120, b: 120 },
+                color: Rgb {
+                    r: 120,
+                    g: 120,
+                    b: 120,
+                },
             });
         }
 
@@ -212,9 +229,24 @@ mod tests {
     fn test_text_label_counts() {
         let r = renderer();
         let results = vec![
-            ("cmd1".to_string(), Some(0), "1m ago".to_string(), "output1".to_string()),
-            ("cmd2".to_string(), Some(1), "2m ago".to_string(), "output2".to_string()),
-            ("cmd3".to_string(), None, "3m ago".to_string(), "output3".to_string()),
+            (
+                "cmd1".to_string(),
+                Some(0),
+                "1m ago".to_string(),
+                "output1".to_string(),
+            ),
+            (
+                "cmd2".to_string(),
+                Some(1),
+                "2m ago".to_string(),
+                "output2".to_string(),
+            ),
+            (
+                "cmd3".to_string(),
+                None,
+                "3m ago".to_string(),
+                "output3".to_string(),
+            ),
         ];
         let labels = r.build_overlay_text("test", &results, 1, 800.0, 600.0);
         // 1 query + 3 results * 2 lines = 7
@@ -227,29 +259,75 @@ mod tests {
         let labels = r.build_overlay_text("hello", &[], 0, 800.0, 600.0);
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "Search: hello");
-        assert_eq!(labels[0].color, Rgb { r: 230, g: 230, b: 230 });
+        assert_eq!(
+            labels[0].color,
+            Rgb {
+                r: 230,
+                g: 230,
+                b: 230
+            }
+        );
     }
 
     #[test]
     fn test_text_selected_brighter() {
         let r = renderer();
         let results = vec![
-            ("cmd1".to_string(), Some(0), "1m ago".to_string(), "out".to_string()),
-            ("cmd2".to_string(), Some(0), "2m ago".to_string(), "out".to_string()),
+            (
+                "cmd1".to_string(),
+                Some(0),
+                "1m ago".to_string(),
+                "out".to_string(),
+            ),
+            (
+                "cmd2".to_string(),
+                Some(0),
+                "2m ago".to_string(),
+                "out".to_string(),
+            ),
         ];
         let labels = r.build_overlay_text("q", &results, 0, 800.0, 600.0);
         // labels[1] = cmd1 (selected), labels[3] = cmd2 (not selected)
-        assert_eq!(labels[1].color, Rgb { r: 240, g: 240, b: 240 });
-        assert_eq!(labels[3].color, Rgb { r: 204, g: 204, b: 204 });
+        assert_eq!(
+            labels[1].color,
+            Rgb {
+                r: 240,
+                g: 240,
+                b: 240
+            }
+        );
+        assert_eq!(
+            labels[3].color,
+            Rgb {
+                r: 204,
+                g: 204,
+                b: 204
+            }
+        );
     }
 
     #[test]
     fn test_text_exit_badge_format() {
         let r = renderer();
         let results = vec![
-            ("cmd1".to_string(), Some(0), "1m ago".to_string(), "out".to_string()),
-            ("cmd2".to_string(), Some(127), "2m ago".to_string(), "out".to_string()),
-            ("cmd3".to_string(), None, "3m ago".to_string(), "out".to_string()),
+            (
+                "cmd1".to_string(),
+                Some(0),
+                "1m ago".to_string(),
+                "out".to_string(),
+            ),
+            (
+                "cmd2".to_string(),
+                Some(127),
+                "2m ago".to_string(),
+                "out".to_string(),
+            ),
+            (
+                "cmd3".to_string(),
+                None,
+                "3m ago".to_string(),
+                "out".to_string(),
+            ),
         ];
         let labels = r.build_overlay_text("q", &results, 0, 800.0, 600.0);
         // Metadata lines are at indices 2, 4, 6
@@ -262,7 +340,14 @@ mod tests {
     fn test_text_caps_at_10_visible() {
         let r = renderer();
         let results: Vec<_> = (0..15)
-            .map(|i| (format!("cmd{}", i), Some(0), "1m ago".to_string(), "out".to_string()))
+            .map(|i| {
+                (
+                    format!("cmd{}", i),
+                    Some(0),
+                    "1m ago".to_string(),
+                    "out".to_string(),
+                )
+            })
             .collect();
         let labels = r.build_overlay_text("q", &results, 0, 800.0, 600.0);
         // 1 query + 10 * 2 = 21

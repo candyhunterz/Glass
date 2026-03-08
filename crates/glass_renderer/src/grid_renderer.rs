@@ -7,7 +7,10 @@
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
-use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, FontSystem, Metrics, Shaping, Style, TextArea, TextBounds, Weight};
+use glyphon::{
+    Attrs, Buffer, Color as GlyphonColor, Family, FontSystem, Metrics, Shaping, Style, TextArea,
+    TextBounds, Weight,
+};
 
 use glass_terminal::GridSnapshot;
 
@@ -120,21 +123,31 @@ impl GridRenderer {
             }
             CursorShape::Underline => {
                 rects.push(RectInstance {
-                    pos: [cursor_x, cursor_y + self.cell_height - 2.0, self.cell_width, 2.0],
+                    pos: [
+                        cursor_x,
+                        cursor_y + self.cell_height - 2.0,
+                        self.cell_width,
+                        2.0,
+                    ],
                     color: cursor_color,
                 });
             }
             CursorShape::HollowBlock => {
                 // Draw 4 edges of the block
                 let t = 1.0; // border thickness
-                // Top
+                             // Top
                 rects.push(RectInstance {
                     pos: [cursor_x, cursor_y, self.cell_width, t],
                     color: cursor_color,
                 });
                 // Bottom
                 rects.push(RectInstance {
-                    pos: [cursor_x, cursor_y + self.cell_height - t, self.cell_width, t],
+                    pos: [
+                        cursor_x,
+                        cursor_y + self.cell_height - t,
+                        self.cell_width,
+                        t,
+                    ],
                     color: cursor_color,
                 });
                 // Left
@@ -144,7 +157,12 @@ impl GridRenderer {
                 });
                 // Right
                 rects.push(RectInstance {
-                    pos: [cursor_x + self.cell_width - t, cursor_y, t, self.cell_height],
+                    pos: [
+                        cursor_x + self.cell_width - t,
+                        cursor_y,
+                        t,
+                        self.cell_height,
+                    ],
                     color: cursor_color,
                 });
             }
@@ -174,16 +192,12 @@ impl GridRenderer {
         let end = selection.end;
 
         for line_val in start.line.0..=end.line.0 {
-            let col_start = if line_val == start.line.0 {
-                start.column.0
-            } else if selection.is_block {
+            let col_start = if line_val == start.line.0 || selection.is_block {
                 start.column.0
             } else {
                 0
             };
-            let col_end = if line_val == end.line.0 {
-                end.column.0
-            } else if selection.is_block {
+            let col_end = if line_val == end.line.0 || selection.is_block {
                 end.column.0
             } else {
                 columns.saturating_sub(1)

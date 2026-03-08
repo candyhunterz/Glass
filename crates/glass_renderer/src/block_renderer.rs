@@ -148,9 +148,23 @@ impl BlockRenderer {
                 let badge_width = self.cell_width * 3.0;
                 let badge_x = viewport_width - badge_width + self.cell_width;
                 let (text, color) = if exit_code == 0 {
-                    ("OK".to_string(), Rgb { r: 255, g: 255, b: 255 })
+                    (
+                        "OK".to_string(),
+                        Rgb {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                        },
+                    )
                 } else {
-                    ("X".to_string(), Rgb { r: 255, g: 255, b: 255 })
+                    (
+                        "X".to_string(),
+                        Rgb {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                        },
+                    )
                 };
                 labels.push(BlockLabel {
                     x: badge_x,
@@ -227,7 +241,9 @@ impl BlockRenderer {
         };
 
         let stage_count = Self::panel_stage_count(block);
-        if stage_count == 0 { return rects; }
+        if stage_count == 0 {
+            return rects;
+        }
 
         let total_rows = Self::panel_total_rows(block, stage_count);
         let panel_top = viewport_height - status_bar_height - total_rows as f32 * self.cell_height;
@@ -280,7 +296,9 @@ impl BlockRenderer {
         };
 
         let stage_count = Self::panel_stage_count(block);
-        if stage_count == 0 { return labels; }
+        if stage_count == 0 {
+            return labels;
+        }
 
         let total_rows = Self::panel_total_rows(block, stage_count);
         let panel_top = viewport_height - status_bar_height - total_rows as f32 * self.cell_height;
@@ -301,7 +319,11 @@ impl BlockRenderer {
                 x: self.cell_width * 2.0,
                 y: row_y,
                 text: cmd_text,
-                color: Rgb { r: 180, g: 180, b: 220 },
+                color: Rgb {
+                    r: 180,
+                    g: 180,
+                    b: 220,
+                },
             });
 
             // Line count and byte count
@@ -326,7 +348,11 @@ impl BlockRenderer {
                 x: indicator_x,
                 y: row_y,
                 text: indicator.to_string(),
-                color: Rgb { r: 100, g: 160, b: 220 },
+                color: Rgb {
+                    r: 100,
+                    g: 160,
+                    b: 220,
+                },
             });
 
             let byte_width = byte_text.len() as f32 * self.cell_width;
@@ -336,7 +362,11 @@ impl BlockRenderer {
                     x: byte_x,
                     y: row_y,
                     text: byte_text,
-                    color: Rgb { r: 140, g: 140, b: 140 },
+                    color: Rgb {
+                        r: 140,
+                        g: 140,
+                        b: 140,
+                    },
                 });
             }
 
@@ -347,7 +377,11 @@ impl BlockRenderer {
                     x: line_x,
                     y: row_y,
                     text: line_text,
-                    color: Rgb { r: 140, g: 140, b: 140 },
+                    color: Rgb {
+                        r: 140,
+                        g: 140,
+                        b: 140,
+                    },
                 });
             }
 
@@ -385,7 +419,11 @@ impl BlockRenderer {
     fn expanded_output_row_count(block: &Block, stage_idx: usize) -> usize {
         if let Some(stage) = block.pipeline_stages.get(stage_idx) {
             let lines = line_count(&stage.data);
-            if lines == 0 { 1 } else { lines.min(30) } // at least 1 for "empty" message
+            if lines == 0 {
+                1
+            } else {
+                lines.min(30)
+            } // at least 1 for "empty" message
         } else {
             1 // "no data captured" message
         }
@@ -400,51 +438,105 @@ impl BlockRenderer {
         row: &mut usize,
     ) -> Vec<BlockLabel> {
         let mut labels = Vec::new();
-        let content_color = Rgb { r: 160, g: 160, b: 160 };
+        let content_color = Rgb {
+            r: 160,
+            g: 160,
+            b: 160,
+        };
         let x = self.cell_width * 4.0;
 
         if let Some(stage) = block.pipeline_stages.get(stage_idx) {
             match &stage.data {
                 FinalizedBuffer::Complete(bytes) if bytes.is_empty() => {
                     let y = panel_top + *row as f32 * self.cell_height;
-                    labels.push(BlockLabel { x, y, text: "  (empty)".to_string(), color: content_color });
+                    labels.push(BlockLabel {
+                        x,
+                        y,
+                        text: "  (empty)".to_string(),
+                        color: content_color,
+                    });
                     *row += 1;
                 }
                 FinalizedBuffer::Complete(bytes) => {
                     let text = String::from_utf8_lossy(bytes);
                     for line in text.lines().take(30) {
                         let y = panel_top + *row as f32 * self.cell_height;
-                        labels.push(BlockLabel { x, y, text: format!("  | {}", line), color: content_color });
+                        labels.push(BlockLabel {
+                            x,
+                            y,
+                            text: format!("  | {}", line),
+                            color: content_color,
+                        });
                         *row += 1;
                     }
                 }
-                FinalizedBuffer::Sampled { head, tail, total_bytes } => {
+                FinalizedBuffer::Sampled {
+                    head,
+                    tail,
+                    total_bytes,
+                } => {
                     let head_text = String::from_utf8_lossy(head);
                     for line in head_text.lines().take(15) {
                         let y = panel_top + *row as f32 * self.cell_height;
-                        labels.push(BlockLabel { x, y, text: format!("  | {}", line), color: content_color });
+                        labels.push(BlockLabel {
+                            x,
+                            y,
+                            text: format!("  | {}", line),
+                            color: content_color,
+                        });
                         *row += 1;
                     }
                     let omitted = total_bytes - head.len() - tail.len();
                     let y = panel_top + *row as f32 * self.cell_height;
-                    labels.push(BlockLabel { x, y, text: format!("  | ... {} bytes omitted ...", omitted), color: content_color });
+                    labels.push(BlockLabel {
+                        x,
+                        y,
+                        text: format!("  | ... {} bytes omitted ...", omitted),
+                        color: content_color,
+                    });
                     *row += 1;
                     let tail_text = String::from_utf8_lossy(tail);
-                    for line in tail_text.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev() {
+                    for line in tail_text
+                        .lines()
+                        .rev()
+                        .take(15)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                    {
                         let y = panel_top + *row as f32 * self.cell_height;
-                        labels.push(BlockLabel { x, y, text: format!("  | {}", line), color: content_color });
+                        labels.push(BlockLabel {
+                            x,
+                            y,
+                            text: format!("  | {}", line),
+                            color: content_color,
+                        });
                         *row += 1;
                     }
                 }
                 FinalizedBuffer::Binary { size } => {
                     let y = panel_top + *row as f32 * self.cell_height;
-                    labels.push(BlockLabel { x, y, text: format!("  [binary: {}]", format_bytes(*size)), color: content_color });
+                    labels.push(BlockLabel {
+                        x,
+                        y,
+                        text: format!("  [binary: {}]", format_bytes(*size)),
+                        color: content_color,
+                    });
                     *row += 1;
                 }
             }
         } else {
             let y = panel_top + *row as f32 * self.cell_height;
-            labels.push(BlockLabel { x, y, text: "  (no captured data)".to_string(), color: Rgb { r: 120, g: 120, b: 120 } });
+            labels.push(BlockLabel {
+                x,
+                y,
+                text: "  (no captured data)".to_string(),
+                color: Rgb {
+                    r: 120,
+                    g: 120,
+                    b: 120,
+                },
+            });
             *row += 1;
         }
 
@@ -549,18 +641,16 @@ mod tests {
         let block = make_pipeline_block(vec!["cat", "grep"], vec![], false, None);
         let blocks: Vec<&Block> = vec![&block];
         let rects = renderer.build_pipeline_rects(&blocks, 800.0, 600.0, 20.0);
-        assert!(rects.is_empty(), "Collapsed pipeline should produce no rects");
+        assert!(
+            rects.is_empty(),
+            "Collapsed pipeline should produce no rects"
+        );
     }
 
     #[test]
     fn test_pipeline_rects_generates_row_per_stage_when_expanded() {
         let renderer = BlockRenderer::new(8.0, 16.0);
-        let block = make_pipeline_block(
-            vec!["cat file", "grep foo", "wc -l"],
-            vec![],
-            true,
-            None,
-        );
+        let block = make_pipeline_block(vec!["cat file", "grep foo", "wc -l"], vec![], true, None);
         let blocks: Vec<&Block> = vec![&block];
         let rects = renderer.build_pipeline_rects(&blocks, 800.0, 600.0, 20.0);
         // 3 stages expanded, no stage detail open -> 3 rects
@@ -578,14 +668,26 @@ mod tests {
         };
         let block = make_pipeline_block(
             vec!["cat file", "grep foo"],
-            vec![stage.clone(), CapturedStage { index: 1, total_bytes: 5, data: FinalizedBuffer::Complete(b"hello".to_vec()), temp_path: None }],
+            vec![
+                stage.clone(),
+                CapturedStage {
+                    index: 1,
+                    total_bytes: 5,
+                    data: FinalizedBuffer::Complete(b"hello".to_vec()),
+                    temp_path: None,
+                },
+            ],
             true,
             Some(0), // stage 0 expanded
         );
         let blocks: Vec<&Block> = vec![&block];
         let rects = renderer.build_pipeline_rects(&blocks, 800.0, 600.0, 20.0);
         // 2 stage rows + 2 output rows for expanded stage 0 = 4
-        assert_eq!(rects.len(), 4, "Should have stage rows plus expanded output rows");
+        assert_eq!(
+            rects.len(),
+            4,
+            "Should have stage rows plus expanded output rows"
+        );
     }
 
     // -- build_pipeline_text tests --
@@ -596,7 +698,10 @@ mod tests {
         let block = make_pipeline_block(vec!["cat", "grep"], vec![], false, None);
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
-        assert!(labels.is_empty(), "Collapsed pipeline should produce no labels");
+        assert!(
+            labels.is_empty(),
+            "Collapsed pipeline should produce no labels"
+        );
     }
 
     #[test]
@@ -625,13 +730,26 @@ mod tests {
 
         // Each stage produces: command label, indicator, byte count, line count = 4 labels per stage
         // So 2 stages * 4 = 8 labels
-        assert!(!labels.is_empty(), "Expanded pipeline should produce labels");
+        assert!(
+            !labels.is_empty(),
+            "Expanded pipeline should produce labels"
+        );
 
         // Find command text labels
         let cmd_labels: Vec<_> = labels.iter().filter(|l| l.text.contains("stage")).collect();
-        assert_eq!(cmd_labels.len(), 2, "Should have one command label per stage");
-        assert!(cmd_labels[0].text.contains("cat file.txt"), "Stage 0 should show its command");
-        assert!(cmd_labels[1].text.contains("grep foo"), "Stage 1 should show its command");
+        assert_eq!(
+            cmd_labels.len(),
+            2,
+            "Should have one command label per stage"
+        );
+        assert!(
+            cmd_labels[0].text.contains("cat file.txt"),
+            "Stage 0 should show its command"
+        );
+        assert!(
+            cmd_labels[1].text.contains("grep foo"),
+            "Stage 1 should show its command"
+        );
     }
 
     #[test]
@@ -643,38 +761,40 @@ mod tests {
             data: FinalizedBuffer::Complete(b"line1\nline2\nline3\n".to_vec()),
             temp_path: None,
         };
-        let block = make_pipeline_block(
-            vec!["cat file.txt"],
-            vec![stage0],
-            true,
-            None,
-        );
+        let block = make_pipeline_block(vec!["cat file.txt"], vec![stage0], true, None);
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
 
         let line_label = labels.iter().find(|l| l.text.contains("lines"));
         assert!(line_label.is_some(), "Should have a line count label");
-        assert!(line_label.unwrap().text.contains("3 lines"), "Should show correct line count");
+        assert!(
+            line_label.unwrap().text.contains("3 lines"),
+            "Should show correct line count"
+        );
 
         let byte_label = labels.iter().find(|l| l.text.contains("KB"));
-        assert!(byte_label.is_some(), "Should have a byte count label showing 2.0KB");
+        assert!(
+            byte_label.is_some(),
+            "Should have a byte count label showing 2.0KB"
+        );
     }
 
     #[test]
     fn test_pipeline_text_shows_expand_indicator() {
         let renderer = BlockRenderer::new(8.0, 16.0);
-        let block = make_pipeline_block(
-            vec!["cat", "grep"],
-            vec![],
-            true,
-            None,
-        );
+        let block = make_pipeline_block(vec!["cat", "grep"], vec![], true, None);
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
 
-        let indicators: Vec<_> = labels.iter().filter(|l| l.text == "[+]" || l.text == "[-]").collect();
+        let indicators: Vec<_> = labels
+            .iter()
+            .filter(|l| l.text == "[+]" || l.text == "[-]")
+            .collect();
         assert_eq!(indicators.len(), 2, "Should have one indicator per stage");
-        assert!(indicators.iter().all(|l| l.text == "[+]"), "All should be [+] when no stage expanded");
+        assert!(
+            indicators.iter().all(|l| l.text == "[+]"),
+            "All should be [+] when no stage expanded"
+        );
     }
 
     #[test]
@@ -686,17 +806,19 @@ mod tests {
             data: FinalizedBuffer::Complete(b"alpha\nbeta\n".to_vec()),
             temp_path: None,
         };
-        let block = make_pipeline_block(
-            vec!["cat file"],
-            vec![stage0],
-            true,
-            Some(0),
-        );
+        let block = make_pipeline_block(vec!["cat file"], vec![stage0], true, Some(0));
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_pipeline_text(&blocks, 800.0, 600.0, 20.0);
 
-        let content_lines: Vec<_> = labels.iter().filter(|l| l.text.starts_with("  | ")).collect();
-        assert_eq!(content_lines.len(), 2, "Should show 2 content lines from expanded stage");
+        let content_lines: Vec<_> = labels
+            .iter()
+            .filter(|l| l.text.starts_with("  | "))
+            .collect();
+        assert_eq!(
+            content_lines.len(),
+            2,
+            "Should show 2 content lines from expanded stage"
+        );
         assert!(content_lines[0].text.contains("alpha"));
         assert!(content_lines[1].text.contains("beta"));
     }

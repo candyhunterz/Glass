@@ -1,4 +1,4 @@
-use crate::types::{Pipeline, PipeStage};
+use crate::types::{PipeStage, Pipeline};
 
 /// Split a command string into pipe stages.
 ///
@@ -273,5 +273,4 @@ mod tests {
         assert!(!pipeline.stages[0].is_tty);
         assert!(!pipeline.stages[1].is_tty);
     }
-
 }

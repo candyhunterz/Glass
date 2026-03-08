@@ -11,10 +11,7 @@ fn percent_decode_str(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(val) = u8::from_str_radix(
-                &input[i + 1..i + 3],
-                16,
-            ) {
+            if let Ok(val) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
                 result.push(val);
                 i += 3;
                 continue;
@@ -53,7 +50,7 @@ pub enum OscEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScanState {
     Ground,
-    Escape,    // saw \x1b
+    Escape, // saw \x1b
     Accumulating,
 }
 
@@ -160,9 +157,7 @@ impl OscScanner {
             "B" => Some(OscEvent::CommandStart),
             "C" => Some(OscEvent::CommandExecuted),
             "D" => {
-                let exit_code = parts
-                    .next()
-                    .and_then(|s| s.parse::<i32>().ok());
+                let exit_code = parts.next().and_then(|s| s.parse::<i32>().ok());
                 Some(OscEvent::CommandFinished { exit_code })
             }
             "S" => {
@@ -180,7 +175,11 @@ impl OscScanner {
                 if temp_path.is_empty() {
                     return None;
                 }
-                Some(OscEvent::PipelineStage { index, total_bytes, temp_path })
+                Some(OscEvent::PipelineStage {
+                    index,
+                    total_bytes,
+                    temp_path,
+                })
             }
             _ => None,
         }
@@ -202,8 +201,7 @@ impl OscScanner {
                     path
                 };
                 // Decode percent-encoding
-                let decoded =
-                    percent_decode_str(path);
+                let decoded = percent_decode_str(path);
                 return Some(OscEvent::CurrentDirectory(decoded));
             }
         }
@@ -213,11 +211,9 @@ impl OscScanner {
     /// Parse OSC 9;9 ConEmu CWD.
     fn parse_osc9(params: &str) -> Option<OscEvent> {
         // params after "9;" should be "9;path"
-        if let Some(path) = params.strip_prefix("9;") {
-            Some(OscEvent::CurrentDirectory(path.to_string()))
-        } else {
-            None
-        }
+        params
+            .strip_prefix("9;")
+            .map(|path| OscEvent::CurrentDirectory(path.to_string()))
     }
 }
 
@@ -258,9 +254,7 @@ mod tests {
         let events = s.scan(b"\x1b]133;D;0\x07");
         assert_eq!(
             events,
-            vec![OscEvent::CommandFinished {
-                exit_code: Some(0)
-            }]
+            vec![OscEvent::CommandFinished { exit_code: Some(0) }]
         );
     }
 
@@ -270,9 +264,7 @@ mod tests {
         let events = s.scan(b"\x1b]133;D;1\x07");
         assert_eq!(
             events,
-            vec![OscEvent::CommandFinished {
-                exit_code: Some(1)
-            }]
+            vec![OscEvent::CommandFinished { exit_code: Some(1) }]
         );
     }
 
@@ -280,10 +272,7 @@ mod tests {
     fn command_finished_no_exit_code() {
         let mut s = OscScanner::new();
         let events = s.scan(b"\x1b]133;D\x07");
-        assert_eq!(
-            events,
-            vec![OscEvent::CommandFinished { exit_code: None }]
-        );
+        assert_eq!(events, vec![OscEvent::CommandFinished { exit_code: None }]);
     }
 
     #[test]
@@ -341,10 +330,7 @@ mod tests {
     fn interleaved_normal_and_osc() {
         let mut s = OscScanner::new();
         let events = s.scan(b"before\x1b]133;A\x07middle\x1b]133;B\x07after");
-        assert_eq!(
-            events,
-            vec![OscEvent::PromptStart, OscEvent::CommandStart]
-        );
+        assert_eq!(events, vec![OscEvent::PromptStart, OscEvent::CommandStart]);
     }
 
     #[test]
@@ -364,7 +350,11 @@ mod tests {
             temp_path: "/tmp/glass/stage_0".into(),
         };
         match event {
-            OscEvent::PipelineStage { index, total_bytes, temp_path } => {
+            OscEvent::PipelineStage {
+                index,
+                total_bytes,
+                temp_path,
+            } => {
                 assert_eq!(index, 0);
                 assert_eq!(total_bytes, 1024);
                 assert_eq!(temp_path, "/tmp/glass/stage_0");
@@ -397,33 +387,43 @@ mod tests {
     fn parse_pipeline_stage_st_terminator() {
         let mut s = OscScanner::new();
         let events = s.scan(b"\x1b]133;P;0;1024;/tmp/glass/stage_0\x1b\\");
-        assert_eq!(events, vec![OscEvent::PipelineStage {
-            index: 0,
-            total_bytes: 1024,
-            temp_path: "/tmp/glass/stage_0".into(),
-        }]);
+        assert_eq!(
+            events,
+            vec![OscEvent::PipelineStage {
+                index: 0,
+                total_bytes: 1024,
+                temp_path: "/tmp/glass/stage_0".into(),
+            }]
+        );
     }
 
     #[test]
     fn parse_pipeline_stage_windows_path() {
         let mut s = OscScanner::new();
-        let events = s.scan(b"\x1b]133;P;2;5000;C:/Users/test/AppData/Local/Temp/glass_1234/stage_2\x07");
-        assert_eq!(events, vec![OscEvent::PipelineStage {
-            index: 2,
-            total_bytes: 5000,
-            temp_path: "C:/Users/test/AppData/Local/Temp/glass_1234/stage_2".into(),
-        }]);
+        let events =
+            s.scan(b"\x1b]133;P;2;5000;C:/Users/test/AppData/Local/Temp/glass_1234/stage_2\x07");
+        assert_eq!(
+            events,
+            vec![OscEvent::PipelineStage {
+                index: 2,
+                total_bytes: 5000,
+                temp_path: "C:/Users/test/AppData/Local/Temp/glass_1234/stage_2".into(),
+            }]
+        );
     }
 
     #[test]
     fn pipeline_interleaved_with_normal() {
         let mut s = OscScanner::new();
         let events = s.scan(b"\x1b]133;A\x07\x1b]133;S;2\x07\x1b]133;C\x07");
-        assert_eq!(events, vec![
-            OscEvent::PromptStart,
-            OscEvent::PipelineStart { stage_count: 2 },
-            OscEvent::CommandExecuted,
-        ]);
+        assert_eq!(
+            events,
+            vec![
+                OscEvent::PromptStart,
+                OscEvent::PipelineStart { stage_count: 2 },
+                OscEvent::CommandExecuted,
+            ]
+        );
     }
 
     #[test]

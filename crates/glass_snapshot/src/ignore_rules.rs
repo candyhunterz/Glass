@@ -93,11 +93,7 @@ mod tests {
     #[test]
     fn test_glassignore_negation() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join(".glassignore"),
-            "*.log\n!important.log\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join(".glassignore"), "*.log\n!important.log\n").unwrap();
         let rules = IgnoreRules::load(dir.path());
         assert!(!rules.is_ignored(&dir.path().join("important.log")));
         assert!(rules.is_ignored(&dir.path().join("other.log")));

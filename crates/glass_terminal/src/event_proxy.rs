@@ -17,8 +17,16 @@ pub struct EventProxy {
 }
 
 impl EventProxy {
-    pub fn new(proxy: EventLoopProxy<AppEvent>, window_id: WindowId, session_id: SessionId) -> Self {
-        Self { proxy, window_id, session_id }
+    pub fn new(
+        proxy: EventLoopProxy<AppEvent>,
+        window_id: WindowId,
+        session_id: SessionId,
+    ) -> Self {
+        Self {
+            proxy,
+            window_id,
+            session_id,
+        }
     }
 
     /// Returns the session ID this proxy routes events for.
@@ -32,9 +40,9 @@ impl EventListener for EventProxy {
         use alacritty_terminal::event::Event;
         match event {
             Event::Wakeup => {
-                let _ = self
-                    .proxy
-                    .send_event(AppEvent::TerminalDirty { window_id: self.window_id });
+                let _ = self.proxy.send_event(AppEvent::TerminalDirty {
+                    window_id: self.window_id,
+                });
             }
             Event::Title(title) => {
                 let _ = self.proxy.send_event(AppEvent::SetTitle {

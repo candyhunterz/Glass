@@ -86,7 +86,13 @@ mod tests {
             result
         );
         // The parent directory should be named .glass
-        let parent_name = result.parent().unwrap().file_name().unwrap().to_str().unwrap();
+        let parent_name = result
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(parent_name, ".glass");
     }
 }

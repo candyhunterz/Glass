@@ -13,7 +13,10 @@ pub use blob_store::BlobStore;
 pub use db::SnapshotDb;
 pub use ignore_rules::IgnoreRules;
 pub use pruner::Pruner;
-pub use types::{Confidence, FileOutcome, ParseResult, SnapshotFileRecord, SnapshotRecord, UndoResult, WatcherEvent, WatcherEventKind};
+pub use types::{
+    Confidence, FileOutcome, ParseResult, SnapshotFileRecord, SnapshotRecord, UndoResult,
+    WatcherEvent, WatcherEventKind,
+};
 pub use undo::UndoEngine;
 pub use watcher::FsWatcher;
 
@@ -42,12 +45,7 @@ impl SnapshotStore {
 
     /// Store a file into the snapshot. Handles non-existent files (NULL hash)
     /// and skips symlinks.
-    pub fn store_file(
-        &self,
-        snapshot_id: i64,
-        path: &Path,
-        source: &str,
-    ) -> Result<()> {
+    pub fn store_file(&self, snapshot_id: i64, path: &Path, source: &str) -> Result<()> {
         if !path.exists() {
             // File does not exist -- record NULL hash (file was absent before command)
             self.db

@@ -188,9 +188,14 @@ impl BlockManager {
                         block.finished_at = Some(Instant::now());
 
                         // Auto-expand pipeline blocks on failure or >2 stages
-                        if block.pipeline_stage_count.unwrap_or(0) > 0 || block.pipeline_stage_commands.len() > 1 {
-                            let stage_count = block.pipeline_stage_count.unwrap_or(0).max(block.pipeline_stage_commands.len());
-                            let failed = block.exit_code.map_or(false, |c| c != 0);
+                        if block.pipeline_stage_count.unwrap_or(0) > 0
+                            || block.pipeline_stage_commands.len() > 1
+                        {
+                            let stage_count = block
+                                .pipeline_stage_count
+                                .unwrap_or(0)
+                                .max(block.pipeline_stage_commands.len());
+                            let failed = block.exit_code.is_some_and(|c| c != 0);
                             block.pipeline_expanded = failed || stage_count > 2;
                         }
                     }
@@ -206,7 +211,11 @@ impl BlockManager {
                     }
                 }
             }
-            OscEvent::PipelineStage { index, total_bytes, temp_path } => {
+            OscEvent::PipelineStage {
+                index,
+                total_bytes,
+                temp_path,
+            } => {
                 if let Some(idx) = self.current {
                     if let Some(block) = self.blocks.get_mut(idx) {
                         block.pipeline_stages.push(CapturedStage {
@@ -222,11 +231,7 @@ impl BlockManager {
     }
 
     /// Return blocks that overlap the given viewport.
-    pub fn visible_blocks(
-        &self,
-        display_offset: usize,
-        screen_lines: usize,
-    ) -> Vec<&Block> {
+    pub fn visible_blocks(&self, display_offset: usize, screen_lines: usize) -> Vec<&Block> {
         let viewport_start = display_offset;
         let viewport_end = display_offset + screen_lines;
 
@@ -272,7 +277,10 @@ impl BlockManager {
 
     /// Find a block by its started_epoch and return a mutable reference.
     pub fn find_block_by_epoch_mut(&mut self, epoch: i64) -> Option<&mut Block> {
-        self.blocks.iter_mut().rev().find(|b| b.started_epoch == Some(epoch))
+        self.blocks
+            .iter_mut()
+            .rev()
+            .find(|b| b.started_epoch == Some(epoch))
     }
 
     /// Hit test pipeline stage panel at the bottom of the viewport.
@@ -281,13 +289,19 @@ impl BlockManager {
     /// `viewport_height` and `status_bar_height` are in pixels.
     pub fn pipeline_hit_test(
         &self,
-        _x: f32, y: f32,
-        _cell_w: f32, cell_h: f32,
+        _x: f32,
+        y: f32,
+        _cell_w: f32,
+        cell_h: f32,
         viewport_height: f32,
         status_bar_height: f32,
     ) -> Option<(usize, PipelineHit)> {
         // Find the last expanded pipeline block (matching renderer)
-        let (block_idx, block) = self.blocks.iter().enumerate().rev()
+        let (block_idx, block) = self
+            .blocks
+            .iter()
+            .enumerate()
+            .rev()
             .find(|(_, b)| b.pipeline_expanded)?;
 
         let stage_count = if !block.pipeline_stage_commands.is_empty() {
@@ -338,7 +352,11 @@ impl BlockManager {
                 }
                 glass_pipes::FinalizedBuffer::Binary { .. } => 1,
             };
-            if lines == 0 { 1 } else { lines.min(30) }
+            if lines == 0 {
+                1
+            } else {
+                lines.min(30)
+            }
         } else {
             1 // "no captured data" row
         }
@@ -408,12 +426,7 @@ mod tests {
         bm.handle_event(&OscEvent::PromptStart, 0);
         bm.handle_event(&OscEvent::CommandStart, 1);
         bm.handle_event(&OscEvent::CommandExecuted, 1);
-        bm.handle_event(
-            &OscEvent::CommandFinished {
-                exit_code: Some(0),
-            },
-            5,
-        );
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
         assert_eq!(bm.blocks()[0].state, BlockState::Complete);
         assert_eq!(bm.blocks()[0].exit_code, Some(0));
         assert!(bm.blocks()[0].finished_at.is_some());
@@ -425,12 +438,7 @@ mod tests {
         bm.handle_event(&OscEvent::PromptStart, 0);
         bm.handle_event(&OscEvent::CommandStart, 1);
         bm.handle_event(&OscEvent::CommandExecuted, 1);
-        bm.handle_event(
-            &OscEvent::CommandFinished {
-                exit_code: Some(0),
-            },
-            5,
-        );
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
         // Second command
         bm.handle_event(&OscEvent::PromptStart, 6);
         bm.handle_event(&OscEvent::CommandStart, 7);
@@ -446,22 +454,12 @@ mod tests {
         bm.handle_event(&OscEvent::PromptStart, 0);
         bm.handle_event(&OscEvent::CommandStart, 1);
         bm.handle_event(&OscEvent::CommandExecuted, 1);
-        bm.handle_event(
-            &OscEvent::CommandFinished {
-                exit_code: Some(0),
-            },
-            5,
-        );
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
         // Block at lines 10-15
         bm.handle_event(&OscEvent::PromptStart, 10);
         bm.handle_event(&OscEvent::CommandStart, 11);
         bm.handle_event(&OscEvent::CommandExecuted, 11);
-        bm.handle_event(
-            &OscEvent::CommandFinished {
-                exit_code: Some(0),
-            },
-            15,
-        );
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 15);
 
         // Viewport covers lines 0-9 (should only see first block)
         let visible = bm.visible_blocks(0, 10);
@@ -493,12 +491,7 @@ mod tests {
         // Should not panic even without a prior PromptStart
         bm.handle_event(&OscEvent::CommandStart, 0);
         bm.handle_event(&OscEvent::CommandExecuted, 0);
-        bm.handle_event(
-            &OscEvent::CommandFinished {
-                exit_code: Some(1),
-            },
-            0,
-        );
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(1) }, 0);
         // No blocks created — all events ignored gracefully
         assert!(bm.blocks().is_empty());
     }
@@ -511,10 +504,7 @@ mod tests {
 
     #[test]
     fn format_duration_seconds() {
-        assert_eq!(
-            format_duration(Duration::from_secs_f64(1.23)),
-            "1.2s"
-        );
+        assert_eq!(format_duration(Duration::from_secs_f64(1.23)), "1.2s");
     }
 
     #[test]
@@ -524,10 +514,7 @@ mod tests {
 
     #[test]
     fn format_duration_sub_millisecond() {
-        assert_eq!(
-            format_duration(Duration::from_secs_f64(0.0005)),
-            "<1ms"
-        );
+        assert_eq!(format_duration(Duration::from_secs_f64(0.0005)), "<1ms");
     }
 
     // -- Pipeline stage tests --
@@ -557,15 +544,21 @@ mod tests {
         bm.handle_event(&OscEvent::CommandStart, 1);
         bm.handle_event(&OscEvent::CommandExecuted, 1);
         bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 1);
-        bm.handle_event(&OscEvent::PipelineStage {
-            index: 0,
-            total_bytes: 1024,
-            temp_path: "/tmp/glass/stage_0".to_string(),
-        }, 2);
+        bm.handle_event(
+            &OscEvent::PipelineStage {
+                index: 0,
+                total_bytes: 1024,
+                temp_path: "/tmp/glass/stage_0".to_string(),
+            },
+            2,
+        );
         assert_eq!(bm.blocks()[0].pipeline_stages.len(), 1);
         assert_eq!(bm.blocks()[0].pipeline_stages[0].index, 0);
         assert_eq!(bm.blocks()[0].pipeline_stages[0].total_bytes, 1024);
-        assert_eq!(bm.blocks()[0].pipeline_stages[0].temp_path, Some("/tmp/glass/stage_0".to_string()));
+        assert_eq!(
+            bm.blocks()[0].pipeline_stages[0].temp_path,
+            Some("/tmp/glass/stage_0".to_string())
+        );
     }
 
     #[test]
@@ -576,11 +569,14 @@ mod tests {
         bm.handle_event(&OscEvent::CommandExecuted, 1);
         bm.handle_event(&OscEvent::PipelineStart { stage_count: 3 }, 1);
         for i in 0..3 {
-            bm.handle_event(&OscEvent::PipelineStage {
-                index: i,
-                total_bytes: 100 * (i + 1),
-                temp_path: format!("/tmp/glass/stage_{}", i),
-            }, 2);
+            bm.handle_event(
+                &OscEvent::PipelineStage {
+                    index: i,
+                    total_bytes: 100 * (i + 1),
+                    temp_path: format!("/tmp/glass/stage_{}", i),
+                },
+                2,
+            );
         }
         assert_eq!(bm.blocks()[0].pipeline_stages.len(), 3);
         assert_eq!(bm.blocks()[0].pipeline_stages[2].index, 2);
@@ -592,11 +588,14 @@ mod tests {
         let mut bm = BlockManager::new();
         // No PromptStart -- no current block
         bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 0);
-        bm.handle_event(&OscEvent::PipelineStage {
-            index: 0,
-            total_bytes: 512,
-            temp_path: "/tmp/glass/stage_0".to_string(),
-        }, 1);
+        bm.handle_event(
+            &OscEvent::PipelineStage {
+                index: 0,
+                total_bytes: 512,
+                temp_path: "/tmp/glass/stage_0".to_string(),
+            },
+            1,
+        );
         assert!(bm.blocks().is_empty());
     }
 
@@ -739,15 +738,30 @@ mod tests {
         let panel_top = viewport_h - status_h - 3.0 * cell_h;
 
         // Click on stage row 0 (first row in panel)
-        let result = bm.pipeline_hit_test(100.0, panel_top + 1.0, 8.0, cell_h, viewport_h, status_h);
+        let result =
+            bm.pipeline_hit_test(100.0, panel_top + 1.0, 8.0, cell_h, viewport_h, status_h);
         assert_eq!(result, Some((0, PipelineHit::StageRow(0))));
 
         // Click on stage row 1
-        let result = bm.pipeline_hit_test(100.0, panel_top + cell_h + 1.0, 8.0, cell_h, viewport_h, status_h);
+        let result = bm.pipeline_hit_test(
+            100.0,
+            panel_top + cell_h + 1.0,
+            8.0,
+            cell_h,
+            viewport_h,
+            status_h,
+        );
         assert_eq!(result, Some((0, PipelineHit::StageRow(1))));
 
         // Click on stage row 2
-        let result = bm.pipeline_hit_test(100.0, panel_top + 2.0 * cell_h + 1.0, 8.0, cell_h, viewport_h, status_h);
+        let result = bm.pipeline_hit_test(
+            100.0,
+            panel_top + 2.0 * cell_h + 1.0,
+            8.0,
+            cell_h,
+            viewport_h,
+            status_h,
+        );
         assert_eq!(result, Some((0, PipelineHit::StageRow(2))));
     }
 
@@ -761,11 +775,19 @@ mod tests {
         let panel_top = viewport_h - status_h - 2.0 * cell_h;
 
         // Click above the panel
-        let result = bm.pipeline_hit_test(100.0, panel_top - 10.0, 8.0, cell_h, viewport_h, status_h);
+        let result =
+            bm.pipeline_hit_test(100.0, panel_top - 10.0, 8.0, cell_h, viewport_h, status_h);
         assert_eq!(result, None, "Click above panel should return None");
 
         // Click below the panel (in status bar area)
-        let result = bm.pipeline_hit_test(100.0, viewport_h - status_h + 5.0, 8.0, cell_h, viewport_h, status_h);
+        let result = bm.pipeline_hit_test(
+            100.0,
+            viewport_h - status_h + 5.0,
+            8.0,
+            cell_h,
+            viewport_h,
+            status_h,
+        );
         assert_eq!(result, None, "Click in status bar should return None");
     }
 
@@ -799,11 +821,19 @@ mod tests {
         let panel_top = viewport_h - status_h - 4.0 * cell_h;
 
         // Row 0 = stage 0 header
-        let result = bm.pipeline_hit_test(100.0, panel_top + 1.0, 8.0, cell_h, viewport_h, status_h);
+        let result =
+            bm.pipeline_hit_test(100.0, panel_top + 1.0, 8.0, cell_h, viewport_h, status_h);
         assert_eq!(result, Some((0, PipelineHit::StageRow(0))));
 
         // Row 3 = stage 1 header (after stage 0 header + 2 output rows)
-        let result = bm.pipeline_hit_test(100.0, panel_top + 3.0 * cell_h + 1.0, 8.0, cell_h, viewport_h, status_h);
+        let result = bm.pipeline_hit_test(
+            100.0,
+            panel_top + 3.0 * cell_h + 1.0,
+            8.0,
+            cell_h,
+            viewport_h,
+            status_h,
+        );
         assert_eq!(result, Some((0, PipelineHit::StageRow(1))));
     }
 
@@ -814,11 +844,14 @@ mod tests {
         bm.handle_event(&OscEvent::CommandStart, 1);
         bm.handle_event(&OscEvent::CommandExecuted, 1);
         bm.handle_event(&OscEvent::PipelineStart { stage_count: 2 }, 1);
-        bm.handle_event(&OscEvent::PipelineStage {
-            index: 0,
-            total_bytes: 100,
-            temp_path: "/tmp/glass/stage_0".to_string(),
-        }, 2);
+        bm.handle_event(
+            &OscEvent::PipelineStage {
+                index: 0,
+                total_bytes: 100,
+                temp_path: "/tmp/glass/stage_0".to_string(),
+            },
+            2,
+        );
         // New prompt creates fresh block
         bm.handle_event(&OscEvent::PromptStart, 10);
         assert!(bm.blocks()[1].pipeline_stages.is_empty());

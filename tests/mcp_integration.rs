@@ -194,10 +194,7 @@ fn test_tools_list() {
         .expect("Expected 'tools' array in result");
 
     // Collect tool names
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     assert!(
         tool_names.contains(&"glass_history"),

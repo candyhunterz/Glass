@@ -111,8 +111,18 @@ mod tests {
         };
         let labels = o.build_error_text(&err, 800.0);
         assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].text, "Config error (line 3, col 5): expected string");
-        assert_eq!(labels[0].color, Rgb { r: 220, g: 220, b: 220 });
+        assert_eq!(
+            labels[0].text,
+            "Config error (line 3, col 5): expected string"
+        );
+        assert_eq!(
+            labels[0].color,
+            Rgb {
+                r: 220,
+                g: 220,
+                b: 220
+            }
+        );
     }
 
     #[test]

@@ -19,8 +19,7 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
 
     // Collect ids to delete first
     let ids_to_delete: Vec<i64> = {
-        let mut stmt =
-            conn.prepare("SELECT id FROM commands WHERE started_at < ?1")?;
+        let mut stmt = conn.prepare("SELECT id FROM commands WHERE started_at < ?1")?;
         let result = stmt
             .query_map(params![cutoff], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -30,17 +29,11 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
     if !ids_to_delete.is_empty() {
         let tx = conn.unchecked_transaction()?;
         for &id in &ids_to_delete {
-            tx.execute(
-                "DELETE FROM pipe_stages WHERE command_id = ?1",
-                params![id],
-            )?;
+            tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
         }
         for &id in &ids_to_delete {
             // Delete from FTS table (standard FTS5 -- just DELETE by rowid)
-            tx.execute(
-                "DELETE FROM commands_fts WHERE rowid = ?1",
-                params![id],
-            )?;
+            tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
         }
         for &id in &ids_to_delete {
             tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
@@ -58,16 +51,14 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
     let db_size = db_size as u64;
 
     if db_size > max_size_bytes {
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
         let count = count as u64;
         let to_delete = (count / 10).max(1) as i64;
 
         // Collect ids of oldest records
         let old_ids: Vec<i64> = {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM commands ORDER BY started_at ASC LIMIT ?1",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT id FROM commands ORDER BY started_at ASC LIMIT ?1")?;
             let result = stmt
                 .query_map(params![to_delete], |row| row.get(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -77,16 +68,10 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
         if !old_ids.is_empty() {
             let tx = conn.unchecked_transaction()?;
             for &id in &old_ids {
-                tx.execute(
-                    "DELETE FROM pipe_stages WHERE command_id = ?1",
-                    params![id],
-                )?;
+                tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
             }
             for &id in &old_ids {
-                tx.execute(
-                    "DELETE FROM commands_fts WHERE rowid = ?1",
-                    params![id],
-                )?;
+                tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
             }
             for &id in &old_ids {
                 tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;

@@ -2,22 +2,22 @@
 
 #[cfg(test)]
 mod subcommand_tests {
+    use crate::{Cli, Commands, HistoryAction, HistoryFilters, McpAction};
     use clap::Parser;
-    use crate::{Cli, Commands, McpAction, HistoryAction, HistoryFilters};
 
     #[test]
     fn test_no_subcommand_is_none() {
         let cli = Cli::try_parse_from(["glass"]).unwrap();
-        assert!(cli.command.is_none(), "No args should yield command = None (terminal mode)");
+        assert!(
+            cli.command.is_none(),
+            "No args should yield command = None (terminal mode)"
+        );
     }
 
     #[test]
     fn test_history_subcommand_defaults_to_none_action() {
         let cli = Cli::try_parse_from(["glass", "history"]).unwrap();
-        assert_eq!(
-            cli.command,
-            Some(Commands::History { action: None })
-        );
+        assert_eq!(cli.command, Some(Commands::History { action: None }));
     }
 
     #[test]
@@ -56,12 +56,10 @@ mod subcommand_tests {
     #[test]
     fn test_history_list_with_all_filters() {
         let cli = Cli::try_parse_from([
-            "glass", "history", "list",
-            "--exit", "1",
-            "--after", "1h",
-            "--cwd", "/project",
-            "-n", "10",
-        ]).unwrap();
+            "glass", "history", "list", "--exit", "1", "--after", "1h", "--cwd", "/project", "-n",
+            "10",
+        ])
+        .unwrap();
         assert_eq!(
             cli.command,
             Some(Commands::History {
@@ -80,10 +78,8 @@ mod subcommand_tests {
 
     #[test]
     fn test_history_search_with_limit() {
-        let cli = Cli::try_parse_from([
-            "glass", "history", "search", "deploy",
-            "--limit", "5",
-        ]).unwrap();
+        let cli =
+            Cli::try_parse_from(["glass", "history", "search", "deploy", "--limit", "5"]).unwrap();
         assert_eq!(
             cli.command,
             Some(Commands::History {
@@ -103,10 +99,8 @@ mod subcommand_tests {
 
     #[test]
     fn test_history_list_with_before_filter() {
-        let cli = Cli::try_parse_from([
-            "glass", "history", "list",
-            "--before", "2024-01-15",
-        ]).unwrap();
+        let cli =
+            Cli::try_parse_from(["glass", "history", "list", "--before", "2024-01-15"]).unwrap();
         assert_eq!(
             cli.command,
             Some(Commands::History {
@@ -128,7 +122,9 @@ mod subcommand_tests {
         let cli = Cli::try_parse_from(["glass", "mcp", "serve"]).unwrap();
         assert_eq!(
             cli.command,
-            Some(Commands::Mcp { action: McpAction::Serve })
+            Some(Commands::Mcp {
+                action: McpAction::Serve
+            })
         );
     }
 
@@ -136,13 +132,19 @@ mod subcommand_tests {
     fn test_help_flag() {
         // --help causes clap to return an error (DisplayHelp), not a parsed result
         let result = Cli::try_parse_from(["glass", "--help"]);
-        assert!(result.is_err(), "--help should produce a clap error (DisplayHelp)");
+        assert!(
+            result.is_err(),
+            "--help should produce a clap error (DisplayHelp)"
+        );
     }
 
     #[test]
     fn test_unknown_subcommand_errors() {
         let result = Cli::try_parse_from(["glass", "bogus"]);
-        assert!(result.is_err(), "Unknown subcommand should produce a clap error");
+        assert!(
+            result.is_err(),
+            "Unknown subcommand should produce a clap error"
+        );
     }
 }
 
@@ -163,12 +165,8 @@ mod codepage_tests {
             windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
         }
 
-        let output_cp = unsafe {
-            windows_sys::Win32::System::Console::GetConsoleOutputCP()
-        };
-        let input_cp = unsafe {
-            windows_sys::Win32::System::Console::GetConsoleCP()
-        };
+        let output_cp = unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() };
+        let input_cp = unsafe { windows_sys::Win32::System::Console::GetConsoleCP() };
 
         assert_eq!(
             output_cp, 65001,

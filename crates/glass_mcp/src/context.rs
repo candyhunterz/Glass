@@ -32,10 +32,7 @@ pub struct ContextSummary {
 ///
 /// If `after` is Some, only commands with `started_at >= after` are included.
 /// Uses parameterized queries for safety.
-pub fn build_context_summary(
-    conn: &Connection,
-    after: Option<i64>,
-) -> Result<ContextSummary> {
+pub fn build_context_summary(conn: &Connection, after: Option<i64>) -> Result<ContextSummary> {
     // Build aggregate query with optional time filter
     let (agg_sql, dir_sql, params) = if let Some(after_epoch) = after {
         (
@@ -63,8 +60,8 @@ pub fn build_context_summary(
 
     // Run aggregate query
     let mut stmt = conn.prepare(agg_sql)?;
-    let (command_count, failure_count, earliest_timestamp, latest_timestamp) = stmt
-        .query_row(rusqlite::params_from_iter(params.iter()), |row| {
+    let (command_count, failure_count, earliest_timestamp, latest_timestamp) =
+        stmt.query_row(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
@@ -112,18 +109,13 @@ pub fn build_context_summary(
     let mut pipe_stmt = conn.prepare(pipe_count_sql)?;
     let (pipeline_count, avg_pipeline_stages) = pipe_stmt
         .query_row(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Option<f64>>(1)?,
-            ))
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<f64>>(1)?))
         })?;
     let avg_pipeline_stages = avg_pipeline_stages.unwrap_or(0.0);
 
     let mut pipe_fail_stmt = conn.prepare(pipe_fail_sql)?;
-    let failed_pipeline_count: i64 = pipe_fail_stmt
-        .query_row(rusqlite::params_from_iter(params.iter()), |row| {
-            row.get(0)
-        })?;
+    let failed_pipeline_count: i64 =
+        pipe_fail_stmt.query_row(rusqlite::params_from_iter(params.iter()), |row| row.get(0))?;
     let pipeline_failure_rate = if pipeline_count > 0 {
         failed_pipeline_count as f64 / pipeline_count as f64
     } else {
@@ -250,21 +242,64 @@ mod tests {
             insert(&db, "cat | grep | wc", "/tmp", Some(0), 1700000000);
             1 // first inserted gets id 1
         };
-        db.insert_pipe_stages(id1, &[
-            PipeStageRow { stage_index: 0, command: "cat".into(), output: Some("a".into()), total_bytes: 1, is_binary: false, is_sampled: false },
-            PipeStageRow { stage_index: 1, command: "grep".into(), output: Some("b".into()), total_bytes: 1, is_binary: false, is_sampled: false },
-            PipeStageRow { stage_index: 2, command: "wc".into(), output: Some("1".into()), total_bytes: 1, is_binary: false, is_sampled: false },
-        ]).unwrap();
+        db.insert_pipe_stages(
+            id1,
+            &[
+                PipeStageRow {
+                    stage_index: 0,
+                    command: "cat".into(),
+                    output: Some("a".into()),
+                    total_bytes: 1,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 1,
+                    command: "grep".into(),
+                    output: Some("b".into()),
+                    total_bytes: 1,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 2,
+                    command: "wc".into(),
+                    output: Some("1".into()),
+                    total_bytes: 1,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+            ],
+        )
+        .unwrap();
 
         // Command 2: failure, 2 pipe stages
         let id2 = {
             insert(&db, "echo | sort", "/tmp", Some(1), 1700000010);
             2
         };
-        db.insert_pipe_stages(id2, &[
-            PipeStageRow { stage_index: 0, command: "echo".into(), output: Some("x".into()), total_bytes: 1, is_binary: false, is_sampled: false },
-            PipeStageRow { stage_index: 1, command: "sort".into(), output: Some("x".into()), total_bytes: 1, is_binary: false, is_sampled: false },
-        ]).unwrap();
+        db.insert_pipe_stages(
+            id2,
+            &[
+                PipeStageRow {
+                    stage_index: 0,
+                    command: "echo".into(),
+                    output: Some("x".into()),
+                    total_bytes: 1,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 1,
+                    command: "sort".into(),
+                    output: Some("x".into()),
+                    total_bytes: 1,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+            ],
+        )
+        .unwrap();
 
         let summary = build_context_summary(db.conn(), None).unwrap();
         assert_eq!(summary.pipeline_count, 2);
@@ -281,21 +316,64 @@ mod tests {
             insert(&db, "cat | grep", "/tmp", Some(0), 1700000000);
             1
         };
-        db.insert_pipe_stages(id1, &[
-            PipeStageRow { stage_index: 0, command: "cat".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
-            PipeStageRow { stage_index: 1, command: "grep".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
-        ]).unwrap();
+        db.insert_pipe_stages(
+            id1,
+            &[
+                PipeStageRow {
+                    stage_index: 0,
+                    command: "cat".into(),
+                    output: None,
+                    total_bytes: 0,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 1,
+                    command: "grep".into(),
+                    output: None,
+                    total_bytes: 0,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+            ],
+        )
+        .unwrap();
 
         // New command with pipes (after filter)
         let id2 = {
             insert(&db, "echo | wc", "/tmp", Some(0), 1700000100);
             2
         };
-        db.insert_pipe_stages(id2, &[
-            PipeStageRow { stage_index: 0, command: "echo".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
-            PipeStageRow { stage_index: 1, command: "wc".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
-            PipeStageRow { stage_index: 2, command: "head".into(), output: None, total_bytes: 0, is_binary: false, is_sampled: false },
-        ]).unwrap();
+        db.insert_pipe_stages(
+            id2,
+            &[
+                PipeStageRow {
+                    stage_index: 0,
+                    command: "echo".into(),
+                    output: None,
+                    total_bytes: 0,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 1,
+                    command: "wc".into(),
+                    output: None,
+                    total_bytes: 0,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+                PipeStageRow {
+                    stage_index: 2,
+                    command: "head".into(),
+                    output: None,
+                    total_bytes: 0,
+                    is_binary: false,
+                    is_sampled: false,
+                },
+            ],
+        )
+        .unwrap();
 
         // Filter: only after epoch 1700000050
         let summary = build_context_summary(db.conn(), Some(1700000050)).unwrap();

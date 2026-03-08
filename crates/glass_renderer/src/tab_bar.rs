@@ -58,7 +58,10 @@ pub struct TabBarRenderer {
 impl TabBarRenderer {
     /// Create a new TabBarRenderer with the given cell dimensions.
     pub fn new(cell_width: f32, cell_height: f32) -> Self {
-        Self { cell_width, cell_height }
+        Self {
+            cell_width,
+            cell_height,
+        }
     }
 
     /// Build rectangles for the tab bar.
@@ -66,7 +69,11 @@ impl TabBarRenderer {
     /// Returns:
     /// - First rect: full-width bar background at y=0
     /// - Per-tab rects: equally sized, positioned sequentially with 1px gaps
-    pub fn build_tab_rects(&self, tabs: &[TabDisplayInfo], viewport_width: f32) -> Vec<RectInstance> {
+    pub fn build_tab_rects(
+        &self,
+        tabs: &[TabDisplayInfo],
+        viewport_width: f32,
+    ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
 
         // Bar background rect (always present).
@@ -116,11 +123,24 @@ impl TabBarRenderer {
                 let text = truncate_title(&tab.title);
                 let x = i as f32 * (tab_width + TAB_GAP) + TAB_TEXT_PADDING;
                 let color = if tab.is_active {
-                    Rgb { r: 204, g: 204, b: 204 }
+                    Rgb {
+                        r: 204,
+                        g: 204,
+                        b: 204,
+                    }
                 } else {
-                    Rgb { r: 140, g: 140, b: 140 }
+                    Rgb {
+                        r: 140,
+                        g: 140,
+                        b: 140,
+                    }
                 };
-                TabLabel { text, x, y: 0.0, color }
+                TabLabel {
+                    text,
+                    x,
+                    y: 0.0,
+                    color,
+                }
             })
             .collect()
     }
@@ -185,7 +205,7 @@ mod tests {
         // First rect is bar background
         assert_eq!(rects[0].color, BAR_BG_COLOR);
         assert_eq!(rects[0].pos[2], 800.0); // full width
-        // Second rect is active tab
+                                            // Second rect is active tab
         assert_eq!(rects[1].color, ACTIVE_TAB_COLOR);
     }
 
@@ -278,8 +298,22 @@ mod tests {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Active", true), ("Inactive", false)]);
         let labels = renderer.build_tab_text(&tabs, 800.0);
-        assert_eq!(labels[0].color, Rgb { r: 204, g: 204, b: 204 });
-        assert_eq!(labels[1].color, Rgb { r: 140, g: 140, b: 140 });
+        assert_eq!(
+            labels[0].color,
+            Rgb {
+                r: 204,
+                g: 204,
+                b: 204
+            }
+        );
+        assert_eq!(
+            labels[1].color,
+            Rgb {
+                r: 140,
+                g: 140,
+                b: 140
+            }
+        );
     }
 
     #[test]

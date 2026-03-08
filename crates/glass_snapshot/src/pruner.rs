@@ -24,7 +24,12 @@ pub struct Pruner<'a> {
 
 impl<'a> Pruner<'a> {
     /// Create a new Pruner with the given retention policy parameters.
-    pub fn new(store: &'a SnapshotStore, retention_days: u32, max_count: u32, max_size_mb: u32) -> Self {
+    pub fn new(
+        store: &'a SnapshotStore,
+        retention_days: u32,
+        max_count: u32,
+        max_size_mb: u32,
+    ) -> Self {
         Self {
             store,
             retention_days,
@@ -73,10 +78,8 @@ impl<'a> Pruner<'a> {
         let referenced = self.store.db().get_referenced_hashes()?;
         let all_blobs = self.store.blobs().list_blob_hashes()?;
         for hash in &all_blobs {
-            if !referenced.contains(hash) {
-                if self.store.blobs().delete_blob(hash)? {
-                    result.blobs_deleted += 1;
-                }
+            if !referenced.contains(hash) && self.store.blobs().delete_blob(hash)? {
+                result.blobs_deleted += 1;
             }
         }
 
@@ -98,7 +101,12 @@ mod tests {
     }
 
     /// Helper: create a snapshot with a specific created_at timestamp.
-    fn create_snapshot_at(store: &SnapshotStore, command_id: i64, cwd: &str, created_at: i64) -> i64 {
+    fn create_snapshot_at(
+        store: &SnapshotStore,
+        command_id: i64,
+        cwd: &str,
+        created_at: i64,
+    ) -> i64 {
         let sid = store.db().create_snapshot(command_id, cwd).unwrap();
         store.db().set_created_at(sid, created_at).unwrap();
         sid
@@ -217,7 +225,11 @@ mod tests {
 
         // Create an orphan blob manually
         let orphan_hash = "deadbeef00000000000000000000000000000000000000000000000000000000";
-        let shard_dir = dir.path().join(".glass").join("blobs").join(&orphan_hash[..2]);
+        let shard_dir = dir
+            .path()
+            .join(".glass")
+            .join("blobs")
+            .join(&orphan_hash[..2]);
         std::fs::create_dir_all(&shard_dir).unwrap();
         std::fs::write(shard_dir.join(format!("{}.blob", orphan_hash)), b"orphan").unwrap();
 

@@ -26,17 +26,15 @@ pub fn spawn_update_checker(current_version: &str, proxy: EventLoopProxy<AppEven
     let current = current_version.to_string();
     std::thread::Builder::new()
         .name("Glass update checker".into())
-        .spawn(move || {
-            match check_for_update(&current) {
-                Ok(Some(info)) => {
-                    let _ = proxy.send_event(AppEvent::UpdateAvailable(info));
-                }
-                Ok(None) => {
-                    tracing::debug!("Glass is up to date");
-                }
-                Err(e) => {
-                    tracing::debug!("Update check failed (non-fatal): {}", e);
-                }
+        .spawn(move || match check_for_update(&current) {
+            Ok(Some(info)) => {
+                let _ = proxy.send_event(AppEvent::UpdateAvailable(info));
+            }
+            Ok(None) => {
+                tracing::debug!("Glass is up to date");
+            }
+            Err(e) => {
+                tracing::debug!("Update check failed (non-fatal): {}", e);
             }
         })
         .expect("Failed to spawn update checker thread");
@@ -84,10 +82,7 @@ fn parse_update_from_response(
 
     if latest > current {
         let download_url = find_platform_asset(response)?;
-        let release_url = response["html_url"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let release_url = response["html_url"].as_str().unwrap_or("").to_string();
         Ok(Some(UpdateInfo {
             current: current.to_string(),
             latest: latest.to_string(),
@@ -102,9 +97,7 @@ fn parse_update_from_response(
 /// Find the platform-specific installer asset from a GitHub release response.
 ///
 /// Matches asset name suffix: `.msi` for Windows, `.dmg` for macOS, `.deb` for Linux.
-fn find_platform_asset(
-    release: &serde_json::Value,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn find_platform_asset(release: &serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
     let assets = release["assets"]
         .as_array()
         .ok_or("missing assets array in release response")?;
@@ -170,10 +163,7 @@ pub fn apply_update(info: &UpdateInfo) -> Result<(), Box<dyn std::error::Error>>
 
 /// Download a file from `url` to `path` using ureq.
 #[cfg(target_os = "windows")]
-fn download_file(
-    url: &str,
-    path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn download_file(url: &str, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     let mut response = ureq::get(url)
@@ -259,20 +249,35 @@ mod tests {
 
     #[test]
     fn find_platform_asset_selects_correct_suffix() {
-        let release = mock_release("v2.0.0", &[
-            ("glass-2.0.0.msi", "https://dl.example.com/glass-2.0.0.msi"),
-            ("glass-2.0.0.dmg", "https://dl.example.com/glass-2.0.0.dmg"),
-            ("glass-2.0.0.deb", "https://dl.example.com/glass-2.0.0.deb"),
-        ]);
+        let release = mock_release(
+            "v2.0.0",
+            &[
+                ("glass-2.0.0.msi", "https://dl.example.com/glass-2.0.0.msi"),
+                ("glass-2.0.0.dmg", "https://dl.example.com/glass-2.0.0.dmg"),
+                ("glass-2.0.0.deb", "https://dl.example.com/glass-2.0.0.deb"),
+            ],
+        );
 
         let url = find_platform_asset(&release).unwrap();
 
         if cfg!(target_os = "windows") {
-            assert!(url.ends_with(".msi"), "Windows should select .msi, got: {}", url);
+            assert!(
+                url.ends_with(".msi"),
+                "Windows should select .msi, got: {}",
+                url
+            );
         } else if cfg!(target_os = "macos") {
-            assert!(url.ends_with(".dmg"), "macOS should select .dmg, got: {}", url);
+            assert!(
+                url.ends_with(".dmg"),
+                "macOS should select .dmg, got: {}",
+                url
+            );
         } else {
-            assert!(url.ends_with(".deb"), "Linux should select .deb, got: {}", url);
+            assert!(
+                url.ends_with(".deb"),
+                "Linux should select .deb, got: {}",
+                url
+            );
         }
     }
 
@@ -301,16 +306,23 @@ mod tests {
 
         let release = mock_release("v1.0.0", &assets);
         let result = find_platform_asset(&release);
-        assert!(result.is_err(), "Should error when no matching asset for platform");
+        assert!(
+            result.is_err(),
+            "Should error when no matching asset for platform"
+        );
     }
 
     // --- GitHub API JSON parsing tests ---
 
     #[test]
     fn parse_github_release_json_extracts_tag_and_url() {
-        let release = mock_release("v1.5.0", &[
-            ("glass-1.5.0.msi", "https://github.com/nkngu/Glass/releases/download/v1.5.0/glass-1.5.0.msi"),
-        ]);
+        let release = mock_release(
+            "v1.5.0",
+            &[(
+                "glass-1.5.0.msi",
+                "https://github.com/nkngu/Glass/releases/download/v1.5.0/glass-1.5.0.msi",
+            )],
+        );
 
         assert_eq!(release["tag_name"].as_str().unwrap(), "v1.5.0");
         assert!(release["html_url"].as_str().unwrap().contains("v1.5.0"));
@@ -318,13 +330,18 @@ mod tests {
 
     #[test]
     fn parse_update_populates_release_url() {
-        let release = mock_release("v2.0.0", &[
-            ("glass-2.0.0.msi", "https://dl.example.com/glass-2.0.0.msi"),
-            ("glass-2.0.0.dmg", "https://dl.example.com/glass-2.0.0.dmg"),
-            ("glass-2.0.0.deb", "https://dl.example.com/glass-2.0.0.deb"),
-        ]);
+        let release = mock_release(
+            "v2.0.0",
+            &[
+                ("glass-2.0.0.msi", "https://dl.example.com/glass-2.0.0.msi"),
+                ("glass-2.0.0.dmg", "https://dl.example.com/glass-2.0.0.dmg"),
+                ("glass-2.0.0.deb", "https://dl.example.com/glass-2.0.0.deb"),
+            ],
+        );
 
-        let result = parse_update_from_response("1.0.0", &release).unwrap().unwrap();
+        let result = parse_update_from_response("1.0.0", &release)
+            .unwrap()
+            .unwrap();
         assert!(result.release_url.contains("v2.0.0"));
         assert!(!result.download_url.is_empty());
     }

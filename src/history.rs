@@ -17,7 +17,11 @@ pub fn run_history(action: Option<HistoryAction>) {
     let db = match glass_history::HistoryDb::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
-            eprintln!("Error: could not open history database at {}: {}", db_path.display(), e);
+            eprintln!(
+                "Error: could not open history database at {}: {}",
+                db_path.display(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -30,9 +34,7 @@ pub fn run_history(action: Option<HistoryAction>) {
             };
             build_query_filter(None, filters)
         }
-        Some(HistoryAction::Search { query, filters }) => {
-            build_query_filter(Some(query), filters)
-        }
+        Some(HistoryAction::Search { query, filters }) => build_query_filter(Some(query), filters),
     };
 
     let filter = match filter {
@@ -60,18 +62,16 @@ fn build_query_filter(
     filters: &HistoryFilters,
 ) -> Result<QueryFilter, String> {
     let after = match &filters.after {
-        Some(s) => Some(
-            parse_time(s)
-                .map_err(|e| format!("Invalid --after value '{}': {}", s, e))?,
-        ),
+        Some(s) => {
+            Some(parse_time(s).map_err(|e| format!("Invalid --after value '{}': {}", s, e))?)
+        }
         None => None,
     };
 
     let before = match &filters.before {
-        Some(s) => Some(
-            parse_time(s)
-                .map_err(|e| format!("Invalid --before value '{}': {}", s, e))?,
-        ),
+        Some(s) => {
+            Some(parse_time(s).map_err(|e| format!("Invalid --before value '{}': {}", s, e))?)
+        }
         None => None,
     };
 
@@ -93,7 +93,7 @@ fn format_timestamp(epoch: i64) -> String {
     let now = Utc::now().timestamp();
     let diff = now - epoch;
 
-    if diff >= 0 && diff < 86400 {
+    if (0..86400).contains(&diff) {
         if diff < 60 {
             return format!("{}s ago", diff);
         } else if diff < 3600 {
@@ -145,8 +145,8 @@ fn print_results(records: &[CommandRecord]) {
 
     // Header
     println!(
-        "{:<50} {:>4} {:>8} {:>16} {}",
-        "COMMAND", "EXIT", "DURATION", "TIME", "CWD"
+        "{:<50} {:>4} {:>8} {:>16} CWD",
+        "COMMAND", "EXIT", "DURATION", "TIME"
     );
     println!("{}", "-".repeat(100));
 
@@ -217,6 +217,10 @@ mod tests {
         // A timestamp from 2023 should show full date
         let ts = 1700000000; // 2023-11-14
         let result = format_timestamp(ts);
-        assert!(result.contains("2023"), "Expected date format, got: {}", result);
+        assert!(
+            result.contains("2023"),
+            "Expected date format, got: {}",
+            result
+        );
     }
 }

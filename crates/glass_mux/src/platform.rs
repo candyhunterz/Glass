@@ -14,10 +14,7 @@ use winit::keyboard::ModifiersState;
 /// - Linux: `$SHELL` or `/bin/bash`
 #[cfg(target_os = "windows")]
 pub fn default_shell() -> String {
-    match std::process::Command::new("pwsh")
-        .arg("--version")
-        .output()
-    {
+    match std::process::Command::new("pwsh").arg("--version").output() {
         Ok(output) if output.status.success() => "pwsh".to_string(),
         _ => "powershell".to_string(),
     }
@@ -132,7 +129,10 @@ mod tests {
     #[test]
     fn config_dir_returns_glass_subfolder() {
         let dir = config_dir();
-        assert!(dir.is_some(), "config_dir should return Some on this platform");
+        assert!(
+            dir.is_some(),
+            "config_dir should return Some on this platform"
+        );
         let path = dir.unwrap();
         assert!(
             path.ends_with("glass"),
@@ -144,7 +144,10 @@ mod tests {
     #[test]
     fn data_dir_returns_glass_subfolder() {
         let dir = data_dir();
-        assert!(dir.is_some(), "data_dir should return Some on this platform");
+        assert!(
+            dir.is_some(),
+            "data_dir should return Some on this platform"
+        );
         let path = dir.unwrap();
         assert!(
             path.ends_with("glass"),

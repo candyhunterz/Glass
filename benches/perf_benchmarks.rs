@@ -4,7 +4,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use glass_terminal::{DefaultColors, OscScanner, resolve_color};
+use glass_terminal::{resolve_color, DefaultColors, OscScanner};
 
 fn bench_resolve_color(c: &mut Criterion) {
     let colors = Colors::default();
@@ -15,7 +15,11 @@ fn bench_resolve_color(c: &mut Criterion) {
     group.bench_function("spec_truecolor", |b| {
         b.iter(|| {
             resolve_color(
-                black_box(Color::Spec(Rgb { r: 255, g: 128, b: 0 })),
+                black_box(Color::Spec(Rgb {
+                    r: 255,
+                    g: 128,
+                    b: 0,
+                })),
                 black_box(&colors),
                 black_box(&defaults),
                 black_box(Flags::empty()),
@@ -76,5 +80,10 @@ fn bench_cold_start(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_resolve_color, bench_osc_scanner, bench_cold_start);
+criterion_group!(
+    benches,
+    bench_resolve_color,
+    bench_osc_scanner,
+    bench_cold_start
+);
 criterion_main!(benches);

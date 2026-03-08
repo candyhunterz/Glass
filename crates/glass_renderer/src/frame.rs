@@ -4,7 +4,10 @@
 //! Owns the GlyphCache, GridRenderer, and RectRenderer.
 
 use alacritty_terminal::vte::ansi::Rgb;
-use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, Metrics, Resolution, Shaping, TextArea, TextBounds};
+use glyphon::{
+    Attrs, Buffer, Color as GlyphonColor, Family, Metrics, Resolution, Shaping, TextArea,
+    TextBounds,
+};
 
 use glass_terminal::{Block, GridSnapshot, StatusState};
 
@@ -58,7 +61,15 @@ impl FrameRenderer {
         font_size: f32,
         scale_factor: f32,
     ) -> Self {
-        Self::with_font_system(glyphon::FontSystem::new(), device, queue, surface_format, font_family, font_size, scale_factor)
+        Self::with_font_system(
+            glyphon::FontSystem::new(),
+            device,
+            queue,
+            surface_format,
+            font_family,
+            font_size,
+            scale_factor,
+        )
     }
 
     /// Create the rendering pipeline with a pre-created FontSystem (for parallel init).
@@ -71,7 +82,8 @@ impl FrameRenderer {
         font_size: f32,
         scale_factor: f32,
     ) -> Self {
-        let mut glyph_cache = GlyphCache::with_font_system(font_system, device, queue, surface_format);
+        let mut glyph_cache =
+            GlyphCache::with_font_system(font_system, device, queue, surface_format);
         let grid_renderer = GridRenderer::new(
             &mut glyph_cache.font_system,
             font_family,
@@ -84,7 +96,11 @@ impl FrameRenderer {
         let search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
         let status_bar = StatusBarRenderer::new(cell_height);
         let tab_bar = TabBarRenderer::new(cell_width, cell_height);
-        let default_bg = Rgb { r: 26, g: 26, b: 26 };
+        let default_bg = Rgb {
+            r: 26,
+            g: 26,
+            b: 26,
+        };
 
         Self {
             glyph_cache,
@@ -111,12 +127,7 @@ impl FrameRenderer {
     /// Called when the user changes font_family or font_size in config.toml.
     /// Rebuilds GridRenderer (cell metrics), then updates BlockRenderer,
     /// SearchOverlayRenderer, StatusBarRenderer, and TabBarRenderer.
-    pub fn update_font(
-        &mut self,
-        font_family: &str,
-        font_size: f32,
-        scale_factor: f32,
-    ) {
+    pub fn update_font(&mut self, font_family: &str, font_size: f32, scale_factor: f32) {
         self.grid_renderer = GridRenderer::new(
             &mut self.glyph_cache.font_system,
             font_family,
@@ -142,6 +153,7 @@ impl FrameRenderer {
     ///
     /// When `blocks` is empty and `status` is None, this behaves identically to Phase 2.
     #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_frame(
         &mut self,
         device: &wgpu::Device,
@@ -169,7 +181,8 @@ impl FrameRenderer {
 
         // 1. Build rect instances (backgrounds + cursor)
         let mut rect_instances = if grid_y_offset > 0.0 {
-            self.grid_renderer.build_rects_offset(snapshot, self.default_bg, 0.0, grid_y_offset)
+            self.grid_renderer
+                .build_rects_offset(snapshot, self.default_bg, 0.0, grid_y_offset)
         } else {
             self.grid_renderer.build_rects(snapshot, self.default_bg)
         };
@@ -192,7 +205,9 @@ impl FrameRenderer {
         // 1b. Append block decoration rects (separators, badges)
         // Block lines are absolute; convert viewport start to absolute coords.
         if !blocks.is_empty() {
-            let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+            let viewport_abs_start = snapshot
+                .history_size
+                .saturating_sub(snapshot.display_offset);
             let mut block_rects = self.block_renderer.build_block_rects(
                 blocks,
                 viewport_abs_start,
@@ -235,21 +250,23 @@ impl FrameRenderer {
 
         // 1e. Pipeline panel rects (bottom of viewport, above status bar)
         let (_, cell_height_early) = self.grid_renderer.cell_size();
-        let status_bar_h = if status.is_some() { cell_height_early } else { 0.0 };
+        let status_bar_h = if status.is_some() {
+            cell_height_early
+        } else {
+            0.0
+        };
         if !blocks.is_empty() {
-            let pipeline_rects = self.block_renderer.build_pipeline_rects(
-                blocks,
-                w,
-                h,
-                status_bar_h,
-            );
+            let pipeline_rects =
+                self.block_renderer
+                    .build_pipeline_rects(blocks, w, h, status_bar_h);
             rect_instances.extend(pipeline_rects);
         }
 
         let total_rect_count = rect_instances.len() as u32;
 
         // 2. Prepare rect renderer (all rects in one buffer, drawn in two passes)
-        self.rect_renderer.prepare(device, queue, &rect_instances, width, height);
+        self.rect_renderer
+            .prepare(device, queue, &rect_instances, width, height);
 
         // 3. Build text buffers and text areas for grid content
         self.text_buffers.clear();
@@ -267,11 +284,8 @@ impl FrameRenderer {
                 grid_y_offset,
             )
         } else {
-            self.grid_renderer.build_text_areas(
-                &self.text_buffers,
-                width,
-                height,
-            )
+            self.grid_renderer
+                .build_text_areas(&self.text_buffers, width, height)
         };
 
         // 3b. Build overlay text buffers for block labels and status bar.
@@ -295,7 +309,9 @@ impl FrameRenderer {
         // Phase A: Build all overlay buffers
         // Block label buffers
         if !blocks.is_empty() {
-            let viewport_abs_start = snapshot.history_size.saturating_sub(snapshot.display_offset);
+            let viewport_abs_start = snapshot
+                .history_size
+                .saturating_sub(snapshot.display_offset);
             let block_labels = self.block_renderer.build_block_text(
                 blocks,
                 viewport_abs_start,
@@ -314,7 +330,12 @@ impl FrameRenderer {
                     &label.text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
                     Shaping::Advanced,
                     None,
                 );
@@ -454,13 +475,22 @@ impl FrameRenderer {
             let tab_labels = self.tab_bar.build_tab_text(tabs, w);
             for label in &tab_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(&mut self.glyph_cache.font_system, Some(w - label.x), Some(cell_height));
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
                 buffer.set_text(
                     &mut self.glyph_cache.font_system,
                     &label.text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
                     Shaping::Advanced,
                     None,
                 );
@@ -495,7 +525,12 @@ impl FrameRenderer {
                     &label.text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
                     Shaping::Advanced,
                     None,
                 );
@@ -514,12 +549,9 @@ impl FrameRenderer {
         let mut pipeline_metas: Vec<OverlayMeta> = Vec::new();
 
         if !blocks.is_empty() {
-            let pipeline_labels = self.block_renderer.build_pipeline_text(
-                blocks,
-                w,
-                h,
-                status_bar_h,
-            );
+            let pipeline_labels =
+                self.block_renderer
+                    .build_pipeline_text(blocks, w, h, status_bar_h);
             for label in &pipeline_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
@@ -532,7 +564,12 @@ impl FrameRenderer {
                     &label.text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
                     Shaping::Advanced,
                     None,
                 );
@@ -567,7 +604,9 @@ impl FrameRenderer {
         }
 
         // 4. Update viewport resolution
-        self.glyph_cache.viewport.update(queue, Resolution { width, height });
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
 
         // 5. Prepare text renderer (grid + block labels + status bar — NO pipeline labels)
         if let Err(e) = self.glyph_cache.text_renderer.prepare(
@@ -624,7 +663,8 @@ impl FrameRenderer {
             }
 
             // 9. Draw pipeline overlay rects on top of text
-            self.rect_renderer.render_range(&mut pass, bg_rect_count, total_rect_count);
+            self.rect_renderer
+                .render_range(&mut pass, bg_rect_count, total_rect_count);
         }
 
         // Submit pass 1
@@ -702,6 +742,7 @@ impl FrameRenderer {
     ///
     /// `panes`: Vec of (viewport, snapshot, blocks, is_focused) for each pane.
     #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_multi_pane_frame(
         &mut self,
         device: &wgpu::Device,
@@ -778,7 +819,12 @@ impl FrameRenderer {
         // Divider rects between panes
         for div in dividers {
             rect_instances.push(crate::rect_renderer::RectInstance {
-                pos: [div.x as f32, div.y as f32, div.width as f32, div.height as f32],
+                pos: [
+                    div.x as f32,
+                    div.y as f32,
+                    div.width as f32,
+                    div.height as f32,
+                ],
                 color: [80.0 / 255.0, 80.0 / 255.0, 80.0 / 255.0, 1.0],
             });
         }
@@ -798,7 +844,8 @@ impl FrameRenderer {
         let total_rect_count = rect_instances.len() as u32;
 
         // 2. Prepare rect renderer
-        self.rect_renderer.prepare(device, queue, &rect_instances, width, height);
+        self.rect_renderer
+            .prepare(device, queue, &rect_instances, width, height);
 
         // 3. Build text buffers for all panes
         // We need separate buffer storage per pane since they have different offsets
@@ -861,15 +908,21 @@ impl FrameRenderer {
             // Left text (CWD)
             {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(&mut self.glyph_cache.font_system, Some(w), Some(cell_height));
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
                 buffer.set_text(
                     &mut self.glyph_cache.font_system,
                     &status_label.left_text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
                         .color(GlyphonColor::rgba(
-                            status_label.left_color.r, status_label.left_color.g,
-                            status_label.left_color.b, 255,
+                            status_label.left_color.r,
+                            status_label.left_color.g,
+                            status_label.left_color.b,
+                            255,
                         )),
                     Shaping::Advanced,
                     None,
@@ -880,8 +933,10 @@ impl FrameRenderer {
                     left: cell_width * 0.5,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
-                        status_label.left_color.r, status_label.left_color.g,
-                        status_label.left_color.b, 255,
+                        status_label.left_color.r,
+                        status_label.left_color.g,
+                        status_label.left_color.b,
+                        255,
                     ),
                 });
             }
@@ -890,15 +945,21 @@ impl FrameRenderer {
             if let Some(ref right_text) = status_label.right_text {
                 let right_text_width = right_text.len() as f32 * cell_width;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(&mut self.glyph_cache.font_system, Some(w), Some(cell_height));
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
                 buffer.set_text(
                     &mut self.glyph_cache.font_system,
                     right_text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
                         .color(GlyphonColor::rgba(
-                            status_label.right_color.r, status_label.right_color.g,
-                            status_label.right_color.b, 255,
+                            status_label.right_color.r,
+                            status_label.right_color.g,
+                            status_label.right_color.b,
+                            255,
                         )),
                     Shaping::Advanced,
                     None,
@@ -909,8 +970,10 @@ impl FrameRenderer {
                     left: w - right_text_width - cell_width * 0.5,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
-                        status_label.right_color.r, status_label.right_color.g,
-                        status_label.right_color.b, 255,
+                        status_label.right_color.r,
+                        status_label.right_color.g,
+                        status_label.right_color.b,
+                        255,
                     ),
                 });
             }
@@ -920,15 +983,21 @@ impl FrameRenderer {
                 let center_text_width = center_text.len() as f32 * cell_width;
                 let center_x = (w - center_text_width) / 2.0;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(&mut self.glyph_cache.font_system, Some(w), Some(cell_height));
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
                 buffer.set_text(
                     &mut self.glyph_cache.font_system,
                     center_text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
                         .color(GlyphonColor::rgba(
-                            status_label.center_color.r, status_label.center_color.g,
-                            status_label.center_color.b, 255,
+                            status_label.center_color.r,
+                            status_label.center_color.g,
+                            status_label.center_color.b,
+                            255,
                         )),
                     Shaping::Advanced,
                     None,
@@ -939,8 +1008,10 @@ impl FrameRenderer {
                     left: center_x,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
-                        status_label.center_color.r, status_label.center_color.g,
-                        status_label.center_color.b, 255,
+                        status_label.center_color.r,
+                        status_label.center_color.g,
+                        status_label.center_color.b,
+                        255,
                     ),
                 });
             }
@@ -951,13 +1022,22 @@ impl FrameRenderer {
             let tab_labels = self.tab_bar.build_tab_text(tabs, w);
             for label in &tab_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(&mut self.glyph_cache.font_system, Some(w - label.x), Some(cell_height));
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
                 buffer.set_text(
                     &mut self.glyph_cache.font_system,
                     &label.text,
                     &Attrs::new()
                         .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
                     Shaping::Advanced,
                     None,
                 );
@@ -990,11 +1070,14 @@ impl FrameRenderer {
         }
 
         // 4. Update viewport resolution
-        self.glyph_cache.viewport.update(queue, Resolution { width, height });
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
 
         // 5. Prepare text renderer
         if let Err(e) = self.glyph_cache.text_renderer.prepare(
-            device, queue,
+            device,
+            queue,
             &mut self.glyph_cache.font_system,
             &mut self.glyph_cache.atlas,
             &self.glyph_cache.viewport,
@@ -1019,7 +1102,10 @@ impl FrameRenderer {
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: bg_r, g: bg_g, b: bg_b, a: 1.0,
+                            r: bg_r,
+                            g: bg_g,
+                            b: bg_b,
+                            a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -1065,7 +1151,8 @@ impl FrameRenderer {
         let error_labels = overlay.build_error_text(error, width as f32);
 
         // Reuse self.rect_renderer -- safe because this runs after the main draw
-        self.rect_renderer.prepare(device, queue, &error_rects, width, height);
+        self.rect_renderer
+            .prepare(device, queue, &error_rects, width, height);
 
         // Build error text buffer
         let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
@@ -1084,15 +1171,22 @@ impl FrameRenderer {
                 &label.text,
                 &Attrs::new()
                     .family(Family::Name(font_family))
-                    .color(GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255)),
+                    .color(GlyphonColor::rgba(
+                        label.color.r,
+                        label.color.g,
+                        label.color.b,
+                        255,
+                    )),
                 Shaping::Advanced,
                 None,
             );
             error_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
         }
 
-        let error_text_areas: Vec<TextArea<'_>> = error_labels.iter().take(1).map(|label| {
-            TextArea {
+        let error_text_areas: Vec<TextArea<'_>> = error_labels
+            .iter()
+            .take(1)
+            .map(|label| TextArea {
                 buffer: &error_buffer,
                 left: label.x,
                 top: label.y,
@@ -1105,13 +1199,16 @@ impl FrameRenderer {
                 },
                 default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
                 custom_glyphs: &[],
-            }
-        }).collect();
+            })
+            .collect();
 
-        self.glyph_cache.viewport.update(queue, Resolution { width, height });
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
 
         if let Err(e) = self.glyph_cache.text_renderer.prepare(
-            device, queue,
+            device,
+            queue,
             &mut self.glyph_cache.font_system,
             &mut self.glyph_cache.atlas,
             &self.glyph_cache.viewport,
@@ -1139,7 +1236,8 @@ impl FrameRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.rect_renderer.render(&mut pass, error_rects.len() as u32);
+            self.rect_renderer
+                .render(&mut pass, error_rects.len() as u32);
             if let Err(e) = self.glyph_cache.text_renderer.render(
                 &self.glyph_cache.atlas,
                 &self.glyph_cache.viewport,

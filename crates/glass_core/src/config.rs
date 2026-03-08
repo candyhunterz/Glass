@@ -14,7 +14,11 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.line, self.column) {
             (Some(line), Some(col)) => {
-                write!(f, "Config error (line {}, col {}): {}", line, col, self.message)
+                write!(
+                    f,
+                    "Config error (line {}, col {}): {}",
+                    line, col, self.message
+                )
             }
             _ => write!(f, "Config error: {}", self.message),
         }
@@ -113,11 +117,17 @@ fn default_auto_expand() -> bool {
 
 fn default_font_family() -> &'static str {
     #[cfg(target_os = "windows")]
-    { "Consolas" }
+    {
+        "Consolas"
+    }
     #[cfg(target_os = "macos")]
-    { "Menlo" }
+    {
+        "Menlo"
+    }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    { "Monospace" }
+    {
+        "Monospace"
+    }
 }
 
 impl Default for GlassConfig {
@@ -158,11 +168,18 @@ impl GlassConfig {
                 config
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!("No config file at {}; using defaults", config_path.display());
+                tracing::debug!(
+                    "No config file at {}; using defaults",
+                    config_path.display()
+                );
                 Self::default()
             }
             Err(err) => {
-                tracing::warn!("Failed to read {}: {}; using defaults", config_path.display(), err);
+                tracing::warn!(
+                    "Failed to read {}: {}; using defaults",
+                    config_path.display(),
+                    err
+                );
                 Self::default()
             }
         }
@@ -198,7 +215,12 @@ impl GlassConfig {
             } else {
                 (None, None, None)
             };
-            ConfigError { message, line, column, snippet }
+            ConfigError {
+                message,
+                line,
+                column,
+                snippet,
+            }
         })
     }
 
@@ -386,7 +408,8 @@ mod tests {
 
     #[test]
     fn snapshot_section_all_fields() {
-        let toml = "[snapshot]\nenabled = true\nmax_count = 2000\nmax_size_mb = 1024\nretention_days = 90";
+        let toml =
+            "[snapshot]\nenabled = true\nmax_count = 2000\nmax_size_mb = 1024\nretention_days = 90";
         let config = GlassConfig::load_from_str(toml);
         let snap = config.snapshot.expect("snapshot section should be Some");
         assert!(snap.enabled);

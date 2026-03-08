@@ -116,7 +116,7 @@ mod tests {
         // >30% non-printable bytes (excluding \n\r\t)
         let mut data = vec![0u8; 40]; // 40 null bytes
         data.extend_from_slice(b"hello world this is normal text here!!!!"); // 40 printable
-        // 40/80 = 50% non-printable -> binary
+                                                                             // 40/80 = 50% non-printable -> binary
         assert!(is_binary(&data));
     }
 

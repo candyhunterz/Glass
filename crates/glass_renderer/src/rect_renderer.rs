@@ -210,7 +210,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     ) {
         // Update viewport uniform
         let viewport_data = [width as f32, height as f32];
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&viewport_data));
+        queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&viewport_data),
+        );
 
         if instances.is_empty() {
             return;
@@ -232,11 +236,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     /// Draw instanced rectangles into the given render pass.
-    pub fn render<'a>(
-        &'a self,
-        render_pass: &mut wgpu::RenderPass<'a>,
-        instance_count: u32,
-    ) {
+    pub fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, instance_count: u32) {
         if instance_count == 0 {
             return;
         }

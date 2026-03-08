@@ -38,13 +38,19 @@ impl BlobStore {
 
     /// Read blob contents by hash.
     pub fn read_blob(&self, hash: &str) -> Result<Vec<u8>> {
-        let blob_path = self.blob_dir.join(&hash[..2]).join(format!("{}.blob", hash));
+        let blob_path = self
+            .blob_dir
+            .join(&hash[..2])
+            .join(format!("{}.blob", hash));
         Ok(std::fs::read(&blob_path)?)
     }
 
     /// Check if a blob exists.
     pub fn blob_exists(&self, hash: &str) -> bool {
-        let blob_path = self.blob_dir.join(&hash[..2]).join(format!("{}.blob", hash));
+        let blob_path = self
+            .blob_dir
+            .join(&hash[..2])
+            .join(format!("{}.blob", hash));
         blob_path.exists()
     }
 
@@ -74,7 +80,10 @@ impl BlobStore {
 
     /// Delete a blob by hash. Returns true if it existed.
     pub fn delete_blob(&self, hash: &str) -> Result<bool> {
-        let blob_path = self.blob_dir.join(&hash[..2]).join(format!("{}.blob", hash));
+        let blob_path = self
+            .blob_dir
+            .join(&hash[..2])
+            .join(format!("{}.blob", hash));
         if blob_path.exists() {
             std::fs::remove_file(&blob_path)?;
             Ok(true)
@@ -146,7 +155,9 @@ mod tests {
 
         let (hash, _) = store.store_file(&file_path).unwrap();
         assert!(store.blob_exists(&hash));
-        assert!(!store.blob_exists("0000000000000000000000000000000000000000000000000000000000000000"));
+        assert!(
+            !store.blob_exists("0000000000000000000000000000000000000000000000000000000000000000")
+        );
     }
 
     #[test]

@@ -29,8 +29,18 @@ impl ViewportLayout {
                 let right_w = usable - left_w;
                 let right_x = self.x + left_w + DIVIDER_GAP;
                 (
-                    ViewportLayout { x: self.x, y: self.y, width: left_w, height: self.height },
-                    ViewportLayout { x: right_x, y: self.y, width: right_w, height: self.height },
+                    ViewportLayout {
+                        x: self.x,
+                        y: self.y,
+                        width: left_w,
+                        height: self.height,
+                    },
+                    ViewportLayout {
+                        x: right_x,
+                        y: self.y,
+                        width: right_w,
+                        height: self.height,
+                    },
                 )
             }
             SplitDirection::Vertical => {
@@ -39,8 +49,18 @@ impl ViewportLayout {
                 let bottom_h = usable - top_h;
                 let bottom_y = self.y + top_h + DIVIDER_GAP;
                 (
-                    ViewportLayout { x: self.x, y: self.y, width: self.width, height: top_h },
-                    ViewportLayout { x: self.x, y: bottom_y, width: self.width, height: bottom_h },
+                    ViewportLayout {
+                        x: self.x,
+                        y: self.y,
+                        width: self.width,
+                        height: top_h,
+                    },
+                    ViewportLayout {
+                        x: self.x,
+                        y: bottom_y,
+                        width: self.width,
+                        height: bottom_h,
+                    },
                 )
             }
         }
@@ -58,7 +78,12 @@ mod tests {
 
     #[test]
     fn split_horizontal_even() {
-        let vp = ViewportLayout { x: 0, y: 0, width: 1000, height: 600 };
+        let vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 600,
+        };
         let (left, right) = vp.split(SplitDirection::Horizontal, 0.5);
         assert_eq!(left.width + right.width + DIVIDER_GAP, 1000);
         assert_eq!(left.x, 0);
@@ -69,7 +94,12 @@ mod tests {
 
     #[test]
     fn split_vertical_even() {
-        let vp = ViewportLayout { x: 0, y: 0, width: 800, height: 800 };
+        let vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 800,
+        };
         let (top, bottom) = vp.split(SplitDirection::Vertical, 0.5);
         assert_eq!(top.height + bottom.height + DIVIDER_GAP, 800);
         assert_eq!(top.y, 0);
@@ -80,7 +110,12 @@ mod tests {
 
     #[test]
     fn center_calculation() {
-        let vp = ViewportLayout { x: 100, y: 200, width: 400, height: 300 };
+        let vp = ViewportLayout {
+            x: 100,
+            y: 200,
+            width: 400,
+            height: 300,
+        };
         assert_eq!(vp.center(), (300, 350));
     }
 }
