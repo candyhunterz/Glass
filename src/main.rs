@@ -467,9 +467,16 @@ impl ApplicationHandler<AppEvent> for Processor {
             return;
         }
 
+        let mut attrs = Window::default_attributes().with_title("Glass");
+
+        // Load app icon from embedded PNG for the window title bar and taskbar
+        if let Some(icon) = load_window_icon() {
+            attrs = attrs.with_window_icon(Some(icon));
+        }
+
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Glass"))
+                .create_window(attrs)
                 .expect("Failed to create window"),
         );
 
@@ -2379,6 +2386,18 @@ fn clipboard_paste(sender: &PtySender, mode: TermMode) {
             let _ = sender.send(PtyMsg::Input(Cow::Owned(bytes)));
         }
     }
+}
+
+/// Load the app icon PNG from the assets directory and convert to a winit Icon.
+///
+/// Returns `None` if the icon file is missing or malformed — the app still
+/// launches, just without a custom icon.
+fn load_window_icon() -> Option<winit::window::Icon> {
+    let icon_bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory_with_format(icon_bytes, image::ImageFormat::Png).ok()?;
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    winit::window::Icon::from_rgba(rgba.into_raw(), width, height).ok()
 }
 
 fn main() {
