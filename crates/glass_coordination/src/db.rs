@@ -1356,6 +1356,134 @@ mod tests {
         assert_eq!(count, 0, "No other agents means 0 messages inserted");
     }
 
+    // ---- Cross-connection integration tests ----
+
+    /// Helper: open two independent connections to the same SQLite database.
+    fn shared_test_db() -> (CoordinationDb, CoordinationDb, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("shared-agents.db");
+        let db1 = CoordinationDb::open(&db_path).unwrap();
+        let db2 = CoordinationDb::open(&db_path).unwrap();
+        (db1, db2, dir)
+    }
+
+    #[test]
+    fn test_cross_connection_registration_visibility() {
+        let (mut db1, mut db2, dir) = shared_test_db();
+        let project = dir.path().to_str().unwrap();
+
+        // Register agent A via connection 1
+        let _id_a = db1
+            .register("Agent-A", "claude-code", project, project, None)
+            .unwrap();
+
+        // Register agent B via connection 2
+        let _id_b = db2
+            .register("Agent-B", "cursor", project, project, None)
+            .unwrap();
+
+        // Both connections should see both agents
+        let canonical = crate::canonicalize_path(dir.path()).unwrap();
+        let agents_from_db1 = db1.list_agents(&canonical).unwrap();
+        let agents_from_db2 = db2.list_agents(&canonical).unwrap();
+
+        assert_eq!(agents_from_db1.len(), 2, "db1 should see 2 agents");
+        assert_eq!(agents_from_db2.len(), 2, "db2 should see 2 agents");
+
+        let names: Vec<&str> = agents_from_db1.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"Agent-A"));
+        assert!(names.contains(&"Agent-B"));
+    }
+
+    #[test]
+    fn test_cross_connection_lock_conflict() {
+        let (mut db1, mut db2, dir) = shared_test_db();
+        let project = dir.path().to_str().unwrap();
+
+        let id_a = db1
+            .register("Agent-A", "claude-code", project, project, None)
+            .unwrap();
+        let id_b = db2
+            .register("Agent-B", "cursor", project, project, None)
+            .unwrap();
+
+        // Create a real file for path canonicalization
+        let file_path = dir.path().join("contested.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        // Agent A locks file via connection 1
+        let result = db1
+            .lock_files(&id_a, &[file_path.clone()], Some("editing"))
+            .unwrap();
+        assert!(
+            matches!(result, LockResult::Acquired(_)),
+            "Agent A should acquire the lock"
+        );
+
+        // Agent B tries to lock same file via connection 2
+        let result = db2
+            .lock_files(&id_b, &[file_path], Some("also want it"))
+            .unwrap();
+        match result {
+            LockResult::Conflict(conflicts) => {
+                assert_eq!(conflicts.len(), 1);
+                assert_eq!(conflicts[0].held_by_agent_id, id_a);
+                assert_eq!(conflicts[0].held_by_agent_name, "Agent-A");
+            }
+            LockResult::Acquired(_) => panic!("Expected Conflict, got Acquired"),
+        }
+    }
+
+    #[test]
+    fn test_cross_connection_directed_message() {
+        let (mut db1, mut db2, _dir) = shared_test_db();
+
+        let id_a = db1
+            .register("Agent-A", "claude-code", "cross-msg", "/tmp", None)
+            .unwrap();
+        let id_b = db2
+            .register("Agent-B", "cursor", "cross-msg", "/tmp", None)
+            .unwrap();
+
+        // Agent A sends directed message to Agent B via connection 1
+        db1.send_message(&id_a, &id_b, "request_unlock", "please release foo.rs")
+            .unwrap();
+
+        // Agent B reads messages via connection 2
+        let msgs = db2.read_messages(&id_b).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "please release foo.rs");
+        assert_eq!(msgs[0].msg_type, "request_unlock");
+        assert_eq!(msgs[0].from_agent.as_deref(), Some(id_a.as_str()));
+        assert_eq!(msgs[0].from_name.as_deref(), Some("Agent-A"));
+    }
+
+    #[test]
+    fn test_cross_connection_broadcast() {
+        let (mut db1, mut db2, _dir) = shared_test_db();
+
+        let id_a = db1
+            .register("Agent-A", "claude-code", "cross-bcast", "/tmp", None)
+            .unwrap();
+        let _id_b = db2
+            .register("Agent-B", "cursor", "cross-bcast", "/tmp", None)
+            .unwrap();
+
+        // Agent A broadcasts via connection 1
+        let count = db1
+            .broadcast(&id_a, "cross-bcast", "status_update", "working on db.rs")
+            .unwrap();
+        assert_eq!(count, 1, "One other agent should receive the broadcast");
+
+        // Agent B reads broadcast via connection 2
+        let msgs = db2.read_messages(&_id_b).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "working on db.rs");
+        assert_eq!(msgs[0].msg_type, "status_update");
+        assert_eq!(msgs[0].from_agent.as_deref(), Some(id_a.as_str()));
+        assert_eq!(msgs[0].from_name.as_deref(), Some("Agent-A"));
+    }
+
     #[test]
     fn test_list_locks_all() {
         let (mut db, dir) = test_db();
