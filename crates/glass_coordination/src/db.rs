@@ -208,6 +208,167 @@ impl CoordinationDb {
         Ok(agents)
     }
 
+    // ---- File locking operations ----
+
+    /// Atomically lock one or more files for an agent.
+    ///
+    /// All-or-nothing semantics: if ANY file is already locked by a different agent,
+    /// no locks are acquired and a `LockResult::Conflict` is returned with details
+    /// about who holds each conflicting file.
+    ///
+    /// If the same agent already holds a lock on a file, it is refreshed
+    /// (INSERT OR REPLACE).
+    ///
+    /// Paths are canonicalized via `canonicalize_path` before storage so that
+    /// two different path representations of the same file correctly detect conflicts.
+    pub fn lock_files(
+        &mut self,
+        agent_id: &str,
+        paths: &[std::path::PathBuf],
+        reason: Option<&str>,
+    ) -> Result<LockResult> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Canonicalize all paths up front
+        let mut canonical_paths = Vec::with_capacity(paths.len());
+        for p in paths {
+            let canonical = crate::canonicalize_path(p)?;
+            canonical_paths.push(canonical);
+        }
+
+        // Check for conflicts (files locked by OTHER agents)
+        let mut conflicts = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT fl.path, a.id, a.name, fl.reason
+                 FROM file_locks fl
+                 JOIN agents a ON fl.agent_id = a.id
+                 WHERE fl.path = ?1 AND fl.agent_id != ?2",
+            )?;
+
+            for canonical in &canonical_paths {
+                let mut rows = stmt.query(params![canonical, agent_id])?;
+                if let Some(row) = rows.next()? {
+                    conflicts.push(LockConflict {
+                        path: row.get(0)?,
+                        held_by_agent_id: row.get(1)?,
+                        held_by_agent_name: row.get(2)?,
+                        reason: row.get(3)?,
+                    });
+                }
+            }
+        }
+
+        if !conflicts.is_empty() {
+            // All-or-nothing: return conflict without inserting anything
+            // Transaction will rollback on drop
+            return Ok(LockResult::Conflict(conflicts));
+        }
+
+        // No conflicts -- insert/replace all locks
+        {
+            let mut insert_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO file_locks (path, agent_id, reason, locked_at)
+                 VALUES (?1, ?2, ?3, unixepoch())",
+            )?;
+            for canonical in &canonical_paths {
+                insert_stmt.execute(params![canonical, agent_id, reason])?;
+            }
+        }
+
+        // Implicit heartbeat on lock activity
+        tx.execute(
+            "UPDATE agents SET last_heartbeat = unixepoch() WHERE id = ?1",
+            params![agent_id],
+        )?;
+
+        tx.commit()?;
+        Ok(LockResult::Acquired(canonical_paths))
+    }
+
+    /// Unlock a specific file for an agent.
+    ///
+    /// Only the agent that holds the lock can release it.
+    /// Returns `true` if a lock was actually released, `false` if no matching lock existed.
+    pub fn unlock_file(&mut self, agent_id: &str, path: &std::path::Path) -> Result<bool> {
+        let canonical = crate::canonicalize_path(path)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = tx.execute(
+            "DELETE FROM file_locks WHERE path = ?1 AND agent_id = ?2",
+            params![&canonical, agent_id],
+        )?;
+        tx.commit()?;
+        Ok(rows > 0)
+    }
+
+    /// Release all file locks held by an agent.
+    ///
+    /// Returns the number of locks released.
+    pub fn unlock_all(&mut self, agent_id: &str) -> Result<u64> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = tx.execute(
+            "DELETE FROM file_locks WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+        tx.commit()?;
+        Ok(rows as u64)
+    }
+
+    /// List file locks, optionally filtered by project.
+    ///
+    /// If `project` is `Some`, only locks held by agents registered to that project
+    /// are returned. If `None`, all locks are returned (useful for GUI display).
+    ///
+    /// The project path is canonicalized before matching.
+    pub fn list_locks(&mut self, project: Option<&str>) -> Result<Vec<FileLock>> {
+        if let Some(proj) = project {
+            let canonical_project =
+                crate::canonicalize_path(Path::new(proj)).unwrap_or_else(|_| proj.to_string());
+            let mut stmt = self.conn.prepare(
+                "SELECT fl.path, fl.agent_id, a.name, fl.reason, fl.locked_at
+                 FROM file_locks fl
+                 JOIN agents a ON fl.agent_id = a.id
+                 WHERE a.project = ?1",
+            )?;
+            let locks = stmt
+                .query_map(params![&canonical_project], |row| {
+                    Ok(FileLock {
+                        path: row.get(0)?,
+                        agent_id: row.get(1)?,
+                        agent_name: row.get(2)?,
+                        reason: row.get(3)?,
+                        locked_at: row.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(locks)
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT fl.path, fl.agent_id, a.name, fl.reason, fl.locked_at
+                 FROM file_locks fl
+                 JOIN agents a ON fl.agent_id = a.id",
+            )?;
+            let locks = stmt
+                .query_map([], |row| {
+                    Ok(FileLock {
+                        path: row.get(0)?,
+                        agent_id: row.get(1)?,
+                        agent_name: row.get(2)?,
+                        reason: row.get(3)?,
+                        locked_at: row.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(locks)
+        }
+    }
+
     /// Prune stale agents (heartbeat timeout or dead PID).
     ///
     /// Agents whose `last_heartbeat` is older than `timeout_secs` are pruned
@@ -610,9 +771,7 @@ mod tests {
         let id_a = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let _id_b = db
-            .register("agent-b", "cursor", ".", "/tmp", None)
-            .unwrap();
+        let _id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         let file_path = dir.path().join("shared.rs");
         std::fs::write(&file_path, "").unwrap();
@@ -633,10 +792,7 @@ mod tests {
                 assert_eq!(conflicts.len(), 1);
                 assert_eq!(conflicts[0].held_by_agent_id, id_a);
                 assert_eq!(conflicts[0].held_by_agent_name, "agent-a");
-                assert_eq!(
-                    conflicts[0].reason.as_deref(),
-                    Some("editing shared.rs")
-                );
+                assert_eq!(conflicts[0].reason.as_deref(), Some("editing shared.rs"));
             }
             LockResult::Acquired(_) => panic!("Expected Conflict, got Acquired"),
         }
@@ -648,9 +804,7 @@ mod tests {
         let id_a = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db
-            .register("agent-b", "cursor", ".", "/tmp", None)
-            .unwrap();
+        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         let file_x = dir.path().join("x.rs");
         let file_y = dir.path().join("y.rs");
@@ -715,9 +869,7 @@ mod tests {
         let id_a = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db
-            .register("agent-b", "cursor", ".", "/tmp", None)
-            .unwrap();
+        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         // Create a real file
         let subdir = dir.path().join("sub");
@@ -794,9 +946,7 @@ mod tests {
         let id_a = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db
-            .register("agent-b", "cursor", ".", "/tmp", None)
-            .unwrap();
+        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         let file_path = dir.path().join("owned.rs");
         std::fs::write(&file_path, "").unwrap();
@@ -807,7 +957,10 @@ mod tests {
 
         // Agent B tries to unlock it -- should return false
         let unlocked = db.unlock_file(&id_b, &file_path).unwrap();
-        assert!(!unlocked, "Agent B should not be able to unlock Agent A's file");
+        assert!(
+            !unlocked,
+            "Agent B should not be able to unlock Agent A's file"
+        );
 
         // Lock should still be there
         let locks = db.list_locks(None).unwrap();
