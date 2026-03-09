@@ -369,6 +369,142 @@ impl CoordinationDb {
         }
     }
 
+    // ---- Messaging operations ----
+
+    /// Broadcast a message to all agents in the same project (except the sender).
+    ///
+    /// Creates one message row per recipient for independent read tracking.
+    /// Also refreshes the sender's heartbeat. Returns the number of messages inserted.
+    pub fn broadcast(
+        &mut self,
+        from_agent_id: &str,
+        project: &str,
+        msg_type: &str,
+        content: &str,
+    ) -> Result<u64> {
+        let canonical_project =
+            crate::canonicalize_path(Path::new(project)).unwrap_or_else(|_| project.to_string());
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Get all agents in the same project except the sender
+        let recipient_ids: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM agents WHERE project = ?1 AND id != ?2")?;
+            let result = stmt
+                .query_map(params![&canonical_project, from_agent_id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        };
+
+        // Insert one message per recipient
+        let mut count = 0u64;
+        {
+            let mut insert_stmt = tx.prepare(
+                "INSERT INTO messages (from_agent, to_agent, msg_type, content, created_at)
+                 VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            )?;
+            for recipient_id in &recipient_ids {
+                insert_stmt.execute(params![from_agent_id, recipient_id, msg_type, content])?;
+                count += 1;
+            }
+        }
+
+        // Refresh sender's heartbeat
+        tx.execute(
+            "UPDATE agents SET last_heartbeat = unixepoch() WHERE id = ?1",
+            params![from_agent_id],
+        )?;
+
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Send a directed message from one agent to another.
+    ///
+    /// Also refreshes the sender's heartbeat. Returns the message ID.
+    pub fn send_message(
+        &mut self,
+        from_agent_id: &str,
+        to_agent_id: &str,
+        msg_type: &str,
+        content: &str,
+    ) -> Result<i64> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        tx.execute(
+            "INSERT INTO messages (from_agent, to_agent, msg_type, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            params![from_agent_id, to_agent_id, msg_type, content],
+        )?;
+
+        let msg_id = tx.last_insert_rowid();
+
+        // Refresh sender's heartbeat
+        tx.execute(
+            "UPDATE agents SET last_heartbeat = unixepoch() WHERE id = ?1",
+            params![from_agent_id],
+        )?;
+
+        tx.commit()?;
+        Ok(msg_id)
+    }
+
+    /// Read all unread messages for an agent, marking them as read.
+    ///
+    /// Returns messages in chronological order (oldest first).
+    /// Also refreshes the reader's heartbeat.
+    pub fn read_messages(&mut self, agent_id: &str) -> Result<Vec<Message>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Select unread messages, joining to get sender's name
+        let messages: Vec<Message> = {
+            let mut stmt = tx.prepare(
+                "SELECT m.id, m.from_agent, a.name, m.to_agent, m.msg_type, m.content, m.created_at
+                 FROM messages m
+                 LEFT JOIN agents a ON m.from_agent = a.id
+                 WHERE m.to_agent = ?1 AND m.read = 0
+                 ORDER BY m.created_at ASC",
+            )?;
+            let result = stmt
+                .query_map(params![agent_id], |row| {
+                    Ok(Message {
+                        id: row.get(0)?,
+                        from_agent: row.get(1)?,
+                        from_name: row.get(2)?,
+                        to_agent: row.get(3)?,
+                        msg_type: row.get(4)?,
+                        content: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        };
+
+        // Mark all fetched messages as read
+        {
+            let mut update_stmt = tx.prepare("UPDATE messages SET read = 1 WHERE id = ?1")?;
+            for msg in &messages {
+                update_stmt.execute(params![msg.id])?;
+            }
+        }
+
+        // Refresh reader's heartbeat
+        tx.execute(
+            "UPDATE agents SET last_heartbeat = unixepoch() WHERE id = ?1",
+            params![agent_id],
+        )?;
+
+        tx.commit()?;
+        Ok(messages)
+    }
+
     /// Prune stale agents (heartbeat timeout or dead PID).
     ///
     /// Agents whose `last_heartbeat` is older than `timeout_secs` are pruned
@@ -1077,15 +1213,11 @@ mod tests {
             .register("agent-b", "cursor", "proj-exc", "/tmp", None)
             .unwrap();
 
-        db.broadcast(&id_a, "proj-exc", "status", "hello")
-            .unwrap();
+        db.broadcast(&id_a, "proj-exc", "status", "hello").unwrap();
 
         // Sender should NOT see own broadcast
         let msgs_a = db.read_messages(&id_a).unwrap();
-        assert!(
-            msgs_a.is_empty(),
-            "Sender should not receive own broadcast"
-        );
+        assert!(msgs_a.is_empty(), "Sender should not receive own broadcast");
     }
 
     #[test]
@@ -1098,9 +1230,7 @@ mod tests {
             .register("agent-b", "cursor", "proj-dm", "/tmp", None)
             .unwrap();
 
-        let msg_id = db
-            .send_message(&id_a, &id_b, "chat", "hello B")
-            .unwrap();
+        let msg_id = db.send_message(&id_a, &id_b, "chat", "hello B").unwrap();
         assert!(msg_id > 0);
 
         let msgs = db.read_messages(&id_b).unwrap();
