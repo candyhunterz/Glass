@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with thirteen tools:
+//! Defines `GlassServer` with sixteen tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -14,6 +14,9 @@
 //! - `glass_agent_lock`: Atomically claim advisory file locks
 //! - `glass_agent_unlock`: Release file locks
 //! - `glass_agent_locks`: List all active file locks
+//! - `glass_agent_broadcast`: Broadcast a message to all project agents
+//! - `glass_agent_send`: Send a directed message to a specific agent
+//! - `glass_agent_messages`: Read unread messages
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -183,6 +186,48 @@ pub struct ListLocksParams {
     /// Project root path to filter locks. Omit for all locks.
     #[schemars(description = "Project root path to filter locks. Omit for all locks.")]
     pub project: Option<String>,
+}
+
+/// Parameters for the glass_agent_broadcast tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BroadcastParams {
+    /// Agent UUID of the sender.
+    #[schemars(description = "Agent UUID of the sender")]
+    pub agent_id: String,
+    /// Project root path (broadcast reaches all agents in this project).
+    #[schemars(description = "Project root path (broadcast reaches all agents in this project)")]
+    pub project: String,
+    /// Message type (e.g. 'status', 'file_saved', 'conflict', 'chat').
+    #[schemars(description = "Message type (e.g. 'status', 'file_saved', 'conflict', 'chat')")]
+    pub msg_type: String,
+    /// Message content.
+    #[schemars(description = "Message content")]
+    pub content: String,
+}
+
+/// Parameters for the glass_agent_send tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SendParams {
+    /// Agent UUID of the sender.
+    #[schemars(description = "Agent UUID of the sender")]
+    pub agent_id: String,
+    /// Agent UUID of the recipient.
+    #[schemars(description = "Agent UUID of the recipient")]
+    pub to_agent: String,
+    /// Message type (e.g. 'request_unlock', 'chat', 'conflict').
+    #[schemars(description = "Message type (e.g. 'request_unlock', 'chat', 'conflict')")]
+    pub msg_type: String,
+    /// Message content.
+    #[schemars(description = "Message content")]
+    pub content: String,
+}
+
+/// Parameters for the glass_agent_messages tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MessagesParams {
+    /// Agent UUID to read messages for.
+    #[schemars(description = "Agent UUID to read messages for")]
+    pub agent_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +794,84 @@ impl GlassServer {
         let content = Content::json(&result)?;
         Ok(CallToolResult::success(vec![content]))
     }
+
+    /// Broadcast a typed message to all agents in the same project.
+    #[tool(
+        description = "Broadcast a typed message to all agents in the same project."
+    )]
+    async fn glass_agent_broadcast(
+        &self,
+        Parameters(params): Parameters<BroadcastParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let count = db
+                .broadcast(
+                    &params.agent_id,
+                    &params.project,
+                    &params.msg_type,
+                    &params.content,
+                )
+                .map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "delivered_to": count }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// Send a directed message to a specific agent.
+    #[tool(description = "Send a directed message to a specific agent.")]
+    async fn glass_agent_send(
+        &self,
+        Parameters(params): Parameters<SendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let msg_id = db
+                .send_message(
+                    &params.agent_id,
+                    &params.to_agent,
+                    &params.msg_type,
+                    &params.content,
+                )
+                .map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "message_id": msg_id }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// Read unread messages. Messages are marked as read after retrieval.
+    #[tool(
+        description = "Read unread messages. Messages are marked as read after retrieval."
+    )]
+    async fn glass_agent_messages(
+        &self,
+        Parameters(params): Parameters<MessagesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let messages = db.read_messages(&params.agent_id).map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "messages": messages }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
 }
 
 #[tool_handler]
@@ -757,11 +880,12 @@ impl ServerHandler for GlassServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("glass-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Glass terminal history, context, undo, file diff, pipe inspect, and agent coordination server. \
+                "Glass terminal server with history, undo, and multi-agent coordination tools. \
                  Use glass_history to search commands, glass_context for activity overview, \
                  glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents, \
-                 glass_pipe_inspect to inspect intermediate pipeline stage output, \
-                 glass_agent_register/deregister/list/status/heartbeat for multi-agent coordination.",
+                 glass_pipe_inspect to inspect pipeline stage output. \
+                 For multi-agent coordination: glass_agent_register to join, glass_agent_lock/unlock for file locks, \
+                 glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness.",
             )
     }
 }
@@ -989,5 +1113,32 @@ mod tests {
         let json = r#"{}"#;
         let params: ListLocksParams = serde_json::from_str(json).unwrap();
         assert!(params.project.is_none());
+    }
+
+    #[test]
+    fn test_broadcast_params_deserialize() {
+        let json = r#"{"agent_id":"abc-123","project":"/tmp/proj","msg_type":"status","content":"Working on auth"}"#;
+        let params: BroadcastParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(params.project, "/tmp/proj");
+        assert_eq!(params.msg_type, "status");
+        assert_eq!(params.content, "Working on auth");
+    }
+
+    #[test]
+    fn test_send_params_deserialize() {
+        let json = r#"{"agent_id":"abc-123","to_agent":"def-456","msg_type":"request_unlock","content":"Need access to auth.rs"}"#;
+        let params: SendParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(params.to_agent, "def-456");
+        assert_eq!(params.msg_type, "request_unlock");
+        assert_eq!(params.content, "Need access to auth.rs");
+    }
+
+    #[test]
+    fn test_messages_params_deserialize() {
+        let json = r#"{"agent_id":"abc-123"}"#;
+        let params: MessagesParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
     }
 }
