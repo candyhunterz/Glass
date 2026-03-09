@@ -13,13 +13,13 @@ Requirements for multi-agent coordination milestone. Each maps to roadmap phases
 - [x] **COORD-02**: Agent can deregister, releasing all locks and preserving sent messages
 - [x] **COORD-03**: Agent can send heartbeat to maintain liveness (60s interval, 10min timeout)
 - [x] **COORD-04**: Stale agents are auto-pruned via heartbeat timeout or PID liveness check
-- [ ] **COORD-05**: Agent can atomically lock multiple files (all-or-nothing, returns conflicts if any held)
-- [ ] **COORD-06**: File paths are canonicalized before lock storage (dunce on Windows, lowercase on NTFS)
-- [ ] **COORD-07**: Agent can unlock specific files or release all locks
+- [x] **COORD-05**: Agent can atomically lock multiple files (all-or-nothing, returns conflicts if any held)
+- [x] **COORD-06**: File paths are canonicalized before lock storage (dunce on Windows, lowercase on NTFS)
+- [x] **COORD-07**: Agent can unlock specific files or release all locks
 - [ ] **COORD-08**: Agent can broadcast a typed message to all agents in the same project
 - [ ] **COORD-09**: Agent can send a directed message to a specific agent
 - [ ] **COORD-10**: Agent can read unread messages (marks as read, preserves messages from deregistered senders)
-- [ ] **COORD-11**: Agents are scoped by project root — agents on different repos don't see each other's locks
+- [x] **COORD-11**: Agents are scoped by project root — agents on different repos don't see each other's locks
 
 ### MCP Tools
 
@@ -83,13 +83,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | COORD-02 | Phase 31 | Complete |
 | COORD-03 | Phase 31 | Complete |
 | COORD-04 | Phase 31 | Complete |
-| COORD-05 | Phase 31 | Pending |
-| COORD-06 | Phase 31 | Pending |
-| COORD-07 | Phase 31 | Pending |
+| COORD-05 | Phase 31 | Complete |
+| COORD-06 | Phase 31 | Complete |
+| COORD-07 | Phase 31 | Complete |
 | COORD-08 | Phase 31 | Pending |
 | COORD-09 | Phase 31 | Pending |
 | COORD-10 | Phase 31 | Pending |
-| COORD-11 | Phase 31 | Pending |
+| COORD-11 | Phase 31 | Complete |
 | MCP-01 | Phase 32 | Pending |
 | MCP-02 | Phase 32 | Pending |
 | MCP-03 | Phase 32 | Pending |
