@@ -1,187 +1,179 @@
 # Project Research Summary
 
-**Project:** Glass v2.1 -- Packaging & Polish
-**Domain:** Platform packaging, auto-update, config hot-reload, performance profiling, and documentation for a 12-crate Rust GPU-accelerated terminal emulator
-**Researched:** 2026-03-07
+**Project:** Glass v2.2 -- Multi-Agent Coordination
+**Domain:** Agent orchestration layer for GPU-accelerated terminal emulator
+**Researched:** 2026-03-09
 **Confidence:** HIGH
 
 ## Executive Summary
 
-Glass v2.1 is a polish milestone for an already functional and daily-drivable terminal emulator (17,868 LOC, 436 tests, 12 crates). The goal is distribution readiness: platform-native installers (MSI, DMG, deb), automatic update checking via GitHub Releases, config hot-reload (following the pattern Alacritty established as baseline expectation), a performance profiling pass with real benchmarks, and a documentation site. The existing architecture is well-suited for these additions -- the event-driven `AppEvent`/`EventLoopProxy` pattern already handles cross-thread communication, `notify` 8.2 is already a workspace dependency, and `tracing` spans are already throughout the codebase.
+Glass v2.2 adds a multi-agent coordination layer that enables multiple AI coding agents (Claude Code, Cursor, Copilot) to register, claim files via advisory locks, and communicate through a shared SQLite database. This is a well-scoped infrastructure milestone that leverages Glass's existing architectural patterns -- WAL-mode SQLite, synchronous crate libraries wrapped in `spawn_blocking` at the MCP layer, and background polling threads for GUI state. The domain is young but converging: Claude Code Agent Teams, Warp 2.0, Overstory, and mcp_agent_mail all implement variations of the same core primitives (agent registry, file locking, heartbeat liveness, messaging). Glass's unique advantage is being the only tool that pairs a GPU-rendered terminal GUI with an MCP-exposed coordination layer.
 
-The recommended approach is: use `cargo-packager` as the primary cross-platform packaging tool (from the Tauri team, handles MSI/DMG/deb/AppImage), `self_update` 0.42 for GitHub Releases-based auto-update (no custom update server needed), reuse the existing `notify` watcher with debouncing for config hot-reload, and layer `tracing-flame` behind a cargo feature flag for profiling. Only 2 new runtime crates are needed (`self_update`, `notify-debouncer-mini`); everything else is dev tooling or CI-only CLI tools. mdBook handles the documentation site, deployed to GitHub Pages.
+The recommended approach is to build a new `glass_coordination` crate as a pure synchronous library with zero dependency on any other glass_* crate, then wire it into `glass_mcp` via 11 new MCP tool handlers, followed by integration testing with CLAUDE.md instructions, and finally GUI integration in the status bar. The entire milestone requires only 2 new runtime crates (`uuid` for agent IDs, `dunce` for Windows path canonicalization) and reuses existing workspace dependencies (rusqlite, anyhow, tracing, dirs, windows-sys). This is the lightest-weight milestone in terms of new dependencies.
 
-The key risks are: (1) config hot-reload causing font rebuild cascades without proper debouncing and diff-based application -- editors generate 2-5 filesystem events per save, and rebuilding glyphon's FontSystem on each one causes flicker and potential panics; (2) MSI UpgradeCode must be hardcoded and committed from the very first release or all future Windows upgrades break irreparably; (3) macOS Gatekeeper blocks unsigned DMGs downloaded from the internet, requiring an Apple Developer account and CI-integrated code signing; (4) Windows file locking prevents replacing the running executable, requiring MSI-based upgrade flow rather than direct binary replacement. All of these are well-understood problems with documented solutions.
+The key risks are concentrated in Phase 1: Windows UNC path canonicalization silently breaking lock matching across agents, SQLite `SQLITE_BUSY` errors from deferred transaction upgrades under concurrent writes, and WAL checkpoint starvation from persistent reader connections. All three have well-documented prevention strategies. The behavioral risk -- whether AI agents will reliably follow CLAUDE.md coordination instructions -- is harder to mitigate technically and must be validated through real multi-agent testing in Phase 3.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The v2.1 stack adds minimal new runtime dependencies to the existing validated 12-crate workspace. See [STACK.md](STACK.md) for full details.
+The milestone adds minimal new dependencies to the workspace. The core coordination infrastructure reuses rusqlite 0.38 (bundled) with the same WAL+PRAGMA pattern proven in glass_history and glass_snapshot. No new async runtime, IPC framework, or message queue is needed -- SQLite WAL replaces all of them. See [STACK.md](STACK.md) for full details.
 
 **Core technologies:**
-- **cargo-packager 0.11.8** (CLI, not runtime): Cross-platform installer generation (MSI, DMG, deb, AppImage) from Cargo.toml metadata. From CrabNebula/Tauri team.
-- **self_update 0.42.0** (runtime): GitHub Releases-based binary self-update. Handles platform detection, archive extraction, binary replacement, version comparison. Dramatically simpler than hosting a custom update server.
-- **notify 8.2 + notify-debouncer-mini 0.7** (runtime): Config file watching with proper debouncing. notify is already in the workspace; only the debouncer is new.
-- **tracing-chrome 0.7.2** (optional, dev): Chrome/Perfetto trace output from existing tracing spans. Zero overhead when feature-disabled.
-- **criterion 0.5** (dev-only): Statistical microbenchmarks for cold start, key latency, FTS5 queries.
-- **mdBook 0.5.2** (CLI): Rust ecosystem standard for documentation sites. GitHub Pages deployment.
-- **cargo-generate-rpm 0.20.0** (CLI): RPM generation (cargo-packager does not cover RPM).
+- **rusqlite 0.38 (existing):** Coordination DB (agents.db) -- same WAL pattern as HistoryDb and SnapshotDb, validated across hundreds of tests
+- **uuid 1.22 (new):** Agent ID generation (v4 random) -- de facto Rust UUID crate, adds only getrandom as transitive dep (~5KB binary impact)
+- **dunce 1.0.5 (new):** Windows-safe path canonicalization -- strips `\\?\` UNC prefix, zero dependencies, 150 lines
+- **Raw libc/windows-sys (existing):** PID liveness checking -- ~30 lines of platform-gated code, avoids pulling process_alive (windows-sys version conflict) or sysinfo (3MB overkill)
 
-**Total new runtime crates: 2.** Binary size impact: ~200-220 KB (mostly from reqwest in self_update).
+**Explicitly rejected:** process_alive (windows-sys 0.61 conflict), sysinfo (massive), nix (overkill), async-sqlite (breaks established sync pattern), any IPC/message queue framework (SQLite IS the coordination mechanism).
 
 ### Expected Features
 
 See [FEATURES.md](FEATURES.md) for full feature landscape and competitor analysis.
 
 **Must have (table stakes):**
-- Platform-native installers: MSI (Windows), DMG (macOS), deb + AppImage (Linux)
-- GitHub Releases CI with automated binary upload on tag push
-- Config validation with user-visible error messages (not just tracing logs)
-- Config hot-reload for visual settings (font_family, font_size) -- Alacritty set this expectation in 2018
-- README overhaul with screenshots and install instructions
-- Documentation site (mdBook on GitHub Pages)
-- Performance profiling pass with documented baseline metrics
+- Agent registration and discovery with UUID identity and project scoping
+- Advisory file locking with atomic all-or-nothing acquisition (eliminates TOCTOU)
+- Heartbeat-based liveness detection with PID fallback for immediate crash detection
+- Inter-agent messaging (broadcast + directed) with structured message types
+- 11 MCP tools exposing all coordination primitives
+- CLAUDE.md integration instructions (the "glue" that makes agents self-coordinate)
+- Lock conflict reporting with holder identity and reason
 
 **Should have (differentiators):**
-- Auto-update check from GitHub Releases -- genuine gap in the Rust terminal space (Alacritty, WezTerm have none)
-- Hot-reload for ALL settings (history, snapshot, pipes) -- no competitor does this fully
-- `glass config --validate` CLI command
-- Winget and Homebrew listings
+- Status bar agent/lock count display -- low complexity, high visibility, no other terminal does this
+- Agent status task descriptions -- trivially extends registry, enables activity awareness
+- Tab-level agent indicators -- moderate complexity, maps agents to tabs visually
 
-**Defer (v2.2+):**
-- AUR package, portable mode, crash log handler
-- Code signing (MSI + DMG) -- budget Apple Developer account, defer implementation
-- Flatpak/Snap (sandbox breaks PTY access -- explicitly an anti-feature for terminals)
+**Defer (future milestone):**
+- Conflict warning overlay -- HIGH complexity, requires new overlay event types and real-time DB monitoring
+- Enforced file locking -- breaks terminal behavior, advisory locks work because agents cooperate
+- Full A2A protocol -- enterprise-scale, overkill for local coordination
+- Network agent discovery -- out of scope, SQLite requires same-host
 
 ### Architecture Approach
 
-The v2.1 features integrate into the existing event-driven architecture with minimal structural change. See [ARCHITECTURE.md](ARCHITECTURE.md) for component diagrams and data flows.
+The coordination feature integrates as a new crate (`glass_coordination`) that is a pure synchronous library owning its own database (`~/.glass/agents.db`), with modifications to `glass_mcp` (11 new tool handlers), `glass_renderer` (status bar extension), and `src/main.rs` (background polling thread). Every pattern follows established precedent in the codebase. See [ARCHITECTURE.md](ARCHITECTURE.md) for component diagrams and data flows.
 
 **Major components:**
-1. **Config hot-reload** (modify `glass_core/config.rs`) -- ConfigWatcher thread using notify, sends `AppEvent::ConfigChanged` through EventLoopProxy, diff-based application to avoid unnecessary font rebuilds
-2. **Auto-update** (new crate `glass_update`) -- UpdateChecker backed by self_update, background tokio check on startup, `AppEvent::UpdateAvailable` for status bar notification, `glass update` CLI subcommand
-3. **Packaging** (CI/build infrastructure only) -- `release.yml` workflow triggered by `v*` tags, `packaging/` directory with WiX XML, Info.plist, .desktop files
-4. **Performance profiling** (scattered instrumentation) -- `#[tracing::instrument]` on hot paths, `tracing-flame` behind `perf` cargo feature, criterion benchmarks in dev-dependencies
+1. **glass_coordination (new crate)** -- Pure synchronous library: CoordinationDb struct, agent registry, file locks, messaging, stale pruning. Zero dependency on any glass_* crate. Owns `~/.glass/agents.db`.
+2. **glass_mcp (modified)** -- 11 new MCP tool handlers wrapping coordination operations in spawn_blocking. Adds agents_db_path field to GlassServer. Follows existing rmcp tool_router pattern exactly.
+3. **glass_renderer (modified)** -- Status bar extended with optional CoordinationDisplay (agent count, lock count). Single new parameter threaded through build_status_text/draw_frame pipeline.
+4. **src/main.rs (modified)** -- Background std::thread polling agents.db every 5 seconds, storing results in Arc<AtomicUsize> pairs. Render loop reads atomics (zero-cost) and passes to renderer.
 
-**Key architectural patterns to follow:**
-- Event-driven config propagation (extend existing AppEvent pattern)
-- Feature-gated optional components (profiling behind cargo features)
-- Background check with user-triggered action (updates)
-- Diff-then-apply for config changes (avoid rebuilding FontSystem when only history thresholds change)
+**Key architectural decisions:**
+- agents.db is ALWAYS global (`~/.glass/agents.db`), never per-project -- prevents two agents in different subdirectories from seeing different DBs
+- CoordinationDb holds a Connection, not Arc<Mutex<Connection>> -- thread safety handled by open-per-call pattern
+- GUI uses atomic polling, not AppEvent variants -- keeps glass_core unchanged
+- Path canonicalization happens inside lock_files/unlock_file, not at caller -- ensures consistency
 
 ### Critical Pitfalls
 
 See [PITFALLS.md](PITFALLS.md) for full pitfall analysis with recovery strategies.
 
-1. **Config reload cascade without debouncing** -- Editors generate 2-5 FS events per save. Without debouncing, each triggers a FontSystem rebuild causing flicker and panics. Fix: 300-500ms debounce window + diff old vs new config to skip font rebuild when only non-visual fields changed.
-2. **MSI UpgradeCode not locked from day one** -- Windows Installer uses this GUID to detect previous installations. If it changes between versions, users get duplicate entries in Add/Remove Programs with no retroactive fix. Fix: Hardcode GUID in `wix/main.wxs`, commit to git, never change it.
-3. **Windows file locking prevents binary replacement** -- Running `.exe` holds a file lock. Direct overwrite fails. Fix: Use MSI upgrade path on Windows (download MSI, launch msiexec, exit Glass). Only use direct binary replacement on Linux standalone.
-4. **macOS Gatekeeper blocks unsigned DMGs** -- Downloaded unsigned apps show "damaged" error. Fix: Apple Developer account + rcodesign in CI for signing and notarization alongside DMG creation.
-5. **Font change only updates focused pane** -- Glass has tabs with split panes. Naive implementation updates only the active pane, leaving others with stale font metrics. Fix: Iterate ALL sessions in SessionMux, resize every pane's terminal grid, send resize to every PTY.
+1. **UNC path canonicalization on Windows** -- `std::fs::canonicalize()` produces `\\?\C:\...` paths that don't match normal paths. Two agents could lock the same file without detecting conflict. Use `dunce::canonicalize()`, normalize separators, and lowercase on Windows. Must be correct before any lock logic is built on top. *Phase 1.*
+
+2. **SQLITE_BUSY from deferred transaction upgrades** -- Default `BEGIN` starts deferred transactions; upgrading to write fails without honoring busy_timeout. Use `TransactionBehavior::Immediate` for ALL write transactions from day one. *Phase 1.*
+
+3. **WAL checkpoint starvation** -- Multiple persistent reader connections prevent WAL checkpointing, causing unbounded WAL growth. Set aggressive autocheckpoint (100 pages), attempt TRUNCATE checkpoint on open, never cache DB connections. *Phase 1.*
+
+4. **Heartbeat timer drift** -- AI agents cannot reliably call heartbeat on a schedule. Piggyback heartbeat refresh on ALL MCP tool calls, increase stale timeout to 10 minutes. *Phase 1 + Phase 2.*
+
+5. **Atomic lock acquisition livelock** -- Two agents requesting overlapping file sets in different order repeatedly conflict. Sort paths lexicographically before acquiring locks, add retry_after_ms hint to conflict responses. *Phase 1 + Phase 2.*
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+Based on research, the design document's 4-phase structure is well-justified by dependency ordering and risk concentration. The phases map cleanly to architecture boundaries.
 
-### Phase 1: Performance Profiling Instrumentation
-**Rationale:** Must establish baselines BEFORE any optimization work. Zero new crates -- just adding tracing spans and an optional subscriber. Lowest risk, highest information value.
-**Delivers:** Flamegraph capability, criterion benchmark suite, documented baseline metrics (cold start, key latency, PTY throughput, FTS5 query time)
-**Addresses:** Performance profiling pass (P1 feature)
-**Uses:** tracing (existing), tracing-flame (optional dep), criterion (dev dep), cargo-flamegraph (CLI)
-**Avoids:** "Optimizing the wrong thing" pitfall -- profiling without baselines
+### Phase 1: Coordination Crate (Foundation)
+**Rationale:** Everything depends on this. It has zero dependencies on other glass_* crates and must be built and tested before MCP tools can wrap it. This phase concentrates the highest-risk pitfalls (path canonicalization, transaction behavior, WAL management).
+**Delivers:** `glass_coordination` crate with full agent registry, atomic file locking, messaging, and stale pruning. All public APIs unit-tested.
+**Addresses:** Agent registration, file locking, liveness detection, messaging, lock conflict reporting (all table stakes).
+**Avoids:** UNC path mismatch (Pitfall 3), SQLITE_BUSY (Pitfall 2), WAL growth (Pitfall 1), prune race conditions (Pitfall 6), project scope mismatch (Pitfall 11).
+**Stack:** rusqlite (existing), uuid (new), dunce (new), libc/windows-sys (existing).
 
-### Phase 2: Config Validation and Hot-Reload
-**Rationale:** Modifies `glass_core` which is a shared dependency -- do it before adding new crates. Config validation is prerequisite for safe hot-reload. High user value (table stakes feature).
-**Delivers:** Structured config validation errors shown to user, file watcher with debouncing, diff-based config application, font rebuild across all panes
-**Addresses:** Config validation (P1), config hot-reload for visual settings (P1), full config hot-reload (P2)
-**Uses:** notify 8.2 (existing), notify-debouncer-mini 0.7 (new), existing AppEvent/EventLoopProxy
-**Avoids:** Reload cascade pitfall, torn reads pitfall, multi-pane miss pitfall
+### Phase 2: MCP Tools (Interface Layer)
+**Rationale:** Agents cannot use coordination without MCP exposure. Depends on Phase 1 being complete. Follows established rmcp patterns closely, making it predictable.
+**Delivers:** 11 new MCP tool handlers in glass_mcp, CoordinationDb wiring into GlassServer, updated server info instructions.
+**Addresses:** MCP tool exposure (table stakes), implicit heartbeat on all tools (Pitfall 7 mitigation), retry_after_ms in conflict responses (Pitfall 5 mitigation).
+**Avoids:** Connection sharing anti-pattern (Pitfall 10), message ordering assumptions (Pitfall 8).
 
-### Phase 3: Packaging and CI Release Workflow
-**Rationale:** Pure infrastructure -- no runtime code changes. Must exist before auto-update (which queries GitHub Releases). Unblocks distribution.
-**Delivers:** MSI installer, DMG bundle, deb package, tar.gz archives, automated release workflow on git tag
-**Addresses:** Platform installers (P1), GitHub Releases CI (P1)
-**Uses:** cargo-packager 0.11.8, cargo-wix 0.3.9 (fallback), cargo-deb 3.6.3 (fallback), cargo-generate-rpm 0.20.0
-**Avoids:** UpgradeCode pitfall (lock GUID immediately), macOS notarization pitfall (sign alongside DMG creation)
+### Phase 3: Integration Testing and CLAUDE.md
+**Rationale:** The system only works if AI agents actually follow coordination instructions. This phase validates behavioral correctness, not just technical correctness. Can overlap with Phase 4 since it modifies different files.
+**Delivers:** CLAUDE.md coordination protocol, multi-server integration tests, manual multi-agent validation.
+**Addresses:** CLAUDE.md integration instructions (table stakes), structured message types (differentiator).
+**Risk:** MEDIUM -- whether real Claude Code sessions reliably follow instructions is a behavioral question, not a technical one.
 
-### Phase 4: Auto-Update Mechanism
-**Rationale:** Depends on Phase 3 (needs GitHub Releases with downloadable artifacts). New crate `glass_update`. Genuine competitive differentiator.
-**Delivers:** `glass update` CLI command, background version check on startup, status bar notification, install-method-aware update flow
-**Addresses:** Auto-update check (P2 feature, but high differentiator value)
-**Uses:** self_update 0.42.0 (new runtime dep), existing tokio runtime, existing AppEvent system
-**Avoids:** Windows file locking pitfall (MSI upgrade path), startup blocking pitfall (async check with 24hr cooldown)
-
-### Phase 5: Documentation and README
-**Rationale:** Documents the finished product. Can partially overlap with Phase 4. Content is most accurate when features are complete.
-**Delivers:** mdBook site on GitHub Pages (install guide, config reference, shell integration, MCP docs), README overhaul with screenshots
-**Addresses:** Documentation site (P1), README overhaul (P1)
-**Uses:** mdBook 0.5.2, GitHub Pages deployment
-
-### Phase 6: Package Manager Listings (Optional)
-**Rationale:** Depends on Phase 3 (installer URLs from GitHub Releases). Low effort, medium value. Can be deferred.
-**Delivers:** Winget manifest, Homebrew tap
-**Addresses:** Winget listing (P2), Homebrew tap (P2)
+### Phase 4: GUI Integration (Visual Layer)
+**Rationale:** Can start in parallel with Phase 3 once the DB schema is stable (Phase 1 complete). Modifies the hot rendering path, so changes must be minimal. Status bar is low-hanging fruit; tab indicators and conflict overlay are progressively harder.
+**Delivers:** Status bar agent/lock count display, background polling thread, CoordinationDisplay struct.
+**Addresses:** Status bar agent indicator (differentiator), tab-level indicators (differentiator, partial -- defer per-tab agent mapping).
+**Avoids:** GUI polling overhead (Pitfall 9) -- 5-second background thread with atomics, not render-loop polling.
+**Defers:** Conflict warning overlay to a future milestone (HIGH complexity, new overlay event types).
 
 ### Phase Ordering Rationale
 
-- **Profiling before everything:** Data-driven decisions for the rest of the milestone. If profiling reveals a critical bottleneck, it informs architecture decisions in subsequent phases.
-- **Config hot-reload before packaging:** Modifies glass_core (shared dependency). Better to stabilize internal changes before adding external distribution infrastructure.
-- **Packaging before auto-update:** Auto-update queries GitHub Releases for artifacts that packaging produces. Hard dependency.
-- **Docs last:** Content accuracy requires features to be complete. Shell integration docs need installer paths. Config reference needs hot-reload behavior documented.
+- **Phase 1 before Phase 2:** glass_mcp depends on glass_coordination as a crate dependency. Cannot build tool handlers without the library.
+- **Phase 2 before Phase 3:** CLAUDE.md instructions reference MCP tool names. Integration tests require working tools.
+- **Phase 4 parallel with Phase 3:** GUI reads agents.db directly. Only needs the schema to be stable, not the MCP layer.
+- **Risk-front-loaded:** Phase 1 contains all 6 critical pitfalls. Getting path canonicalization, transaction behavior, and WAL management right early prevents cascading problems.
 
 ### Research Flags
 
 Phases likely needing deeper research during planning:
-- **Phase 2 (Config Hot-Reload):** Multi-pane propagation is complex -- need to trace all config access sites (15+ in main.rs) and ensure each handles runtime changes. The renderer font rebuild path needs careful design.
-- **Phase 3 (Packaging):** WiX template customization, macOS code signing secrets in CI, and cross-platform CI matrix each have platform-specific gotchas. Test MSI upgrade flow end-to-end.
-- **Phase 4 (Auto-Update):** Windows-specific binary replacement strategy, install-method detection logic, and GitHub API rate limiting (60/hr unauthenticated) need detailed design.
+- **Phase 1 (locks.rs):** Path canonicalization edge cases on Windows need exhaustive testing -- junctions, symlinks, case sensitivity, non-existent files. Research the exact behavior of `dunce::canonicalize()` with NTFS junction points.
+- **Phase 3 (CLAUDE.md):** Whether Claude Code reliably follows multi-step coordination protocols is an open behavioral question. May need iteration on instruction phrasing. Test with real 2-agent sessions.
+- **Phase 4 (tab indicators):** Mapping MCP agent PID to Glass tab SessionId requires process tree walking. Research platform-specific APIs for parent PID resolution. May be infeasible -- defer if so.
 
 Phases with standard patterns (skip research-phase):
-- **Phase 1 (Profiling):** tracing + tracing-flame + criterion is a thoroughly documented pattern. Just add spans and benchmarks.
-- **Phase 5 (Documentation):** mdBook + GitHub Pages is boilerplate. Content writing, not technical research.
+- **Phase 1 (schema, agents, messages, prune):** Directly replicates glass_history/glass_snapshot patterns. WAL mode, PRAGMA config, user_version migrations are battle-tested in the codebase.
+- **Phase 2 (MCP tools):** Exact replication of existing 5-tool pattern in glass_mcp/tools.rs. spawn_blocking, parameter structs with schemars, CallToolResult responses.
+- **Phase 4 (status bar):** Extending build_status_text with one more optional parameter. Same pattern as when update_text was added.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All crate versions verified on crates.io. Minimal new runtime dependencies (2 crates). Existing workspace deps reused. |
-| Features | MEDIUM-HIGH | Feature landscape well-mapped against Alacritty/WezTerm/Kitty/Ghostty. Auto-update as differentiator is validated (no Rust terminal has it). |
-| Architecture | HIGH | Extends existing event-driven patterns. No fundamental architecture changes. Build order dependencies are clear. |
-| Pitfalls | HIGH | Based on codebase analysis (specific line numbers in main.rs/config.rs), platform behavior (Windows file locking, macOS Gatekeeper), and ecosystem experience. |
+| Stack | HIGH | Only 2 new crates, both trivial. All other deps reused from workspace. Version compatibility verified via docs.rs. No novel technology. |
+| Features | MEDIUM-HIGH | Core patterns converging across Claude Code Agent Teams, Warp 2.0, Overstory, mcp_agent_mail. Domain is young but the primitives are well-established. |
+| Architecture | HIGH | Every pattern directly replicates existing codebase patterns. No architectural novelty. |
+| Pitfalls | HIGH | SQLite concurrency pitfalls are thoroughly documented. Windows UNC path issue has a known solution. Sources include official SQLite docs and established Rust ecosystem documentation. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **wgpu-profiler compatibility with wgpu 28.0:** Need to verify before committing to GPU-specific profiling. If incompatible, CPU profiling via tracing-flame is sufficient for v2.1.
-- **macOS code signing budget:** Requires $99/year Apple Developer account. Decision needed on whether to defer (ship with "xattr -d" workaround instructions) or invest now.
-- **Windows code signing:** Unsigned MSI triggers SmartScreen warnings. SSL.com eSigner is an option but adds cost and CI complexity. Acceptable to defer.
-- **GitHub API rate limiting for update checks:** 60 requests/hr unauthenticated. Need a cooldown cache strategy (check at most once per 24hrs, cache result to disk).
-- **ScaleFactorChanged handler:** Currently log-only (known tech debt). Config hot-reload implementation should address DPI-change font recalculation as part of the font rebuild path.
+- **AI agent behavioral compliance:** Whether Claude Code reliably follows CLAUDE.md coordination instructions (heartbeat calls, lock-before-edit, check messages) is untestable until Phase 3 manual validation. If agents are unreliable, the system degrades to heartbeat-timeout-based cleanup only, which still works but is slower.
+- **PID start-time verification complexity:** The research recommends verifying process start time alongside PID for robust stale detection, but the implementation is platform-specific. Decide in Phase 1 planning whether this is worth the complexity or whether heartbeat timeout alone is sufficient.
+- **Tab-to-agent mapping:** Correlating MCP agent PIDs with Glass tab SessionIds requires process tree walking. No cross-platform Rust crate handles this cleanly. May need to accept aggregate state rather than per-tab agent identity.
+- **Case-insensitive path matching on Windows:** NTFS has per-directory case sensitivity edge cases (Windows 10 1803+). Decide whether to always lowercase on Windows or respect per-directory settings.
+- **Message retention policy:** No max age or pruning strategy for messages is specified in the design. Without it, the messages table grows unbounded. Add a `max_message_age` (24h) pruning step to `prune_stale()` before Phase 3.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [cargo-packager (crates.io)](https://crates.io/crates/cargo-packager) -- v0.11.8, multi-format installer generation
-- [self_update (GitHub)](https://github.com/jaemk/self_update) -- v0.42.0, GitHub Releases auto-update backend
-- [notify (crates.io)](https://crates.io/crates/notify) -- v8.2.0, already in Glass workspace
-- [notify-debouncer-mini (crates.io)](https://crates.io/crates/notify-debouncer-mini) -- v0.7.0, debounced file watching
-- [tracing-chrome (crates.io)](https://crates.io/crates/tracing-chrome) -- v0.7.2, Chrome/Perfetto trace output
-- [mdBook (crates.io)](https://crates.io/crates/mdbook) -- v0.5.2, documentation site generator
-- [cargo-wix (GitHub)](https://github.com/volks73/cargo-wix) -- v0.3.9, MSI generation
-- [cargo-deb (crates.io)](https://crates.io/crates/cargo-deb) -- v3.6.3, Debian package generation
-- [cargo-generate-rpm (crates.io)](https://crates.io/crates/cargo-generate-rpm) -- v0.20.0, RPM generation
-- [Microsoft MSI UpgradeCode docs](https://learn.microsoft.com/en-us/windows/win32/msi/changing-the-product-code) -- MSI upgrade semantics
-- [Alacritty (GitHub)](https://github.com/alacritty/alacritty) -- Reference terminal for packaging and config hot-reload patterns
-- Glass codebase: `crates/glass_core/src/config.rs`, `src/main.rs`, `crates/glass_core/src/event.rs`
+- [SQLite WAL mode documentation](https://sqlite.org/wal.html) -- concurrent access, checkpoint behavior, same-host requirement
+- [rusqlite TransactionBehavior docs](https://docs.rs/rusqlite/latest/rusqlite/enum.TransactionBehavior.html) -- BEGIN IMMEDIATE support
+- [uuid crate v1.22.0](https://docs.rs/uuid/latest/uuid/) -- v4 features, dependency footprint
+- [dunce crate](https://docs.rs/dunce/latest/dunce/) -- UNC prefix stripping behavior
+- [Rust std::fs::canonicalize UNC issue #42869](https://github.com/rust-lang/rust/issues/42869) -- Windows path problem
+- [windows-sys Threading module](https://docs.rs/windows-sys/latest/windows_sys/Win32/System/Threading/index.html) -- OpenProcess, GetExitCodeProcess
+- [Claude Code Agent Teams documentation](https://code.claude.com/docs/en/agent-teams) -- multi-agent coordination patterns
+- Glass codebase: glass_history/db.rs, glass_mcp/tools.rs, glass_snapshot/ignore_rules.rs -- validated existing patterns
 
 ### Secondary (MEDIUM confidence)
-- [apple-codesign (rcodesign)](https://gregoryszorc.com/blog/2022/08/08/achieving-a-completely-open-source-implementation-of-apple-code-signing-and-notarization/) -- Pure-Rust macOS code signing
-- [wgpu-profiler (docs.rs)](https://docs.rs/wgpu-profiler) -- GPU timing for wgpu (compatibility with wgpu 28.0 unverified)
-- [winget-releaser (GitHub)](https://github.com/vedantmgoyal9/winget-releaser) -- Winget manifest automation
-- [Flatpak Rust packaging](https://belmoussaoui.com/blog/8-how-to-flatpak-a-rust-application/) -- Manual manifest approach (not recommended for terminals)
+- [Warp 2.0 Agentic Development Environment](https://www.warp.dev/blog/reimagining-coding-agentic-development-environment) -- agent status indicators, management panel
+- [Overstory multi-agent orchestration](https://github.com/jayminwest/overstory) -- git worktree isolation, SQLite mail system
+- [mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail) -- MCP-exposed agent mail with file reservations
+- [SQLite busy_timeout pitfalls (Bert Hubert)](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) -- transaction upgrade behavior
+- [SQLite concurrent writes analysis](https://tenthousandmeters.com/blog/sqlite-concurrent-writes-and-database-is-locked-errors/) -- BEGIN IMMEDIATE vs DEFERRED
+- [SkyPilot: Abusing SQLite for concurrency](https://blog.skypilot.co/abusing-sqlite-to-handle-concurrency/) -- multi-process SQLite coordination patterns
+
+### Tertiary (LOW confidence)
+- [The Heartbeat Pattern for AI Agents](https://dev.to/askpatrick/the-heartbeat-pattern-how-to-keep-ai-agents-alive-between-tasks-2b0p) -- heartbeat intervals and stale detection
+- [PID Reuse Race Conditions (LWN.net)](https://lwn.net/Articles/773459/) -- Linux PID reuse timing
+- [NTFS Case Sensitivity Internals](https://www.tiraniddo.dev/2019/02/ntfs-case-sensitivity-on-windows.html) -- per-directory case sensitivity edge cases
 
 ---
-*Research completed: 2026-03-07*
+*Research completed: 2026-03-09*
 *Ready for roadmap: yes*

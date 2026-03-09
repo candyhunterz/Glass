@@ -1,624 +1,666 @@
-# Architecture Research
+# Architecture Patterns: Multi-Agent Coordination Integration
 
-**Domain:** Packaging, distribution, auto-update, config hot-reload, and performance profiling for a 12-crate Rust terminal emulator
-**Researched:** 2026-03-07
-**Confidence:** HIGH
+**Domain:** Multi-agent coordination layer for GPU-accelerated terminal emulator
+**Researched:** 2026-03-09
+**Overall confidence:** HIGH
 
-## System Overview
+## Recommended Architecture
 
-Current 12-crate architecture with new v2.1 components marked:
-
-```
-                         ┌─────────────────────────────────────────┐
-                         │              glass (binary)             │
-                         │  main.rs -- Processor / ApplicationHandler  │
-                         │  Owns: EventLoop, WindowContext, config │
-                         └────┬────────────┬──────────┬────────────┘
-                              │            │          │
-         ┌────────────────────┤            │          ├────────────────┐
-         │                    │            │          │                │
-    ┌────▼────┐         ┌────▼────┐  ┌────▼────┐  ┌──▼───────┐  ┌────▼────┐
-    │glass_mux│         │glass_   │  │glass_   │  │glass_    │  │glass_   │
-    │         │         │terminal │  │renderer │  │history   │  │snapshot │
-    └────┬────┘         └─────────┘  └─────────┘  └──────────┘  └─────────┘
-         │
-    ┌────▼────┐         ┌─────────┐  ┌─────────┐  ┌──────────┐
-    │glass_   │         │glass_   │  │glass_   │  │glass_    │
-    │core     │         │protocol │  │pipes    │  │mcp       │
-    │(config) │         └─────────┘  └─────────┘  └──────────┘
-    └─────────┘
-
-    NEW COMPONENTS (v2.1):
-
-    ┌──────────────┐
-    │ glass_update │    (new crate -- auto-update via GitHub Releases)
-    └──────────────┘
-
-    MODIFIED COMPONENTS:
-    - glass_core/config.rs   -- hot-reload watcher, validation, ConfigDiff
-    - glass_core/event.rs    -- AppEvent::ConfigChanged, AppEvent::UpdateAvailable
-    - glass (binary)/main.rs -- handle ConfigChanged, startup update check, profiling
-    - glass_renderer         -- accept font changes at runtime (rebuild font system)
-    - CI (.github/workflows) -- release workflow producing platform installers
-```
-
-## New vs Modified Components
-
-| Component | Status | What Changes |
-|-----------|--------|-------------|
-| `glass_core/config.rs` | **MODIFY** | Add validation, hot-reload watcher, `ConfigDiff` type |
-| `glass_core/event.rs` | **MODIFY** | Add `AppEvent::ConfigChanged` and `AppEvent::UpdateAvailable` variants |
-| `glass (binary)/main.rs` | **MODIFY** | Handle ConfigChanged, startup update check, profiling gates |
-| `glass_renderer` | **MODIFY** | Accept font changes at runtime (rebuild FontSystem) |
-| `glass_update` | **NEW CRATE** | Auto-update check/download/replace via GitHub Releases |
-| `.github/workflows/release.yml` | **NEW FILE** | Release workflow producing MSI/DMG/deb/tar.gz |
-| `packaging/` | **NEW DIR** | Installer configs (WiX XML, Info.plist, .desktop) |
-| Profiling instrumentation | **MODIFY (scattered)** | `tracing` spans in hot paths across crates |
-
----
-
-## Component 1: Config Hot-Reload
-
-### Where It Lives
-
-Modify `glass_core/config.rs` -- NOT a new crate. The config module already handles loading; hot-reload extends the same responsibility. The `notify` crate is already a workspace dependency (v8.2, used by `glass_snapshot` for FS watching).
-
-### Architecture
+The coordination feature integrates as a new crate (`glass_coordination`) with modifications to two existing crates (`glass_mcp`, `glass_renderer`) and the root binary (`src/main.rs`). The design follows established patterns already proven in the codebase.
 
 ```
-~/.glass/config.toml
-        │
-        │ (notify crate -- file watcher, already in workspace)
-        ▼
-┌─────────────────────┐
-│ ConfigWatcher        │  spawned on dedicated std::thread
-│  - notify::Watcher   │  manual debounce: 500ms via Instant
-│  - EventLoopProxy    │  sends AppEvent::ConfigChanged
-└─────────┬───────────┘
-          │
-          ▼ AppEvent::ConfigChanged { changes: Vec<ConfigChange> }
-┌─────────────────────┐
-│ Processor (main.rs)  │
-│  - diff old vs new   │
-│  - apply what changed │
-└─────────────────────┘
-          │
-          ├──▶ font_family/font_size changed → rebuild FontSystem, resize terminals
-          ├──▶ history.* changed → update HistoryDb config thresholds
-          ├──▶ snapshot.* changed → update SnapshotStore config thresholds
-          ├──▶ pipes.* changed → update pipe capture settings
-          └──▶ shell changed → log warning "requires restart"
+                   src/main.rs (MODIFIED)
+                   - Reads agents.db periodically for GUI indicators
+                   - Passes coordination state to renderer
+                        |
+         +--------------+--------------+
+         |              |              |
+   glass_mux       glass_renderer    glass_mcp (MODIFIED)
+   (unchanged)     (MODIFIED)        - Adds glass_coordination dep
+                   - Status bar:     - 11 new MCP tool handlers
+                     agent count     - Opens CoordinationDb on startup
+                   - Tab bar:        - Wraps sync calls in spawn_blocking
+                     lock indicators
+                        |              |
+                        +------+-------+
+                               |
+                    glass_coordination (NEW)
+                    - CoordinationDb struct
+                    - SQLite schema (agents.db)
+                    - Agent registry, file locks, messaging
+                    - Path canonicalization
+                    - Stale agent pruning (heartbeat + PID)
+                               |
+                         rusqlite (existing workspace dep)
+                         uuid (NEW workspace dep)
 ```
 
-### Key Design Decisions
+### Component Classification
 
-**Reuse `notify 8.2` (already a workspace dependency).** The snapshot crate already depends on it. No new dependency needed. Use the `RecommendedWatcher` with a polling fallback (same as snapshot's FS watcher).
+| Component | Status | Role |
+|-----------|--------|------|
+| `crates/glass_coordination/` | **NEW** | Pure library: SQLite coordination DB, all agent/lock/message operations |
+| `crates/glass_mcp/src/tools.rs` | **MODIFIED** | Add 11 tool handlers, wire CoordinationDb into GlassServer |
+| `crates/glass_mcp/src/lib.rs` | **MODIFIED** | Open CoordinationDb path during server startup |
+| `crates/glass_mcp/Cargo.toml` | **MODIFIED** | Add `glass_coordination` dependency |
+| `crates/glass_renderer/src/status_bar.rs` | **MODIFIED** | Add agent count display to status bar |
+| `crates/glass_renderer/src/tab_bar.rs` | **MODIFIED** | Add lock indicator (colored dot) per tab |
+| `crates/glass_renderer/src/frame.rs` | **MODIFIED** | Pass coordination display state through to status bar |
+| `src/main.rs` | **MODIFIED** | Periodic coordination state polling, pass to renderer |
+| `Cargo.toml` (workspace root) | **MODIFIED** | Add `uuid` to workspace deps, add `glass_coordination` to root deps |
+| `CLAUDE.md` | **MODIFIED** | Add coordination instructions for AI agents |
 
-**Debounce at 500ms with manual `Instant` check.** Editors like vim write to temp files then rename; VS Code does atomic saves. A 500ms debounce window absorbs all intermediate filesystem events. Use a simple `Instant::elapsed()` check in the callback rather than adding `notify-debouncer-mini` as a new dependency.
+### Components NOT Modified
 
-**Diff-based application via ConfigChange enum.** Parse the new config, diff against the stored `GlassConfig`, and only apply changed fields. This avoids rebuilding the expensive FontSystem on every save when only a history threshold changed.
+| Component | Why Unchanged |
+|-----------|---------------|
+| `glass_terminal` | No terminal emulation changes needed; coordination is above PTY layer |
+| `glass_core` | No new AppEvent variants needed (coordination state is polled, not event-driven) |
+| `glass_history` | History DB is separate from agents.db; no schema changes |
+| `glass_snapshot` | Snapshot operations are independent of coordination |
+| `glass_pipes` | Pipe capture is orthogonal to agent coordination |
+| `glass_mux` | Session multiplexer does not need coordination awareness; tab metadata flows through main.rs |
+
+## New Crate: `glass_coordination`
+
+### Design Principles
+
+Follow the exact patterns established by `glass_history` and `glass_snapshot`:
+
+1. **Pure synchronous library** -- no async runtime, no Tokio dependency. All SQLite operations are blocking. The MCP layer wraps them in `tokio::task::spawn_blocking`.
+2. **Own its database** -- `agents.db` lives in `~/.glass/` alongside `history.db` and `snapshots.db`. Separate DB for independent lifecycle and no migration risk to existing data.
+3. **WAL mode with busy_timeout** -- identical PRAGMA configuration to `HistoryDb` and `SnapshotDb`: `journal_mode = WAL`, `synchronous = NORMAL`, `busy_timeout = 5000`, `foreign_keys = ON`.
+4. **PRAGMA user_version for migrations** -- same migration pattern used by glass_history (v0 -> v1 -> v2) and glass_snapshot (v0).
+
+### Internal Structure
+
+```
+crates/glass_coordination/
+  Cargo.toml
+  src/
+    lib.rs          -- CoordinationDb struct, open(), resolve_agents_db_path()
+    schema.rs       -- CREATE TABLE statements, migrations
+    agents.rs       -- register, deregister, heartbeat, set_status, list_agents, get_agent
+    locks.rs        -- lock_files (atomic), unlock_file, unlock_all, list_locks
+    messages.rs     -- broadcast, send_message, read_messages
+    types.rs        -- AgentInfo, FileLock, Message, LockResult, LockConflict structs
+    prune.rs        -- prune_stale(), PID liveness check (cross-platform)
+```
+
+### Cargo.toml
+
+```toml
+[package]
+name = "glass_coordination"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+```
+
+### Key API Design Decisions
+
+**CoordinationDb holds a `Connection`, not `Arc<Mutex<Connection>>`**. This matches `HistoryDb` and `SnapshotDb`. Thread safety is handled by the caller (MCP layer uses `spawn_blocking` with the DB path cloned into the closure, opening per-call).
+
+**`lock_files` is atomic (all-or-nothing)**. Uses a single SQLite transaction with `BEGIN IMMEDIATE`. If any path is already locked by another agent, the entire request fails with conflict details, and no locks are acquired. This eliminates TOCTOU races and prevents partial-lock deadlocks.
+
+**Path canonicalization happens inside `lock_files`/`unlock_file`**, not at the caller. This ensures consistency regardless of how the path arrives. Uses `std::fs::canonicalize()` which resolves symlinks and produces absolute paths. On Windows, this produces UNC paths (`\\?\C:\...`) -- stored as-is since all paths go through the same canonicalization.
+
+**DB location: `~/.glass/agents.db`** (always global, never per-project). Unlike history and snapshots which can be project-local (`.glass/` in project root), coordination must be global so agents in different CWDs within the same project can discover each other. The `project` field in the agents table handles scoping by project root path.
+
+### Database Schema: `~/.glass/agents.db`
+
+```sql
+-- Schema version 0
+
+CREATE TABLE agents (
+    id              TEXT PRIMARY KEY,        -- UUID v4, assigned on register
+    name            TEXT NOT NULL,            -- Human-readable label ("Claude A")
+    agent_type      TEXT NOT NULL,            -- "claude-code", "cursor", "copilot", "human"
+    project         TEXT NOT NULL,            -- Canonical project root (scopes visibility)
+    cwd             TEXT NOT NULL,            -- Working directory
+    pid             INTEGER,                 -- OS process ID (liveness fallback)
+    status          TEXT NOT NULL DEFAULT 'active',  -- active | busy | idle
+    task            TEXT,                     -- Current task description
+    registered_at   INTEGER NOT NULL,
+    last_heartbeat  INTEGER NOT NULL
+);
+
+CREATE TABLE file_locks (
+    path       TEXT PRIMARY KEY,             -- Canonical absolute path
+    agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    reason     TEXT,
+    locked_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_locks_agent ON file_locks(agent_id);
+
+CREATE TABLE messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_agent  TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    to_agent    TEXT,                         -- NULL = broadcast
+    msg_type    TEXT NOT NULL DEFAULT 'info', -- info | conflict_warning | task_complete | request_unlock
+    content     TEXT NOT NULL,
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+    read        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_messages_unread ON messages(to_agent, read);
+```
+
+### Concurrency Model: Why SQLite WAL Works Here
+
+SQLite WAL mode supports concurrent readers with a single writer. Multiple `glass mcp serve` processes safely share `agents.db`:
+
+- **Reads** (list_agents, list_locks, read_messages): Fully concurrent, never blocked by writers.
+- **Writes** (register, lock_files, heartbeat, send_message): Serialized by SQLite's write lock. With `busy_timeout = 5000ms`, a writer waits up to 5 seconds. Coordination writes are small and fast (single-row INSERTs/UPDATEs), so contention is negligible even with 10+ agents.
+- **Atomic transactions** (`lock_files`): Uses `BEGIN IMMEDIATE` to acquire the write lock at transaction start, preventing the upgrade deadlock where two readers try to simultaneously upgrade to writers.
+
+This is the identical pattern used by `HistoryDb` and `SnapshotDb`. WAL mode, synchronous=NORMAL, busy_timeout=5000 are already proven in the codebase across hundreds of tests.
+
+### PID Liveness Check (Cross-Platform)
+
+For stale agent detection, `prune_stale()` needs to check if a PID is still running. Two approaches, in order of preference:
+
+**Approach A (Recommended): Manual platform-specific checks.** Zero new dependencies. Small amount of platform-specific code behind `#[cfg]`:
 
 ```rust
-// In glass_core/config.rs
-pub enum ConfigChange {
-    FontFamily(String),
-    FontSize(f32),
-    HistorySection(HistorySection),
-    SnapshotSection(Option<SnapshotSection>),
-    PipesSection(Option<PipesSection>),
-    // shell: not hot-reloadable
+fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // kill(pid, 0) checks process existence without sending a signal
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows_sys::Win32::Foundation::CloseHandle;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 { return false; }
+        unsafe { CloseHandle(handle); }
+        true
+    }
 }
+```
 
-// In glass_core/event.rs
-AppEvent::ConfigChanged {
-    window_id: WindowId,  // broadcast to all windows
-    changes: Vec<ConfigChange>,
+This avoids adding libc/windows-sys as direct dependencies to glass_coordination. Instead, use `std::process::Command` to call platform tools:
+- Unix: `kill -0 <pid>` (returns success if process exists)
+- Windows: `tasklist /FI "PID eq <pid>"` or use `windows-sys` (already a workspace dependency)
+
+**Approach B: Use `process_alive` crate.** Adds one tiny dependency. Handles all platform nuances. If the manual approach proves fragile, fall back to this.
+
+## Modified Component: `glass_mcp`
+
+### GlassServer Changes
+
+The `GlassServer` struct gains a new field for the coordination DB path:
+
+```rust
+#[derive(Clone)]
+pub struct GlassServer {
+    tool_router: ToolRouter<Self>,
+    db_path: PathBuf,        // existing: history DB path
+    glass_dir: PathBuf,      // existing: snapshot glass_dir
+    agents_db_path: PathBuf, // NEW: coordination DB path (~/.glass/agents.db)
 }
 ```
 
-**What is NOT hot-reloadable:** Shell override (`shell = "bash"`) requires PTY respawn -- log a warning: "Shell change requires restart." This is the same approach Alacritty uses.
+**Why store the path, not an open `CoordinationDb`?** Same pattern as `glass_dir` for snapshots. `CoordinationDb` wraps `rusqlite::Connection` which is `!Send`. `GlassServer` must be `Clone + Send` for rmcp's `ServerHandler` trait. Each tool handler opens the DB inside `spawn_blocking` on a dedicated thread. This is the exact pattern used by the existing `glass_undo` and `glass_file_diff` handlers which open `SnapshotStore` per-request.
 
-**Validation on reload.** Currently, malformed TOML silently falls back to all defaults. For hot-reload, preserve the previous working config and log specific errors:
-- Font size must be 6.0..=72.0
-- Unknown TOML keys produce a warning (not an error)
-- Invalid sections preserve the previous value and log what went wrong
+### 11 New Tool Handlers
 
-### Integration Points
+Each follows the identical pattern to existing handlers. Example:
 
-| Touches | What Changes |
-|---------|-------------|
-| `glass_core/config.rs` | Add `ConfigWatcher::new(proxy)`, `GlassConfig::diff(&self, &other)`, validation |
-| `glass_core/event.rs` | Add `AppEvent::ConfigChanged` variant |
-| `glass_core/Cargo.toml` | Add `notify` and `winit` dependencies (for EventLoopProxy type) |
-| `main.rs` Processor | Store `GlassConfig` as mutable, spawn ConfigWatcher, handle ConfigChanged events |
-| `glass_renderer` | Add `FontSystem::rebuild(family, size)` or equivalent method |
+```rust
+#[tool(description = "Register this agent for coordination. Returns agent_id and count of active agents.")]
+async fn glass_agent_register(
+    &self,
+    Parameters(params): Parameters<RegisterParams>,
+) -> Result<CallToolResult, McpError> {
+    let agents_db_path = self.agents_db_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db = CoordinationDb::open(&agents_db_path).map_err(internal_err)?;
+        db.register(&params.name, &params.agent_type, &params.project, &params.cwd, None)
+            .map_err(internal_err)
+    })
+    .await
+    .map_err(internal_err)??;
 
-### Config Flow Detail
-
-```
-1. User edits ~/.glass/config.toml and saves
-2. notify fires Create/Modify/Rename event on config.toml
-3. ConfigWatcher callback checks Instant::elapsed() > 500ms since last reload
-4. If debounce passed: re-read file, parse TOML via GlassConfig::load_from_str()
-5. If parse fails: log error, keep existing config, do nothing
-6. If parse succeeds: compute diff vs current config
-7. If no changes: do nothing
-8. If changes: send AppEvent::ConfigChanged { changes } via EventLoopProxy
-9. Processor::user_event() matches ConfigChanged:
-   - FontFamily/FontSize → call renderer.rebuild_font_system()
-   - HistorySection → update session history_db thresholds
-   - SnapshotSection → update session snapshot_store thresholds
-   - PipesSection → update pipe capture settings
-10. Store new config as current
+    let content = Content::json(&serde_json::json!({
+        "agent_id": result.agent_id,
+        "agents_active": result.active_count,
+    }))?;
+    Ok(CallToolResult::success(vec![content]))
+}
 ```
 
----
+### MCP Server Startup Changes
 
-## Component 2: Auto-Update
+In `lib.rs`, `run_mcp_server()` adds agents DB path resolution:
 
-### Where It Lives
+```rust
+pub async fn run_mcp_server() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let db_path = glass_history::resolve_db_path(&cwd);
+    let glass_dir = glass_snapshot::resolve_glass_dir(&cwd);
+    let agents_db_path = glass_coordination::resolve_agents_db_path(); // NEW
 
-**New crate: `glass_update`** in `crates/glass_update/`. Isolated because update logic is complex, platform-specific, and optional.
-
-### Architecture
-
-```
-┌─────────────────────────────────────┐
-│ glass_update                         │
-│                                      │
-│  UpdateChecker                       │
-│    - check() -> Option<Release>      │
-│    - download_and_replace() -> Result│
-│                                      │
-│  Backed by: self_update crate        │
-│  Backend: GitHub Releases API        │
-│  Format: .tar.gz (Linux/macOS),      │
-│          .zip (Windows)              │
-└──────────────┬──────────────────────┘
-               │
-               ▼ called from main.rs
-┌─────────────────────────────────────┐
-│ Startup check (background tokio)     │
-│  1. Compare CARGO_PKG_VERSION to     │
-│     latest GitHub release tag        │
-│  2. If newer: send AppEvent::        │
-│     UpdateAvailable { version }      │
-│  3. User triggers: Ctrl+Shift+U or   │
-│     `glass update` CLI               │
-└─────────────────────────────────────┘
+    let server = tools::GlassServer::new(db_path, glass_dir, agents_db_path);
+    let service = server.serve(rmcp::transport::stdio()).await?;
+    service.waiting().await?;
+    Ok(())
+}
 ```
 
-### Key Design Decisions
+`resolve_agents_db_path()` always returns `~/.glass/agents.db` (global, no per-project walk).
 
-**Use `self_update` crate.** It handles the download-extract-replace-binary workflow, supports GitHub Releases as a backend, works cross-platform, and uses `self_replace` for atomic binary replacement on Windows (where the running exe cannot be directly overwritten). Well-maintained with 400+ GitHub stars.
+### Heartbeat Strategy
 
-**Background check, manual apply.** Check for updates on startup in a background tokio task. Do NOT auto-apply. Show a non-intrusive status bar notification ("Update v2.2 available"). The user explicitly triggers via keyboard shortcut or CLI. This preserves trust -- users do not expect their terminal to restart itself.
+The MCP server process is long-lived (runs for the entire Claude Code session). Heartbeats must be sent every 60 seconds to prevent stale pruning (5-minute timeout).
 
-**CLI subcommand for headless update:**
-```
-glass update          # Check and apply update
-glass update --check  # Check only, print result
-```
+**Use explicit heartbeat tool calls.** The agent (Claude Code) is instructed via CLAUDE.md to call `glass_agent_heartbeat` periodically. This keeps the MCP server stateless -- it does not self-register or maintain its own agent identity. The MCP server is a tool provider; the agent using the tools is the registered entity.
 
-**Install-method detection.** When Glass was installed via MSI/DMG/package manager, `self_update` binary replacement would conflict with the package manager's tracking. Detect install method by checking the binary's path:
-- `/usr/bin/glass` or `C:\Program Files\Glass\` = installer-managed, tell user to update via their package manager
-- `~/.glass/bin/glass` or portable location = self-managed, binary replacement is safe
+This is the approach specified in the design document. Each tool call is independent and stateless from the MCP server's perspective.
 
-**Use `rustls` not native-tls.** Avoids OpenSSL dependency on Linux. Pure Rust TLS.
+## Modified Component: `glass_renderer`
 
-### Crate Structure
+### Status Bar: Agent Count
 
-```
-crates/glass_update/
-  src/
-    lib.rs        -- pub UpdateChecker, UpdateStatus
-    checker.rs    -- version comparison, GitHub API call
-    installer.rs  -- download, verify, replace binary
+Extend `StatusBarRenderer::build_status_text()` to accept optional coordination state:
+
+```rust
+pub struct CoordinationDisplay {
+    pub agent_count: usize,
+    pub lock_count: usize,
+}
 ```
 
-### Crate Dependencies
+The `build_status_text` method signature adds one parameter:
 
-```toml
-[dependencies]
-self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2"] }
-semver = "1"
-tokio = { workspace = true }
-tracing = { workspace = true }
-anyhow = { workspace = true }
+```rust
+pub fn build_status_text(
+    &self,
+    cwd: &str,
+    git_info: Option<&GitInfo>,
+    update_text: Option<&str>,
+    coordination: Option<&CoordinationDisplay>, // NEW
+    viewport_height: f32,
+) -> StatusLabel { ... }
 ```
 
-### Integration Points
-
-| Touches | What Changes |
-|---------|-------------|
-| New `crates/glass_update/` | UpdateChecker struct, version comparison, download logic |
-| `Cargo.toml` (workspace) | Add `self_update` and `semver` to workspace deps |
-| `main.rs` CLI | Add `Commands::Update { check_only: bool }` subcommand |
-| `main.rs` Processor | Spawn background update check on startup, handle UpdateAvailable |
-| `glass_core/event.rs` | Add `AppEvent::UpdateAvailable { version: String, url: String }` |
-| Status bar rendering | Show "[v2.2 available]" indicator when update exists |
-
----
-
-## Component 3: Packaging and Distribution
-
-### Where It Lives
-
-**No new Rust crate.** This is entirely CI/build infrastructure plus static installer config files.
-
-### Architecture
+When `coordination` is `Some` and `agent_count > 0`, append to `right_text` after git info:
 
 ```
-Git tag push (v2.1.0)
-        │
-        ▼
-┌──────────────────────────────────────────────────┐
-│ .github/workflows/release.yml                     │
-│                                                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐    │
-│  │ Windows  │  │  macOS   │  │    Linux      │    │
-│  │          │  │          │  │               │    │
-│  │ cargo    │  │ cargo    │  │ cargo build   │    │
-│  │ build    │  │ build    │  │ --release     │    │
-│  │ --release│  │ --release│  │               │    │
-│  │          │  │          │  │               │    │
-│  │ ┌──────┐ │  │ ┌──────┐ │  │ ┌───────────┐ │    │
-│  │ │ .msi │ │  │ │ .dmg │ │  │ │ .deb      │ │    │
-│  │ │ .zip │ │  │ │.tar.gz│ │  │ │ .tar.gz   │ │    │
-│  │ └──────┘ │  │ └──────┘ │  │ └───────────┘ │    │
-│  └──────────┘  └──────────┘  └──────────────┘    │
-│                                                    │
-│  Upload all artifacts to GitHub Release            │
-└──────────────────────────────────────────────────┘
+main +3 | 2 agents, 5 locks
 ```
 
-### Platform Installer Details
-
-**Windows (MSI via cargo-wix / WiX 4):**
-- WiX Toolset 4.x generates `.msi` installer
-- Installs to `C:\Program Files\Glass\`
-- Adds `glass.exe` to system PATH
-- Includes shell integration scripts in install dir
-- Also produce a portable `.zip` (binary + scripts)
-- Config file: `packaging/windows/main.wxs`
-- Reference: Alacritty uses the same approach (WiX MSI + portable exe)
-
-**macOS (DMG with .app bundle):**
-- Create `.app` bundle with `Info.plist` and icon
-- Use `hdiutil` in CI to produce `.dmg`
-- Separate builds per architecture (aarch64 primary, x86_64 secondary) -- `lipo` universal binary optional
-- Also produce `.tar.gz` for Homebrew-style installs
-- Config files: `packaging/macos/Info.plist`, `packaging/macos/glass.icns`
-
-**Linux (deb + tar.gz):**
-- `cargo-deb` for `.deb` package (Ubuntu/Debian)
-- Tar.gz with binary + shell integration scripts for other distros
-- Install binary to `/usr/bin/glass`, shell scripts to `/usr/share/glass/`
-- Config files: `packaging/linux/glass.desktop`, deb metadata in `Cargo.toml`
-- Skip rpm/Flatpak/AppImage initially -- deb covers the largest desktop Linux base, tar.gz covers everything else
-
-### Directory Layout
+If no git info, show just coordination:
 
 ```
-packaging/
-├── windows/
-│   └── main.wxs              # WiX installer definition
-├── macos/
-│   ├── Info.plist             # .app bundle metadata
-│   ├── glass.icns             # Application icon
-│   └── create-dmg.sh          # DMG creation script
-├── linux/
-│   ├── glass.desktop          # XDG desktop entry
-│   └── postinst               # Post-install script (optional)
-└── scripts/
-    └── install.sh             # curl-pipe installer for quick installs
+2 agents, 5 locks
 ```
 
-### Integration Points
+**Why extend right_text rather than using center_text?** Center text is reserved for the update notification. Right text already shows git info and naturally extends with coordination info using a `|` separator.
 
-| Touches | What Changes |
-|---------|-------------|
-| `.github/workflows/release.yml` | New workflow triggered by `v*` tags |
-| `packaging/` directory | New -- all installer config files |
-| `Cargo.toml` | Add `[package.metadata.wix]` and `[package.metadata.deb]` sections |
-| Existing `ci.yml` | No change -- remains for PR/push CI |
+### Tab Bar: Lock Indicators (Phase 4, Deferred)
 
-### Release Workflow Trigger
+Extend `TabDisplayInfo` with optional lock state:
 
-```yaml
-on:
-  push:
-    tags: ['v*']  # Triggered by: git tag v2.1.0 && git push --tags
+```rust
+pub struct TabDisplayInfo {
+    pub title: String,
+    pub is_active: bool,
+    pub has_agent_locks: bool, // NEW: true if an agent in this tab holds file locks
+}
 ```
 
-The workflow matrix mirrors the existing CI matrix (windows-latest, macos-latest, ubuntu-latest) but adds packaging steps after `cargo build --release`.
+**Challenge: Mapping MCP agents to Glass tabs.** MCP servers are separate processes spawned by Claude Code, which runs inside a shell that runs inside a Glass tab's PTY. The Glass GUI knows each tab's shell PID (from PTY spawn), but the MCP agent knows its own PID. Correlating requires process tree walking (MCP PID -> parent shell PID -> Glass PTY PID).
 
----
+**Recommendation:** Defer per-tab lock indicators to Phase 4. For Phase 3, show aggregate agent/lock counts in the status bar only. This avoids process tree walking complexity while still providing coordination visibility.
 
-## Component 4: Performance Profiling
+### Frame Renderer Changes
 
-### Where It Lives
+Both `draw_frame()` and `draw_multi_pane_frame()` need the coordination display data passed through. The signature change cascades from `main.rs` through to `build_status_text()`. This is the same pattern used when `update_text` was added -- a new optional parameter threaded through the rendering pipeline.
 
-**No new crate.** Add instrumentation spans across existing crates using `tracing` (already a workspace dependency everywhere). Add `tracing-flame` as an optional dependency for flamegraph output. Feature-gated behind `--features perf`.
+## Modified Component: `src/main.rs`
 
-### Architecture
+### Coordination State Polling
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ Compile-time feature: "perf"                              │
-│                                                            │
-│  When enabled:                                             │
-│    - tracing-flame subscriber layer → flamegraph.folded    │
-│    - Optional: wgpu-profiler → GPU timing data             │
-│    - memory-stats logging (already available)              │
-│                                                            │
-│  Instrumented hot paths:                                   │
-│    glass_terminal:  PTY read loop, VTE byte processing     │
-│    glass_renderer:  frame render, glyph shaping, GPU pass  │
-│    glass_core:      config load, config diff               │
-│    glass (binary):  event dispatch, keyboard encode        │
-│    glass_snapshot:  blob write, BLAKE3 hash                │
-│    glass_history:   DB insert, FTS5 search queries         │
-└──────────────────────────────────────────────────────────┘
+The main event loop needs periodic access to coordination state for GUI display.
+
+**Use a background polling thread with `Arc<AtomicUsize>` pairs.** This avoids adding new `AppEvent` variants (keeping `glass_core` unchanged) and matches the lightweight pattern used for `update_info`.
+
+```rust
+struct GlassApp {
+    // ... existing fields ...
+    coordination_agent_count: Arc<AtomicUsize>, // NEW
+    coordination_lock_count: Arc<AtomicUsize>,  // NEW
+}
 ```
 
-### Key Design Decisions
+On startup, spawn a background `std::thread` (not Tokio -- same as git status queries):
 
-**Use `tracing` spans (already everywhere) + `tracing-flame` for flamegraphs.** The project already uses `tracing` and `tracing-subscriber` throughout. Adding `tracing-flame` as an optional subscriber produces folded stack traces consumable by `inferno` (Rust flamegraph tool). Zero new instrumentation API to learn.
+```rust
+let agent_count = Arc::clone(&self.coordination_agent_count);
+let lock_count = Arc::clone(&self.coordination_lock_count);
+let agents_db_path = glass_coordination::resolve_agents_db_path();
 
-**Feature-gated, not always-on.** Profiling adds overhead even when spans are "inactive" because `tracing` still checks the subscriber filter. Gate behind a Cargo feature:
-```toml
-[features]
-perf = ["dep:tracing-flame"]
-
-[dependencies]
-tracing-flame = { version = "0.2", optional = true }
+std::thread::spawn(move || {
+    loop {
+        if let Ok(db) = CoordinationDb::open(&agents_db_path) {
+            if let Ok(agents) = db.list_agents() {
+                agent_count.store(agents.len(), Ordering::Relaxed);
+            }
+            if let Ok(locks) = db.list_locks(None) {
+                lock_count.store(locks.len(), Ordering::Relaxed);
+            }
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+});
 ```
 
-**Instrumentation targets (key metrics):**
+**Why not `AppEvent`-driven?** Adding a `CoordinationUpdate` variant to `AppEvent` in `glass_core` would require modifying `glass_core`, which is depended on by 5 other crates. The atomic approach is simpler: the render loop reads two atomics (essentially free, no event handling code) and passes the values to the renderer. This is appropriate because coordination state is non-urgent display-only data.
 
-| Metric | Location | Instrumentation |
-|--------|----------|-----------------|
-| Cold start time | `main.rs` | Already measured (360ms baseline), keep as-is |
-| Key-to-screen latency | `main.rs` event loop | `#[tracing::instrument]` on keyboard handler |
-| Frame render time | `glass_renderer` | Span around `render_frame()` and sub-passes |
-| PTY read throughput | `glass_terminal` | Span in PTY reader thread loop, bytes/iteration |
-| Glyph cache hit rate | `glass_renderer` | Counter in FontSystem, logged periodically |
-| Memory usage | `main.rs` | Already have `memory-stats`, log periodically |
-| DB query time | `glass_history` | Span around `insert_command()`, `search()` |
-| Config parse time | `glass_core` | Span around `GlassConfig::load()` |
+**Why not `notify` file watcher on agents.db?** SQLite WAL creates `-wal` and `-shm` companion files. Every write to any table triggers filesystem events on multiple files, causing excessive redundant GUI updates. Simple 5-second polling is sufficient for a status bar display.
 
-**CLI subcommand for on-demand profiling (optional, defer if time-constrained):**
-```
-glass profile --duration 10   # Profile for 10s, write flamegraph.folded
-```
+### Render Loop Integration
 
-**GPU profiling via `wgpu-profiler`.** This is a MEDIUM confidence recommendation -- need to verify compatibility with wgpu 28.0. Feature-gate separately if added:
-```toml
-[features]
-gpu-profile = ["dep:wgpu-profiler"]
+In the `RedrawRequested` handler, read atomics and construct `CoordinationDisplay`:
+
+```rust
+let coordination = {
+    let ac = self.coordination_agent_count.load(Ordering::Relaxed);
+    let lc = self.coordination_lock_count.load(Ordering::Relaxed);
+    if ac > 0 {
+        Some(CoordinationDisplay { agent_count: ac, lock_count: lc })
+    } else {
+        None
+    }
+};
 ```
 
-### Integration Points
+Pass this to `build_status_text()` alongside existing `update_text`.
 
-| Touches | What Changes |
-|---------|-------------|
-| Root `Cargo.toml` | Add `perf` feature, `tracing-flame` optional dep |
-| `main.rs` | Conditional `tracing-flame` subscriber layer when `perf` feature enabled |
-| `glass_renderer/src/*.rs` | Add `#[tracing::instrument(skip_all)]` on render hot paths |
-| `glass_terminal/src/pty.rs` | Add span in PTY read loop |
-| `glass_history/src/db.rs` | Add spans around DB operations |
-| `glass_snapshot/src/*.rs` | Add spans around blob store operations |
+## Data Flow Diagrams
 
----
-
-## Data Flow Changes Summary
-
-### Config Hot-Reload Flow
+### Agent Registration Flow (MCP Process)
 
 ```
-1. User saves ~/.glass/config.toml
-2. notify::Watcher fires filesystem event
-3. ConfigWatcher thread checks debounce (500ms)
-4. Re-parses TOML via GlassConfig::load_from_str()
-5. If valid: compute diff vs current config
-6. Send AppEvent::ConfigChanged { changes } via EventLoopProxy
-7. Processor::user_event() matches ConfigChanged
-8. Per-change dispatch:
-   - FontFamily/FontSize → renderer.rebuild_font_system()
-   - Sections → update thresholds on active sessions
-   - Shell → log "requires restart"
-9. Store new config
+Claude Code                glass mcp serve              agents.db
+    |                           |                           |
+    |-- glass_agent_register -->|                           |
+    |                           |-- spawn_blocking -------->|
+    |                           |   CoordinationDb::open()  |
+    |                           |   db.register(...)        |
+    |                           |   INSERT INTO agents      |
+    |                           |<-- agent_id (UUID) -------|
+    |<-- { agent_id, count } ---|                           |
 ```
 
-### Auto-Update Flow
+### File Lock Flow (Atomic All-or-Nothing)
 
 ```
-1. App starts → spawn tokio task: glass_update::check()
-2. HTTP GET GitHub Releases API (rate limit: 60/hr unauthenticated)
-3. Compare latest tag semver to env!("CARGO_PKG_VERSION")
-4. If newer: send AppEvent::UpdateAvailable { version }
-5. Processor renders "[v2.2 available]" in status bar
-6. User presses Ctrl+Shift+U or runs `glass update`
-7. glass_update::download_and_apply()
-8. Binary replaced atomically → prompt user to restart
+Claude Code                glass mcp serve              agents.db
+    |                           |                           |
+    |-- glass_agent_lock ------>|                           |
+    |   paths: [a.rs, b.rs]    |-- spawn_blocking -------->|
+    |                           |   BEGIN IMMEDIATE         |
+    |                           |   canonicalize(a.rs)      |
+    |                           |   canonicalize(b.rs)      |
+    |                           |   SELECT from file_locks  |
+    |                           |   -- no conflicts? -->    |
+    |                           |   INSERT INTO file_locks  |
+    |                           |   COMMIT                  |
+    |<-- { locked: [...] } -----|                           |
+    |                           |                           |
+    |   -- OR if conflict: --   |                           |
+    |                           |   ROLLBACK                |
+    |<-- { conflicts: [...] } --|                           |
 ```
 
-### Packaging Flow (CI only, not runtime)
+### GUI Coordination Display Flow (Glass Terminal Process)
 
 ```
-1. Developer pushes tag v2.1.0
-2. GitHub Actions release.yml triggers on tag
-3. Matrix: Windows (MSI+zip), macOS (DMG+tar.gz), Linux (deb+tar.gz)
-4. Artifacts uploaded to GitHub Release
-5. self_update checks this same Release endpoint for newer versions
+Glass main.rs          Background Thread         agents.db
+    |                       |                       |
+    | (startup)             |                       |
+    |-- spawn thread ------>|                       |
+    |                       |-- poll every 5s ----->|
+    |                       |   SELECT COUNT(*)     |
+    |                       |<-- agent_count -------|
+    |                       |-- store AtomicUsize   |
+    |                       |                       |
+    | (render frame)        |                       |
+    |-- read atomics        |                       |
+    |-- pass to renderer    |                       |
+    |-- status bar shows    |                       |
+    |   "2 agents, 5 locks" |                       |
 ```
 
----
+### Cross-Process Coordination (Two Agents)
 
-## Build Order (Dependency-Aware)
+```
+Glass Tab 1              agents.db              Glass Tab 2
+(Claude A)                                      (Claude B)
+    |                       |                       |
+    |-- register ---------->|                       |
+    |<-- agent_id: AAA -----|                       |
+    |                       |<-- register ----------|
+    |                       |--- agent_id: BBB ---->|
+    |                       |                       |
+    |-- lock src/main.rs -->|                       |
+    |<-- locked ------------|                       |
+    |                       |                       |
+    |                       |<-- lock src/main.rs --|
+    |                       |--- conflict: AAA ---->|
+    |                       |                       |
+    |                       |<-- send_message ------|
+    |                       |   "need main.rs"      |
+    |                       |                       |
+    |-- read_messages ----->|                       |
+    |<-- "need main.rs" ----|                       |
+    |                       |                       |
+    |-- unlock src/main.rs->|                       |
+    |                       |<-- lock src/main.rs --|
+    |                       |--- locked ----------->|
+```
 
-These four features have minimal interdependencies but the following order respects logical prerequisites.
+## Path Canonicalization Strategy
 
-### Phase 1: Performance Profiling Instrumentation
-**Why first:** Profiling should be in place BEFORE the optimization pass so you can measure impact. Zero new crates, just adding spans and an optional subscriber.
-- Add `tracing::instrument` to render, PTY, and DB hot paths
-- Add `tracing-flame` optional subscriber behind `perf` feature
-- Run profiling, capture baseline flamegraph
-- Optimize bottlenecks based on data (not guesses)
+### The Problem
 
-### Phase 2: Config Validation and Hot-Reload
-**Why second:** Config validation is a prerequisite for safe hot-reload. Modifies `glass_core` which is a shared dependency -- do it before adding new crates.
-- Add validation rules to `GlassConfig` (range checks, unknown key warnings)
-- Add `GlassConfig::diff()` method
-- Add `ConfigWatcher` using `notify` (already in workspace)
-- Add `AppEvent::ConfigChanged` variant
-- Implement per-field application in Processor
-- Add renderer font rebuild path (`FontSystem::rebuild()`)
+File paths arrive at the coordination layer from different agents running in different working directories. The same file could be referenced as:
+- `src/main.rs` (relative)
+- `./src/main.rs` (relative with dot)
+- `C:\Users\nkngu\apps\Glass\src\main.rs` (Windows absolute)
+- `/c/Users/nkngu/apps/Glass/src/main.rs` (Git Bash style)
+- `\\?\C:\Users\nkngu\apps\Glass\src\main.rs` (Windows UNC)
 
-### Phase 3: Packaging and CI Release Workflow
-**Why third:** Pure infrastructure -- no runtime code changes. Must exist before auto-update (which needs GitHub Releases with downloadable artifacts).
-- Create `packaging/` directory with installer configs
-- Write `release.yml` GitHub Actions workflow
-- Add `[package.metadata.wix]` and `[package.metadata.deb]` to Cargo.toml
-- Test MSI, DMG, and deb builds in CI
-- Produce first tagged release with platform installers
+### The Solution
 
-### Phase 4: Auto-Update Mechanism
-**Why last:** Depends on packaging (Phase 3) because it downloads artifacts from GitHub Releases. New crate `glass_update`.
-- Create `crates/glass_update/` with `UpdateChecker`
-- Integrate `self_update` crate with GitHub Releases backend
-- Add `Commands::Update` CLI subcommand
-- Add background check on startup (tokio task)
-- Add `AppEvent::UpdateAvailable` and status bar notification
-- Add install-method detection (MSI vs portable)
+`std::fs::canonicalize()` inside `lock_files()` and `unlock_file()` before any DB operation. This produces a canonical absolute path that resolves symlinks. All agents go through the same canonicalization, so identical files produce identical DB keys.
 
-### Phase 5: Documentation
-**Why last:** Documents the finished product. Can overlap with Phase 4.
-- README rewrite with installation instructions per platform
-- Config reference (all TOML sections, hot-reloadable vs restart-required)
-- Keyboard shortcuts reference
-- Contributing/building guide
+### Interaction with Existing Canonicalization
 
----
+The existing `glass_snapshot` crate already uses `canonicalize()` in two places:
+- `IgnoreRules::new()` canonicalizes CWD for gitignore matching
+- `FsWatcher::new()` canonicalizes the watch directory
 
-## Architectural Patterns
+The coordination crate's canonicalization is **completely independent** -- it operates on a different database (`agents.db` vs `snapshots.db`) and different path sets (advisory locks vs watched files). No interaction or conflicts.
 
-### Pattern 1: Event-Driven Config Propagation (extend existing pattern)
+### Windows UNC Path Consistency
 
-**What:** Config changes flow through the same `AppEvent` / `EventLoopProxy` mechanism already used for PTY events, shell events, git status, and terminal dirty notifications.
-**When to use:** Any background thread/watcher needs to notify the main event loop.
-**Trade-offs:** Consistent with existing architecture. Slightly more latency than direct mutation (goes through event loop queue), but thread-safe and maintains the single-writer pattern on the main thread.
+On Windows, `canonicalize()` returns extended-length paths like `\\?\C:\Users\...`. Since ALL paths go through the same `canonicalize()` call, they consistently use this format. Two agents locking the same file produce identical UNC paths. No special handling needed.
 
-### Pattern 2: Feature-Gated Optional Components
+### Non-Existent File Paths
 
-**What:** Use Cargo features to gate heavy optional dependencies (`tracing-flame`, `wgpu-profiler`).
-**When to use:** Development/debugging tools that should not increase binary size or runtime overhead in release builds.
-**Trade-offs:** Conditional compilation adds `#[cfg(feature = "perf")]` annotations but keeps release binary lean.
+`std::fs::canonicalize()` requires the file to exist on disk. For locking files that do not exist yet (agent is about to create them), use a fallback strategy:
 
-### Pattern 3: Background Check with User-Triggered Action
+1. Canonicalize the parent directory (which must exist)
+2. Append the filename
 
-**What:** Background async task checks for updates/information but never applies disruptive changes automatically.
-**When to use:** Updates, migrations, or any operation that disrupts the user's workflow.
-**Trade-offs:** Slower update adoption vs. user trust and session stability.
+This matches the pattern in `glass_snapshot::IgnoreRules::canonicalize_path()`. Duplicate the logic in glass_coordination rather than creating a shared utility, to avoid coupling between crates that have no other dependency relationship.
 
-### Pattern 4: Diff-Then-Apply for Config Changes
+## Patterns to Follow
 
-**What:** Compute a diff between old and new config, then apply only the changed fields rather than rebuilding everything.
-**When to use:** When config changes have heterogeneous costs (font rebuild is expensive, threshold update is cheap).
-**Trade-offs:** More code to maintain the diff logic, but avoids visible flicker from unnecessary font rebuilds.
+### Pattern 1: Per-Request DB Opening (from glass_mcp/tools.rs)
 
----
+**What:** Open SQLite DB inside `spawn_blocking` for each MCP tool call, not at server startup.
+**When:** All coordination tool handlers.
+**Why:** `rusqlite::Connection` is `!Send`. Storing it in `GlassServer` (which must be `Clone + Send` for rmcp) would require `Arc<Mutex<>>`. Per-request opening is cheap (SQLite open is <1ms) and matches the existing pattern used by all 5 existing tools.
+**Example:** See existing `glass_undo` handler in `tools.rs` lines 251-257.
 
-## Anti-Patterns
+### Pattern 2: PRAGMA Configuration (from glass_history/db.rs)
 
-### Anti-Pattern 1: Polling Config File on a Timer
+**What:** Set WAL mode, synchronous=NORMAL, busy_timeout=5000, foreign_keys=ON on every connection open.
+**When:** `CoordinationDb::open()`.
+**Why:** WAL mode persists in the database file but PRAGMAs like `busy_timeout` and `foreign_keys` are per-connection settings. Must be set every time a connection is opened. Exact same 4-line PRAGMA block as `HistoryDb::open()` and `SnapshotDb::open()`.
 
-**What people do:** `loop { sleep(1s); reload_config(); }` instead of filesystem events.
-**Why it's wrong:** Wastes CPU, misses rapid saves, adds 0-1s latency to config changes.
-**Do this instead:** Use `notify` crate with debounce. Glass already uses `notify 8.2` for snapshot FS watching -- reuse it.
+### Pattern 3: Schema Migration via user_version (from glass_history/db.rs, glass_snapshot/db.rs)
 
-### Anti-Pattern 2: Auto-Applying Updates Without Consent
+**What:** Use `PRAGMA user_version` to track schema version. Apply migrations in a match statement.
+**When:** `CoordinationDb::open()` after initial schema creation.
+**Why:** Simple, built-in, proven in two existing crates. History DB has migrated from v0 -> v1 -> v2 successfully. No migration framework dependency needed.
 
-**What people do:** Download and replace binary silently on startup.
-**Why it's wrong:** User's terminal disappears mid-session. Binary replacement can fail and corrupt the install. Breaks trust.
-**Do this instead:** Check in background, notify in status bar, user explicitly triggers apply + restart.
+### Pattern 4: BEGIN IMMEDIATE for Write Transactions
 
-### Anti-Pattern 3: Rebuilding Everything on Config Change
+**What:** Use `BEGIN IMMEDIATE` instead of plain `BEGIN` for transactions that will write.
+**When:** `lock_files()` -- the only multi-statement write operation.
+**Why:** Plain `BEGIN` starts a deferred transaction (read-only initially). If two connections both start deferred transactions and then try to upgrade to write, one gets `SQLITE_BUSY`. `BEGIN IMMEDIATE` acquires the write lock upfront, so the second connection waits (up to busy_timeout) rather than failing.
 
-**What people do:** Tear down renderer, fonts, and terminal state when any config field changes.
-**Why it's wrong:** Causes visible flicker, ~35ms FontSystem rebuild, drops scroll position.
-**Do this instead:** Diff config, apply only changed fields. Font change rebuilds FontSystem but preserves terminal grids. History thresholds update in-place.
+### Pattern 5: Atomic State via Arc + AtomicUsize (from main.rs update_info pattern)
 
-### Anti-Pattern 4: Shipping Only a Bare Binary
+**What:** Background thread stores results in `Arc<AtomicUsize>`. Render loop reads with `Ordering::Relaxed`.
+**When:** GUI coordination state display.
+**Why:** Avoids adding `AppEvent` variants (keeping glass_core unchanged), avoids event loop overhead for non-urgent display data, and is essentially zero-cost in the render path.
 
-**What people do:** Upload `glass.exe` to GitHub Releases with no installer.
-**Why it's wrong:** No PATH setup, no shell integration scripts installed, no Start Menu entry, no uninstaller. Users must manually manage everything.
-**Do this instead:** Provide both an installer (MSI/DMG/deb) for system integration AND a portable archive for power users.
+## Anti-Patterns to Avoid
 
-### Anti-Pattern 5: Always-On Profiling in Release Builds
+### Anti-Pattern 1: Sharing Connection Across Threads
 
-**What people do:** Leave profiling spans always active.
-**Why it's wrong:** Even inactive tracing spans have ~1ns overhead per call. In a 60fps render loop processing thousands of cells, this adds up across hundreds of span sites.
-**Do this instead:** Feature-gate profiling behind `--features perf`. Ship release builds without the feature.
+**What:** Wrapping `rusqlite::Connection` in `Arc<Mutex<>>` and sharing between the Tokio runtime and tool handlers.
+**Why bad:** Creates unnecessary contention. The Mutex must be held for the entire DB operation duration. Under load, tool handlers queue up waiting for the lock.
+**Instead:** Open a fresh connection per `spawn_blocking` call. SQLite connections are cheap to create (<1ms). WAL mode handles the real concurrency at the DB level.
 
----
+### Anti-Pattern 2: Polling agents.db from the Render Loop
 
-## Integration Point Summary
+**What:** Opening and querying `agents.db` synchronously during frame rendering in the `RedrawRequested` handler.
+**Why bad:** SQLite I/O in the render loop would block frame submission. Even a 1ms query at 60fps (16.6ms budget) causes visible jank.
+**Instead:** Background thread polls every 5 seconds, stores results in atomics. Render loop reads atomics (effectively zero-cost).
 
-### Internal Boundaries
+### Anti-Pattern 3: Event-Driven Coordination State via notify
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| ConfigWatcher -> Processor | `AppEvent::ConfigChanged` via EventLoopProxy | Same pattern as GitInfo, Shell, CommandOutput events |
-| UpdateChecker -> Processor | `AppEvent::UpdateAvailable` via EventLoopProxy | Background tokio task on startup |
-| Processor -> Renderer | Direct method call (`rebuild_font_system()`) | Synchronous, main thread only |
-| CI -> GitHub Releases | Tag-triggered workflow upload | No runtime component |
-| glass_update -> GitHub API | HTTPS via reqwest (inside self_update) | rustls backend, no OpenSSL |
+**What:** Using `notify` file watcher on `agents.db` to trigger GUI updates when coordination state changes.
+**Why bad:** SQLite WAL creates `-wal` and `-shm` companion files. Every write to any table triggers filesystem events on multiple files, causing excessive redundant redraws. Also, `notify` events don't tell you WHAT changed, so you'd still have to query the DB.
+**Instead:** Simple periodic polling (5-second interval) is appropriate for non-urgent status bar display.
 
-### External Services
+### Anti-Pattern 4: Making glass_coordination Async
 
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| GitHub Releases API | self_update crate handles HTTP + JSON | Rate limited 60/hr unauthenticated; cache result |
-| Filesystem (notify) | notify 8.2 RecommendedWatcher | Platform: ReadDirectoryChangesW / FSEvents / inotify |
-| WiX Toolset 4 | CI-only via cargo-wix | Windows MSI generation |
-| cargo-deb | CI-only | Debian package generation |
-| hdiutil | CI-only (macOS runner) | DMG creation |
+**What:** Adding Tokio as a dependency to glass_coordination for async DB operations.
+**Why bad:** Rusqlite is synchronous. Wrapping sync calls in async adds complexity without benefit. The MCP layer already handles the sync-to-async bridge via `spawn_blocking`. Adding Tokio would also break the pattern established by glass_history and glass_snapshot (both pure sync).
+**Instead:** Keep glass_coordination purely synchronous. Let the consumer (glass_mcp) handle threading.
 
----
+### Anti-Pattern 5: Coupling Agent ID to SessionId
 
-## Confidence Assessment
+**What:** Using Glass's internal `SessionId` (u64 counter) as the agent identifier.
+**Why bad:** MCP servers are separate processes spawned by the AI tool (e.g., Claude Code). They have no access to Glass's internal session IDs. There is no IPC channel between the Glass GUI process and MCP server processes to communicate SessionIds.
+**Instead:** Use UUID v4 for agent IDs. Self-generated, globally unique, no coordination with Glass GUI needed.
 
-| Area | Confidence | Notes |
-|------|------------|-------|
-| Config hot-reload architecture | HIGH | `notify` already in workspace, pattern well-established in Rust ecosystem |
-| Auto-update via self_update | HIGH | Crate is mature, GitHub Releases backend well-documented |
-| Packaging (MSI/DMG/deb) | HIGH | Alacritty uses identical approach (WiX + hdiutil + cargo-deb) |
-| Performance profiling via tracing-flame | HIGH | tracing already in workspace, tracing-flame is a standard layer |
-| GPU profiling via wgpu-profiler | MEDIUM | Need to verify wgpu 28.0 compatibility |
-| Build order | HIGH | Dependency chain is clear (profiling before optimization, packaging before auto-update) |
+### Anti-Pattern 6: Per-Project agents.db
 
-## Open Questions
+**What:** Using the same `resolve_glass_dir()` walk-up-and-find pattern used by history.db and snapshots.db.
+**Why bad:** Two agents working on the same project but from different subdirectories might resolve to different `.glass/` directories. One agent in `/project/` finds `/project/.glass/agents.db`; another in `/project/subdir/` might find a different `.glass/` or fall back to `~/.glass/`. They would not see each other.
+**Instead:** Always use `~/.glass/agents.db` (global). The `project` column in the agents table handles scoping.
 
-- **wgpu-profiler version:** Does the latest wgpu-profiler support wgpu 28.0? Needs verification before committing to GPU profiling.
-- **macOS code signing:** DMG distribution may trigger Gatekeeper warnings without signing. Apple Developer Program ($99/yr) needed for proper code signing. Can defer to a future milestone.
-- **Windows SmartScreen:** Unsigned MSI triggers SmartScreen warning. cargo-dist supports SSL.com eSigner for code signing, but adds cost/complexity. Can defer.
-- **Update check rate limiting:** GitHub API allows 60 requests/hr unauthenticated. For daily-driver use, checking once per startup (with a 24hr cooldown cache) is sufficient.
+## Build Order (Dependency-Respecting)
+
+The components have a strict dependency chain. Build in this order:
+
+### Phase 1: `glass_coordination` crate (foundation, no dependents yet)
+
+**What to build:**
+- `Cargo.toml` with rusqlite, uuid, anyhow, chrono, tracing
+- `src/lib.rs` -- CoordinationDb struct, open(), resolve_agents_db_path()
+- `src/schema.rs` -- CREATE TABLE statements, user_version = 0
+- `src/types.rs` -- AgentInfo, FileLock, Message, LockResult, LockConflict
+- `src/agents.rs` -- register, deregister, heartbeat, set_status, list_agents, get_agent
+- `src/locks.rs` -- lock_files (atomic), unlock_file, unlock_all, list_locks, path canonicalization
+- `src/messages.rs` -- broadcast, send_message, read_messages
+- `src/prune.rs` -- prune_stale with PID liveness check
+
+**Tests:** Unit tests for every public method. Use `tempfile` for DB paths. Test concurrent access by opening two connections to the same WAL-mode DB. Test atomic lock_files failure (partial conflicts return no locks). Test stale pruning with expired timestamps. Test path canonicalization (relative paths resolve correctly).
+
+**Dependencies:** Only workspace deps (rusqlite) + new uuid. Zero dependency on any glass_* crate.
+
+**Must complete before:** Phase 2 (glass_mcp depends on it).
+
+### Phase 2: `glass_mcp` integration (depends on Phase 1)
+
+**What to build:**
+- Add `glass_coordination` to glass_mcp/Cargo.toml
+- Add `agents_db_path: PathBuf` field to GlassServer
+- Update `GlassServer::new()` signature (3 args -> 3 args, backward compatible if we add to end)
+- Add 11 new parameter structs (RegisterParams, LockParams, StatusParams, etc.) with schemars derives
+- Add 11 new `#[tool]` handlers following existing spawn_blocking pattern
+- Update `run_mcp_server()` to resolve and pass agents_db_path
+- Update `ServerHandler::get_info()` instructions text to mention coordination tools
+
+**Tests:** Param deserialization tests (existing pattern). Integration test: open real tempdir DB, register agent, lock files, send message, verify round-trip.
+
+**Must complete before:** Phase 3.
+
+### Phase 3: Integration testing + CLAUDE.md (depends on Phase 2)
+
+**What to build:**
+- CLAUDE.md coordination instructions section (7-bullet protocol)
+- Integration test: two GlassServer instances sharing same agents.db via tempdir
+- Test: register from server A, see agent from server B's list
+- Test: lock from A, conflict from B, unlock from A, lock from B succeeds
+
+**Must complete before:** Phase 4 (GUI needs real data to display).
+
+### Phase 4: GUI integration (depends on Phase 1; can start in parallel with Phase 3)
+
+**What to build:**
+- Add `glass_coordination` to root Cargo.toml dependencies
+- Add `Arc<AtomicUsize>` fields to `GlassApp` struct (or equivalent Processor struct in main.rs)
+- Background polling thread (5-second interval, reads agents.db)
+- Add `CoordinationDisplay` struct to glass_renderer
+- Extend `StatusBarRenderer::build_status_text()` with `coordination` parameter
+- Update `draw_frame()` and `draw_multi_pane_frame()` signatures in frame.rs
+- Update call sites in main.rs `RedrawRequested` handler
+- Future: TabDisplayInfo `has_agent_locks` field (defer per-tab mapping)
+
+**Note:** Phase 4 modifies `src/main.rs` and `glass_renderer` -- both in the hot rendering path. Changes must be minimal (reading two atomics, passing one extra Option parameter) to avoid performance regression.
+
+## Scalability Considerations
+
+| Concern | 2 agents | 10 agents | 50+ agents |
+|---------|----------|-----------|------------|
+| DB write contention | Negligible | Minimal (~5ms worst case) | busy_timeout may trigger; consider connection pooling |
+| Lock table size | <20 entries | <100 entries | May need index on project column for filtered queries |
+| Message broadcast fan-out | Trivial | Moderate (N-1 message rows per broadcast) | Need message TTL/auto-prune to prevent table growth |
+| GUI poll cost | <1ms | <1ms | <5ms (still fine at 5s poll interval) |
+| Stale pruning | Instant | Instant | Consider batch DELETE with LIMIT for large agent tables |
+
+The design is comfortable for the expected use case of 2-5 concurrent agents. This is the realistic scenario for a developer using Glass with Claude Code instances.
 
 ## Sources
 
-- [self_update crate](https://github.com/jaemk/self_update) -- GitHub Releases backend for auto-update (HIGH confidence)
-- [cargo-wix](https://github.com/volks73/cargo-wix) -- MSI installer generation for Rust projects (HIGH confidence)
-- [cargo-deb](https://crates.io/crates/cargo-deb) -- Debian package generation (HIGH confidence)
-- [notify crate](https://crates.io/crates/notify) -- Already in workspace v8.2 for FS watching (HIGH confidence)
-- [tracing-flame](https://lib.rs/crates/tracing-flame) -- Flamegraph generation from tracing spans (HIGH confidence)
-- [wgpu-profiler](https://docs.rs/wgpu-profiler) -- GPU timing for wgpu pipelines (MEDIUM confidence)
-- [Alacritty packaging](https://github.com/alacritty/alacritty) -- Reference implementation for terminal MSI/DMG distribution (HIGH confidence)
-- [cargo-dist](https://github.com/axodotdev/cargo-dist) -- Alternative to manual release workflow; considered but manual preferred for control (MEDIUM confidence)
-- [Rust hot-reloader patterns](https://github.com/junkurihara/rust-hot-reloader) -- Reference for notify-based config reload (MEDIUM confidence)
-- [profiling crate](https://github.com/aclysma/profiling) -- Abstraction over profiling backends (MEDIUM confidence)
-
----
-*Architecture research for: Glass v2.1 Packaging & Polish*
-*Researched: 2026-03-07*
+- Glass codebase: `crates/glass_history/src/db.rs` lines 48-61 (WAL + PRAGMA pattern, HIGH confidence)
+- Glass codebase: `crates/glass_mcp/src/tools.rs` lines 145-410 (spawn_blocking tool handler pattern, HIGH confidence)
+- Glass codebase: `crates/glass_snapshot/src/ignore_rules.rs` lines 23-82 (canonicalize pattern, HIGH confidence)
+- Glass codebase: `crates/glass_renderer/src/status_bar.rs` (status bar rendering pattern, HIGH confidence)
+- Glass codebase: `crates/glass_renderer/src/tab_bar.rs` (tab bar rendering pattern, HIGH confidence)
+- Glass codebase: `src/main.rs` lines 661-840 (render loop, draw_frame call sites, HIGH confidence)
+- AGENT_COORDINATION_DESIGN.md (design document for this milestone, HIGH confidence)
+- [SQLite WAL mode](https://www.sqlite.org/wal.html) -- concurrent reader/single writer semantics (HIGH confidence)
+- [uuid crate v1.22.0](https://crates.io/crates/uuid) -- features=["v4"] for random UUIDs (HIGH confidence)
+- [process_alive crate](https://lib.rs/crates/process_alive) -- cross-platform PID liveness checking (MEDIUM confidence, alternative approach)

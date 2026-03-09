@@ -1,306 +1,418 @@
-# Pitfalls Research
+# Pitfalls Research: Multi-Agent Coordination
 
-**Domain:** Adding packaging, auto-update, config hot-reload, and performance profiling to an existing Rust terminal emulator (Glass v2.1)
-**Researched:** 2026-03-07
-**Confidence:** HIGH (based on codebase analysis of config.rs/main.rs/event.rs, ecosystem research, and known platform behaviors)
+**Domain:** Adding multi-agent coordination (SQLite WAL shared DB, advisory locks, heartbeat liveness, inter-agent messaging) to an existing GPU-accelerated terminal emulator
+**Researched:** 2026-03-09
+**Confidence:** HIGH (pitfalls are well-documented across SQLite docs, Rust ecosystem, and distributed systems literature)
+
+---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Config hot-reload triggers font/renderer rebuild cascade without debouncing
+### Pitfall 1: SQLite WAL Checkpoint Starvation and Unbounded WAL Growth
 
 **What goes wrong:**
-A single file save in most editors (VS Code, vim, nano) generates 2-5 filesystem events (write, close, modify metadata, rename-then-write). Without debouncing, each event triggers a full config reload. Since Glass uses `glyphon` for text rendering with per-line `cosmic_text::Buffer` objects, a font family or font size change requires rebuilding the entire `FontSystem`, recalculating all glyph metrics, resizing the terminal grid, and re-laying-out every visible line. Triggering this 3-5 times in 50ms causes visible flickering, frame drops, and potential panics if the renderer is mid-frame when the font system is replaced.
+The `agents.db` WAL file grows without bound. Each `glass mcp serve` process opens a connection and performs periodic reads (heartbeats, message checks, lock queries). If there is always at least one active reader holding a snapshot, SQLite cannot checkpoint the WAL file because it cannot overwrite pages that any reader might still need. With multiple MCP servers each polling on their own schedules, there is rarely a "reader gap" where all connections are idle simultaneously. The WAL file grows from kilobytes to hundreds of megabytes over days of continuous use.
 
 **Why it happens:**
-Developers test hot-reload with manual saves and see one event. In production, editors use atomic-write patterns (write temp file, rename over original) that generate multiple events. The `notify` crate (already a Glass dependency at v8.2) faithfully reports each one. Linux inotify generates 3-5 events per save; Windows `ReadDirectoryChangesW` generates 2-3; macOS FSEvents batches them ambiguously.
+SQLite WAL checkpointing requires that no reader holds a snapshot of pages being checkpointed. The design calls for multiple MCP processes each with their own connection, plus the GUI polling coordination state. If any of these connections has an open read transaction (even briefly), it prevents checkpoint progress. The default auto-checkpoint (1000 pages) triggers a PASSIVE checkpoint that does its best but silently stops at the first page held by a reader. Developers see "checkpoint succeeded" and assume the WAL was fully recycled, but it was only partially checkpointed.
 
 **How to avoid:**
-Use `notify-debouncer-mini` or implement a 300-500ms debounce window. On receiving any config file event, start a timer. Only reload after 500ms of silence. When reloading, diff the old and new `GlassConfig` structs to determine what actually changed -- skip font rebuild if only `[history]` or `[pipes]` sections changed. Never rebuild fonts for non-visual config changes.
+1. Set `PRAGMA wal_autocheckpoint = 100;` on `agents.db` connections to checkpoint more aggressively (the coordination DB is tiny -- 3 small tables).
+2. Never hold read transactions open longer than necessary. Each `spawn_blocking` call should open a connection, execute, and close. Do NOT cache a `CoordinationDb` connection across multiple MCP tool calls.
+3. On `CoordinationDb::open()`, attempt a `PRAGMA wal_checkpoint(TRUNCATE)` which truncates the WAL to zero bytes if it can get exclusive access. This opportunistically cleans up on startup.
+4. Consider periodic `PRAGMA wal_checkpoint(RESTART)` calls during `prune_stale()` since pruning already implies a quiet moment.
 
 **Warning signs:**
-- Testing only on one OS (events behave differently per platform)
-- No debounce timer in the file watcher setup
-- Font flickering when saving config in VS Code
-- Multiple "Config reloaded" log lines per save
+- `agents.db-wal` file grows beyond 1MB (the actual data should be under 100KB)
+- `PRAGMA wal_checkpoint` returns `(0, N, 0)` where N is large (meaning N pages checkpointed but 0 moved back -- all blocked by readers)
+- Disk usage in `~/.glass/` grows steadily over multi-day sessions
 
 **Phase to address:**
-Config hot-reload phase. Debouncing must be the first thing implemented, before any reload logic.
+Phase 1 (Coordination Crate) -- bake checkpoint strategy into `CoordinationDb::open()` and expose a `maintenance()` method.
 
 ---
 
-### Pitfall 2: Config is owned directly by App -- no shared-state pattern for multi-consumer reload
+### Pitfall 2: SQLITE_BUSY Despite busy_timeout with Transaction Upgrades
 
 **What goes wrong:**
-Currently `GlassConfig` is a plain `Clone` struct stored as `config: GlassConfig` on the `App` struct in `main.rs` (line 156). Config values are read directly via `self.config.font_family`, `self.config.pipes.as_ref()`, `self.config.snapshot.clone()`, etc. across 15+ call sites spanning session creation (line 328, 352), rendering (lines 468-469), history capture (line 1795), snapshot management (line 500, 1529), and pipe processing (lines 1432, 1450, 1465). Hot-reload requires atomically swapping the config while multiple consumers read it. Naively mutating `self.config` in a file watcher callback while a render frame is in progress creates torn reads -- a frame that starts with `font_size = 14.0` but switches to `font_size = 18.0` halfway through.
+MCP tool handlers get intermittent `SQLITE_BUSY` / "database is locked" errors that surface as MCP error responses to AI agents. The agents retry, get the same error, and eventually give up or hallucinate that coordination is broken. This happens even though `busy_timeout = 5000` is set.
 
 **Why it happens:**
-The "load once at startup" design (line 1935: `let config = GlassConfig::load()`) was correct for v1.0-v2.0. Adding hot-reload is a retroactive architectural change that touches every config consumer.
+The existing codebase uses `PRAGMA busy_timeout = 5000` (seen in both `glass_history/db.rs` and `glass_snapshot/db.rs`). This works for simple read/write patterns. But the coordination crate introduces read-then-write transactions: `lock_files` must read existing locks, check for conflicts, then insert new locks -- all atomically in one transaction. If the transaction starts as a deferred read (`BEGIN` default) and later tries to upgrade to a write lock, SQLite may return `SQLITE_BUSY` immediately without honoring the busy timeout, because another connection already holds a read lock that would conflict with the upgrade.
+
+The design document correctly specifies atomic lock acquisition, but the implementation must use `BEGIN IMMEDIATE` (or `BEGIN EXCLUSIVE`) for any transaction that will write. Rusqlite's `conn.transaction()` defaults to `DEFERRED`.
 
 **How to avoid:**
-Since Glass uses winit's event loop with `EventLoopProxy`, send a `UserEvent::ConfigReloaded(GlassConfig)` through the proxy when the file watcher detects a change. The reload happens synchronously in the event loop -- the same thread that reads config. This is the simplest correct approach for Glass's architecture because it avoids `Arc<RwLock<>>` complexity and guarantees config is consistent within a single frame. Add a `ConfigReloaded` variant to `AppEvent` in `glass_core::event`.
+1. Use `conn.transaction_with_behavior(TransactionBehavior::Immediate)` for ALL write transactions in `CoordinationDb`. This is critical for `lock_files`, `register`, `deregister`, `heartbeat`, `broadcast`, `send_message`, and `prune_stale`.
+2. Keep the 5000ms busy_timeout but understand it only works when the lock contention happens at `BEGIN IMMEDIATE` time (which is the correct place).
+3. For read-only operations (`list_agents`, `list_locks`, `read_messages`), deferred transactions are fine.
+4. Handle `SQLITE_BUSY` at the MCP layer with a single retry + exponential backoff before returning an error to the agent.
 
 **Warning signs:**
-- Adding `&mut self.config` writes in a file watcher callback running on a different thread
-- No `ConfigReloaded` event variant in `AppEvent`
-- Config reads scattered across async boundaries without synchronization
-- File watcher calling `GlassConfig::load()` directly instead of through event loop
+- Sporadic "database is locked" errors in MCP tool responses
+- Errors correlate with multiple agents performing actions simultaneously
+- Errors disappear when only one agent is active
 
 **Phase to address:**
-Config hot-reload phase. The event-based reload pattern must be established before implementing any individual reload handlers (font, colors, history settings, etc.).
+Phase 1 (Coordination Crate) -- use `Immediate` for all write transactions from day one. This is not something to "fix later."
 
 ---
 
-### Pitfall 3: MSI UpgradeCode not set from day one -- breaks all future auto-updates on Windows
+### Pitfall 3: Path Canonicalization Produces UNC Paths on Windows
 
 **What goes wrong:**
-Windows Installer uses a stable `UpgradeCode` GUID to identify that two MSI packages are versions of the same product. If the first MSI release ships without a fixed UpgradeCode (or if it changes between versions), Windows Installer cannot detect the previous installation during `FindRelatedProducts`. The user ends up with two entries in "Add/Remove Programs," potentially two copies of the executable, and `ALLUSERS` mismatch between versions causes the old install to be invisible to the new installer. There is no way to retroactively fix this for users who installed with the wrong UpgradeCode without asking them to manually uninstall.
+Agent A locks `src/main.rs` which gets canonicalized to `\\?\C:\Users\nkngu\apps\Glass\src\main.rs`. Agent B tries to lock the same file, but its CWD resolves differently (or it passes an already-absolute path), producing `C:\Users\nkngu\apps\Glass\src\main.rs` (without UNC prefix). The two strings don't match, so both agents believe they have exclusive locks on the same file. The entire coordination system silently fails.
 
 **Why it happens:**
-`cargo-wix` generates a new random GUID in the WiX template on `cargo wix init`. Developers build the first MSI, ship it, then only discover the UpgradeCode problem when they ship version 2. By then, early adopters have the wrong GUID installed.
+Rust's `std::fs::canonicalize()` on Windows calls `GetFinalPathNameByHandleW` which returns extended-length path syntax (`\\?\`). This is a well-documented Rust issue (rust-lang/rust#42869, open since 2017). The design document specifies `std::fs::canonicalize()` for path normalization, which will produce inconsistent results depending on:
+- Whether the caller passes a relative or absolute path
+- Whether the path goes through junctions or symlinks
+- Whether the file exists at canonicalization time
+
+The existing codebase already uses `canonicalize()` in `glass_snapshot/watcher.rs` and `ignore_rules.rs`, but those are single-process -- the same connection always sees the same UNC-prefixed paths. With multi-process coordination, different processes may produce different path forms for the same file.
 
 **How to avoid:**
-Run `cargo wix init` once, then immediately hardcode a permanent UpgradeCode GUID in `wix/main.wxs`. Commit this to version control. Never change it. The ProductCode should change with each version (use `*` for auto-generation), but the UpgradeCode is forever. Add a CI check that verifies the UpgradeCode has not changed from the committed value.
+1. Add the `dunce` crate (small, well-maintained, already used by Deno, Cargo, and many Rust projects). Use `dunce::canonicalize()` instead of `std::fs::canonicalize()` everywhere in `glass_coordination`. This strips the `\\?\` prefix when it's safe to do so, producing consistent paths across all callers.
+2. Additionally normalize path separators to forward slashes before storing in the DB. This handles edge cases where paths come from different shells (PowerShell uses `\`, bash uses `/`).
+3. Store paths as lowercase on Windows (NTFS is case-insensitive by default). Use `path.to_string_lossy().to_lowercase()` on `cfg(target_os = "windows")`.
+4. If `dunce::canonicalize()` fails (file doesn't exist yet), fall back to `std::path::absolute()` + normalization rather than returning an error.
 
 **Warning signs:**
-- `UpgradeCode` not committed to version control
-- WiX template regenerated per release instead of edited
-- No upgrade testing (install v1, then install v2, verify v1 is removed)
-- Different `ALLUSERS` value between versions
+- Two agents hold locks on what looks like the same file but with different path prefixes
+- Lock conflicts never trigger even when agents are clearly editing the same files
+- Works on macOS/Linux but fails silently on Windows
 
 **Phase to address:**
-Packaging phase (first phase of v2.1). Must be locked down before the first MSI is distributed to anyone.
+Phase 1 (Coordination Crate) -- the path normalization function must be correct before any lock logic is built on top of it. Write a `normalize_path()` helper with explicit tests for UNC, relative, forward-slash, and case-insensitive scenarios.
 
 ---
 
-### Pitfall 4: Auto-updater tries to replace the running Glass.exe on Windows
+### Pitfall 4: PID Reuse Causing Incorrect Stale Agent Pruning or Ghost Agents
 
 **What goes wrong:**
-On Windows, a running executable holds a file lock. The auto-update mechanism downloads the new binary and tries to overwrite `glass.exe` -- Windows denies the write because the file is locked by the running process. Naive workarounds: (1) kill the process then replace -- leaves the user with no terminal and possibly lost work; (2) rename the running exe (Windows allows this), place new binary, prompt restart -- works but leaves orphaned `.old` files; (3) download new MSI and invoke `msiexec /i` -- correct but requires MSI infrastructure.
+Two failure modes: (1) A stale agent's PID gets reused by an unrelated process. The liveness check sees the PID is alive, so the stale agent is never pruned. Its file locks persist forever, blocking other agents. (2) A new agent process happens to get the same PID as a recently-crashed agent. The system incorrectly associates the new process with the old agent's registration, causing identity confusion.
 
 **Why it happens:**
-Linux and macOS allow replacing a running binary's file (the running process keeps its inode reference). Developers who test on Linux first don't encounter this. Windows is the odd one out, and it is Glass's primary platform.
+The design uses PID as a "fast liveness fallback" -- if the PID is dead, the agent is immediately prunable without waiting for the 5-minute heartbeat timeout. On long-running systems, PID reuse is guaranteed (Linux recycles PIDs from a pool of 32768 by default, Windows has no guaranteed minimum cycle time). The race window is: Agent A crashes at time T, its PID is recycled at T+1s, prune_stale runs at T+2s, sees PID alive, keeps the stale agent registered.
 
 **How to avoid:**
-Use the MSI upgrade path for Windows: download the new MSI, prompt "Update available, restart Glass to install," and when the user agrees, launch `msiexec /i new_version.msi` and exit Glass. The MSI handles file replacement, PATH updates, and Start Menu shortcuts. For macOS, download new DMG and prompt relaunch. For Linux, use system package manager updates (apt/dnf) rather than self-update. Only implement direct binary replacement on platforms that support it (Linux standalone binary).
+1. Use PID-based pruning only as an acceleration, never as the sole liveness signal. The heartbeat timeout (5 minutes) is the authoritative signal.
+2. When checking PID liveness, also verify the process start time if the OS provides it. On Windows, use `GetProcessTimes()` via `windows-sys`. On Unix, read `/proc/<pid>/stat` field 22 (start time). If the process start time is newer than the agent's `registered_at`, the PID was reused.
+3. Store the process start time in the `agents` table alongside `pid`. This makes the PID+start_time pair globally unique.
+4. If start-time verification is too complex for Phase 1, accept the limitation: PID liveness is advisory and the 5-minute heartbeat timeout is the real cleanup mechanism. Document this explicitly.
 
 **Warning signs:**
-- Auto-update code using `std::fs::copy` or `std::fs::rename` to overwrite the current exe path
-- No restart-after-update flow
-- No `.old` file cleanup on startup
-- Testing auto-update only on Linux/macOS
+- Stale agents persist in `glass_agent_list` output after their terminal tab is closed
+- Lock conflicts reference agents that no longer exist
+- `prune_stale()` runs but doesn't remove agents it should
 
 **Phase to address:**
-Auto-update phase. Must be designed specifically for Windows first since it is the primary platform.
+Phase 1 (Coordination Crate) -- implement PID check with start-time verification, or explicitly document the limitation and rely on heartbeat timeout as primary. Phase 3 (Integration Testing) should include a test that simulates PID reuse.
 
 ---
 
-### Pitfall 5: macOS notarization blocks distribution of unsigned DMGs
+### Pitfall 5: Atomic Lock Acquisition Deadlock Under Contention
 
 **What goes wrong:**
-macOS Gatekeeper quarantines unsigned applications downloaded from the internet. Users see "Glass is damaged and can't be opened" or "Glass can't be opened because it is from an unidentified developer." macOS Sequoia (15+) has tightened these restrictions further -- users need `xattr -d com.apple.quarantine` from the command line, which is a dealbreaker for non-technical users. Hardened runtime must be enabled (`codesign --options=runtime`), and notarization requires submitting the binary to Apple's servers which can have multi-hour delays.
+Agent A requests locks on `[main.rs, config.rs]`. Agent B simultaneously requests locks on `[config.rs, main.rs]`. Both agents' `lock_files` transactions start concurrently. Under the all-or-nothing design, both fail (each sees the other holding one file). They retry immediately, and the same thing happens. This produces a livelock where neither agent can make progress.
 
 **Why it happens:**
-Apple code signing requires a $99/year Apple Developer account and a specific certificate type (Developer ID Application). The apple-codesign (rcodesign) Rust crate can sign and notarize from any platform, but the certificate management and GitHub Actions secrets setup is complex. Developers skip it "for now" and never come back.
+The design correctly avoids partial-lock states with all-or-nothing semantics. But it doesn't specify retry behavior or lock ordering. Without consistent ordering, concurrent lock requests on overlapping file sets will repeatedly conflict. AI agents following the CLAUDE.md instructions will retry lock acquisition, potentially in a tight loop.
 
 **How to avoid:**
-Budget for an Apple Developer account. Use the `apple-codesign` crate (rcodesign) to sign and notarize from CI without needing macOS for the signing step. Set up code signing in the CI pipeline alongside DMG creation -- not as a follow-up task. Store the signing certificate as a GitHub Actions secret. Test by downloading the DMG from GitHub releases on a clean Mac, not by running a locally-built binary.
+1. Sort requested paths lexicographically before acquiring locks inside the `lock_files` transaction. This establishes a consistent lock ordering that prevents the A-B / B-A deadlock pattern.
+2. In the MCP tool response for conflicts, include a `retry_after_ms` hint (e.g., 1000-3000ms with jitter) so agents don't retry immediately.
+3. In the CLAUDE.md coordination instructions, explicitly tell agents: "If lock acquisition fails, wait at least 2 seconds before retrying. After 3 failures, use glass_agent_send to negotiate with the lock holder."
+4. Inside the SQLite transaction, insert locks in sorted order to minimize the write-lock hold time.
 
 **Warning signs:**
-- DMG works when built locally (no quarantine flag) but fails when downloaded
-- No `codesign --verify` step in CI
-- No Apple Developer account budgeted
-- Notarization treated as "we'll do it later"
+- Agents report repeated lock conflicts on the same files
+- MCP tool call volume spikes with lock/unlock cycles
+- Agents get stuck in retry loops visible in their conversation history
 
 **Phase to address:**
-Packaging phase. Code signing setup must happen alongside DMG creation, not after.
+Phase 1 (Coordination Crate) -- sort paths in `lock_files`. Phase 2 (MCP Tools) -- add `retry_after_ms` to conflict responses. Phase 3 (Integration) -- CLAUDE.md retry guidance.
 
 ---
 
-### Pitfall 6: Performance profiling without baseline benchmarks -- optimizing the wrong thing
+### Pitfall 6: Stale Agent Cleanup Race During Concurrent prune_stale Calls
 
 **What goes wrong:**
-Developers start a "performance optimization pass" by guessing what is slow (usually the GPU renderer) and spending days optimizing draw calls when the actual bottleneck is font shaping, config parsing, or SQLite queries. Glass already has good ad-hoc metrics (360ms cold start, 3-7us key latency, 86MB idle) but no automated benchmark suite. Without baselines, there is no way to know if an optimization helped or if a regression was introduced. The existing `ScaleFactorChanged` handler is log-only (known tech debt) -- performance work might trigger DPI-related regressions that go undetected.
+Two MCP servers call `list_agents()` simultaneously. Both trigger `prune_stale()`. Both identify Agent X as stale. Agent A deletes Agent X. Agent B tries to delete Agent X, fails silently (or causes a cascading FK delete on already-deleted locks). Messages from Agent X are orphaned or double-processed. In the worst case, a new agent that registered between the two prune calls gets its data corrupted.
 
 **Why it happens:**
-Performance intuition is almost always wrong. GPU rendering feels expensive, but Glass's instanced quad pipeline is efficient. Real bottlenecks in terminal emulators are typically: (1) PTY read loop throughput for large outputs (`cat large_file.txt`), (2) VTE parsing for complex escape sequences, (3) glyph cache misses when new Unicode characters appear, (4) SQLite writes blocking the event loop during history logging, (5) `notify` watcher overhead with many watchers active.
+The design says `prune_stale()` is called automatically on `list_agents()` and `list_locks()`. Multiple MCP servers calling these concurrently will trigger concurrent prune operations on the same shared DB. Without idempotent delete logic, this creates races.
 
 **How to avoid:**
-Before optimizing anything: (1) Add `criterion` benchmarks for the critical path: PTY read throughput, VTE parse rate, grid snapshot lock duration, glyph shaping latency. (2) Profile with `cargo flamegraph` or `Tracy` to find actual hotspots. (3) Measure before and after every change. (4) For GPU-specific profiling, use `wgpu-profiler` to measure GPU-side frame timing. (5) Add a CI benchmark job that detects regressions > 5%.
+1. Make `prune_stale()` idempotent: use `DELETE FROM agents WHERE id IN (SELECT id FROM agents WHERE ...)` in a single statement rather than selecting stale IDs then deleting them in separate steps.
+2. Use `BEGIN IMMEDIATE` for the prune transaction (it writes).
+3. Accept that multiple processes may prune concurrently -- the operation should be harmless when repeated.
+4. Consider rate-limiting prune calls: only prune if the last prune was more than 60 seconds ago (store a module-level timestamp or a DB metadata row).
 
 **Warning signs:**
-- Optimization PRs without before/after numbers
-- Spending time on the renderer when no rendering benchmark exists
-- "It feels faster" as the success criterion
-- No `criterion` or `divan` dependency in `dev-dependencies`
+- "no such row" or "foreign key constraint failed" errors during prune operations
+- `glass_agent_list` returns inconsistent results between rapid calls
+- Messages disappear unexpectedly
 
 **Phase to address:**
-Performance profiling phase. Establish baselines and benchmarks before any optimization work begins.
+Phase 1 (Coordination Crate) -- implement prune as a single idempotent SQL statement.
 
 ---
 
-### Pitfall 7: Config hot-reload changes font but only updates the focused pane
+## Moderate Pitfalls
+
+### Pitfall 7: Heartbeat Timer Drift in MCP Processes
 
 **What goes wrong:**
-Glass v2.0 has tabs with split panes. Each tab owns a `SplitNode` tree, and each leaf pane has its own session with independent terminal grid, viewport, and render state. When font_family or font_size changes via hot-reload, the naive implementation updates the `FontSystem` and resizes only the active/focused pane's terminal grid. The other 5+ panes in other tabs continue rendering with stale font metrics, causing misaligned text, wrong column counts, and eventual panics when the renderer tries to draw glyphs with the old font metrics but the new font system.
+AI agents are instructed to call `glass_agent_heartbeat` every 60 seconds. In practice, MCP tool calls happen as part of agent reasoning, which is inherently irregular. An agent deep in a complex code change may not call any MCP tools for 6+ minutes. The agent gets pruned mid-task, its file locks are released, and another agent swoops in and edits the same files.
 
 **Why it happens:**
-The config reload handler processes the event in the context of the focused pane. Developers test with a single pane and it works. Multi-pane testing is skipped because it requires opening multiple tabs and splits.
+AI agents don't have reliable timer mechanisms. They call MCP tools when their reasoning loop dictates, not on a schedule. The CLAUDE.md instruction "call heartbeat every 60 seconds" is aspirational, not enforceable. Claude Code's internal MCP call patterns are determined by the model's reasoning, not by wall-clock timers.
 
 **How to avoid:**
-On font change, iterate ALL sessions in `SessionMux`, and for each session, iterate ALL panes in the `SplitTree`. For each pane: recalculate cell dimensions, resize the terminal grid (columns/rows may change), send resize to the PTY (which triggers `SIGWINCH` on Unix / `ResizePseudoConsole` on Windows), and invalidate the glyph cache. Use a helper method like `apply_font_change_to_all_panes()` that the config reload handler calls.
+1. Piggyback heartbeats on ALL MCP tool calls. Every `glass_agent_*` tool should silently refresh `last_heartbeat` for the calling agent. If Agent A calls `glass_agent_lock`, `glass_agent_status`, or `glass_agent_messages`, each call also updates the heartbeat. This way, any agent activity automatically extends liveness.
+2. Increase the stale timeout from 5 minutes to 10 minutes. A coding agent may easily go 5 minutes between tool calls during complex refactoring.
+3. In CLAUDE.md instructions, add: "If you will be performing a long operation (>3 minutes) without MCP calls, call glass_agent_heartbeat before starting."
+4. Consider making the stale timeout configurable in `config.toml` under a `[coordination]` section.
 
 **Warning signs:**
-- Config reload handler only calls resize on `self.active_session()` or similar
-- No test with multiple tabs and splits open during config change
-- Text misalignment in background tabs after font change
+- Active agents get pruned during long coding sessions
+- Locks disappear while an agent is still working
+- Agents re-register frequently (sign they were pruned and noticed)
 
 **Phase to address:**
-Config hot-reload phase. The multi-pane propagation must be part of the core reload logic, not an afterthought.
+Phase 1 (implicit heartbeat on all tool calls), Phase 2 (MCP tool implementations), Phase 3 (CLAUDE.md instructions and timeout tuning).
+
+---
+
+### Pitfall 8: Message Ordering Not Guaranteed Across Concurrent Writers
+
+**What goes wrong:**
+Agent A sends a broadcast "I'm starting work on renderer" at T=0. Agent B sends "I need renderer locks" at T=0.001. Due to SQLite write serialization and the timing of `BEGIN IMMEDIATE` lock acquisition, Agent B's message may get `AUTOINCREMENT` ID 5 while Agent A's gets ID 6. When Agent C reads messages, it sees B's request before A's announcement, leading to incorrect coordination decisions.
+
+**Why it happens:**
+SQLite `AUTOINCREMENT` guarantees monotonically increasing IDs within a single connection, but not across concurrent connections. With WAL mode, the write lock is held briefly for each INSERT, and the ordering depends on which connection acquires the write lock first. This is a wall-clock race, not a logical ordering issue.
+
+**How to avoid:**
+1. Accept that message ordering is approximate, not strict. The `created_at` column already uses `unixepoch()` which has 1-second granularity -- messages within the same second are inherently unordered.
+2. Do NOT rely on message ID ordering for correctness. Use `created_at` for display ordering and treat messages as unordered within the same second.
+3. For coordination correctness, rely on the lock mechanism (which IS atomic) rather than message ordering. Messages are informational; locks are authoritative.
+4. If sub-second ordering ever matters, add a `created_at_ms` column using a custom function or application-supplied timestamp.
+
+**Warning signs:**
+- Agents make decisions based on message order that don't match chronological reality
+- "I announced first but the other agent didn't see it" type coordination failures
+
+**Phase to address:**
+Phase 2 (MCP Tools) -- document in tool descriptions that messages are informational and ordering is approximate.
+
+---
+
+### Pitfall 9: GUI Polling Overhead for Coordination State
+
+**What goes wrong:**
+The Glass GUI adds a timer to poll `agents.db` every 500ms to update status bar indicators and tab decorations. Each poll opens a SQLite connection (or reuses a cached one), runs queries, and triggers a redraw. With 60fps vsync rendering, this adds measurable latency to the event loop. The terminal feels sluggish, especially when multiple panes are open and each triggers coordination state queries.
+
+**Why it happens:**
+The GUI event loop in Glass is driven by winit's `EventLoop<AppEvent>`. The existing pattern uses `EventLoopProxy::send_event()` from background threads (PTY reader, config watcher, update checker). Adding another polling thread for coordination state seems natural, but the frequency must be tuned. Opening a SQLite connection per poll is expensive (~0.5ms per open on Windows). Even reusing a connection, the poll query + event dispatch + redraw cycle adds CPU overhead that compounds with pane count.
+
+**How to avoid:**
+1. Poll coordination state infrequently: every 5 seconds is sufficient for status bar updates. Agent activity doesn't change rapidly.
+2. Use a dedicated background thread (not tokio) that sends `AppEvent::CoordinationUpdate(CoordinationState)` through the existing `EventLoopProxy`. This keeps SQLite I/O off the render thread entirely.
+3. Cache the last coordination state in memory. Only send an event (and trigger redraw) when state actually changes (agent count, lock count, or unread messages differ from cached values).
+4. Open a single `CoordinationDb` connection in the background thread and reuse it. Set `PRAGMA busy_timeout = 1000` (shorter than MCP connections) so the GUI thread doesn't block long on contention.
+5. Do NOT poll during frames -- the background thread should be completely independent of the render loop.
+
+**Warning signs:**
+- Cold start time increases by >50ms after adding coordination GUI
+- Input latency increases measurably (>1ms increase in bench)
+- Status bar flickering or unnecessary redraws
+- CPU usage increases at idle (polling with no agents active)
+
+**Phase to address:**
+Phase 4 (GUI Integration) -- design the polling architecture before adding visual elements.
+
+---
+
+### Pitfall 10: CoordinationDb Connection Shared Across spawn_blocking Calls
+
+**What goes wrong:**
+The developer caches a `CoordinationDb` instance in `GlassServer` (alongside `db_path` and `glass_dir`) and reuses it across all MCP tool calls. Since `Connection` is `!Send + !Sync`, this either fails to compile or requires `Arc<Mutex<CoordinationDb>>`. With the mutex, all 11 coordination tools serialize through a single lock, creating contention. Worse, a single long-running transaction (like `lock_files` with many paths) blocks all other tool calls including heartbeats.
+
+**Why it happens:**
+The existing `GlassServer` pattern clones `db_path` and opens a fresh `HistoryDb` connection inside each `spawn_blocking` call. This works because each tool call is independent. The temptation with `CoordinationDb` is to optimize by caching the connection, since "it's the same DB and opening connections is expensive." But rusqlite `Connection` is deliberately `!Send` -- you cannot share it across threads without unsafe code.
+
+**How to avoid:**
+1. Follow the existing pattern exactly: clone `agents_db_path` into `GlassServer`, open a fresh `CoordinationDb` inside each `spawn_blocking` call. SQLite connection opens are ~0.5ms, which is negligible for MCP tool call latency.
+2. If connection open overhead proves measurable, use `thread_local!` storage inside the `spawn_blocking` closure to reuse connections within the same OS thread (tokio may schedule multiple spawn_blocking calls on the same thread pool thread).
+3. Do NOT use `Arc<Mutex<Connection>>` -- it serializes all tool calls and defeats SQLite WAL's concurrent read capability.
+
+**Warning signs:**
+- Compile errors about `Send`/`Sync` bounds on `Connection`
+- `Arc<Mutex<>>` wrapper around the DB connection
+- All MCP tool calls serialized (visible in tracing output as sequential, never overlapping)
+
+**Phase to address:**
+Phase 2 (MCP Tools) -- use the same open-per-call pattern as existing tools from the start.
+
+---
+
+### Pitfall 11: File Lock Scope Mismatch With Project Scoping
+
+**What goes wrong:**
+Agent A registers with project `/home/user/myapp`. Agent B registers with project `/home/user/myapp/` (trailing slash). They are treated as different projects, so their locks don't conflict. Alternatively, Agent A uses the project root while Agent B uses a subdirectory as its project root. Lock scoping fails silently because paths are canonicalized but project strings may not be.
+
+**Why it happens:**
+The `project` field in the `agents` table is a freeform `TEXT` field set by the agent during registration. The design says "scopes locks/visibility" but doesn't specify normalization. Agents pass whatever path their `cwd` resolves to, which may differ in trailing slash, symlink resolution, or case.
+
+**How to avoid:**
+1. Canonicalize the `project` path using the same `normalize_path()` helper used for file locks. Strip trailing separators.
+2. The `lock_files` and `list_locks` queries should match on canonical project path, not on string equality of user-provided paths.
+3. Consider scoping locks by the canonical path prefix: if Agent A's project is `/home/user/myapp` and locks `/home/user/myapp/src/main.rs`, Agent B with project `/home/user/myapp/frontend` should still see the conflict because the locked file is under B's project too.
+4. Store the canonical project path at registration time and use it consistently.
+
+**Warning signs:**
+- Agents in the same repo don't see each other's locks
+- `glass_agent_list` shows agents with slightly different project paths for the same repo
+- Locks exist but `list_locks` returns empty (project filter mismatch)
+
+**Phase to address:**
+Phase 1 (Coordination Crate) -- normalize project paths at registration time.
+
+---
+
+### Pitfall 12: ON DELETE CASCADE Surprises with Foreign Keys
+
+**What goes wrong:**
+Deleting a stale agent via `prune_stale()` cascades to delete all its file locks (correct) but also sets `from_agent = NULL` on all its messages via `ON DELETE SET NULL` (correct by design but potentially surprising). If a message references a pruned agent and the recipient reads it, the `from` field is null. The agent tool response says "message from: null" which is confusing for AI agents trying to coordinate.
+
+**Why it happens:**
+The schema correctly uses `ON DELETE CASCADE` for `file_locks` and `ON DELETE SET NULL` for `messages.from_agent`. But the MCP tool `glass_agent_messages` response format shows `from: "Claude B"` by joining against the agents table. After pruning, this join returns NULL, and the response shows `from: null`.
+
+**How to avoid:**
+1. Store the sender's name in the messages table itself (`from_name TEXT`) in addition to the `from_agent` foreign key. This denormalizes slightly but ensures messages remain readable after the sender is pruned.
+2. Alternatively, in the `read_messages` query, use `COALESCE(agents.name, '(departed agent)')` to provide a human-readable fallback.
+3. The MCP tool response should handle null sender gracefully: `"from": "(departed agent)"` rather than `"from": null`.
+
+**Warning signs:**
+- Messages with `from: null` appearing in agent message feeds
+- AI agents confused by messages from "null" and unable to respond
+- Messages becoming useless after sender departure
+
+**Phase to address:**
+Phase 1 (schema design) -- add `from_name` column. Phase 2 (MCP tools) -- handle null sender in response formatting.
 
 ---
 
 ## Technical Debt Patterns
 
-Shortcuts that seem reasonable but create long-term problems.
-
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Reload entire config on any file change | Simple implementation | Unnecessary font rebuilds, frame drops when only `[history]` changed | Never -- always diff old vs new config |
-| Ship unsigned binaries "to start" | Faster initial release | macOS users blocked by Gatekeeper; Windows SmartScreen warns "Unknown publisher" | Never for macOS; acceptable for early Windows testing only |
-| Self-contained update binary (no MSI) | No WiX dependency | Cannot cleanly replace running exe on Windows, no uninstall entry, no Start Menu shortcuts | Never on Windows; acceptable on Linux standalone |
-| Skip CI benchmarks | Faster CI runs | Performance regressions ship undetected | Only before first public release; add benchmarks as part of v2.1 |
-| Polling-based config reload (check every N seconds) | No additional `notify` watcher needed | Unnecessary CPU usage, delayed feedback (up to N seconds), wastes battery on laptops | Never -- Glass already depends on `notify` |
-| `GlassConfig::load()` in watcher thread | Simple hot-reload | File read on watcher thread, potential race with main thread reading config | Never -- parse in watcher, send via `EventLoopProxy` |
-| Hardcoding update check URL in binary | Simple update mechanism | Cannot change update server without shipping new binary | Acceptable if URL points to a stable redirect endpoint |
+| Skip PID start-time verification | Simpler implementation, no platform-specific code | Rare ghost agents on long-running systems | Phase 1 MVP only; add start-time check before v2.2 release |
+| Open new DB connection per MCP call | Simple, follows existing pattern, no Send/Sync issues | ~0.5ms overhead per tool call | Always acceptable for coordination DB (tiny and infrequent) |
+| String equality for project scoping | No path normalization complexity | Mismatched projects when paths differ in trailing slash/case | Never -- normalize from day one |
+| 5-minute stale timeout without tuning | Works for fast agent sessions | Active agents pruned during long coding tasks | Phase 1 only; increase to 10 minutes and make configurable |
+| No message retention policy | Messages accumulate indefinitely | DB bloat over weeks of use | Phase 1 only; add `max_message_age` pruning in Phase 3 |
+| Case-sensitive path comparison on Windows | Works if all callers use same case | Silent lock bypass when cases differ | Never on Windows -- lowercase normalize from day one |
 
 ## Integration Gotchas
 
-Common mistakes when connecting these new features to the existing Glass system.
-
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Config reload + GPU renderer | Rebuilding the entire wgpu surface/pipeline on font change | Only rebuild `FontSystem` and glyph atlas; the pipeline, shaders, and surface are font-independent |
-| Config reload + split panes | Applying new font size to focused pane only | Iterate all sessions in `SessionMux`, resize every pane's terminal grid and viewport |
-| Config reload + existing `notify` watcher | Two `notify` watchers competing (one for snapshots in `glass_snapshot`, one for config) | Use separate watchers with clearly distinct event channels, or a shared watcher with path-based demuxing |
-| Config reload + shell setting | Changing `shell = "fish"` restarts current session | Shell changes should only affect new tabs/panes, not running sessions |
-| Config reload + TOML errors | Parse error resets all config to defaults | On reload error, keep previous working config and show error in status bar |
-| Auto-update + MCP server | Update kills `glass mcp serve` subprocess | MCP server is a separate process launched by AI clients, not managed by Glass terminal -- auto-update only affects the terminal binary |
-| MSI installer + shell integration | Installer doesn't add `glass.exe` to PATH | Include PATH modification in WiX template (`Environment` element); shell integration scripts need `glass` on PATH for `glass history` commands |
-| MSI installer + config migration | New version expects config in new location, old config orphaned | First-run migration: check old location, copy to new, log warning |
-| Performance benchmarks + multi-pane | Profiling single-session and declaring "done" | Benchmark with 4+ split panes rendering simultaneously -- GPU and memory pressure scales with pane count |
-| Update check + startup time | Synchronous HTTP request blocks terminal launch | Check for updates asynchronously after terminal is rendered; never block startup |
+| glass_mcp tool_router | Adding 11 tools to existing `#[tool_router]` makes the impl block massive and hard to navigate | Create a separate `CoordinationTools` struct or split into `coordination_tools.rs` module; delegate to `GlassServer` via composition |
+| rusqlite Connection in async context | Holding a `Connection` reference across an `.await` point causes `!Send` errors | Always clone paths/data INTO the `spawn_blocking` closure; open `CoordinationDb` inside the closure |
+| PRAGMA settings not inherited | Opening a new connection doesn't inherit PRAGMAs from other connections to the same DB | Every `CoordinationDb::open()` must set WAL mode, busy_timeout, and foreign_keys -- these are per-connection settings (except WAL which is persistent but should still be set defensively) |
+| uuid crate feature flags | `uuid = "1"` alone doesn't include generation functions | Use `uuid = { version = "1", features = ["v4"] }` for `Uuid::new_v4()` |
+| Existing `Cargo.toml` workspace | Adding `glass_coordination` crate without updating workspace members | Add to `[workspace] members` in root `Cargo.toml` and verify `cargo build --workspace` succeeds |
+| ON DELETE CASCADE requires PRAGMA | Foreign key constraints are OFF by default in SQLite | Every connection must set `PRAGMA foreign_keys = ON;` BEFORE any operations -- the existing codebase already does this, but the new crate must too |
 
 ## Performance Traps
 
-Patterns that work at small scale but fail as usage grows.
-
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Re-shaping all glyphs on font size change | 200ms+ freeze on config reload with large scrollback | Only reshape visible lines; invalidate scrollback glyph cache lazily | Scrollback > 5000 lines |
-| Synchronous config file read on watcher event | Main thread blocks for 1-5ms reading/parsing TOML | Read and parse in watcher thread, send parsed result via `EventLoopProxy` | Config file on network drive or slow disk |
-| Downloading update on main thread | Terminal freezes during multi-MB download | Download in background tokio task, show progress in status bar | Any network latency > 100ms |
-| `criterion` benchmarks in default `cargo test` | CI time doubles, developers skip running tests | Put benchmarks behind `--bench` flag (criterion default), separate CI job | Benchmark suite > 30 seconds |
-| Full scrollback re-render on any config change | Multi-second freeze | Only re-render visible viewport; scrollback re-rendered on scroll | Scrollback > 10000 lines |
-| Update check on every Glass launch | Cold start goes from 360ms to 2000ms+ | Check at most once per day; cache result; never block startup | Always, even on fast networks |
-| Profiling with debug builds | Numbers meaningless, 10-50x slower than release | Always profile with `--release`; `criterion` does this by default | Always |
+| GUI polling coordination DB every frame | Dropped frames, increased idle CPU, sluggish input | Poll every 5 seconds from a background thread; only trigger redraw on state change | Immediately visible with 2+ panes open |
+| Selecting all messages without pagination | `read_messages` returns thousands of old messages | Add `LIMIT 100` to message queries; prune messages older than 24 hours | After days of active multi-agent use |
+| `canonicalize()` on every lock operation | Filesystem syscall per path per lock call | Cache canonical paths within a single `lock_files` transaction; batch canonicalization | With 20+ files locked per request |
+| WAL file not truncated | Disk usage grows, reads slow as WAL is scanned | Periodic `PRAGMA wal_checkpoint(TRUNCATE)` during maintenance | After hours of continuous multi-agent use |
+| Heartbeat UPDATE without index | Full table scan on every heartbeat | The `agents` table uses `id TEXT PRIMARY KEY` which is already indexed; no action needed | N/A (already handled) |
 
 ## Security Mistakes
 
-Domain-specific security issues for packaging, updates, and config reload.
-
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Auto-updater downloads over HTTP without hash verification | MITM replaces glass.exe with malware | HTTPS only + SHA256/BLAKE3 hash verification against a signed manifest |
-| Storing code signing certificates in the repo | Certificate leaked, attacker signs malicious updates | GitHub Actions secrets only; never commit `.pfx`, `.p12`, or private keys |
-| Config hot-reload allows `exec` or `shell_command` fields | Malicious config file runs arbitrary code | `GlassConfig` only contains data fields (strings, numbers, bools) -- maintain this invariant |
-| Auto-updater runs with elevated privileges unnecessarily | Privilege escalation if update mechanism is compromised | Download and verification as normal user; only MSI installation elevates via UAC prompt |
-| Update manifest URL configurable via config.toml | Attacker changes config to point to malicious update server | Hardcode the update check URL in the binary; never allow config to override it |
-| Self-update binary not verified before execution | Corrupted download replaces working binary | Download to temp file, verify checksum, then rename into place; keep backup of old binary |
+| Agent IDs are guessable UUIDs | Any process with filesystem access to `agents.db` can impersonate another agent (deregister it, steal locks, read messages) | Accept this risk -- the system is advisory and local-only. Document that coordination is trust-based, not authenticated. No MCP over network transport (already out of scope). |
+| Path traversal in lock paths | Agent locks `../../../etc/passwd` to troll other agents | Validate that locked paths are under the registered project root. Reject paths outside project scope. |
+| Unbounded message content | Agent sends a 100MB message body, bloating the DB | Add a `MAX_MESSAGE_SIZE` constant (e.g., 10KB) and reject messages exceeding it in `send_message` / `broadcast`. |
+| SQLite injection via path strings | Malicious path like `'; DROP TABLE agents; --` | rusqlite uses parameterized queries (`params![]`), which prevent SQL injection. No action needed as long as all queries use parameters (the existing codebase does this correctly). |
 
 ## UX Pitfalls
 
-Common user experience mistakes in this domain.
-
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Silent config reload with no feedback | User changes font_size, nothing happens (typo in field name), thinks hot-reload is broken | Flash status bar message: "Config reloaded" or "Config error: unknown field 'fontt_size'" |
-| Auto-update interrupts active terminal session | User loses work in running commands | Never auto-restart; show notification "Update available, restart to apply" and let user choose when |
-| Config error drops all settings to defaults on reload | User makes one typo, entire config resets | On reload error, keep previous config and show error in status bar |
-| Installer requires admin privileges when not needed | Users in corporate/locked-down environments can't install | Per-user install option (install to `%LOCALAPPDATA%`) in addition to system-wide install |
-| No config validation error messages | User sets `font_size = -5` and gets cryptic rendering bug | Validate config values on load/reload; report specific errors: "font_size must be between 6.0 and 72.0" |
-| Update download shows no progress | User thinks Glass is frozen during update download | Show download progress in status bar with percentage and ETA |
-| Config changes apply inconsistently across panes | Some panes have new font, others have old font | Apply changes to all panes atomically before next render frame |
+| Lock conflicts show raw canonical paths | User sees `\\?\C:\Users\nkngu\apps\Glass\src\main.rs` in error messages | Strip UNC prefix and show paths relative to project root in MCP responses: `src/main.rs` |
+| No indication which tab has which agent | Human can't tell which Glass tab corresponds to "Claude A" vs "Claude B" | Show agent name in tab title or a small badge on the tab bar |
+| Silent heartbeat-based pruning | Agent gets pruned and its locks vanish without notification | Send a `conflict_warning` message to remaining agents when a stale agent is pruned: "Agent X was pruned due to inactivity; its locks on [files] have been released" |
+| Message flood from chatty agents | Human agent gets spammed with coordination noise | Add a `glass_agent_messages` filter for `msg_type` so agents can read only `conflict_warning` messages and ignore `info` chatter |
+| No way to see coordination state without MCP | Human user in a regular terminal tab can't see what agents are doing | The GUI status bar integration (Phase 4) is essential for human oversight. Before Phase 4, provide a `glass coordination list` CLI subcommand. |
 
 ## "Looks Done But Isn't" Checklist
 
-Things that appear complete but are missing critical pieces.
-
-- [ ] **Config hot-reload:** Often missing validation error reporting -- verify user sees what went wrong when TOML is malformed
-- [ ] **Config hot-reload:** Often missing shell change handling -- verify that changing `shell = "fish"` does NOT affect existing sessions (only new tabs)
-- [ ] **Config hot-reload:** Often missing multi-pane propagation -- verify font change applies to ALL panes in ALL tabs, not just focused one
-- [ ] **Config hot-reload:** Often missing debounce -- save config 5 times rapidly, verify only one reload occurs
-- [ ] **Config hot-reload:** Often missing diff -- change only `[history].max_output_capture_kb`, verify fonts are NOT rebuilt
-- [ ] **MSI installer:** Often missing UpgradeCode stability -- verify same GUID across v2.1.0, v2.1.1, v2.2.0 builds
-- [ ] **MSI installer:** Often missing PATH entry -- verify `glass` command works from any terminal after install
-- [ ] **MSI installer:** Often missing per-user install option -- verify non-admin users can install
-- [ ] **Auto-update:** Often missing rollback -- verify that if new version crashes on startup, user can recover (old binary kept as backup)
-- [ ] **Auto-update:** Often missing proxy support -- verify update checks work behind corporate HTTP proxies
-- [ ] **Auto-update:** Often missing offline handling -- verify Glass starts normally when update server is unreachable
-- [ ] **macOS DMG:** Often missing notarization -- verify DMG works when downloaded from internet (not just built locally)
-- [ ] **Linux packages:** Often missing desktop file and icon -- verify Glass appears in application launchers
-- [ ] **Performance benchmarks:** Often missing throughput test -- verify `cat /dev/urandom | head -c 10M` doesn't crash or freeze
-- [ ] **Performance benchmarks:** Often missing multi-pane test -- benchmark with 4 split panes, not just 1
-- [ ] **ScaleFactorChanged:** Currently log-only (known tech debt) -- verify DPI change triggers font metric recalculation after hot-reload is implemented
+- [ ] **Path canonicalization:** Often missing Windows case-insensitivity handling -- verify with test: `lock("src/Main.rs")` and `lock("src/main.rs")` conflict on Windows
+- [ ] **Heartbeat implicit refresh:** Often missing on non-heartbeat tools -- verify that `glass_agent_lock` also updates `last_heartbeat`
+- [ ] **Transaction behavior:** Often using default `DEFERRED` for writes -- verify ALL write methods use `TransactionBehavior::Immediate`
+- [ ] **WAL checkpoint on open:** Often missing cleanup -- verify `CoordinationDb::open()` attempts a truncate checkpoint
+- [ ] **Foreign key enforcement:** Often forgotten per-connection -- verify `PRAGMA foreign_keys = ON` in `CoordinationDb::open()`
+- [ ] **Prune idempotency:** Often uses SELECT-then-DELETE pattern -- verify prune is a single atomic DELETE statement
+- [ ] **Message sender name:** Often joins only on `from_agent` FK -- verify response handles NULL sender gracefully after pruning
+- [ ] **UUID generation:** Often missing feature flag -- verify `uuid` dependency includes `v4` feature
+- [ ] **Cross-platform PID check:** Often uses Unix-only APIs -- verify PID liveness check compiles on Windows, macOS, and Linux
+- [ ] **Project path normalization:** Often stores raw user input -- verify trailing slash stripped and path canonicalized at registration
 
 ## Recovery Strategies
 
-When pitfalls occur despite prevention, how to recover.
-
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Wrong UpgradeCode shipped in MSI | HIGH | Must ask users to manually uninstall old version; add detection in new MSI for orphaned installs |
-| Config reload crashes terminal | MEDIUM | Add `--safe-mode` CLI flag that skips config file and uses defaults; add crash handler that logs which config field caused issue |
-| Unsigned macOS binary shipped | MEDIUM | Re-sign and notarize the DMG; existing users must re-download; provide `xattr -d` instructions as interim fix |
-| Performance regression shipped | LOW | Revert the optimization commit; this is why benchmarks in CI matter |
-| Auto-updater corrupts binary | HIGH | Ship standalone recovery tool or provide manual download link; store previous binary hash for verification |
-| Font rebuild causes frame tear | LOW | Increase debounce window; add a "config applying..." overlay that hides the torn frame |
-| Config reload ignores multi-pane | LOW | Fix to iterate all sessions/panes; no data loss, just visual inconsistency until restarted |
-| Update check blocks startup | LOW | Move to async check; users experience slow startup until fix ships |
+| WAL file grows unbounded | LOW | Run `PRAGMA wal_checkpoint(TRUNCATE)` manually via SQLite CLI on `~/.glass/agents.db`. Add checkpoint to `CoordinationDb::open()` to self-heal. |
+| Ghost agents with stale locks | LOW | `DELETE FROM agents WHERE last_heartbeat < unixepoch() - 600;` manually. Or restart Glass (re-open triggers prune). |
+| UNC path mismatch causing duplicate locks | MEDIUM | Identify affected rows, normalize paths, deduplicate. Requires a schema migration adding a `canonical_path` index. |
+| SQLITE_BUSY errors blocking agents | LOW | Agents retry naturally. Fix by switching to `BEGIN IMMEDIATE`. No data loss. |
+| PID reuse causing ghost agents | LOW | The 5-10 minute heartbeat timeout eventually cleans up. Manual `glass coordination prune` CLI command as escape hatch. |
+| Message ordering confusion | LOW | Not a data integrity issue. Adjust agent instructions to not rely on message order. |
+| GUI polling causing frame drops | MEDIUM | Requires refactoring poll timer from render-coupled to background thread. May need to rearchitect the coordination state cache. |
 
 ## Pitfall-to-Phase Mapping
 
-How roadmap phases should address these pitfalls.
-
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| UpgradeCode not set | Packaging (MSI) | `grep UpgradeCode wix/main.wxs` shows hardcoded GUID committed to git |
-| macOS not notarized | Packaging (DMG) | CI includes `codesign --verify` and notarization; download DMG from releases on clean Mac |
-| Config reload cascade/flicker | Config hot-reload | Save config 5 times rapidly in VS Code; terminal shows one "Config reloaded" message, no flicker |
-| Config torn reads | Config hot-reload | `ConfigReloaded` variant exists in `AppEvent`; config updated once per event loop iteration |
-| Config multi-pane miss | Config hot-reload | Open 3 tabs with 2 splits each; change font_size; verify all 6 panes update |
-| Config error drops to defaults | Config hot-reload | Introduce typo in config.toml; verify old config preserved, error shown in status bar |
-| Shell config affects running sessions | Config hot-reload | Change `shell = "fish"` while bash is running; existing session stays bash, new tab opens fish |
-| Auto-update blocks startup | Auto-update | Measure cold start with and without network; difference < 10ms |
-| Auto-update crashes on Windows | Auto-update | Start Glass, trigger update, verify Glass doesn't crash; verify cleanup on next launch |
-| Profiling without baselines | Performance | `cargo bench` produces reproducible numbers; CI job fails if metrics regress > 5% |
-| Installer missing PATH | Packaging (MSI) | Install MSI, open cmd.exe, run `glass --version`; it works |
-| Linux missing desktop integration | Packaging (Linux) | Install .deb, verify Glass appears in GNOME/KDE launcher with icon |
+| WAL checkpoint starvation | Phase 1: Coordination Crate | `agents.db-wal` stays under 1MB after 1 hour of multi-agent use |
+| SQLITE_BUSY with deferred transactions | Phase 1: Coordination Crate | `lock_files` under concurrent load never returns "database is locked" |
+| UNC path canonicalization | Phase 1: Coordination Crate | Unit test: same file locked via relative, absolute, and UNC paths all conflict |
+| PID reuse ghost agents | Phase 1: Coordination Crate | Integration test: simulate PID reuse, verify heartbeat timeout still prunes |
+| Lock acquisition deadlock/livelock | Phase 1: Coordination Crate + Phase 2: MCP Tools | Two agents locking overlapping file sets both succeed within 10 seconds |
+| Concurrent prune_stale race | Phase 1: Coordination Crate | Stress test: 5 concurrent prune calls complete without errors |
+| Heartbeat timer drift | Phase 2: MCP Tools | Agent active for 8 minutes with no explicit heartbeat calls is not pruned |
+| Message ordering assumptions | Phase 2: MCP Tools | Tool documentation states ordering is approximate |
+| GUI polling overhead | Phase 4: GUI Integration | Input latency benchmark shows <0.5ms increase after adding coordination GUI |
+| Connection sharing anti-pattern | Phase 2: MCP Tools | No `Arc<Mutex<Connection>>` in codebase; each spawn_blocking opens fresh |
+| Project scope mismatch | Phase 1: Coordination Crate | Agents with `/path/to/project` and `/path/to/project/` see same locks |
+| FK cascade message sender | Phase 1: Schema + Phase 2: MCP Tools | Messages readable after sender pruned; `from` field shows name not null |
 
 ## Sources
 
-- Glass codebase analysis: `crates/glass_core/src/config.rs` (config struct with 6 sections, load-once pattern), `src/main.rs` (15+ config access sites, line 156 ownership, line 1935 load), `crates/glass_core/src/event.rs` (AppEvent enum, EventLoopProxy integration)
-- [cargo-wix](https://github.com/volks73/cargo-wix) -- WiX template generation and MSI building for Rust
-- [self_update crate](https://github.com/jaemk/self_update) -- Rust self-update library for GitHub releases
-- [Microsoft: Changing the Product Code](https://learn.microsoft.com/en-us/windows/win32/msi/changing-the-product-code) -- MSI UpgradeCode/ProductCode semantics
-- [notify-debouncer-mini](https://crates.io/crates/notify-debouncer-mini) -- Debounced file watching for notify crate
-- [File watcher debouncing in Rust](https://oneuptime.com/blog/post/2026-01-25-file-watcher-debouncing-rust/view) -- Debounce patterns, atomic counter approach
-- [apple-codesign (rcodesign)](https://gregoryszorc.com/blog/2022/08/08/achieving-a-completely-open-source-implementation-of-apple-code-signing-and-notarization/) -- Pure-Rust macOS code signing from any platform
-- [wgpu-profiler](https://github.com/Wumpf/wgpu-profiler) -- GPU timer query profiling for wgpu
-- [Alacritty config hot-reload](https://alacritty.org/config-alacritty.html) -- Reference for terminal config live reload behavior (most settings reload, fonts require restart)
-- [Advanced Installer: MSI Upgrades](https://www.advancedinstaller.com/application-packaging-training/msi-advanced/ebook/msi-upgrades-and-patches.html) -- Major vs minor upgrade semantics
-- [Packaging Rust for end users](https://rust-cli.github.io/book/tutorial/packaging.html) -- Official Rust CLI book packaging guide
-- [cargo-bundle](https://github.com/burtonageo/cargo-bundle) -- Cross-platform app bundle creation
+- [SQLite WAL Mode Documentation](https://sqlite.org/wal.html) -- authoritative source on checkpoint behavior, reader blocking, and WAL growth
+- [SQLite Busy Timeout Pitfalls (Bert Hubert)](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) -- explains why busy_timeout doesn't help with transaction upgrades
+- [SQLite Concurrent Writes Analysis](https://tenthousandmeters.com/blog/sqlite-concurrent-writes-and-database-is-locked-errors/) -- detailed analysis of BEGIN IMMEDIATE vs DEFERRED
+- [Rust std::fs::canonicalize UNC Issue #42869](https://github.com/rust-lang/rust/issues/42869) -- open since 2017, documents Windows UNC path problem
+- [dunce crate](https://docs.rs/dunce) -- drop-in replacement for canonicalize that strips UNC prefix safely
+- [Heartbeat Patterns (Martin Fowler)](https://martinfowler.com/articles/patterns-of-distributed-systems/heartbeat.html) -- authoritative pattern reference for distributed liveness
+- [PID Reuse Race Conditions (LWN.net)](https://lwn.net/Articles/773459/) -- Linux kernel discussion of PID reuse timing
+- [macOS PID Reuse Attacks (HackTricks)](https://book.hacktricks.wiki/en/macos-hardening/macos-security-and-privilege-escalation/macos-proces-abuse/macos-ipc-inter-process-communication/macos-xpc/macos-xpc-connecting-process-check/macos-pid-reuse.html) -- demonstrates real PID reuse exploitation
+- [SQLite WAL Checkpoint Starvation (sqlite-users)](https://sqlite-users.sqlite.narkive.com/muT0rMYt/sqlite-wal-checkpoint-starved) -- community report of unbounded WAL growth
+- [SkyPilot: Abusing SQLite for Concurrency](https://blog.skypilot.co/abusing-sqlite-to-handle-concurrency/) -- patterns for multi-process SQLite coordination
+- [Fixing Claude Code Concurrent Sessions with SQLite WAL (DEV Community)](https://dev.to/daichikudo/fixing-claude-codes-concurrent-session-problem-implementing-memory-mcp-with-sqlite-wal-mode-o7k) -- directly relevant: using SQLite WAL for MCP coordination
+- [NTFS Case Sensitivity Internals (Tyranid's Lair)](https://www.tiraniddo.dev/2019/02/ntfs-case-sensitivity-on-windows.html) -- explains NTFS case-sensitivity edge cases
+- [SQLite WAL File Growth Guide (CopyProgramming)](https://copyprogramming.com/howto/sqlite-wal-file-size-keeps-growing) -- practical guide to WAL size management
 
 ---
-*Pitfalls research for: Glass v2.1 -- Packaging, Auto-Update, Config Hot-Reload, Performance*
-*Researched: 2026-03-07*
+*Pitfalls research for: Multi-Agent Coordination (Glass v2.2)*
+*Researched: 2026-03-09*

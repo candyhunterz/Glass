@@ -1,206 +1,226 @@
-# Stack Research: v2.1 Packaging & Polish
+# Technology Stack: v2.2 Multi-Agent Coordination
 
-**Project:** Glass v2.1 -- Platform Installers, Auto-Update, Config Hot-Reload, Profiling, Docs
-**Researched:** 2026-03-07
-**Confidence:** HIGH (well-established Rust packaging ecosystem, verified versions via crates.io)
+**Project:** Glass v2.2 -- Shared coordination DB, agent registry, file locks, messaging
+**Researched:** 2026-03-09
+**Overall Confidence:** HIGH
 
 ## Scope
 
-This document covers ONLY what is needed for v2.1. The existing validated stack (12 crates, 17,868 LOC, 436 tests) is unchanged. This research addresses five new capability areas:
+This document covers ONLY new stack additions for multi-agent coordination. The existing validated workspace (rusqlite 0.38 bundled, rmcp MCP server, tokio async, blake3, etc.) is unchanged and not re-researched.
 
-1. Platform installers (MSI, DMG, deb, rpm, AppImage, Flatpak)
-2. Auto-update mechanism
-3. Config hot-reload
-4. Performance profiling tooling
-5. Documentation site
+New capabilities needed:
+1. Shared SQLite DB with WAL mode for multi-process concurrent access
+2. UUID generation for agent IDs
+3. Cross-platform PID liveness checking (Windows/macOS/Linux)
+4. Path canonicalization that avoids Windows UNC prefix issues
+5. No new async runtime, no IPC framework
 
 ---
 
 ## Recommended Stack
 
-### Packaging & Distribution (Build-Time Tools -- NOT Runtime Dependencies)
+### Core Framework (No Changes)
 
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| cargo-packager (CLI) | 0.11.8 | Cross-platform installer generation | Single tool generates MSI (WiX), DMG, deb, AppImage, NSIS. From CrabNebula (Tauri team). Configured via `[package.metadata.packager]` in Cargo.toml -- no separate config file needed. Supports code signing. |
-| cargo-wix (CLI) | 0.3.9 | MSI-specific generation (fallback) | More mature MSI tooling than cargo-packager's WiX support. Use only if cargo-packager's MSI output is insufficient. |
-| cargo-deb (CLI) | 3.6.3 | Debian package generation (fallback) | Most mature deb packager in Rust ecosystem. Use if cargo-packager's deb output needs customization beyond what it supports. |
-| cargo-generate-rpm (CLI) | 0.20.0 | RPM package generation | cargo-packager does not generate RPM. This is the standard Rust RPM generator. |
+The existing rusqlite 0.38 (bundled) handles everything needed for the coordination database. No version bump or feature additions required.
 
-**Key decision: Use cargo-packager as primary, with per-format fallbacks.**
+### New Runtime Dependencies
 
-cargo-packager handles MSI + DMG + deb + AppImage in one tool. For RPM, add cargo-generate-rpm. For Flatpak, use flatpak-builder directly (no Rust crate needed -- it's a manifest + build system, not a library).
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `uuid` | 1.22 | Agent ID generation (v4 random) | De facto Rust UUID crate. 1.22.0 is latest stable. With features `["v4"]` it generates random UUIDs using `getrandom`. Minimal footprint: the base crate has zero dependencies; `v4` adds only `getrandom`. No-std compatible. |
+| `dunce` | 1.0.5 | Windows-safe path canonicalization | Wraps `std::fs::canonicalize()` but strips the `\\?\` UNC prefix on Windows when safe. Zero dependencies, 150 lines. The project already uses `std::fs::canonicalize()` in glass_snapshot (ignore_rules.rs, watcher.rs) which produces UNC paths on Windows -- dunce fixes this for path comparison in the lock table. |
 
-**These are all `cargo install` CLI tools, NOT Cargo.toml dependencies.** They run in CI and are invoked as build steps, not compiled into Glass.
+**Total new runtime crates: 2** (uuid + getrandom, dunce). Minimal dependency footprint.
 
-### Auto-Update (Runtime Dependency)
+### Existing Dependencies Reused (No Version Changes)
 
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| self_update | 0.42.0 | In-place binary self-update from GitHub Releases | Most mature Rust self-update crate (0.42.0, actively maintained). Supports GitHub Releases backend natively. Handles: version comparison, asset download by platform/target triple, binary replacement, optional progress callbacks. 2.5M+ downloads. |
+| Technology | Current Version | Reuse For | Notes |
+|------------|----------------|-----------|-------|
+| `rusqlite` | 0.38.0 (bundled) | Coordination DB (agents.db) | Already used by glass_history and glass_snapshot with identical WAL+PRAGMA pattern. The new glass_coordination crate reuses the workspace dependency unchanged. |
+| `anyhow` | 1.0.102 | Error handling | Standard workspace error type. |
+| `tracing` | 0.1.44 | Logging | Structured logging for agent registration, lock conflicts, stale pruning. |
+| `dirs` | 6 | `~/.glass/` path resolution | Already used by glass_history for locating the glass data directory. |
+| `serde` | 1.0.228 | Serialization for MCP tool params/responses | Already in glass_mcp. |
+| `schemars` | 1.0 | JSON Schema generation for MCP tools | Already in glass_mcp for tool parameter schemas. |
+| `serde_json` | 1.0 | JSON serialization for MCP responses | Already in glass_mcp. |
+| `chrono` | 0.4 | Timestamp formatting in messages | Already in workspace. |
+| `windows-sys` | 0.59 | PID liveness checking on Windows (extended features) | Already in workspace for Console APIs. Needs additional feature `Win32_System_Threading` for `OpenProcess` / `GetExitCodeProcess`. |
 
-**Why self_update over cargo-packager-updater:**
+### Platform-Specific PID Checking (No New Crates)
 
-cargo-packager-updater (0.2.3) is designed to work with cargo-packager's signing infrastructure and update server. It requires hosting your own update endpoint that serves signed update manifests. self_update works directly with GitHub Releases -- just upload platform-specific archives to a release and self_update finds and downloads the right one by naming convention.
+PID liveness checking is implemented using platform APIs already available or transitively present:
 
-For a project distributing via GitHub Releases, self_update is dramatically simpler. No update server, no signing infrastructure, no custom manifest format. Just: tag a release, upload binaries, self_update handles the rest.
+| Platform | API | Source | Implementation |
+|----------|-----|--------|----------------|
+| **Windows** | `OpenProcess` + `GetExitCodeProcess` | `windows-sys` 0.59 (already in workspace) | Open process handle with `PROCESS_QUERY_LIMITED_INFORMATION`, check if exit code equals `STILL_ACTIVE` (259). Close handle after. |
+| **Unix (macOS/Linux)** | `kill(pid, 0)` | `libc` (already a transitive dependency) | Signal 0 tests process existence without sending a signal. Returns 0 if alive, ESRCH if not. |
 
-**Integration point:** Add a `glass update` CLI subcommand (via existing clap infrastructure) that checks GitHub Releases for a newer version and replaces the binary in-place.
+**Why NOT add `process_alive` or `sysinfo` crate:**
 
-### Config Hot-Reload (Runtime Dependency)
+| Rejected Crate | Why Not |
+|----------------|---------|
+| `process_alive` 0.2.0 | Adds `windows-sys` 0.61 as a dependency -- version conflict with workspace's 0.59. Its entire implementation is ~30 lines of `kill(0)` / `OpenProcess`. Not worth a dependency for trivial platform code. |
+| `sysinfo` | Massive crate (~3MB compiled) that enumerates ALL system processes. We need a single `is_pid_alive(u32) -> bool` check. Overkill by orders of magnitude. |
 
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| notify | 8.2.0 | File system watching for config.toml changes | **Already in the project** (glass_snapshot uses it for FS watching). Reuse the same dependency. Provides cross-platform file watching: ReadDirectoryChangesW (Windows), FSEvents (macOS), inotify (Linux). |
-| notify-debouncer-mini | 0.7.0 | Debounced file watch events | Prevents multiple reloads from a single save operation. Text editors often write-rename-delete which triggers 2-4 events. Debouncer collapses these into one event. Built on top of notify, same maintainers. |
-
-**No new watcher crate needed.** notify 8.2.0 is already a workspace dependency. The only addition is notify-debouncer-mini for debouncing (the snapshot watcher does its own ad-hoc debouncing -- config watching should use the proper debouncer).
-
-**Integration pattern:**
-1. Watch `~/.glass/config.toml` via notify-debouncer-mini (100ms debounce)
-2. On change: re-parse TOML, validate, diff against current config
-3. Apply hot-reloadable fields (font_family, font_size, colors) via `AppEvent::ConfigChanged`
-4. Non-hot-reloadable fields (shell) log a warning: "restart required"
-5. Invalid config: log error, keep current config (never crash on bad config)
-
-**What is hot-reloadable vs not:**
-
-| Field | Hot-Reloadable | Why |
-|-------|---------------|-----|
-| font_family | YES | Rebuild glyphon font system, recompute metrics |
-| font_size | YES | Rebuild glyphon font system, recompute metrics |
-| shell | NO | Requires new PTY process -- restart needed |
-| history.* | YES | Runtime parameters, no structural change |
-| snapshot.enabled | YES | Gate check is per-command |
-| snapshot.max_count | YES | Pruner reads on next run |
-| pipes.enabled | YES | Gate check is per-command |
-
-### Performance Profiling (Dev Dependencies Only)
-
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| tracing-chrome | 0.7.2 | Generate chrome://tracing JSON for frame-level profiling | Glass already uses tracing 0.1.44 and tracing-subscriber 0.3. tracing-chrome is a Layer that outputs to Chrome's trace format. Open in chrome://tracing or Perfetto for per-frame GPU/CPU visualization. Zero production overhead when not enabled. |
-| criterion | 0.5 | Statistical microbenchmarks | Standard Rust benchmarking framework. Use for cold-start time, key-to-screen latency, config parse time, FTS5 query time. Handles warmup, statistical analysis, regression detection. |
-| cargo-flamegraph (CLI) | 0.6 | CPU flame graphs | `cargo install flamegraph`. Wraps perf (Linux) / DTrace (macOS) / ETW (Windows via cargo-xctrace). Visualize where CPU time is spent during rendering, PTY I/O, etc. |
-| memory-stats | 1.2 | Runtime memory reporting | **Already in the project.** Used for idle memory measurement. Continue using for profiling pass. |
-
-**Profiling is dev-tooling, not shipped to users.** tracing-chrome should be behind a cargo feature flag (`profiling`) so it adds zero overhead in release builds. criterion goes in `[dev-dependencies]`.
-
-**Integration pattern for tracing-chrome:**
-```toml
-[features]
-profiling = ["tracing-chrome"]
-
-[dependencies]
-tracing-chrome = { version = "0.7.2", optional = true }
-```
+The PID checking logic is approximately 30 lines of platform-gated code:
 
 ```rust
-#[cfg(feature = "profiling")]
-let _guard = {
-    let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-        .file("glass_trace.json")
-        .build();
-    tracing_subscriber::registry().with(chrome_layer).init();
-    guard
-};
+/// Check if a process with the given PID is still running.
+pub fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // kill(pid, 0) checks existence without sending a signal
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows_sys::Win32::Foundation::CloseHandle;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle == 0 {
+                return false;
+            }
+            let mut exit_code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut exit_code);
+            CloseHandle(handle);
+            ok != 0 && exit_code == 259 // STILL_ACTIVE
+        }
+    }
+}
 ```
-
-### Documentation Site (External Tooling)
-
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| mdBook | 0.5.2 | Documentation site from Markdown | Official Rust documentation tool. Used by The Rust Programming Language book, rustc docs, wasm-bindgen docs. Generates static HTML from Markdown with search, theming, and sidebar navigation. Deployed to GitHub Pages with zero config. |
-
-**Why mdBook over alternatives:**
-
-| Alternative | Why Not |
-|-------------|---------|
-| Docusaurus | JavaScript/React -- wrong ecosystem for a Rust project. Heavyweight. |
-| Hugo/Zola | General-purpose static site generators. mdBook is purpose-built for technical documentation with code blocks, admonitions, and search. |
-| rustdoc | For API docs (already generated by `cargo doc`). mdBook is for user-facing documentation: installation, configuration, keybindings, shell integration. |
-
-**Structure:**
-```
-docs/
-  book.toml          # mdBook config
-  src/
-    SUMMARY.md        # Table of contents
-    installation.md   # Platform-specific install instructions
-    configuration.md  # config.toml reference
-    keybindings.md    # Keyboard shortcuts
-    shell-integration.md  # bash/zsh/fish/pwsh setup
-    history.md        # History & search features
-    snapshots.md      # Undo/snapshot features
-    mcp.md            # MCP server for AI integration
-    tabs-panes.md     # Tabs and split panes
-```
-
-**CI integration:** `mdbook build` in GitHub Actions, deploy to GitHub Pages on release tags.
 
 ---
 
-## New Cargo.toml Dependencies (Runtime)
+## SQLite WAL Mode Configuration for Multi-Process Access
+
+### Existing Pattern (Validated)
+
+Glass already uses WAL mode in two databases with identical PRAGMA blocks:
+
+```sql
+-- glass_history/src/db.rs:57-60 and glass_snapshot/src/db.rs:25-28
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+```
+
+### Coordination DB Pattern (Same + One Addition)
+
+The new `glass_coordination` crate uses the exact same PRAGMA block, with one critical addition for write-heavy coordination:
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+```
+
+**Key multi-process behaviors with WAL mode:**
+
+| Behavior | Detail |
+|----------|--------|
+| **Concurrent reads** | Multiple MCP server processes can read agents/locks/messages simultaneously without blocking. |
+| **Write serialization** | Only one writer at a time. SQLite queues writers automatically; `busy_timeout = 5000` means a writer waits up to 5 seconds for the lock before failing. |
+| **No IPC needed** | WAL uses shared memory (the `-shm` file) for coordination between processes on the same host. This replaces any need for pipes, sockets, or message queues. |
+| **Crash safety** | If an MCP process crashes, its connection is released. Other processes are not affected. The WAL file self-recovers on next open. |
+
+**Transaction pattern for atomic lock acquisition:**
+
+Use `BEGIN IMMEDIATE` (via `conn.transaction_with_behavior(TransactionBehavior::Immediate)`) for all write operations. This acquires the write lock at transaction start rather than on first write statement, which:
+1. Prevents upgrade-from-read deadlocks
+2. Makes `busy_timeout` apply from the start
+3. Is the recommended pattern for SQLite multi-process writes
+
+This is supported directly by rusqlite 0.38:
+
+```rust
+use rusqlite::TransactionBehavior;
+
+let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+// All writes within this transaction are atomic
+tx.commit()?;
+```
+
+---
+
+## Path Canonicalization Strategy
+
+### The Problem
+
+`std::fs::canonicalize()` on Windows produces UNC paths like `\\?\C:\Users\nkngu\apps\Glass\src\main.rs`. These paths:
+- Are not comparable with normal paths (`C:\Users\nkngu\apps\Glass\src\main.rs`)
+- Break many Windows tools and libraries
+- Would cause file lock mismatches if one agent uses `canonicalize()` and another constructs paths normally
+
+### The Solution: `dunce::canonicalize()`
+
+`dunce` 1.0.5 wraps `std::fs::canonicalize()` and strips the `\\?\` prefix when the path can be expressed as a standard Windows path (drive-letter paths). It passes through unchanged on Unix. Zero dependencies, battle-tested (10M+ downloads).
+
+### Integration
+
+The new `glass_coordination` crate uses `dunce::canonicalize()` in `lock_files()` before storing paths. This also benefits the existing `glass_snapshot` crate -- the `ignore_rules.rs` and `watcher.rs` files currently use raw `std::fs::canonicalize()` which produces UNC paths on Windows. Consider migrating those to `dunce` as a followup.
+
+### Existing Canonicalization Code
+
+`glass_snapshot/src/ignore_rules.rs` already has a `canonicalize_path()` method that handles non-existent files by canonicalizing the deepest existing ancestor. The coordination crate should reuse this pattern for lock paths that reference files not yet created.
+
+---
+
+## Workspace Configuration Changes
+
+### Root Cargo.toml Additions
 
 ```toml
 [workspace.dependencies]
-# Auto-update
-self_update = { version = "0.42", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "backends-github"] }
+# Agent ID generation
+uuid = { version = "1", features = ["v4"] }
 
-# Config hot-reload debouncing
-notify-debouncer-mini = "0.7"
-
-# Performance profiling (optional)
-tracing-chrome = { version = "0.7.2", optional = true }
+# Windows-safe path canonicalization
+dunce = "1"
 ```
+
+### New Crate: `crates/glass_coordination/Cargo.toml`
 
 ```toml
-# In glass_core or root binary Cargo.toml
+[package]
+name = "glass_coordination"
+version = "0.1.0"
+edition = "2021"
+
 [dependencies]
-self_update = { workspace = true }
-notify-debouncer-mini = { workspace = true }
-# notify already available via workspace
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+dunce = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[features]
-profiling = ["tracing-chrome"]
+tempfile = "3"
 ```
 
-**Total new runtime crates: 2** (self_update, notify-debouncer-mini). Everything else is dev tooling or CLI tools installed separately.
+### Modified Crate: `crates/glass_mcp/Cargo.toml`
 
----
+Add one dependency:
 
-## CI/CD Pipeline Additions
-
-### Release Workflow (new: `.github/workflows/release.yml`)
-
-```yaml
-# Trigger: push tag v*
-# Matrix: windows-latest, macos-latest, ubuntu-latest
-# Steps per platform:
-#   1. cargo build --release
-#   2. Platform-specific packaging:
-#      - Windows: cargo packager --formats msi,nsis
-#      - macOS: cargo packager --formats dmg,app
-#      - Linux: cargo packager --formats deb,appimage
-#      - Linux: cargo generate-rpm
-#   3. Upload artifacts to GitHub Release
+```toml
+[dependencies]
+# ... existing deps ...
+glass_coordination = { path = "../glass_coordination" }
 ```
-
-### Documentation Workflow (new: `.github/workflows/docs.yml`)
-
-```yaml
-# Trigger: push to main (docs/** changed)
-# Steps:
-#   1. mdbook build docs/
-#   2. Deploy to GitHub Pages
-```
-
-### Existing CI (unchanged)
-
-The existing `ci.yml` continues to run `cargo build --release` and `cargo test` on all three platforms. No changes needed.
 
 ---
 
@@ -208,14 +228,15 @@ The existing `ci.yml` continues to run `cargo build --release` and `cargo test` 
 
 | Temptation | Why Not |
 |------------|---------|
-| **cargo-packager-updater** (0.2.3) | Requires hosting an update server with signed manifests. Overkill for GitHub Releases distribution. self_update works directly with GitHub Releases. |
-| **Tauri** | Glass is not a webview app. Tauri's packaging is tightly coupled to its webview + IPC model. cargo-packager (extracted from Tauri) gives packaging without the webview baggage. |
-| **Squirrel/Sparkle** | Native update frameworks for Windows/macOS. Would require FFI bindings, platform-specific code, and a separate update server. self_update is pure Rust and cross-platform. |
-| **config-rs crate** | Over-engineered for Glass's needs. Glass loads a single TOML file. serde + toml (already in the project) handles deserialization. Adding config-rs introduces layered config, environment variable overrides, and 12-factor patterns that add complexity without value. |
-| **hot-lib-reloader** | For hot-reloading Rust code (dylib swapping). Glass needs config hot-reload, not code hot-reload. Totally different problem. |
-| **pprof-rs** | Linux-only CPU profiler. cargo-flamegraph + tracing-chrome cover all platforms. |
-| **Tracy profiler** | Excellent but requires building a separate C++ viewer application and linking a C library. tracing-chrome outputs to Perfetto (browser-based) which is zero-install. |
-| **Snap packaging** | Snap's confinement model restricts filesystem and PTY access. Terminal emulators notoriously break under Snap confinement. Flatpak or AppImage are better choices for sandboxed Linux distribution. |
+| **`process_alive` crate** | Pulls `windows-sys` 0.61 (version conflict with workspace 0.59). The implementation is ~30 lines of trivial platform code. Write it inline. |
+| **`sysinfo` crate** | 3MB compiled weight to check if one PID is alive. Enumerates all system processes. Absurd overkill. |
+| **`nix` crate** | Large Unix abstraction layer. We need one function: `kill(pid, 0)`. Use raw `libc` call. |
+| **`tokio::sync::watch` or channels for IPC** | The design explicitly chose SQLite WAL over IPC. No inter-process channels needed. Each MCP process polls the shared DB. |
+| **`crossbeam-channel` or message queue** | Same as above. SQLite `messages` table IS the message queue. No in-memory IPC. |
+| **`notify` for DB change watching** | Watching SQLite files for changes is unreliable (WAL writes to `-wal` and `-shm` files, not the main DB). Agents poll via `read_messages()`. |
+| **`async-sqlite` or `tokio-rusqlite`** | The design specifies synchronous SQLite wrapped in `spawn_blocking` at the MCP layer. This is the same pattern used by glass_mcp for glass_history and glass_snapshot. Adding async SQLite would break the established pattern for no benefit. |
+| **`parking_lot` or custom locks** | SQLite handles all locking via its internal lock manager. No Rust-level synchronization needed between processes. |
+| **`uuid` v7 (time-ordered)** | v4 random UUIDs are sufficient. Agent IDs don't need time-ordering. v4 avoids any clock dependency. |
 
 ---
 
@@ -223,27 +244,15 @@ The existing `ci.yml` continues to run `cargo build --release` and `cargo test` 
 
 | Category | Recommended | Alternative | Why Not Alternative |
 |----------|-------------|-------------|---------------------|
-| Cross-platform packaging | cargo-packager 0.11.8 | cargo-bundle 0.6 | cargo-bundle is unmaintained (last release 2021). cargo-packager is its spiritual successor from the Tauri team. |
-| MSI generation | cargo-packager (primary) + cargo-wix (fallback) | WiX directly | cargo-packager wraps WiX. Only fall back to cargo-wix if advanced MSI customization is needed (custom dialog UI, merge modules). |
-| RPM generation | cargo-generate-rpm 0.20.0 | rpmbuild directly | cargo-generate-rpm reads metadata from Cargo.toml. rpmbuild requires writing a separate .spec file. |
-| Auto-update | self_update 0.42.0 | Custom reqwest + GitHub API | self_update handles: platform detection, archive extraction, binary replacement, version comparison. Reimplementing this is 500+ LOC of error-prone code. |
-| Config watching | notify 8.2 + debouncer-mini 0.7 | Polling loop | Polling wastes CPU. notify uses OS-native file watching (inotify/FSEvents/ReadDirectoryChangesW) -- zero CPU when idle. |
-| Profiling | tracing-chrome 0.7.2 | Tracy | Tracy is more powerful but requires C++ viewer and native library linking. tracing-chrome outputs JSON for Perfetto (browser). Good enough for an optimization pass; switch to Tracy only if deeper GPU analysis is needed. |
-| Docs site | mdBook 0.5.2 | Zola | Zola is a general static site generator. mdBook is purpose-built for documentation with search, code highlighting, and sidebar TOC out of the box. Less config, better fit. |
-
----
-
-## Version Compatibility
-
-| Package | Compatible With | Notes |
-|---------|-----------------|-------|
-| self_update 0.42.0 | reqwest (async HTTP), zip/tar/flate2 | Pulls in reqwest as a dependency. Uses tokio runtime (already in project). |
-| notify-debouncer-mini 0.7.0 | notify 8.x | Built on top of notify. Must use compatible notify version -- 8.2.0 matches. |
-| tracing-chrome 0.7.2 | tracing 0.1.x, tracing-subscriber 0.3.x | Compatible with existing tracing stack. Implements tracing_subscriber::Layer. |
-| criterion 0.5 | Stable Rust | No compatibility concerns. Dev-dependency only. |
-| cargo-packager 0.11.8 | WiX Toolset v3/v4 (Windows), create-dmg (macOS) | CLI tool. Requires WiX installed on Windows CI runner (`choco install wixtoolset`). |
-| cargo-generate-rpm 0.20.0 | RPM 4.x | CLI tool. Requires rpmbuild on Linux CI runner. |
-| mdBook 0.5.2 | Stable Rust | CLI tool. `cargo install mdbook` or download pre-built binary. |
+| UUID generation | `uuid` 1.22 with v4 | `nanoid` | UUID v4 is the standard for distributed IDs. nanoid produces shorter strings but loses the universal tooling and format recognition. |
+| UUID generation | `uuid` 1.22 with v4 | `ulid` | ULIDs are time-ordered. Agent IDs don't need ordering. uuid is more widely used and understood. |
+| Path canonicalization | `dunce` 1.0.5 | Manual `\\?\` prefix stripping | Stripping `\\?\` is correct for drive-letter paths but incorrect for device paths (`\\?\GLOBALROOT\...`). dunce handles the edge cases correctly. 150 lines, zero deps -- no reason not to use it. |
+| Path canonicalization | `dunce` 1.0.5 | `normpath` | normpath does lexical normalization (no filesystem I/O). We need actual canonicalization (symlink resolution, existence check). |
+| PID checking | Raw `libc` / `windows-sys` | `process_alive` 0.2.0 | Version conflict with workspace `windows-sys` 0.59 vs 0.61. Implementation is trivial. |
+| PID checking | Raw `libc` / `windows-sys` | `sysinfo` | Massive dependency for a single boolean check. |
+| Coordination mechanism | SQLite WAL | Redis / ZeroMQ | External service dependency. Glass is a local desktop app. SQLite is embedded and already in the stack. |
+| Coordination mechanism | SQLite WAL | Named pipes / Unix domain sockets | Requires designing a wire protocol, connection management, reconnection logic. SQLite gives ACID transactions for free. |
+| Coordination mechanism | SQLite WAL | Shared memory (mmap) | Requires manual synchronization, no schema, crash recovery is manual. SQLite provides all of this. |
 
 ---
 
@@ -251,78 +260,90 @@ The existing `ci.yml` continues to run `cargo build --release` and `cargo test` 
 
 | Addition | New Transitive Deps | Compile Impact | Binary Size | Notes |
 |----------|---------------------|----------------|-------------|-------|
-| self_update | reqwest, hyper, rustls, zip, tar, flate2 | MODERATE (~15s) | ~200 KB | reqwest is the heavy one. Consider feature-gating behind `update` feature if cold compile time matters. |
-| notify-debouncer-mini | None (notify already present) | MINIMAL (~1s) | ~5 KB | Thin wrapper over notify. |
-| tracing-chrome (optional) | None | MINIMAL (~2s) | ~10 KB | Only compiled with `--features profiling`. |
-| criterion (dev-only) | plotters, statistical libs | MODERATE (~10s) | N/A | Dev-dependency only, not in release binary. |
-| **Total runtime addition** | ~30 new transitive crates (mostly from reqwest) | ~15-20s first compile | ~200-220 KB | Acceptable for auto-update capability. |
+| `uuid` 1.22 (v4 feature) | `getrandom` (likely already present via other deps) | MINIMAL (~1s) | ~5 KB | Tiny crate. getrandom is a common transitive dep. |
+| `dunce` 1.0.5 | None | MINIMAL (<1s) | ~2 KB | 150 lines, zero dependencies. |
+| `libc` 0.2 (unix only) | None | NONE (already transitive) | 0 KB | Already pulled in by alacritty_terminal, notify, and others. |
+| `windows-sys` feature additions | None (features on existing dep) | MINIMAL | ~1 KB | Just adds Threading/Foundation bindings to already-compiled crate. |
+| **Total** | ~1 new transitive crate (getrandom, if not already present) | ~2s | ~8 KB | Negligible impact. |
 
-**Mitigation for reqwest bloat:** Use `default-features = false` on self_update to avoid pulling in unnecessary backends. Only enable `backends-github`, `archive-tar`, `archive-zip`, and `compression-flate2`.
+This is the lightest-weight milestone in terms of new dependencies. The design intentionally reuses SQLite infrastructure that's already proven in the workspace.
 
 ---
 
 ## Integration Points with Existing Architecture
 
-### Auto-Update Integration
+### glass_coordination (New Crate)
 
 ```
-glass update (clap subcommand)
-  -> self_update::backends::github::Update::configure()
-  -> Check latest GitHub Release tag vs current version
-  -> Download platform-specific archive (glass-v{version}-{target}.tar.gz)
-  -> Replace binary in-place
-  -> Print "Updated to vX.Y.Z. Restart Glass to use new version."
+CoordinationDb::open()
+  -> Opens ~/.glass/agents.db
+  -> Same WAL + PRAGMA pattern as HistoryDb and SnapshotDb
+  -> Schema: agents, file_locks, messages tables
+  -> Pure synchronous API (no async, no tokio)
 ```
 
-**Version embedding:** Use `env!("CARGO_PKG_VERSION")` (already available) for current version comparison.
-
-**Asset naming convention:** `glass-v{version}-x86_64-pc-windows-msvc.zip`, `glass-v{version}-aarch64-apple-darwin.tar.gz`, `glass-v{version}-x86_64-unknown-linux-gnu.tar.gz`
-
-### Config Hot-Reload Integration
+### glass_mcp Integration
 
 ```
-App::new()
-  -> Spawn config watcher thread (notify-debouncer-mini)
-  -> Watch ~/.glass/config.toml
-  -> On change: parse + validate + diff
-  -> Send AppEvent::ConfigChanged(ConfigDelta) via EventProxy
-  -> App::handle_event matches ConfigChanged:
-     -> Update font system (glyphon rebuild)
-     -> Update renderer parameters
-     -> Log non-hot-reloadable changes
+GlassServer (existing)
+  -> Currently holds: glass_dir (PathBuf) for snapshot operations
+  -> Add: CoordinationDb instance (opened once at server startup)
+  -> 11 new #[tool_handler] methods following existing pattern
+  -> Write operations use spawn_blocking (same as existing undo/snapshot tools)
 ```
 
-**Existing event infrastructure:** Glass already has `AppEvent` enum and `EventProxy` for cross-thread communication. Config changes slot into this pattern naturally.
+**Pattern precedent:** The existing `glass_undo` tool in glass_mcp opens `SnapshotStore` in `spawn_blocking`:
 
-### Profiling Integration
-
+```rust
+#[tool_handler]
+async fn glass_undo(&self, params: UndoParams) -> Result<CallToolResult, McpError> {
+    let glass_dir = self.glass_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // Synchronous SQLite operations here
+    }).await.map_err(/* ... */)?;
+    // ...
+}
 ```
-GLASS_PROFILE=1 glass
-  -> Activates tracing-chrome layer
-  -> Writes glass_trace.json on exit
-  -> Open in chrome://tracing or Perfetto
+
+The new coordination tools follow this exact pattern.
+
+### windows-sys Feature Extension
+
+Current workspace definition:
+```toml
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 ```
 
-**Existing tracing infrastructure:** Glass already uses `tracing::info!`, `tracing::debug!` etc. throughout the codebase. tracing-chrome captures these spans automatically -- no instrumentation code changes needed. Add `#[tracing::instrument]` to hot-path functions (render loop, PTY read, event dispatch) for detailed breakdown.
+The glass_coordination crate adds its own platform-specific dependency with additional features. This does NOT modify the workspace-level definition -- the crate declares its own `windows-sys` dependency with the features it needs. Cargo merges features when resolving.
+
+---
+
+## Version Compatibility Matrix
+
+| Package | Compatible With | Verified |
+|---------|-----------------|----------|
+| `uuid` 1.22.0 | Rust 2021 edition, no async runtime needed | Version confirmed via docs.rs (HIGH confidence) |
+| `dunce` 1.0.5 | Any Rust edition, zero deps | Version confirmed via docs.rs (HIGH confidence) |
+| `libc` 0.2.x | Already resolved in Cargo.lock as transitive dep | Confirmed in Cargo.lock (HIGH confidence) |
+| `windows-sys` 0.59 | Threading + Foundation features available | Features confirmed via docs.rs (HIGH confidence) |
+| `rusqlite` 0.38.0 | WAL mode, `TransactionBehavior::Immediate`, `busy_timeout` pragma | Existing usage in glass_history and glass_snapshot validates all needed APIs (HIGH confidence) |
 
 ---
 
 ## Sources
 
-- [cargo-packager (crates.io)](https://crates.io/crates/cargo-packager) -- v0.11.8 verified, format support confirmed (HIGH confidence)
-- [cargo-packager (GitHub)](https://github.com/crabnebula-dev/cargo-packager) -- README documents MSI, DMG, deb, AppImage, NSIS support (HIGH confidence)
-- [self_update (crates.io)](https://crates.io/crates/self_update) -- v0.42.0 verified (HIGH confidence)
-- [self_update (GitHub)](https://github.com/jaemk/self_update) -- GitHub Releases backend documented (HIGH confidence)
-- [cargo-packager-updater (crates.io)](https://crates.io/crates/cargo-packager-updater) -- v0.2.3, requires update server (HIGH confidence)
-- [notify-debouncer-mini (crates.io)](https://crates.io/crates/notify-debouncer-mini) -- v0.7.0, compatible with notify 8.x (HIGH confidence)
-- [notify (crates.io)](https://crates.io/crates/notify) -- v8.2.0 latest stable (HIGH confidence)
-- [tracing-chrome (crates.io)](https://crates.io/crates/tracing-chrome) -- v0.7.2 verified (HIGH confidence)
-- [mdBook (crates.io)](https://crates.io/crates/mdbook) -- v0.5.2 verified (HIGH confidence)
-- [cargo-deb (crates.io)](https://crates.io/crates/cargo-deb) -- v3.6.3, fallback for deb (HIGH confidence)
-- [cargo-generate-rpm (crates.io)](https://crates.io/crates/cargo-generate-rpm) -- v0.20.0, needed for RPM format (HIGH confidence)
-- [cargo-wix (crates.io)](https://crates.io/crates/cargo-wix) -- v0.3.9, MSI fallback (HIGH confidence)
-- [Flatpak Rust packaging (belmoussaoui.com)](https://belmoussaoui.com/blog/8-how-to-flatpak-a-rust-application/) -- Manual manifest approach documented (MEDIUM confidence)
+- [uuid crate docs (docs.rs)](https://docs.rs/uuid/latest/uuid/) -- v1.22.0, features confirmed (HIGH confidence)
+- [dunce crate docs (docs.rs)](https://docs.rs/dunce/latest/dunce/) -- v1.0.5, UNC stripping behavior confirmed (HIGH confidence)
+- [SQLite WAL mode documentation (sqlite.org)](https://sqlite.org/wal.html) -- Multi-process concurrency guarantees (HIGH confidence)
+- [SQLite recommended PRAGMAs](https://highperformancesqlite.com/articles/sqlite-recommended-pragmas) -- busy_timeout and WAL configuration (MEDIUM confidence)
+- [rusqlite TransactionBehavior (docs.rs)](https://docs.rs/rusqlite/latest/rusqlite/enum.TransactionBehavior.html) -- BEGIN IMMEDIATE support confirmed (HIGH confidence)
+- [std::fs::canonicalize UNC issue (rust-lang/rust#42869)](https://github.com/rust-lang/rust/issues/42869) -- Windows UNC path problem documented (HIGH confidence)
+- [windows-sys Threading module (docs.rs)](https://docs.rs/windows-sys/latest/windows_sys/Win32/System/Threading/index.html) -- OpenProcess, GetExitCodeProcess available (HIGH confidence)
+- [process_alive crate (lib.rs)](https://lib.rs/crates/process_alive) -- v0.2.0, uses windows-sys 0.61 (version conflict confirmed) (HIGH confidence)
+- [SQLite busy_timeout behavior (berthub.eu)](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) -- BEGIN IMMEDIATE recommended for writes (MEDIUM confidence)
+- [Existing glass_history/src/db.rs WAL pattern](../../../crates/glass_history/src/db.rs) -- Validated working WAL configuration (HIGH confidence)
+- [Existing glass_snapshot/src/ignore_rules.rs canonicalization](../../../crates/glass_snapshot/src/ignore_rules.rs) -- Existing canonicalize_path pattern for non-existent files (HIGH confidence)
 
 ---
-*Stack research for: Glass v2.1 Packaging & Polish*
-*Researched: 2026-03-07*
+*Stack research for: Glass v2.2 Multi-Agent Coordination*
+*Researched: 2026-03-09*

@@ -76,7 +76,18 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-<!-- No active milestone -- use /gsd:new-milestone to start next -->
+## Current Milestone: v2.2 Multi-Agent Coordination
+
+**Goal:** Make Glass an agent orchestration layer so AI agents in separate tabs can register, claim files, exchange messages, and avoid conflicts through shared coordination.
+
+**Target features:**
+- New `glass_coordination` crate with shared SQLite DB (WAL mode)
+- Agent registry with heartbeat-based liveness and PID fallback
+- Atomic advisory file locks with path canonicalization and project scoping
+- Inter-agent messaging (broadcast + directed) with structured message types
+- 11 new MCP tools exposing coordination capabilities
+- CLAUDE.md integration instructions for auto-coordination
+- GUI integration (status bar, tab indicators, conflict warnings)
 
 ### Deferred (Future Milestones)
 
@@ -196,4 +207,4 @@ Known tech debt:
 | Homebrew cask targets custom tap | Notarization deferred; tap avoids homebrew-cask review | ✓ Good -- practical distribution |
 
 ---
-*Last updated: 2026-03-07 after v2.1 milestone complete*
+*Last updated: 2026-03-09 after v2.2 milestone started*
