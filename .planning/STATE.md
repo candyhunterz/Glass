@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Multi-Agent Coordination
-status: completed
-stopped_at: Completed 31-03-PLAN.md (phase 31 complete)
-last_updated: "2026-03-09T21:27:13.659Z"
-last_activity: 2026-03-09 -- Completed 31-03 (inter-agent messaging)
+status: in-progress
+stopped_at: Completed 32-01-PLAN.md
+last_updated: "2026-03-09T22:17:19Z"
+last_activity: 2026-03-09 -- Completed 32-01 (agent lifecycle MCP tools)
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
-  percent: 100
+  total_plans: 2
+  completed_plans: 1
+  percent: 50
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** v2.2 Multi-Agent Coordination -- Phase 31 (Coordination Crate)
+**Current focus:** v2.2 Multi-Agent Coordination -- Phase 32 (MCP Tools)
 
 ## Current Position
 
-Phase: 31 of 34 (Coordination Crate)
-Plan: 3 of 3 (complete)
-Status: Phase 31 Complete
-Last activity: 2026-03-09 -- Completed 31-03 (inter-agent messaging)
+Phase: 32 of 34 (MCP Tools)
+Plan: 1 of 2
+Status: In Progress
+Last activity: 2026-03-09 -- Completed 32-01 (agent lifecycle MCP tools)
 
-Progress: [██████████] 100%
+Progress: [█████-----] 50%
 
 ## Performance Metrics
 
@@ -62,6 +62,7 @@ Recent decisions for v2.2:
 - list_locks canonicalizes project parameter for consistent matching with register
 - [Phase 31]: Broadcast fans out to per-recipient rows for independent read tracking
 - [Phase 31]: All messaging methods refresh caller heartbeat in same transaction
+- [Phase 32]: Open-per-call CoordinationDb in MCP tool spawn_blocking matches HistoryDb pattern
 
 ### Pending Todos
 
@@ -84,9 +85,10 @@ Recent decisions for v2.2:
 | 31 | 01 | 6min | 2 | 5 |
 | 31 | 02 | 3min | 1 | 1 |
 | 31 | 03 | 4min | 1 | 1 |
+| 32 | 01 | 3min | 2 | 3 |
 
 ## Session Continuity
 
-Last session: 2026-03-09T21:23:06.327Z
-Stopped at: Completed 31-03-PLAN.md (phase 31 complete)
+Last session: 2026-03-09T22:17:19Z
+Stopped at: Completed 32-01-PLAN.md
 Resume file: None

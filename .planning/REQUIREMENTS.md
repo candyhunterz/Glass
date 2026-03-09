@@ -23,18 +23,18 @@ Requirements for multi-agent coordination milestone. Each maps to roadmap phases
 
 ### MCP Tools
 
-- [ ] **MCP-01**: `glass_agent_register` tool registers agent and returns ID + active agent count
-- [ ] **MCP-02**: `glass_agent_deregister` tool unregisters agent and cascades cleanup
-- [ ] **MCP-03**: `glass_agent_list` tool lists active agents with auto-pruning
-- [ ] **MCP-04**: `glass_agent_status` tool updates agent status and task description
+- [x] **MCP-01**: `glass_agent_register` tool registers agent and returns ID + active agent count
+- [x] **MCP-02**: `glass_agent_deregister` tool unregisters agent and cascades cleanup
+- [x] **MCP-03**: `glass_agent_list` tool lists active agents with auto-pruning
+- [x] **MCP-04**: `glass_agent_status` tool updates agent status and task description
 - [ ] **MCP-05**: `glass_agent_lock` tool atomically claims advisory file locks
 - [ ] **MCP-06**: `glass_agent_unlock` tool releases file locks
 - [ ] **MCP-07**: `glass_agent_locks` tool lists all active locks across agents
 - [ ] **MCP-08**: `glass_agent_broadcast` tool sends typed message to all project agents
 - [ ] **MCP-09**: `glass_agent_send` tool sends directed message to specific agent
 - [ ] **MCP-10**: `glass_agent_messages` tool reads unread messages
-- [ ] **MCP-11**: `glass_agent_heartbeat` tool refreshes liveness timestamp
-- [ ] **MCP-12**: All MCP tool calls implicitly refresh the calling agent's heartbeat
+- [x] **MCP-11**: `glass_agent_heartbeat` tool refreshes liveness timestamp
+- [x] **MCP-12**: All MCP tool calls implicitly refresh the calling agent's heartbeat
 
 ### Integration
 
@@ -90,18 +90,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | COORD-09 | Phase 31 | Complete |
 | COORD-10 | Phase 31 | Complete |
 | COORD-11 | Phase 31 | Complete |
-| MCP-01 | Phase 32 | Pending |
-| MCP-02 | Phase 32 | Pending |
-| MCP-03 | Phase 32 | Pending |
-| MCP-04 | Phase 32 | Pending |
+| MCP-01 | Phase 32 | Complete |
+| MCP-02 | Phase 32 | Complete |
+| MCP-03 | Phase 32 | Complete |
+| MCP-04 | Phase 32 | Complete |
 | MCP-05 | Phase 32 | Pending |
 | MCP-06 | Phase 32 | Pending |
 | MCP-07 | Phase 32 | Pending |
 | MCP-08 | Phase 32 | Pending |
 | MCP-09 | Phase 32 | Pending |
 | MCP-10 | Phase 32 | Pending |
-| MCP-11 | Phase 32 | Pending |
-| MCP-12 | Phase 32 | Pending |
+| MCP-11 | Phase 32 | Complete |
+| MCP-12 | Phase 32 | Complete |
 | INTG-01 | Phase 33 | Pending |
 | INTG-02 | Phase 33 | Pending |
 | INTG-03 | Phase 33 | Pending |
