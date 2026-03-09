@@ -1,11 +1,16 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with five tools:
+//! Defines `GlassServer` with ten tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
 //! - `glass_file_diff`: Inspect pre-command file contents for a given command
 //! - `glass_pipe_inspect`: Inspect intermediate output from a pipeline stage
+//! - `glass_agent_register`: Register an agent in the coordination database
+//! - `glass_agent_deregister`: Remove an agent from the coordination database
+//! - `glass_agent_list`: List active agents for a project
+//! - `glass_agent_status`: Update an agent's status and current task
+//! - `glass_agent_heartbeat`: Refresh an agent's liveness timestamp
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -468,6 +473,136 @@ impl GlassServer {
         let content = Content::json(&response)?;
         Ok(CallToolResult::success(vec![content]))
     }
+
+    /// Register an agent in the coordination database.
+    /// Returns the new agent UUID and count of active agents for the project.
+    #[tool(
+        description = "Register an agent in the coordination database. Returns the new agent UUID and count of active agents."
+    )]
+    async fn glass_agent_register(
+        &self,
+        Parameters(params): Parameters<RegisterParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let agent_id = db
+                .register(
+                    &params.name,
+                    &params.agent_type,
+                    &params.project,
+                    &params.cwd,
+                    params.pid,
+                )
+                .map_err(internal_err)?;
+            let agents = db.list_agents(&params.project).map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({
+                "agent_id": agent_id,
+                "agents_active": agents.len(),
+            }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// Deregister an agent from the coordination database.
+    /// Returns whether the agent was successfully removed.
+    #[tool(
+        description = "Deregister an agent from the coordination database. Returns whether the agent was successfully removed."
+    )]
+    async fn glass_agent_deregister(
+        &self,
+        Parameters(params): Parameters<DeregisterParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let ok = db.deregister(&params.agent_id).map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// List active agents for a project.
+    /// Prunes stale agents (10 min timeout), then returns remaining active agents.
+    #[tool(
+        description = "List active agents for a project. Prunes stale agents (10 min timeout), then returns remaining active agents."
+    )]
+    async fn glass_agent_list(
+        &self,
+        Parameters(params): Parameters<ListAgentsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            db.prune_stale(600).map_err(internal_err)?;
+            let agents = db.list_agents(&params.project).map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "agents": agents }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// Update an agent's status and current task description.
+    /// Returns whether the update was successful.
+    #[tool(
+        description = "Update an agent's status and current task description. Returns whether the update was successful."
+    )]
+    async fn glass_agent_status(
+        &self,
+        Parameters(params): Parameters<StatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let ok = db
+                .update_status(&params.agent_id, &params.status, params.task.as_deref())
+                .map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// Refresh an agent's liveness timestamp.
+    /// Returns whether the heartbeat was successfully recorded.
+    #[tool(
+        description = "Refresh an agent's liveness timestamp. Returns whether the heartbeat was successfully recorded."
+    )]
+    async fn glass_agent_heartbeat(
+        &self,
+        Parameters(params): Parameters<HeartbeatParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let ok = db.heartbeat(&params.agent_id).map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
 }
 
 #[tool_handler]
@@ -476,10 +611,11 @@ impl ServerHandler for GlassServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("glass-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Glass terminal history, context, undo, file diff, and pipe inspect server. \
+                "Glass terminal history, context, undo, file diff, pipe inspect, and agent coordination server. \
                  Use glass_history to search commands, glass_context for activity overview, \
                  glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents, \
-                 glass_pipe_inspect to inspect intermediate pipeline stage output.",
+                 glass_pipe_inspect to inspect intermediate pipeline stage output, \
+                 glass_agent_register/deregister/list/status/heartbeat for multi-agent coordination.",
             )
     }
 }
