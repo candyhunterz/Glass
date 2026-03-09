@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with ten tools:
+//! Defines `GlassServer` with thirteen tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -11,6 +11,9 @@
 //! - `glass_agent_list`: List active agents for a project
 //! - `glass_agent_status`: Update an agent's status and current task
 //! - `glass_agent_heartbeat`: Refresh an agent's liveness timestamp
+//! - `glass_agent_lock`: Atomically claim advisory file locks
+//! - `glass_agent_unlock`: Release file locks
+//! - `glass_agent_locks`: List all active file locks
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -147,6 +150,39 @@ pub struct HeartbeatParams {
     /// Agent UUID to refresh heartbeat for.
     #[schemars(description = "Agent UUID to refresh heartbeat for")]
     pub agent_id: String,
+}
+
+/// Parameters for the glass_agent_lock tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct LockParams {
+    /// Agent UUID requesting the locks.
+    #[schemars(description = "Agent UUID requesting the locks")]
+    pub agent_id: String,
+    /// File paths to lock.
+    #[schemars(description = "File paths to lock")]
+    pub paths: Vec<String>,
+    /// Reason for locking (shown to other agents).
+    #[schemars(description = "Reason for locking (shown to other agents)")]
+    pub reason: Option<String>,
+}
+
+/// Parameters for the glass_agent_unlock tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnlockParams {
+    /// Agent UUID releasing locks.
+    #[schemars(description = "Agent UUID releasing locks")]
+    pub agent_id: String,
+    /// Specific file paths to unlock. Omit to release all locks.
+    #[schemars(description = "Specific file paths to unlock. Omit to release all locks.")]
+    pub paths: Option<Vec<String>>,
+}
+
+/// Parameters for the glass_agent_locks tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListLocksParams {
+    /// Project root path to filter locks. Omit for all locks.
+    #[schemars(description = "Project root path to filter locks. Omit for all locks.")]
+    pub project: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +639,116 @@ impl GlassServer {
         let content = Content::json(&result)?;
         Ok(CallToolResult::success(vec![content]))
     }
+
+    /// Atomically claim advisory file locks.
+    /// Returns conflicts if any file is held by another agent.
+    #[tool(
+        description = "Atomically claim advisory file locks. Returns conflicts if any file is held by another agent."
+    )]
+    async fn glass_agent_lock(
+        &self,
+        Parameters(params): Parameters<LockParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let paths: Vec<PathBuf> = params.paths.iter().map(PathBuf::from).collect();
+            let lock_result = db
+                .lock_files(&params.agent_id, &paths, params.reason.as_deref())
+                .map_err(internal_err)?;
+            match lock_result {
+                glass_coordination::types::LockResult::Acquired(locked) => {
+                    Ok::<_, McpError>(serde_json::json!({
+                        "locked": locked,
+                        "conflicts": [],
+                    }))
+                }
+                glass_coordination::types::LockResult::Conflict(conflicts) => {
+                    let conflict_entries: Vec<serde_json::Value> = conflicts
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "path": c.path,
+                                "held_by": c.held_by_agent_name,
+                                "held_by_id": c.held_by_agent_id,
+                                "reason": c.reason,
+                                "retry_hint": "Wait and retry, or send a 'request_unlock' message to the holder",
+                            })
+                        })
+                        .collect();
+                    Ok::<_, McpError>(serde_json::json!({
+                        "locked": [],
+                        "conflicts": conflict_entries,
+                    }))
+                }
+            }
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// Release file locks. Omit paths to release all locks.
+    #[tool(description = "Release file locks. Omit paths to release all locks.")]
+    async fn glass_agent_unlock(
+        &self,
+        Parameters(params): Parameters<UnlockParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let released = if let Some(paths) = &params.paths {
+                let mut count = 0u64;
+                for p in paths {
+                    let ok = db
+                        .unlock_file(&params.agent_id, std::path::Path::new(p))
+                        .map_err(internal_err)?;
+                    if ok {
+                        count += 1;
+                    }
+                }
+                count
+            } else {
+                db.unlock_all(&params.agent_id).map_err(internal_err)?
+            };
+            // MCP-12: implicit heartbeat refresh on unlock
+            let _ = db.heartbeat(&params.agent_id);
+            Ok::<_, McpError>(serde_json::json!({ "released": released }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    /// List all active file locks, optionally filtered by project.
+    #[tool(
+        description = "List all active file locks, optionally filtered by project."
+    )]
+    async fn glass_agent_locks(
+        &self,
+        Parameters(params): Parameters<ListLocksParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let coord_path = self.coord_db_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db =
+                glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let locks = db
+                .list_locks(params.project.as_deref())
+                .map_err(internal_err)?;
+            Ok::<_, McpError>(serde_json::json!({ "locks": locks }))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        let content = Content::json(&result)?;
+        Ok(CallToolResult::success(vec![content]))
+    }
 }
 
 #[tool_handler]
@@ -792,5 +938,56 @@ mod tests {
         let json = r#"{"agent_id":"def-456"}"#;
         let params: HeartbeatParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.agent_id, "def-456");
+    }
+
+    #[test]
+    fn test_lock_params_deserialize() {
+        let json = r#"{"agent_id":"abc-123","paths":["/tmp/a.rs","/tmp/b.rs"],"reason":"editing auth module"}"#;
+        let params: LockParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(params.paths, vec!["/tmp/a.rs", "/tmp/b.rs"]);
+        assert_eq!(params.reason, Some("editing auth module".to_string()));
+    }
+
+    #[test]
+    fn test_lock_params_deserialize_no_reason() {
+        let json = r#"{"agent_id":"abc-123","paths":["/tmp/a.rs"]}"#;
+        let params: LockParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(params.paths, vec!["/tmp/a.rs"]);
+        assert!(params.reason.is_none());
+    }
+
+    #[test]
+    fn test_unlock_params_deserialize_with_paths() {
+        let json = r#"{"agent_id":"abc-123","paths":["/tmp/a.rs","/tmp/b.rs"]}"#;
+        let params: UnlockParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(
+            params.paths,
+            Some(vec!["/tmp/a.rs".to_string(), "/tmp/b.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_unlock_params_deserialize_no_paths() {
+        let json = r#"{"agent_id":"abc-123"}"#;
+        let params: UnlockParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert!(params.paths.is_none());
+    }
+
+    #[test]
+    fn test_list_locks_params_deserialize() {
+        let json = r#"{"project":"/home/user/proj"}"#;
+        let params: ListLocksParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.project, Some("/home/user/proj".to_string()));
+    }
+
+    #[test]
+    fn test_list_locks_params_deserialize_no_project() {
+        let json = r#"{}"#;
+        let params: ListLocksParams = serde_json::from_str(json).unwrap();
+        assert!(params.project.is_none());
     }
 }
