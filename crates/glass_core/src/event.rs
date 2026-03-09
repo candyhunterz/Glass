@@ -98,6 +98,8 @@ pub enum AppEvent {
     },
     /// A newer version of Glass is available for download.
     UpdateAvailable(crate::updater::UpdateInfo),
+    /// Updated coordination state from the background poller.
+    CoordinationUpdate(crate::coordination_poller::CoordinationState),
 }
 
 #[cfg(test)]
