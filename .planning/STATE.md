@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Multi-Agent Coordination
-status: in-progress
-stopped_at: Completed 32-01-PLAN.md
-last_updated: "2026-03-09T22:17:19Z"
-last_activity: 2026-03-09 -- Completed 32-01 (agent lifecycle MCP tools)
+status: executing
+stopped_at: Completed 32-02-PLAN.md
+last_updated: "2026-03-09T22:24:30Z"
+last_activity: 2026-03-09 -- Completed 32-02 (file locking + messaging MCP tools)
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 1
-  percent: 50
+  completed_phases: 2
+  total_plans: 5
+  completed_plans: 5
+  percent: 100
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 
 ## Current Position
 
-Phase: 32 of 34 (MCP Tools)
-Plan: 1 of 2
-Status: In Progress
-Last activity: 2026-03-09 -- Completed 32-01 (agent lifecycle MCP tools)
+Phase: 32 of 34 (MCP Tools) -- COMPLETE
+Plan: 2 of 2
+Status: Phase Complete
+Last activity: 2026-03-09 -- Completed 32-02 (file locking + messaging MCP tools)
 
-Progress: [█████-----] 50%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -63,6 +63,8 @@ Recent decisions for v2.2:
 - [Phase 31]: Broadcast fans out to per-recipient rows for independent read tracking
 - [Phase 31]: All messaging methods refresh caller heartbeat in same transaction
 - [Phase 32]: Open-per-call CoordinationDb in MCP tool spawn_blocking matches HistoryDb pattern
+- [Phase 32]: Lock conflicts returned as CallToolResult::success (not McpError) for graceful agent handling
+- [Phase 32]: Explicit heartbeat call in unlock tool for MCP-12 compliance
 
 ### Pending Todos
 
@@ -86,9 +88,10 @@ Recent decisions for v2.2:
 | 31 | 02 | 3min | 1 | 1 |
 | 31 | 03 | 4min | 1 | 1 |
 | 32 | 01 | 3min | 2 | 3 |
+| 32 | 02 | 4min | 2 | 1 |
 
 ## Session Continuity
 
-Last session: 2026-03-09T22:17:19Z
-Stopped at: Completed 32-01-PLAN.md
+Last session: 2026-03-09T22:24:30Z
+Stopped at: Completed 32-02-PLAN.md
 Resume file: None

@@ -83,7 +83,7 @@
 **Milestone Goal:** Make Glass an agent orchestration layer so AI agents in separate tabs can register, claim files, exchange messages, and avoid conflicts through shared coordination.
 
 - [x] **Phase 31: Coordination Crate** - Pure synchronous library with agent registry, atomic file locking, messaging, and stale pruning (completed 2026-03-09)
-- [ ] **Phase 32: MCP Tools** - 11 new MCP tool handlers exposing coordination primitives to AI agents
+- [x] **Phase 32: MCP Tools** - 11 new MCP tool handlers exposing coordination primitives to AI agents (completed 2026-03-09)
 - [ ] **Phase 33: Integration and Testing** - CLAUDE.md coordination protocol and multi-agent integration tests
 - [ ] **Phase 34: GUI Integration** - Status bar agent/lock display, background polling, tab indicators, and conflict overlay
 
@@ -187,6 +187,6 @@ Phases execute in numeric order: 31 -> 32 -> 33 (and 34 can start after 31)
 | 29. Auto-Update | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 30. Documentation & Distribution | v2.1 | 3/3 | Complete | 2026-03-07 |
 | 31. Coordination Crate | 3/3 | Complete    | 2026-03-09 | - |
-| 32. MCP Tools | 1/2 | In Progress|  | - |
+| 32. MCP Tools | 2/2 | Complete   | 2026-03-09 | - |
 | 33. Integration and Testing | v2.2 | 0/? | Not started | - |
 | 34. GUI Integration | v2.2 | 0/? | Not started | - |
