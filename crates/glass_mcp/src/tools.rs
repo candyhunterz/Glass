@@ -148,16 +148,19 @@ pub struct GlassServer {
     tool_router: ToolRouter<Self>,
     db_path: PathBuf,
     glass_dir: PathBuf,
+    coord_db_path: PathBuf,
 }
 
 #[tool_router]
 impl GlassServer {
-    /// Create a new GlassServer pointing at the given history database and glass directory.
-    pub fn new(db_path: PathBuf, glass_dir: PathBuf) -> Self {
+    /// Create a new GlassServer pointing at the given history database, glass directory,
+    /// and coordination database.
+    pub fn new(db_path: PathBuf, glass_dir: PathBuf, coord_db_path: PathBuf) -> Self {
         Self {
             tool_router: Self::tool_router(),
             db_path,
             glass_dir,
+            coord_db_path,
         }
     }
 
@@ -431,9 +434,11 @@ mod tests {
     fn test_glass_server_accepts_glass_dir() {
         let db_path = PathBuf::from("/tmp/history.db");
         let glass_dir = PathBuf::from("/tmp/.glass");
-        let server = GlassServer::new(db_path.clone(), glass_dir.clone());
+        let coord_db_path = PathBuf::from("/tmp/agents.db");
+        let server = GlassServer::new(db_path.clone(), glass_dir.clone(), coord_db_path.clone());
         assert_eq!(server.db_path, db_path);
         assert_eq!(server.glass_dir, glass_dir);
+        assert_eq!(server.coord_db_path, coord_db_path);
     }
 
     #[test]

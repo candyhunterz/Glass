@@ -26,13 +26,15 @@ pub async fn run_mcp_server() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let db_path = glass_history::resolve_db_path(&cwd);
     let glass_dir = glass_snapshot::resolve_glass_dir(&cwd);
+    let coord_db_path = glass_coordination::resolve_db_path();
     tracing::info!(
-        "MCP server starting, db_path={}, glass_dir={}",
+        "MCP server starting, db_path={}, glass_dir={}, coord_db_path={}",
         db_path.display(),
-        glass_dir.display()
+        glass_dir.display(),
+        coord_db_path.display()
     );
 
-    let server = tools::GlassServer::new(db_path, glass_dir);
+    let server = tools::GlassServer::new(db_path, glass_dir, coord_db_path);
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

@@ -116,11 +116,11 @@ Plans:
   3. An AI agent can call `glass_agent_broadcast` or `glass_agent_send` to communicate, and another agent can call `glass_agent_messages` to read those messages
   4. Every MCP tool call implicitly refreshes the calling agent's heartbeat timestamp, so active agents never go stale
   5. An AI agent can call `glass_agent_status` to update its task description and `glass_agent_heartbeat` for explicit liveness refresh
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 32-01: TBD
-- [ ] 32-02: TBD
+- [ ] 32-01-PLAN.md -- Add coordination dependency, extend GlassServer, implement agent lifecycle tools (register, deregister, list, status, heartbeat)
+- [ ] 32-02-PLAN.md -- File locking tools (lock, unlock, locks), messaging tools (broadcast, send, messages), update ServerInfo
 
 ### Phase 33: Integration and Testing
 **Goal**: Multi-agent coordination works end-to-end with real AI agents following documented instructions
@@ -186,7 +186,7 @@ Phases execute in numeric order: 31 -> 32 -> 33 (and 34 can start after 31)
 | 28. Platform Packaging & CI Release | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 29. Auto-Update | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 30. Documentation & Distribution | v2.1 | 3/3 | Complete | 2026-03-07 |
-| 31. Coordination Crate | 3/3 | Complete   | 2026-03-09 | - |
-| 32. MCP Tools | v2.2 | 0/? | Not started | - |
+| 31. Coordination Crate | 3/3 | Complete    | 2026-03-09 | - |
+| 32. MCP Tools | v2.2 | 0/2 | Not started | - |
 | 33. Integration and Testing | v2.2 | 0/? | Not started | - |
 | 34. GUI Integration | v2.2 | 0/? | Not started | - |
