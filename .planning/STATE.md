@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Multi-Agent Coordination
-status: requirements
-stopped_at: Defining requirements
-last_updated: "2026-03-09T00:00:00.000Z"
-last_activity: 2026-03-09 -- Milestone v2.2 started
+status: executing
+stopped_at: Completed 31-01-PLAN.md
+last_updated: "2026-03-09T21:09:57Z"
+last_activity: 2026-03-09 -- Completed 31-01 (crate scaffold & agent registry)
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 12
+  completed_plans: 1
+  percent: 8
 ---
 
 # Project State
@@ -21,14 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** v2.2 Multi-Agent Coordination
+**Current focus:** v2.2 Multi-Agent Coordination -- Phase 31 (Coordination Crate)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-03-09 — Milestone v2.2 started
+Phase: 31 of 34 (Coordination Crate)
+Plan: 2 of 3
+Status: Executing
+Last activity: 2026-03-09 -- Completed 31-01 (crate scaffold & agent registry)
+
+Progress: [█░░░░░░░░░] 8%
 
 ## Performance Metrics
 
@@ -47,6 +49,15 @@ Last activity: 2026-03-09 — Milestone v2.2 started
 
 See PROJECT.md Key Decisions table for full history.
 
+Recent decisions for v2.2:
+- agents.db is always global (~/.glass/agents.db), never per-project
+- CoordinationDb is synchronous library, thread safety via open-per-call
+- GUI uses atomic polling (Arc<AtomicUsize>), not AppEvent variants
+- Path canonicalization via dunce inside lock/unlock, not at caller
+- BEGIN IMMEDIATE for all write transactions (prevents SQLITE_BUSY)
+- list_agents canonicalizes project path to match register behavior
+- conn() accessor exposed on CoordinationDb for test SQL and extensibility
+
 ### Pending Todos
 
 1 pending (Mouse drag-and-select for copy paste).
@@ -58,9 +69,17 @@ See PROJECT.md Key Decisions table for full history.
 - pruner.rs max_size_mb not enforced (minor, count/age pruning sufficient)
 - ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Package manager manifests have placeholder values needing replacement at publish time
+- [v2.2] AI agent behavioral compliance is untestable until Phase 33 manual validation
+- [v2.2] Tab-to-agent PID mapping may be infeasible cross-platform (process tree walking)
+
+## Performance Metrics (v2.2)
+
+| Phase | Plan | Duration | Tasks | Files |
+|-------|------|----------|-------|-------|
+| 31 | 01 | 6min | 2 | 5 |
 
 ## Session Continuity
 
 Last session: 2026-03-09
-Stopped at: Defining requirements for v2.2
+Stopped at: Completed 31-01-PLAN.md
 Resume file: None
