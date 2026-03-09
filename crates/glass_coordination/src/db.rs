@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{params, Connection, TransactionBehavior};
 
 use crate::types::AgentInfo;
 
@@ -103,29 +103,57 @@ impl CoordinationDb {
     /// Register a new agent and return its UUID.
     ///
     /// The `project` path is canonicalized for consistent cross-platform matching.
+    /// If canonicalization fails (e.g., path doesn't exist), the raw project string is used.
     pub fn register(
         &mut self,
-        _name: &str,
-        _agent_type: &str,
-        _project: &str,
-        _cwd: &str,
-        _pid: Option<u32>,
+        name: &str,
+        agent_type: &str,
+        project: &str,
+        cwd: &str,
+        pid: Option<u32>,
     ) -> Result<String> {
-        todo!("register not yet implemented")
+        let canonical_project =
+            crate::canonicalize_path(Path::new(project)).unwrap_or_else(|_| project.to_string());
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO agents (id, name, agent_type, project, cwd, pid, status, registered_at, last_heartbeat)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', unixepoch(), unixepoch())",
+            params![&id, name, agent_type, &canonical_project, cwd, pid.map(|p| p as i64)],
+        )?;
+        tx.commit()?;
+
+        Ok(id)
     }
 
     /// Deregister an agent, releasing all its locks (via CASCADE).
     ///
     /// Returns `true` if the agent existed and was removed.
-    pub fn deregister(&mut self, _agent_id: &str) -> Result<bool> {
-        todo!("deregister not yet implemented")
+    pub fn deregister(&mut self, agent_id: &str) -> Result<bool> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = tx.execute("DELETE FROM agents WHERE id = ?1", params![agent_id])?;
+        tx.commit()?;
+        Ok(rows > 0)
     }
 
     /// Update an agent's heartbeat timestamp.
     ///
     /// Returns `true` if the agent existed and was updated.
-    pub fn heartbeat(&mut self, _agent_id: &str) -> Result<bool> {
-        todo!("heartbeat not yet implemented")
+    pub fn heartbeat(&mut self, agent_id: &str) -> Result<bool> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = tx.execute(
+            "UPDATE agents SET last_heartbeat = unixepoch() WHERE id = ?1",
+            params![agent_id],
+        )?;
+        tx.commit()?;
+        Ok(rows > 0)
     }
 
     /// Update an agent's status and optional task description.
@@ -134,16 +162,50 @@ impl CoordinationDb {
     /// Returns `true` if the agent existed and was updated.
     pub fn update_status(
         &mut self,
-        _agent_id: &str,
-        _status: &str,
-        _task: Option<&str>,
+        agent_id: &str,
+        status: &str,
+        task: Option<&str>,
     ) -> Result<bool> {
-        todo!("update_status not yet implemented")
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows = tx.execute(
+            "UPDATE agents SET status = ?1, task = ?2, last_heartbeat = unixepoch() WHERE id = ?3",
+            params![status, task, agent_id],
+        )?;
+        tx.commit()?;
+        Ok(rows > 0)
     }
 
     /// List all agents registered for a given project.
-    pub fn list_agents(&mut self, _project: &str) -> Result<Vec<AgentInfo>> {
-        todo!("list_agents not yet implemented")
+    ///
+    /// The `project` path is canonicalized before matching to ensure consistency
+    /// with the canonicalization done during `register`.
+    pub fn list_agents(&mut self, project: &str) -> Result<Vec<AgentInfo>> {
+        let canonical_project =
+            crate::canonicalize_path(Path::new(project)).unwrap_or_else(|_| project.to_string());
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, agent_type, project, cwd, pid, status, task, registered_at, last_heartbeat
+             FROM agents WHERE project = ?1",
+        )?;
+        let agents = stmt
+            .query_map(params![&canonical_project], |row| {
+                let pid_val: Option<i64> = row.get(5)?;
+                Ok(AgentInfo {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    agent_type: row.get(2)?,
+                    project: row.get(3)?,
+                    cwd: row.get(4)?,
+                    pid: pid_val.map(|p| p as u32),
+                    status: row.get(6)?,
+                    task: row.get(7)?,
+                    registered_at: row.get(8)?,
+                    last_heartbeat: row.get(9)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(agents)
     }
 
     /// Prune stale agents (heartbeat timeout or dead PID).
@@ -153,8 +215,52 @@ impl CoordinationDb {
     /// heartbeat is recent. CASCADE removes associated locks.
     ///
     /// Returns the list of pruned agent IDs.
-    pub fn prune_stale(&mut self, _timeout_secs: i64) -> Result<Vec<String>> {
-        todo!("prune_stale not yet implemented")
+    pub fn prune_stale(&mut self, timeout_secs: i64) -> Result<Vec<String>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Collect all agents to check
+        let mut stmt = tx.prepare("SELECT id, name, pid, last_heartbeat FROM agents")?;
+        let agents: Vec<(String, String, Option<i64>, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let now: i64 = tx.query_row("SELECT unixepoch()", [], |row| row.get(0))?;
+        let cutoff = now - timeout_secs;
+
+        let mut pruned = Vec::new();
+
+        for (id, name, pid, last_heartbeat) in &agents {
+            let stale_by_timeout = *last_heartbeat < cutoff;
+            let stale_by_pid = pid
+                .map(|p| !crate::pid::is_pid_alive(p as u32))
+                .unwrap_or(false);
+
+            if stale_by_timeout || stale_by_pid {
+                let reason = if stale_by_timeout && stale_by_pid {
+                    "heartbeat timeout and dead PID"
+                } else if stale_by_timeout {
+                    "heartbeat timeout"
+                } else {
+                    "dead PID"
+                };
+                tracing::info!(
+                    agent_id = %id,
+                    agent_name = %name,
+                    reason = %reason,
+                    "Pruning stale agent"
+                );
+                tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
+                pruned.push(id.clone());
+            }
+        }
+
+        tx.commit()?;
+        Ok(pruned)
     }
 }
 
@@ -264,9 +370,7 @@ mod tests {
         let id_a = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db
-            .register("agent-b", "cursor", ".", "/tmp", None)
-            .unwrap();
+        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         // Agent A sends message to Agent B
         db.conn()
@@ -288,7 +392,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert!(from_agent.is_none(), "from_agent should be NULL after sender deregistered");
+        assert!(
+            from_agent.is_none(),
+            "from_agent should be NULL after sender deregistered"
+        );
         assert_eq!(content, "hello from A");
     }
 
@@ -329,7 +436,10 @@ mod tests {
             )
             .unwrap();
 
-        assert!(new_hb > old_hb, "Heartbeat should be more recent: {new_hb} > {old_hb}");
+        assert!(
+            new_hb > old_hb,
+            "Heartbeat should be more recent: {new_hb} > {old_hb}"
+        );
 
         // Heartbeat for non-existent agent should return false
         let updated = db.heartbeat("nonexistent").unwrap();
