@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Multi-Agent Coordination
 status: completed
-stopped_at: Completed 32-02-PLAN.md
-last_updated: "2026-03-09T22:32:50.709Z"
-last_activity: 2026-03-09 -- Completed 32-02 (file locking + messaging MCP tools)
+stopped_at: Completed 33-01-PLAN.md
+last_updated: "2026-03-09T22:54:27.654Z"
+last_activity: 2026-03-09 -- Completed 33-01 (CLAUDE.md protocol + cross-connection tests)
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 3
+  total_plans: 6
+  completed_plans: 6
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** v2.2 Multi-Agent Coordination -- Phase 32 (MCP Tools)
+**Current focus:** v2.2 Multi-Agent Coordination -- Phase 33 (Integration and Testing)
 
 ## Current Position
 
-Phase: 32 of 34 (MCP Tools) -- COMPLETE
-Plan: 2 of 2
+Phase: 33 of 34 (Integration and Testing) -- COMPLETE
+Plan: 1 of 1
 Status: Phase Complete
-Last activity: 2026-03-09 -- Completed 32-02 (file locking + messaging MCP tools)
+Last activity: 2026-03-09 -- Completed 33-01 (CLAUDE.md protocol + cross-connection tests)
 
 Progress: [██████████] 100%
 
@@ -65,6 +65,7 @@ Recent decisions for v2.2:
 - [Phase 32]: Open-per-call CoordinationDb in MCP tool spawn_blocking matches HistoryDb pattern
 - [Phase 32]: Lock conflicts returned as CallToolResult::success (not McpError) for graceful agent handling
 - [Phase 32]: Explicit heartbeat call in unlock tool for MCP-12 compliance
+- [Phase 33]: Cross-connection tests use canonicalized project paths and real TempDir files for Windows compatibility
 
 ### Pending Todos
 
@@ -89,9 +90,10 @@ Recent decisions for v2.2:
 | 31 | 03 | 4min | 1 | 1 |
 | 32 | 01 | 3min | 2 | 3 |
 | 32 | 02 | 4min | 2 | 1 |
+| 33 | 01 | 2min | 2 | 2 |
 
 ## Session Continuity
 
-Last session: 2026-03-09T22:24:30Z
-Stopped at: Completed 32-02-PLAN.md
+Last session: 2026-03-09T22:54:27.652Z
+Stopped at: Completed 33-01-PLAN.md
 Resume file: None

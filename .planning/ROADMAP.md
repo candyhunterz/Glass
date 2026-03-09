@@ -84,7 +84,7 @@
 
 - [x] **Phase 31: Coordination Crate** - Pure synchronous library with agent registry, atomic file locking, messaging, and stale pruning (completed 2026-03-09)
 - [x] **Phase 32: MCP Tools** - 11 new MCP tool handlers exposing coordination primitives to AI agents (completed 2026-03-09)
-- [ ] **Phase 33: Integration and Testing** - CLAUDE.md coordination protocol and multi-agent integration tests
+- [x] **Phase 33: Integration and Testing** - CLAUDE.md coordination protocol and multi-agent integration tests (completed 2026-03-09)
 - [ ] **Phase 34: GUI Integration** - Status bar agent/lock display, background polling, tab indicators, and conflict overlay
 
 ## Phase Details
@@ -130,10 +130,10 @@ Plans:
   1. CLAUDE.md contains a coordination protocol section that instructs AI agents to register on start, lock files before editing, check messages periodically, and deregister on finish
   2. An integration test spawns two MCP server instances against the same shared DB and validates that agent registration, lock conflict detection, and message exchange work across processes
   3. An integration test validates that when agent A holds a lock on file X, agent B's lock request for file X returns a conflict identifying agent A as the holder
-**Plans**: TBD
+**Plans**: 1 plans
 
 Plans:
-- [ ] 33-01: TBD
+- [ ] 33-01-PLAN.md -- CLAUDE.md coordination protocol and cross-connection integration tests
 
 ### Phase 34: GUI Integration
 **Goal**: Users can see multi-agent activity at a glance in the terminal UI
@@ -188,5 +188,5 @@ Phases execute in numeric order: 31 -> 32 -> 33 (and 34 can start after 31)
 | 30. Documentation & Distribution | v2.1 | 3/3 | Complete | 2026-03-07 |
 | 31. Coordination Crate | 3/3 | Complete    | 2026-03-09 | - |
 | 32. MCP Tools | 2/2 | Complete    | 2026-03-09 | - |
-| 33. Integration and Testing | v2.2 | 0/? | Not started | - |
+| 33. Integration and Testing | 1/1 | Complete   | 2026-03-09 | - |
 | 34. GUI Integration | v2.2 | 0/? | Not started | - |

@@ -38,9 +38,9 @@ Requirements for multi-agent coordination milestone. Each maps to roadmap phases
 
 ### Integration
 
-- [ ] **INTG-01**: CLAUDE.md includes coordination protocol instructions for AI agents
-- [ ] **INTG-02**: Multi-server integration test validates two MCP instances coordinating via shared DB
-- [ ] **INTG-03**: Integration test validates lock conflict detection across agents
+- [x] **INTG-01**: CLAUDE.md includes coordination protocol instructions for AI agents
+- [x] **INTG-02**: Multi-server integration test validates two MCP instances coordinating via shared DB
+- [x] **INTG-03**: Integration test validates lock conflict detection across agents
 
 ### GUI
 
@@ -102,9 +102,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MCP-10 | Phase 32 | Complete |
 | MCP-11 | Phase 32 | Complete |
 | MCP-12 | Phase 32 | Complete |
-| INTG-01 | Phase 33 | Pending |
-| INTG-02 | Phase 33 | Pending |
-| INTG-03 | Phase 33 | Pending |
+| INTG-01 | Phase 33 | Complete |
+| INTG-02 | Phase 33 | Complete |
+| INTG-03 | Phase 33 | Complete |
 | GUI-01 | Phase 34 | Pending |
 | GUI-02 | Phase 34 | Pending |
 | GUI-03 | Phase 34 | Pending |
