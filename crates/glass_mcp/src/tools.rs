@@ -86,6 +86,64 @@ pub struct PipeInspectParams {
     pub stage: Option<i64>,
 }
 
+/// Parameters for the glass_agent_register tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RegisterParams {
+    /// Human-readable agent name.
+    #[schemars(description = "Human-readable agent name")]
+    pub name: String,
+    /// Agent type (e.g. 'claude-code', 'cursor', 'human').
+    #[schemars(description = "Agent type (e.g. 'claude-code', 'cursor', 'human')")]
+    pub agent_type: String,
+    /// Project root path for scoping.
+    #[schemars(description = "Project root path for scoping")]
+    pub project: String,
+    /// Current working directory.
+    #[schemars(description = "Current working directory")]
+    pub cwd: String,
+    /// OS process ID for liveness detection.
+    #[schemars(description = "OS process ID for liveness detection")]
+    pub pid: Option<u32>,
+}
+
+/// Parameters for the glass_agent_deregister tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeregisterParams {
+    /// Agent UUID to deregister.
+    #[schemars(description = "Agent UUID to deregister")]
+    pub agent_id: String,
+}
+
+/// Parameters for the glass_agent_list tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListAgentsParams {
+    /// Project root path to list agents for.
+    #[schemars(description = "Project root path to list agents for")]
+    pub project: String,
+}
+
+/// Parameters for the glass_agent_status tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StatusParams {
+    /// Agent UUID.
+    #[schemars(description = "Agent UUID")]
+    pub agent_id: String,
+    /// New status (e.g. 'active', 'idle', 'editing').
+    #[schemars(description = "New status (e.g. 'active', 'idle', 'editing')")]
+    pub status: String,
+    /// Current task description.
+    #[schemars(description = "Current task description")]
+    pub task: Option<String>,
+}
+
+/// Parameters for the glass_agent_heartbeat tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct HeartbeatParams {
+    /// Agent UUID to refresh heartbeat for.
+    #[schemars(description = "Agent UUID to refresh heartbeat for")]
+    pub agent_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -539,5 +597,64 @@ mod tests {
         assert_eq!(json["total_bytes"], 6);
         assert_eq!(json["is_binary"], false);
         assert_eq!(json["is_sampled"], false);
+    }
+
+    #[test]
+    fn test_register_params_deserialize() {
+        let json = r#"{"name":"claude-1","agent_type":"claude-code","project":"/tmp/proj","cwd":"/tmp/proj/src","pid":1234}"#;
+        let params: RegisterParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "claude-1");
+        assert_eq!(params.agent_type, "claude-code");
+        assert_eq!(params.project, "/tmp/proj");
+        assert_eq!(params.cwd, "/tmp/proj/src");
+        assert_eq!(params.pid, Some(1234));
+    }
+
+    #[test]
+    fn test_register_params_deserialize_no_pid() {
+        let json = r#"{"name":"cursor-1","agent_type":"cursor","project":"/home/user/proj","cwd":"/home/user/proj"}"#;
+        let params: RegisterParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "cursor-1");
+        assert_eq!(params.agent_type, "cursor");
+        assert!(params.pid.is_none());
+    }
+
+    #[test]
+    fn test_deregister_params_deserialize() {
+        let json = r#"{"agent_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let params: DeregisterParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn test_list_agents_params_deserialize() {
+        let json = r#"{"project":"/home/user/myproject"}"#;
+        let params: ListAgentsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.project, "/home/user/myproject");
+    }
+
+    #[test]
+    fn test_status_params_deserialize() {
+        let json = r#"{"agent_id":"abc-123","status":"editing","task":"Refactoring auth module"}"#;
+        let params: StatusParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(params.status, "editing");
+        assert_eq!(params.task, Some("Refactoring auth module".to_string()));
+    }
+
+    #[test]
+    fn test_status_params_deserialize_no_task() {
+        let json = r#"{"agent_id":"abc-123","status":"idle"}"#;
+        let params: StatusParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "abc-123");
+        assert_eq!(params.status, "idle");
+        assert!(params.task.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_params_deserialize() {
+        let json = r#"{"agent_id":"def-456"}"#;
+        let params: HeartbeatParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent_id, "def-456");
     }
 }
