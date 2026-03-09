@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{params, Connection, TransactionBehavior};
 
-use crate::types::{AgentInfo, FileLock, LockConflict, LockResult};
+use crate::types::{AgentInfo, FileLock, LockConflict, LockResult, Message};
 
 /// SQLite-backed coordination database.
 ///
@@ -1006,6 +1006,224 @@ mod tests {
         let locks_b = db.list_locks(Some(proj_b_str)).unwrap();
         assert_eq!(locks_b.len(), 1);
         assert_eq!(locks_b[0].agent_name, "agent-b");
+    }
+
+    // ---- Messaging tests ----
+
+    #[test]
+    fn test_broadcast() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-msg", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", "proj-msg", "/tmp", None)
+            .unwrap();
+        let id_c = db
+            .register("agent-c", "claude-code", "proj-msg", "/tmp", None)
+            .unwrap();
+
+        // Agent A broadcasts
+        let count = db
+            .broadcast(&id_a, "proj-msg", "status", "I am working on X")
+            .unwrap();
+        assert_eq!(count, 2, "Broadcast should create 2 message rows (B and C)");
+
+        // Agent B reads -- should get the broadcast
+        let msgs_b = db.read_messages(&id_b).unwrap();
+        assert_eq!(msgs_b.len(), 1);
+        assert_eq!(msgs_b[0].from_agent.as_deref(), Some(id_a.as_str()));
+        assert_eq!(msgs_b[0].msg_type, "status");
+        assert_eq!(msgs_b[0].content, "I am working on X");
+
+        // Agent C reads independently -- should also get the broadcast
+        let msgs_c = db.read_messages(&id_c).unwrap();
+        assert_eq!(msgs_c.len(), 1);
+        assert_eq!(msgs_c[0].content, "I am working on X");
+    }
+
+    #[test]
+    fn test_broadcast_project_scoping() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-x", "/tmp", None)
+            .unwrap();
+        let _id_b = db
+            .register("agent-b", "cursor", "proj-x", "/tmp", None)
+            .unwrap();
+        let id_d = db
+            .register("agent-d", "claude-code", "proj-y", "/tmp", None)
+            .unwrap();
+
+        // Agent A broadcasts in proj-x
+        db.broadcast(&id_a, "proj-x", "status", "proj-x update")
+            .unwrap();
+
+        // Agent D is in proj-y -- should NOT receive the broadcast
+        let msgs_d = db.read_messages(&id_d).unwrap();
+        assert!(
+            msgs_d.is_empty(),
+            "Agent in different project should not receive broadcast"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_excludes_sender() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-exc", "/tmp", None)
+            .unwrap();
+        let _id_b = db
+            .register("agent-b", "cursor", "proj-exc", "/tmp", None)
+            .unwrap();
+
+        db.broadcast(&id_a, "proj-exc", "status", "hello")
+            .unwrap();
+
+        // Sender should NOT see own broadcast
+        let msgs_a = db.read_messages(&id_a).unwrap();
+        assert!(
+            msgs_a.is_empty(),
+            "Sender should not receive own broadcast"
+        );
+    }
+
+    #[test]
+    fn test_send_message() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-dm", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", "proj-dm", "/tmp", None)
+            .unwrap();
+
+        let msg_id = db
+            .send_message(&id_a, &id_b, "chat", "hello B")
+            .unwrap();
+        assert!(msg_id > 0);
+
+        let msgs = db.read_messages(&id_b).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].id, msg_id);
+        assert_eq!(msgs[0].from_agent.as_deref(), Some(id_a.as_str()));
+        assert_eq!(msgs[0].from_name.as_deref(), Some("agent-a"));
+        assert_eq!(msgs[0].msg_type, "chat");
+        assert_eq!(msgs[0].content, "hello B");
+    }
+
+    #[test]
+    fn test_read_messages_marks_read() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-read", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", "proj-read", "/tmp", None)
+            .unwrap();
+
+        db.send_message(&id_a, &id_b, "chat", "first").unwrap();
+        db.send_message(&id_a, &id_b, "chat", "second").unwrap();
+
+        // First read should return both
+        let msgs = db.read_messages(&id_b).unwrap();
+        assert_eq!(msgs.len(), 2);
+
+        // Second read should return empty (already marked as read)
+        let msgs_again = db.read_messages(&id_b).unwrap();
+        assert!(
+            msgs_again.is_empty(),
+            "Already-read messages should not be returned"
+        );
+    }
+
+    #[test]
+    fn test_read_messages_preserves_from_deregistered() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-dereg", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", "proj-dereg", "/tmp", None)
+            .unwrap();
+
+        db.send_message(&id_a, &id_b, "chat", "remember me")
+            .unwrap();
+
+        // Deregister sender
+        db.deregister(&id_a).unwrap();
+
+        // Recipient should still get the message, but from_agent is None
+        let msgs = db.read_messages(&id_b).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            msgs[0].from_agent.is_none(),
+            "from_agent should be NULL after sender deregistered"
+        );
+        assert!(
+            msgs[0].from_name.is_none(),
+            "from_name should be None since agent row is gone"
+        );
+        assert_eq!(msgs[0].content, "remember me");
+    }
+
+    #[test]
+    fn test_read_messages_mixed() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-mix", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", "proj-mix", "/tmp", None)
+            .unwrap();
+        let _id_c = db
+            .register("agent-c", "claude-code", "proj-mix", "/tmp", None)
+            .unwrap();
+
+        // Agent A sends a directed message to B
+        db.send_message(&id_a, &id_b, "chat", "direct to B")
+            .unwrap();
+
+        // Agent A broadcasts (B and C should get it)
+        db.broadcast(&id_a, "proj-mix", "status", "broadcast from A")
+            .unwrap();
+
+        // Agent B reads -- should get both the directed and broadcast message
+        let msgs = db.read_messages(&id_b).unwrap();
+        assert_eq!(msgs.len(), 2, "Should have both direct and broadcast");
+
+        let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"direct to B"));
+        assert!(contents.contains(&"broadcast from A"));
+    }
+
+    #[test]
+    fn test_send_message_unknown_recipient() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-unk", "/tmp", None)
+            .unwrap();
+
+        // Sending to a non-existent agent should error (foreign key constraint)
+        let result = db.send_message(&id_a, "nonexistent-id", "chat", "hello?");
+        assert!(
+            result.is_err(),
+            "Sending to unknown agent should fail with FK constraint"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_no_other_agents() {
+        let (mut db, _dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", "proj-solo", "/tmp", None)
+            .unwrap();
+
+        // Broadcasting with no other agents in project should succeed with 0 rows
+        let count = db
+            .broadcast(&id_a, "proj-solo", "status", "talking to myself")
+            .unwrap();
+        assert_eq!(count, 0, "No other agents means 0 messages inserted");
     }
 
     #[test]
