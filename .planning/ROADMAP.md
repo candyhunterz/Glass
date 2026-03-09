@@ -143,11 +143,11 @@ Plans:
   1. The status bar displays the count of active agents and active file locks, updating every 5 seconds via a background polling thread
   2. A tab whose agent holds file locks shows a visual lock indicator distinguishing it from tabs without locks
   3. When two agents hold locks on the same file (or one agent edits a file another has locked), a conflict warning overlay appears with details about the conflicting agents and file
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 34-01: TBD
-- [ ] 34-02: TBD
+- [ ] 34-01-PLAN.md -- Coordination poller thread, CoordinationState types, status bar agent/lock counts
+- [ ] 34-02-PLAN.md -- Tab lock indicator, conflict warning overlay
 
 ## Progress
 
@@ -188,5 +188,5 @@ Phases execute in numeric order: 31 -> 32 -> 33 (and 34 can start after 31)
 | 30. Documentation & Distribution | v2.1 | 3/3 | Complete | 2026-03-07 |
 | 31. Coordination Crate | 3/3 | Complete    | 2026-03-09 | - |
 | 32. MCP Tools | 2/2 | Complete    | 2026-03-09 | - |
-| 33. Integration and Testing | 1/1 | Complete   | 2026-03-09 | - |
-| 34. GUI Integration | v2.2 | 0/? | Not started | - |
+| 33. Integration and Testing | 1/1 | Complete    | 2026-03-09 | - |
+| 34. GUI Integration | v2.2 | 0/2 | Not started | - |
