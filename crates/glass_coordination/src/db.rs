@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{params, Connection, TransactionBehavior};
 
-use crate::types::AgentInfo;
+use crate::types::{AgentInfo, FileLock, LockConflict, LockResult};
 
 /// SQLite-backed coordination database.
 ///
@@ -548,5 +548,342 @@ mod tests {
         // Non-existent agent
         let updated = db.update_status("nonexistent", "idle", None).unwrap();
         assert!(!updated);
+    }
+
+    // ---- File locking tests ----
+
+    #[test]
+    fn test_lock_files_single() {
+        let (mut db, dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+
+        // Create a real file so canonicalization works
+        let file_path = dir.path().join("foo.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        let result = db
+            .lock_files(&id, &[file_path.clone()], Some("editing"))
+            .unwrap();
+
+        match result {
+            LockResult::Acquired(paths) => {
+                assert_eq!(paths.len(), 1);
+                // The returned path should be the canonical form
+                let canonical = crate::canonicalize_path(&file_path).unwrap();
+                assert_eq!(paths[0], canonical);
+            }
+            LockResult::Conflict(_) => panic!("Expected Acquired, got Conflict"),
+        }
+    }
+
+    #[test]
+    fn test_lock_files_multiple() {
+        let (mut db, dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+
+        let f1 = dir.path().join("a.rs");
+        let f2 = dir.path().join("b.rs");
+        let f3 = dir.path().join("c.rs");
+        std::fs::write(&f1, "").unwrap();
+        std::fs::write(&f2, "").unwrap();
+        std::fs::write(&f3, "").unwrap();
+
+        let result = db
+            .lock_files(&id, &[f1, f2, f3], Some("refactoring"))
+            .unwrap();
+
+        match result {
+            LockResult::Acquired(paths) => {
+                assert_eq!(paths.len(), 3);
+            }
+            LockResult::Conflict(_) => panic!("Expected Acquired, got Conflict"),
+        }
+    }
+
+    #[test]
+    fn test_lock_files_conflict() {
+        let (mut db, dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let _id_b = db
+            .register("agent-b", "cursor", ".", "/tmp", None)
+            .unwrap();
+
+        let file_path = dir.path().join("shared.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        // Agent A locks the file
+        let result = db
+            .lock_files(&id_a, &[file_path.clone()], Some("editing shared.rs"))
+            .unwrap();
+        assert!(matches!(result, LockResult::Acquired(_)));
+
+        // Agent B tries to lock the same file
+        let result = db
+            .lock_files(&_id_b, &[file_path], Some("also want shared.rs"))
+            .unwrap();
+
+        match result {
+            LockResult::Conflict(conflicts) => {
+                assert_eq!(conflicts.len(), 1);
+                assert_eq!(conflicts[0].held_by_agent_id, id_a);
+                assert_eq!(conflicts[0].held_by_agent_name, "agent-a");
+                assert_eq!(
+                    conflicts[0].reason.as_deref(),
+                    Some("editing shared.rs")
+                );
+            }
+            LockResult::Acquired(_) => panic!("Expected Conflict, got Acquired"),
+        }
+    }
+
+    #[test]
+    fn test_lock_files_partial_conflict() {
+        let (mut db, dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", ".", "/tmp", None)
+            .unwrap();
+
+        let file_x = dir.path().join("x.rs");
+        let file_y = dir.path().join("y.rs");
+        std::fs::write(&file_x, "").unwrap();
+        std::fs::write(&file_y, "").unwrap();
+
+        // Agent A locks file X
+        let result = db
+            .lock_files(&id_a, &[file_x.clone()], Some("editing x"))
+            .unwrap();
+        assert!(matches!(result, LockResult::Acquired(_)));
+
+        // Agent B tries to lock [X, Y] -- should fail entirely (all-or-nothing)
+        let result = db
+            .lock_files(&id_b, &[file_x, file_y.clone()], Some("want both"))
+            .unwrap();
+        assert!(
+            matches!(result, LockResult::Conflict(_)),
+            "Should be Conflict for partial overlap"
+        );
+
+        // Y should NOT be locked either (all-or-nothing)
+        let locks = db.list_locks(None).unwrap();
+        let y_canonical = crate::canonicalize_path(&file_y).unwrap();
+        assert!(
+            !locks.iter().any(|l| l.path == y_canonical),
+            "File Y should not be locked (all-or-nothing semantics)"
+        );
+    }
+
+    #[test]
+    fn test_lock_files_same_agent_relock() {
+        let (mut db, dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+
+        let file_path = dir.path().join("relock.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        // Lock the file
+        let result = db
+            .lock_files(&id, &[file_path.clone()], Some("first lock"))
+            .unwrap();
+        assert!(matches!(result, LockResult::Acquired(_)));
+
+        // Lock the same file again (same agent) -- should succeed with INSERT OR REPLACE
+        let result = db
+            .lock_files(&id, &[file_path], Some("updated reason"))
+            .unwrap();
+        assert!(matches!(result, LockResult::Acquired(_)));
+
+        // Should still only be one lock
+        let locks = db.list_locks(None).unwrap();
+        assert_eq!(locks.len(), 1);
+        assert_eq!(locks[0].reason.as_deref(), Some("updated reason"));
+    }
+
+    #[test]
+    fn test_lock_files_canonicalization() {
+        let (mut db, dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", ".", "/tmp", None)
+            .unwrap();
+
+        // Create a real file
+        let subdir = dir.path().join("sub");
+        std::fs::create_dir(&subdir).unwrap();
+        let file_path = subdir.join("target.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        // Agent A locks via the absolute path
+        let result = db
+            .lock_files(&id_a, &[file_path.clone()], Some("via absolute"))
+            .unwrap();
+        assert!(matches!(result, LockResult::Acquired(_)));
+
+        // Agent B tries to lock via a path with ".." component
+        let relative_path = subdir.join("..").join("sub").join("target.rs");
+        let result = db
+            .lock_files(&id_b, &[relative_path], Some("via relative"))
+            .unwrap();
+
+        assert!(
+            matches!(result, LockResult::Conflict(_)),
+            "Same file via different path representation should conflict"
+        );
+    }
+
+    #[test]
+    fn test_unlock_file() {
+        let (mut db, dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+
+        let file_path = dir.path().join("unlock_me.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        db.lock_files(&id, &[file_path.clone()], Some("temp lock"))
+            .unwrap();
+
+        let unlocked = db.unlock_file(&id, &file_path).unwrap();
+        assert!(unlocked);
+
+        // Lock should be gone
+        let locks = db.list_locks(None).unwrap();
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn test_unlock_all() {
+        let (mut db, dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+
+        let f1 = dir.path().join("u1.rs");
+        let f2 = dir.path().join("u2.rs");
+        let f3 = dir.path().join("u3.rs");
+        std::fs::write(&f1, "").unwrap();
+        std::fs::write(&f2, "").unwrap();
+        std::fs::write(&f3, "").unwrap();
+
+        db.lock_files(&id, &[f1, f2, f3], Some("batch lock"))
+            .unwrap();
+
+        let count = db.unlock_all(&id).unwrap();
+        assert_eq!(count, 3);
+
+        let locks = db.list_locks(None).unwrap();
+        assert!(locks.is_empty());
+    }
+
+    #[test]
+    fn test_unlock_file_not_owned() {
+        let (mut db, dir) = test_db();
+        let id_a = db
+            .register("agent-a", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", ".", "/tmp", None)
+            .unwrap();
+
+        let file_path = dir.path().join("owned.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        // Agent A locks the file
+        db.lock_files(&id_a, &[file_path.clone()], Some("mine"))
+            .unwrap();
+
+        // Agent B tries to unlock it -- should return false
+        let unlocked = db.unlock_file(&id_b, &file_path).unwrap();
+        assert!(!unlocked, "Agent B should not be able to unlock Agent A's file");
+
+        // Lock should still be there
+        let locks = db.list_locks(None).unwrap();
+        assert_eq!(locks.len(), 1);
+    }
+
+    #[test]
+    fn test_list_locks_by_project() {
+        let (mut db, dir) = test_db();
+
+        // Use the temp dir as both projects (need real paths for canonicalization)
+        let proj_a = dir.path().join("proj_a");
+        let proj_b = dir.path().join("proj_b");
+        std::fs::create_dir(&proj_a).unwrap();
+        std::fs::create_dir(&proj_b).unwrap();
+
+        let proj_a_str = proj_a.to_str().unwrap();
+        let proj_b_str = proj_b.to_str().unwrap();
+
+        let id_a = db
+            .register("agent-a", "claude-code", proj_a_str, proj_a_str, None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", proj_b_str, proj_b_str, None)
+            .unwrap();
+
+        let file_a = dir.path().join("file_a.rs");
+        let file_b = dir.path().join("file_b.rs");
+        std::fs::write(&file_a, "").unwrap();
+        std::fs::write(&file_b, "").unwrap();
+
+        db.lock_files(&id_a, &[file_a], Some("project A work"))
+            .unwrap();
+        db.lock_files(&id_b, &[file_b], Some("project B work"))
+            .unwrap();
+
+        // list_locks with project A should only show agent A's locks
+        let locks_a = db.list_locks(Some(proj_a_str)).unwrap();
+        assert_eq!(locks_a.len(), 1);
+        assert_eq!(locks_a[0].agent_name, "agent-a");
+
+        // list_locks with project B should only show agent B's locks
+        let locks_b = db.list_locks(Some(proj_b_str)).unwrap();
+        assert_eq!(locks_b.len(), 1);
+        assert_eq!(locks_b[0].agent_name, "agent-b");
+    }
+
+    #[test]
+    fn test_list_locks_all() {
+        let (mut db, dir) = test_db();
+
+        let proj_a = dir.path().join("proj_x");
+        let proj_b = dir.path().join("proj_y");
+        std::fs::create_dir(&proj_a).unwrap();
+        std::fs::create_dir(&proj_b).unwrap();
+
+        let proj_a_str = proj_a.to_str().unwrap();
+        let proj_b_str = proj_b.to_str().unwrap();
+
+        let id_a = db
+            .register("agent-a", "claude-code", proj_a_str, proj_a_str, None)
+            .unwrap();
+        let id_b = db
+            .register("agent-b", "cursor", proj_b_str, proj_b_str, None)
+            .unwrap();
+
+        let file_a = dir.path().join("all_a.rs");
+        let file_b = dir.path().join("all_b.rs");
+        std::fs::write(&file_a, "").unwrap();
+        std::fs::write(&file_b, "").unwrap();
+
+        db.lock_files(&id_a, &[file_a], None).unwrap();
+        db.lock_files(&id_b, &[file_b], None).unwrap();
+
+        // list_locks with None should show all locks regardless of project
+        let all_locks = db.list_locks(None).unwrap();
+        assert_eq!(all_locks.len(), 2);
     }
 }
