@@ -93,7 +93,7 @@
 
 **Milestone Goal:** Make Glass the most token-efficient, capable terminal for AI agents by exposing multi-tab orchestration, structured error extraction, and token-saving tools through 12 new MCP tools.
 
-- [ ] **Phase 35: MCP Command Channel** - Async channel bridge between MCP server and GUI event loop with IPC listener
+- [x] **Phase 35: MCP Command Channel** - Async channel bridge between MCP server and GUI event loop with IPC listener (completed 2026-03-10)
 - [ ] **Phase 36: Multi-Tab Orchestration** - Agent can create, list, command, read, and close tabs via MCP tools
 - [ ] **Phase 37: Token-Saving Tools** - Filtered output, cached results, file diffs, and budget-aware context via MCP
 - [ ] **Phase 38: Structured Error Extraction** - New glass_errors crate with language-aware parsers and MCP tool
@@ -216,7 +216,7 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 32. MCP Tools | v2.2 | 2/2 | Complete | 2026-03-09 |
 | 33. Integration and Testing | v2.2 | 1/1 | Complete | 2026-03-09 |
 | 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |
-| 35. MCP Command Channel | 1/2 | In Progress|  | - |
+| 35. MCP Command Channel | 2/2 | Complete   | 2026-03-10 | - |
 | 36. Multi-Tab Orchestration | v2.3 | 0/? | Not started | - |
 | 37. Token-Saving Tools | v2.3 | 0/? | Not started | - |
 | 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |

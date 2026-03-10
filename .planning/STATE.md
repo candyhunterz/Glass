@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
 status: planning
-stopped_at: Completed 35-01-PLAN.md
-last_updated: "2026-03-10T02:38:38.782Z"
+stopped_at: Completed 35-02-PLAN.md
+last_updated: "2026-03-10T02:44:01.253Z"
 last_activity: 2026-03-09 -- Roadmap created for v2.3 (5 phases, 16 requirements)
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -50,6 +50,7 @@ Progress: [..........] 0%
 
 See PROJECT.md Key Decisions table for full history.
 - [Phase 35]: Dedicated tokio runtime per IPC listener thread; JSON-line protocol; 5s oneshot timeout; Removed Clone from AppEvent for oneshot::Sender compatibility
+- [Phase 35]: Duplicated socket/pipe paths in ipc_client.rs to avoid glass_core dependency; Arc-wrapped IpcClient for Clone compatibility; fresh connection per request
 
 ### Pending Todos
 
@@ -67,6 +68,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T02:38:38.780Z
-Stopped at: Completed 35-01-PLAN.md
+Last session: 2026-03-10T02:44:01.252Z
+Stopped at: Completed 35-02-PLAN.md
 Resume file: None
