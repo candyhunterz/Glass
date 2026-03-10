@@ -53,7 +53,7 @@ pub struct GitStatus {
     pub dirty_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AppEvent {
     /// Any terminal output received -- triggers redraw. NO session_id because
     /// any dirty terminal triggers a full redraw regardless of which session.
@@ -100,6 +100,8 @@ pub enum AppEvent {
     UpdateAvailable(crate::updater::UpdateInfo),
     /// Updated coordination state from the background poller.
     CoordinationUpdate(crate::coordination_poller::CoordinationState),
+    /// MCP request received over the IPC channel; reply via the oneshot sender.
+    McpRequest(crate::ipc::McpEventRequest),
 }
 
 #[cfg(test)]
