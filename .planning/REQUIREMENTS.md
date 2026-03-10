@@ -24,8 +24,8 @@ Requirements for rendering correctness milestone. Each maps to roadmap phases.
 
 ### Font Handling
 
-- [ ] **FONT-01**: Missing glyphs fall back to system fonts automatically via cosmic-text
-- [ ] **FONT-02**: Fallback glyphs render at correct size within the cell grid
+- [x] **FONT-01**: Missing glyphs fall back to system fonts automatically via cosmic-text
+- [x] **FONT-02**: Fallback glyphs render at correct size within the cell grid
 
 ### DPI Handling
 
@@ -70,8 +70,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WIDE-02 | Phase 41 | Complete |
 | DECO-01 | Phase 42 | Complete |
 | DECO-02 | Phase 42 | Complete |
-| FONT-01 | Phase 43 | Pending |
-| FONT-02 | Phase 43 | Pending |
+| FONT-01 | Phase 43 | Complete |
+| FONT-02 | Phase 43 | Complete |
 | DPI-01 | Phase 44 | Pending |
 | DPI-02 | Phase 44 | Pending |
 

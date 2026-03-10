@@ -108,7 +108,7 @@
 - [x] **Phase 40: Grid Alignment** - Per-cell glyph positioning and font-metric line height for correct TUI rendering (completed 2026-03-10)
 - [x] **Phase 41: Wide Character Support** - CJK and double-width characters render at correct 2-cell width (completed 2026-03-10)
 - [x] **Phase 42: Text Decorations** - Underline and strikethrough GPU rendering via rect instances (completed 2026-03-10)
-- [ ] **Phase 43: Font Fallback** - Missing glyphs resolved via cosmic-text system font fallback
+- [x] **Phase 43: Font Fallback** - Missing glyphs resolved via cosmic-text system font fallback (completed 2026-03-10)
 - [ ] **Phase 44: Dynamic DPI** - ScaleFactorChanged triggers full font and surface rebuild
 
 ## Phase Details
@@ -158,7 +158,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. Characters not in the configured font (e.g., CJK glyphs when using a Latin-only font) render instead of showing tofu/missing glyph boxes
   2. Fallback glyphs render at the correct size and position within the cell grid, not overflowing or misaligned
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 43-01-PLAN.md — Validate font fallback with unit tests for CJK and multi-script glyphs (FONT-01, FONT-02)
 
@@ -222,5 +222,5 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 40. Grid Alignment | 2/2 | Complete    | 2026-03-10 | - |
 | 41. Wide Character Support | 2/2 | Complete    | 2026-03-10 | - |
 | 42. Text Decorations | 1/1 | Complete    | 2026-03-10 | - |
-| 43. Font Fallback | v2.4 | 0/1 | Not started | - |
+| 43. Font Fallback | 1/1 | Complete   | 2026-03-10 | - |
 | 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |

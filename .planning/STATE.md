@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.4
 milestone_name: Rendering Correctness
 status: completed
-stopped_at: Completed 42-01-PLAN.md
-last_updated: "2026-03-10T22:35:52.308Z"
-last_activity: 2026-03-10 -- Completed Phase 42 Plan 01 (text decoration rendering)
+stopped_at: Completed 43-01-PLAN.md
+last_updated: "2026-03-10T23:01:49.706Z"
+last_activity: 2026-03-10 -- Completed Phase 43 Plan 01 (font fallback validation)
 progress:
   total_phases: 5
-  completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 4
+  total_plans: 6
+  completed_plans: 6
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 42 - Text Decorations (v2.4 Rendering Correctness)
+**Current focus:** Phase 43 - Font Fallback (v2.4 Rendering Correctness)
 
 ## Current Position
 
-Phase: 42 of 44 (Text Decorations)
+Phase: 43 of 44 (Font Fallback)
 Plan: 1 of 1 in current phase (phase complete)
-Status: Phase 42 Complete
-Last activity: 2026-03-10 -- Completed Phase 42 Plan 01 (text decoration rendering)
+Status: Phase 43 Complete
+Last activity: 2026-03-10 -- Completed Phase 43 Plan 01 (font fallback validation)
 
 Progress (v2.4): [██████████] 100%
 
@@ -63,6 +63,7 @@ v2.4-specific decisions:
 - [Phase 41]: Use intersects() for multi-flag spacer skip; buf_width per-cell based on WIDE_CHAR flag
 - [Phase 41]: Cursor wide-char detection scans cells for WIDE_CHAR flag at cursor point; Beam cursor excluded from double-width
 - [Phase 42]: Decoration rects use fg color, 1px height, placed after selection rects before block decorations
+- [Phase 43]: Validate layout run line_w against buf_width instead of glyph.w for monospace constraint check
 
 ### Pending Todos
 
@@ -78,6 +79,6 @@ v2.4-specific decisions:
 
 ## Session Continuity
 
-Last session: 2026-03-10T22:34:06.914Z
-Stopped at: Completed 42-01-PLAN.md
+Last session: 2026-03-10T23:01:49.704Z
+Stopped at: Completed 43-01-PLAN.md
 Resume file: None
