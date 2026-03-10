@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
 status: in-progress
-stopped_at: Completed 38-01-PLAN.md
-last_updated: "2026-03-10T05:17:58.723Z"
-last_activity: 2026-03-10 -- Completed 38-01 error parser library
+stopped_at: Completed 38-02-PLAN.md
+last_updated: "2026-03-10T05:21:32Z"
+last_activity: 2026-03-10 -- Completed 38-02 MCP tool integration
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 8
-  completed_plans: 7
-  percent: 60
+  completed_plans: 8
+  percent: 90
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 ## Current Position
 
 Phase: 38 of 39 (Structured Error Extraction)
-Plan: 1 of 2
-Status: In Progress
-Last activity: 2026-03-10 -- Completed 38-01 error parser library
+Plan: 2 of 2
+Status: Complete
+Last activity: 2026-03-10 -- Completed 38-02 MCP tool integration
 
-Progress: [█████████░] 88%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ See PROJECT.md Key Decisions table for full history.
 - [Phase 37]: Head/tail mode applied before regex filter; cache check uses parser-sourced files only; extraction capped at 10000 lines
 - [Phase 37]: similar crate for unified diffs; token budget at 1 token ~ 4 chars; focus modes split budget into thirds; binary detection via null byte in first 8KiB
 - [Phase 38]: Enum dispatch for parser selection; OnceLock regex compilation; state machine for rust human parser two-line patterns
+- [Phase 38]: Helper function build_extract_errors_json for testable JSON construction separate from async tool handler
 
 ### Pending Todos
 
@@ -73,6 +74,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T05:17:20Z
-Stopped at: Completed 38-01-PLAN.md
+Last session: 2026-03-10T05:21:32Z
+Stopped at: Completed 38-02-PLAN.md
 Resume file: None
