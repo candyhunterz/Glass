@@ -1228,6 +1228,7 @@ dependencies = [
  "image",
  "memory-stats",
  "pollster",
+ "regex",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1259,6 +1260,7 @@ dependencies = [
 name = "glass_core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dirs",
  "glass_coordination",
  "notify",
@@ -1266,6 +1268,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "ureq",
@@ -1293,9 +1296,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs",
  "glass_coordination",
  "glass_history",
  "glass_snapshot",
+ "regex",
  "rmcp",
  "rusqlite",
  "schemars",

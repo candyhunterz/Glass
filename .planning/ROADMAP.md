@@ -125,12 +125,11 @@ Plans:
   3. Agent can send a command string to a specific tab and read that tab's output (last N lines, optionally filtered by regex)
   4. Agent can close a tab, and the tool refuses to close the last remaining tab
   5. All tab tools accept both numeric tab index and stable session ID as identifiers
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 36-01: TBD
-- [ ] 36-02: TBD
-- [ ] 36-03: TBD
+- [ ] 36-01-PLAN.md -- GUI-side IPC handlers for all 5 tab methods + resolve_tab and extract_term_lines helpers
+- [ ] 36-02-PLAN.md -- MCP tool handlers in tools.rs + param types + unit tests
 
 ### Phase 37: Token-Saving Tools
 **Goal**: Agent can retrieve command results with minimal token overhead through filtering, caching, and budget-aware compression
@@ -216,8 +215,8 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 32. MCP Tools | v2.2 | 2/2 | Complete | 2026-03-09 |
 | 33. Integration and Testing | v2.2 | 1/1 | Complete | 2026-03-09 |
 | 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |
-| 35. MCP Command Channel | 2/2 | Complete   | 2026-03-10 | - |
-| 36. Multi-Tab Orchestration | v2.3 | 0/? | Not started | - |
+| 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
+| 36. Multi-Tab Orchestration | v2.3 | 0/2 | Not started | - |
 | 37. Token-Saving Tools | v2.3 | 0/? | Not started | - |
 | 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |
 | 39. Live Command Awareness | v2.3 | 0/? | Not started | - |

@@ -462,6 +462,65 @@ fn cleanup_session(session: Session) {
     // Session is dropped here, releasing all resources
 }
 
+/// Resolve a tab by either tab_index or session_id from IPC params.
+/// Returns the tab index or an error string.
+fn resolve_tab_index(
+    mux: &SessionMux,
+    params: &serde_json::Value,
+) -> Result<usize, String> {
+    let tab_index = params.get("tab_index").and_then(|v| v.as_u64());
+    let session_id = params.get("session_id").and_then(|v| v.as_u64());
+    match (tab_index, session_id) {
+        (Some(idx), None) => {
+            let idx = idx as usize;
+            if idx < mux.tab_count() {
+                Ok(idx)
+            } else {
+                Err(format!(
+                    "Tab index {} out of range (0..{})",
+                    idx,
+                    mux.tab_count()
+                ))
+            }
+        }
+        (None, Some(sid)) => {
+            let target = SessionId::new(sid);
+            mux.tabs()
+                .iter()
+                .enumerate()
+                .find(|(_, tab)| tab.session_ids().contains(&target))
+                .map(|(i, _)| i)
+                .ok_or_else(|| format!("No tab contains session {}", sid))
+        }
+        (Some(_), Some(_)) => Err("Provide either tab_index or session_id, not both".into()),
+        (None, None) => Err("Provide tab_index or session_id".into()),
+    }
+}
+
+/// Extract the last `n` text lines from a terminal grid.
+fn extract_term_lines(
+    term: &Arc<FairMutex<Term<EventProxy>>>,
+    n: usize,
+) -> Vec<String> {
+    let term = term.lock();
+    let grid = term.grid();
+    let total = grid.screen_lines();
+    let mut lines = Vec::with_capacity(total);
+    for i in 0..total {
+        let row = &grid[Line(i as i32)];
+        let text: String = (0..grid.columns())
+            .map(|col| row[Column(col)].c)
+            .collect::<String>();
+        lines.push(text.trim_end().to_string());
+    }
+    // Trim trailing empty lines
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(n);
+    lines[start..].to_vec()
+}
+
 impl ApplicationHandler<AppEvent> for Processor {
     /// Called at startup on desktop (Windows) and on app resume on mobile/web.
     ///
@@ -2389,6 +2448,121 @@ impl ApplicationHandler<AppEvent> for Processor {
                         request.id,
                         glass_core::ipc::ping_result(),
                     ),
+                    "tab_list" => {
+                        if let Some(ctx) = self.windows.values().next() {
+                            let active_idx = ctx.session_mux.active_tab_index();
+                            let tabs: Vec<serde_json::Value> = ctx
+                                .session_mux
+                                .tabs()
+                                .iter()
+                                .enumerate()
+                                .map(|(i, tab)| {
+                                    let primary_sid = tab.focused_pane;
+                                    let (cwd, has_running_command) =
+                                        if let Some(session) = ctx.session_mux.session(primary_sid)
+                                        {
+                                            let cwd = session.status.cwd().to_string();
+                                            let running = session
+                                                .block_manager
+                                                .current_block_index()
+                                                .and_then(|idx| {
+                                                    session.block_manager.blocks().get(idx)
+                                                })
+                                                .map(|b| {
+                                                    b.state == glass_terminal::BlockState::Executing
+                                                })
+                                                .unwrap_or(false);
+                                            (cwd, running)
+                                        } else {
+                                            (String::new(), false)
+                                        };
+                                    serde_json::json!({
+                                        "index": i,
+                                        "title": tab.title,
+                                        "session_id": primary_sid.val(),
+                                        "cwd": cwd,
+                                        "is_active": i == active_idx,
+                                        "has_running_command": has_running_command,
+                                        "pane_count": tab.pane_count(),
+                                    })
+                                })
+                                .collect();
+                            glass_core::ipc::McpResponse::ok(
+                                request.id,
+                                serde_json::json!(tabs),
+                            )
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
+                    "tab_create" => {
+                        if let Some(ctx) = self.windows.values_mut().next() {
+                            let shell_override = request
+                                .params
+                                .get("shell")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let cwd_param = request
+                                .params
+                                .get("cwd")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let cwd_path = cwd_param
+                                .as_deref()
+                                .or_else(|| {
+                                    ctx.session_mux
+                                        .focused_session()
+                                        .map(|s| s.status.cwd())
+                                })
+                                .map(std::path::PathBuf::from);
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+
+                            // If shell override provided, temporarily swap config
+                            let mut config_clone;
+                            let config_ref = if let Some(ref shell) = shell_override {
+                                config_clone = self.config.clone();
+                                config_clone.shell = Some(shell.clone());
+                                &config_clone
+                            } else {
+                                &self.config
+                            };
+
+                            let window_id = ctx.window.id();
+                            let session = create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                config_ref,
+                                cwd_path.as_deref(),
+                                cell_w,
+                                cell_h,
+                                size.width,
+                                size.height,
+                                1,
+                            );
+                            let tab_id = ctx.session_mux.add_tab(session);
+                            let new_tab_index = ctx.session_mux.tab_count() - 1;
+                            ctx.window.request_redraw();
+                            glass_core::ipc::McpResponse::ok(
+                                request.id,
+                                serde_json::json!({
+                                    "tab_index": new_tab_index,
+                                    "session_id": session_id.val(),
+                                    "tab_id": tab_id.val(),
+                                }),
+                            )
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
                     _ => glass_core::ipc::McpResponse::err(
                         request.id,
                         format!("Unknown method: {}", request.method),

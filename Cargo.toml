@@ -96,6 +96,8 @@ glass_mux = { path = "crates/glass_mux" }
 glass_coordination = { path = "crates/glass_coordination" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-chrome = { version = "0.7", optional = true }
+serde_json = "1.0"
+regex = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
