@@ -269,8 +269,11 @@ impl GridRenderer {
         let mut char_buf = [0u8; 4]; // stack buffer for zero-alloc char encoding
 
         for cell in &snapshot.cells {
-            // Skip WIDE_CHAR_SPACER cells (right half of wide chars)
-            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            // Skip spacer cells (right half of wide chars & leading spacer at line end)
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
                 continue;
             }
             // Skip empty/space-only cells (no Buffer needed)
@@ -278,10 +281,18 @@ impl GridRenderer {
                 continue;
             }
 
+            // Wide chars get double-width buffers for proper CJK rendering
+            let is_wide = cell.flags.contains(Flags::WIDE_CHAR);
+            let buf_width = if is_wide {
+                self.cell_width * 2.0
+            } else {
+                self.cell_width
+            };
+
             let mut buffer = Buffer::new(font_system, metrics);
-            buffer.set_size(font_system, Some(self.cell_width), Some(self.cell_height));
-            // Force all glyphs to cell_width for grid snapping
-            buffer.set_monospace_width(font_system, Some(self.cell_width));
+            buffer.set_size(font_system, Some(buf_width), Some(self.cell_height));
+            // Force all glyphs to buf_width for grid snapping
+            buffer.set_monospace_width(font_system, Some(buf_width));
 
             // Build text attributes
             let mut attrs = Attrs::new()
@@ -490,6 +501,22 @@ mod tests {
                 flags: Flags::WIDE_CHAR_SPACER,
                 zerowidth: vec![],
             },
+            // LEADING_WIDE_CHAR_SPACER cell -- should also be skipped
+            glass_terminal::RenderedCell {
+                point: Point {
+                    line: Line(0),
+                    column: Column(4),
+                },
+                c: ' ',
+                fg: Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+                bg: Rgb { r: 0, g: 0, b: 0 },
+                flags: Flags::LEADING_WIDE_CHAR_SPACER,
+                zerowidth: vec![],
+            },
         ];
 
         let snapshot = GridSnapshot {
@@ -504,7 +531,7 @@ mod tests {
             display_offset: 0,
             history_size: 0,
             mode: alacritty_terminal::term::TermMode::empty(),
-            columns: 4,
+            columns: 5,
             screen_lines: 1,
             selection: None,
         };
@@ -592,5 +619,125 @@ mod tests {
                 "TextArea.scale must be 1.0 (never use for DPI)"
             );
         }
+    }
+
+    /// Helper to create a RenderedCell for tests
+    fn make_cell(c: char, col: usize, line: i32, flags: Flags) -> glass_terminal::RenderedCell {
+        use alacritty_terminal::index::{Column, Line, Point};
+        glass_terminal::RenderedCell {
+            point: Point {
+                line: Line(line),
+                column: Column(col),
+            },
+            c,
+            fg: Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            bg: Rgb { r: 0, g: 0, b: 0 },
+            flags,
+            zerowidth: vec![],
+        }
+    }
+
+    /// Helper to create a GridSnapshot from cells
+    fn make_snapshot(cells: Vec<glass_terminal::RenderedCell>, columns: usize) -> GridSnapshot {
+        use alacritty_terminal::index::{Column, Line, Point};
+        GridSnapshot {
+            cells,
+            cursor: alacritty_terminal::term::RenderableCursor {
+                point: Point {
+                    line: Line(0),
+                    column: Column(0),
+                },
+                shape: CursorShape::Block,
+            },
+            display_offset: 0,
+            history_size: 0,
+            mode: alacritty_terminal::term::TermMode::empty(),
+            columns,
+            screen_lines: 1,
+            selection: None,
+        }
+    }
+
+    /// Test: wide char cell produces a Buffer with double width, spacer is skipped
+    #[test]
+    fn wide_char_buffer_double_width() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        // 'A' at col 0 (normal), CJK at col 1 (WIDE_CHAR), spacer at col 2, 'B' at col 3
+        let cells = vec![
+            make_cell('A', 0, 0, Flags::empty()),
+            make_cell('\u{4e16}', 1, 0, Flags::WIDE_CHAR), // CJK '世'
+            make_cell(' ', 2, 0, Flags::WIDE_CHAR_SPACER),
+            make_cell('B', 3, 0, Flags::empty()),
+        ];
+        let snapshot = make_snapshot(cells, 4);
+
+        let mut buffers = Vec::new();
+        let mut positions = Vec::new();
+        renderer.build_cell_buffers(&mut font_system, &snapshot, &mut buffers, &mut positions);
+
+        // Should have 3 buffers: A, CJK, B (spacer skipped)
+        assert_eq!(buffers.len(), 3, "Should create 3 buffers (spacer skipped)");
+        assert_eq!(positions.len(), 3, "Should have 3 positions");
+        assert_eq!(positions[0], (0, 0), "A at column 0");
+        assert_eq!(positions[1], (1, 0), "CJK at column 1");
+        assert_eq!(positions[2], (3, 0), "B at column 3");
+    }
+
+    /// Test: LEADING_WIDE_CHAR_SPACER cells are skipped (no buffer created)
+    #[test]
+    fn leading_wide_char_spacer_skipped() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        // A cell with LEADING_WIDE_CHAR_SPACER (appears at end of line when wide char wraps)
+        let cells = vec![
+            make_cell('A', 0, 0, Flags::empty()),
+            make_cell(' ', 1, 0, Flags::LEADING_WIDE_CHAR_SPACER),
+        ];
+        let snapshot = make_snapshot(cells, 2);
+
+        let mut buffers = Vec::new();
+        let mut positions = Vec::new();
+        renderer.build_cell_buffers(&mut font_system, &snapshot, &mut buffers, &mut positions);
+
+        // Only 'A' should produce a buffer; LEADING spacer should be skipped
+        assert_eq!(
+            buffers.len(),
+            1,
+            "LEADING_WIDE_CHAR_SPACER should be skipped"
+        );
+        assert_eq!(positions[0], (0, 0), "Only A at column 0");
+    }
+
+    /// Test: wide char at column 2 produces position (2, line), spacer at column 3 produces nothing
+    #[test]
+    fn wide_char_buffer_position_correct() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        let cells = vec![
+            make_cell('X', 0, 0, Flags::empty()),
+            make_cell('Y', 1, 0, Flags::empty()),
+            make_cell('\u{4e16}', 2, 0, Flags::WIDE_CHAR),
+            make_cell(' ', 3, 0, Flags::WIDE_CHAR_SPACER),
+            make_cell('Z', 4, 0, Flags::empty()),
+        ];
+        let snapshot = make_snapshot(cells, 5);
+
+        let mut buffers = Vec::new();
+        let mut positions = Vec::new();
+        renderer.build_cell_buffers(&mut font_system, &snapshot, &mut buffers, &mut positions);
+
+        assert_eq!(buffers.len(), 4, "X, Y, CJK, Z = 4 buffers");
+        assert_eq!(positions[0], (0, 0), "X at col 0");
+        assert_eq!(positions[1], (1, 0), "Y at col 1");
+        assert_eq!(positions[2], (2, 0), "CJK wide char at col 2, not col 3");
+        assert_eq!(positions[3], (4, 0), "Z at col 4");
     }
 }
