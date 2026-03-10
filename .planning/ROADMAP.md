@@ -94,7 +94,7 @@
 **Milestone Goal:** Make Glass the most token-efficient, capable terminal for AI agents by exposing multi-tab orchestration, structured error extraction, and token-saving tools through 12 new MCP tools.
 
 - [x] **Phase 35: MCP Command Channel** - Async channel bridge between MCP server and GUI event loop with IPC listener (completed 2026-03-10)
-- [ ] **Phase 36: Multi-Tab Orchestration** - Agent can create, list, command, read, and close tabs via MCP tools
+- [x] **Phase 36: Multi-Tab Orchestration** - Agent can create, list, command, read, and close tabs via MCP tools (completed 2026-03-10)
 - [ ] **Phase 37: Token-Saving Tools** - Filtered output, cached results, file diffs, and budget-aware context via MCP
 - [ ] **Phase 38: Structured Error Extraction** - New glass_errors crate with language-aware parsers and MCP tool
 - [ ] **Phase 39: Live Command Awareness** - Agent can check command status and cancel running commands via MCP
@@ -128,8 +128,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 36-01-PLAN.md -- GUI-side IPC handlers for all 5 tab methods + resolve_tab and extract_term_lines helpers
-- [ ] 36-02-PLAN.md -- MCP tool handlers in tools.rs + param types + unit tests
+- [x] 36-01-PLAN.md -- GUI-side IPC handlers for all 5 tab methods + resolve_tab and extract_term_lines helpers
+- [x] 36-02-PLAN.md -- MCP tool handlers in tools.rs + param types + unit tests
 
 ### Phase 37: Token-Saving Tools
 **Goal**: Agent can retrieve command results with minimal token overhead through filtering, caching, and budget-aware compression
@@ -216,7 +216,7 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 33. Integration and Testing | v2.2 | 1/1 | Complete | 2026-03-09 |
 | 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |
 | 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
-| 36. Multi-Tab Orchestration | 1/2 | In Progress|  | - |
+| 36. Multi-Tab Orchestration | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 37. Token-Saving Tools | v2.3 | 0/? | Not started | - |
 | 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |
 | 39. Live Command Awareness | v2.3 | 0/? | Not started | - |

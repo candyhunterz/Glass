@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
 status: executing
-stopped_at: Completed 36-01-PLAN.md
-last_updated: "2026-03-10T03:40:49.000Z"
-last_activity: 2026-03-10 -- Completed 36-01 tab orchestration IPC handlers
+stopped_at: Completed 36-02-PLAN.md
+last_updated: "2026-03-10T03:46:08.000Z"
+last_activity: 2026-03-10 -- Completed 36-02 MCP tab tool handlers
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 3
-  completed_plans: 3
-  percent: 20
+  completed_plans: 4
+  percent: 40
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 ## Current Position
 
 Phase: 36 of 39 (Multi-Tab Orchestration)
-Plan: 1 of 2
+Plan: 2 of 2 (PHASE COMPLETE)
 Status: Executing
-Last activity: 2026-03-10 -- Completed 36-01 tab orchestration IPC handlers
+Last activity: 2026-03-10 -- Completed 36-02 MCP tab tool handlers
 
-Progress: [##........] 20%
+Progress: [####......] 40%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ See PROJECT.md Key Decisions table for full history.
 - [Phase 35]: Dedicated tokio runtime per IPC listener thread; JSON-line protocol; 5s oneshot timeout; Removed Clone from AppEvent for oneshot::Sender compatibility
 - [Phase 35]: Duplicated socket/pipe paths in ipc_client.rs to avoid glass_core dependency; Arc-wrapped IpcClient for Clone compatibility; fresh connection per request
 - [Phase 36]: Config clone for shell override in tab_create; early return for regex errors in tab_output; tab_close checks count before resolve
+- [Phase 36]: Used Parameters<T> wrapper for rmcp tool params; inline tab_index/session_id in each struct avoiding serde flatten
 
 ### Pending Todos
 
@@ -69,6 +70,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T03:40:49.000Z
-Stopped at: Completed 36-01-PLAN.md
+Last session: 2026-03-10T03:46:08.000Z
+Stopped at: Completed 36-02-PLAN.md
 Resume file: None
