@@ -26,6 +26,10 @@ jobs:
         run: |
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # Normalize: append .0 if tag is major.minor without patch
+          if [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            TAG_VERSION="${TAG_VERSION}.0"
+          fi
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
             exit 1
@@ -74,6 +78,10 @@ jobs:
         run: |
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # Normalize: append .0 if tag is major.minor without patch
+          if [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            TAG_VERSION="${TAG_VERSION}.0"
+          fi
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
             exit 1
@@ -120,6 +128,10 @@ jobs:
         run: |
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # Normalize: append .0 if tag is major.minor without patch
+          if [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            TAG_VERSION="${TAG_VERSION}.0"
+          fi
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
             exit 1
