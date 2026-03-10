@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with seventeen tools:
+//! Defines `GlassServer` with twenty-two tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -18,6 +18,11 @@
 //! - `glass_agent_send`: Send a directed message to a specific agent
 //! - `glass_agent_messages`: Read unread messages
 //! - `glass_ping`: Check if the Glass GUI process is running and responsive
+//! - `glass_tab_list`: List all open tabs with their state
+//! - `glass_tab_create`: Create a new terminal tab with optional shell and cwd
+//! - `glass_tab_send`: Send a command to a specific tab's terminal
+//! - `glass_tab_output`: Read the last N lines of output from a tab
+//! - `glass_tab_close`: Close a specific tab
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -231,6 +236,59 @@ pub struct MessagesParams {
     /// Agent UUID to read messages for.
     #[schemars(description = "Agent UUID to read messages for")]
     pub agent_id: String,
+}
+
+/// Parameters for glass_tab_create.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TabCreateParams {
+    /// Shell to use (e.g. "bash", "pwsh"). Uses default if omitted.
+    #[schemars(description = "Shell to use (e.g. 'bash', 'pwsh'). Uses default if omitted")]
+    pub shell: Option<String>,
+    /// Working directory for the new tab.
+    #[schemars(description = "Working directory for the new tab")]
+    pub cwd: Option<String>,
+}
+
+/// Parameters for glass_tab_send.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TabSendParams {
+    /// 0-based tab index.
+    #[schemars(description = "0-based tab index (provide this OR session_id)")]
+    pub tab_index: Option<u64>,
+    /// Stable session ID.
+    #[schemars(description = "Stable session ID (provide this OR tab_index)")]
+    pub session_id: Option<u64>,
+    /// Command string to send (Enter is appended automatically).
+    #[schemars(description = "Command string to send (Enter is appended automatically)")]
+    pub command: String,
+}
+
+/// Parameters for glass_tab_output.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TabOutputParams {
+    /// 0-based tab index.
+    #[schemars(description = "0-based tab index (provide this OR session_id)")]
+    pub tab_index: Option<u64>,
+    /// Stable session ID.
+    #[schemars(description = "Stable session ID (provide this OR tab_index)")]
+    pub session_id: Option<u64>,
+    /// Number of lines to return from the end of output (default 50).
+    #[schemars(description = "Number of lines to return from the end (default 50, max 10000)")]
+    pub lines: Option<usize>,
+    /// Regex pattern to filter lines.
+    #[schemars(description = "Regex pattern to filter output lines")]
+    pub pattern: Option<String>,
+}
+
+/// Parameters for glass_tab_close.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TabCloseParams {
+    /// 0-based tab index.
+    #[schemars(description = "0-based tab index (provide this OR session_id)")]
+    pub tab_index: Option<u64>,
+    /// Stable session ID.
+    #[schemars(description = "Stable session ID (provide this OR tab_index)")]
+    pub session_id: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +964,172 @@ impl GlassServer {
             ))])),
         }
     }
+
+    /// List all open tabs with their state.
+    #[tool(
+        description = "List all open tabs with their state: name, working directory, session ID, and whether a command is running."
+    )]
+    async fn glass_tab_list(&self) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        match client.send_request("tab_list", serde_json::json!({})).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// Create a new terminal tab.
+    #[tool(
+        description = "Create a new terminal tab with optional shell and working directory. Returns the new tab's index and session ID."
+    )]
+    async fn glass_tab_create(
+        &self,
+        Parameters(input): Parameters<TabCreateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let mut params = serde_json::json!({});
+        if let Some(shell) = &input.shell {
+            params["shell"] = serde_json::json!(shell);
+        }
+        if let Some(cwd) = &input.cwd {
+            params["cwd"] = serde_json::json!(cwd);
+        }
+        match client.send_request("tab_create", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// Send a command to a specific tab's terminal.
+    #[tool(
+        description = "Send a command to a specific tab's terminal. The command is executed immediately (Enter is appended). Use tab_output to read results later."
+    )]
+    async fn glass_tab_send(
+        &self,
+        Parameters(input): Parameters<TabSendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let mut params = serde_json::json!({ "command": input.command });
+        if let Some(idx) = input.tab_index {
+            params["tab_index"] = serde_json::json!(idx);
+        }
+        if let Some(sid) = input.session_id {
+            params["session_id"] = serde_json::json!(sid);
+        }
+        match client.send_request("tab_send", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// Read the last N lines of output from a specific tab.
+    #[tool(
+        description = "Read the last N lines of output from a specific tab. Optionally filter lines by regex pattern. Default 50 lines, max 10000."
+    )]
+    async fn glass_tab_output(
+        &self,
+        Parameters(input): Parameters<TabOutputParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let mut params = serde_json::json!({});
+        if let Some(idx) = input.tab_index {
+            params["tab_index"] = serde_json::json!(idx);
+        }
+        if let Some(sid) = input.session_id {
+            params["session_id"] = serde_json::json!(sid);
+        }
+        if let Some(lines) = input.lines {
+            params["lines"] = serde_json::json!(lines);
+        }
+        if let Some(pattern) = &input.pattern {
+            params["pattern"] = serde_json::json!(pattern);
+        }
+        match client.send_request("tab_output", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// Close a specific tab.
+    #[tool(
+        description = "Close a specific tab. Refuses to close the last remaining tab. Use session_id for stability (tab indices shift on close)."
+    )]
+    async fn glass_tab_close(
+        &self,
+        Parameters(input): Parameters<TabCloseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let mut params = serde_json::json!({});
+        if let Some(idx) = input.tab_index {
+            params["tab_index"] = serde_json::json!(idx);
+        }
+        if let Some(sid) = input.session_id {
+            params["session_id"] = serde_json::json!(sid);
+        }
+        match client.send_request("tab_close", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
 }
 
 #[tool_handler]
@@ -920,7 +1144,8 @@ impl ServerHandler for GlassServer {
                  glass_pipe_inspect to inspect pipeline stage output. \
                  For multi-agent coordination: glass_agent_register to join, glass_agent_lock/unlock for file locks, \
                  glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness. \
-                 Live GUI tools: glass_ping to check if the GUI is running and responsive.",
+                 Live GUI tools: glass_ping to check if the GUI is running and responsive. \
+                 Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs.",
             )
     }
 }
@@ -934,7 +1159,12 @@ mod tests {
         let db_path = PathBuf::from("/tmp/history.db");
         let glass_dir = PathBuf::from("/tmp/.glass");
         let coord_db_path = PathBuf::from("/tmp/agents.db");
-        let server = GlassServer::new(db_path.clone(), glass_dir.clone(), coord_db_path.clone(), None);
+        let server = GlassServer::new(
+            db_path.clone(),
+            glass_dir.clone(),
+            coord_db_path.clone(),
+            None,
+        );
         assert_eq!(server.db_path, db_path);
         assert_eq!(server.glass_dir, glass_dir);
         assert!(server.ipc_client.is_none());
