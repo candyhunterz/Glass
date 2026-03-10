@@ -14,6 +14,8 @@ pub struct TabDisplayInfo {
     pub title: String,
     /// Whether this tab is currently active/focused.
     pub is_active: bool,
+    /// Whether agents hold file locks in the current project.
+    pub has_locks: bool,
 }
 
 /// Text label for a single tab.
@@ -120,7 +122,12 @@ impl TabBarRenderer {
         tabs.iter()
             .enumerate()
             .map(|(i, tab)| {
-                let text = truncate_title(&tab.title);
+                let base_title = truncate_title(&tab.title);
+                let text = if tab.has_locks {
+                    format!("* {}", base_title)
+                } else {
+                    base_title
+                };
                 let x = i as f32 * (tab_width + TAB_GAP) + TAB_TEXT_PADDING;
                 let color = if tab.is_active {
                     Rgb {
@@ -191,6 +198,7 @@ mod tests {
             .map(|(title, active)| TabDisplayInfo {
                 title: title.to_string(),
                 is_active: *active,
+                has_locks: false,
             })
             .collect()
     }
@@ -320,5 +328,32 @@ mod tests {
     fn test_tab_bar_height() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         assert_eq!(renderer.tab_bar_height(), 16.0);
+    }
+
+    #[test]
+    fn test_tab_with_locks_shows_indicator() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let tabs = vec![TabDisplayInfo {
+            title: "Tab 1".to_string(),
+            is_active: true,
+            has_locks: true,
+        }];
+        let labels = renderer.build_tab_text(&tabs, 800.0);
+        assert_eq!(labels.len(), 1);
+        assert!(labels[0].text.starts_with("* "));
+    }
+
+    #[test]
+    fn test_tab_without_locks_no_indicator() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let tabs = vec![TabDisplayInfo {
+            title: "Tab 1".to_string(),
+            is_active: true,
+            has_locks: false,
+        }];
+        let labels = renderer.build_tab_text(&tabs, 800.0);
+        assert_eq!(labels.len(), 1);
+        assert!(!labels[0].text.starts_with("* "));
+        assert_eq!(labels[0].text, "Tab 1");
     }
 }
