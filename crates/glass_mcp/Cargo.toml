@@ -15,6 +15,7 @@ glass_coordination = { path = "../glass_coordination" }
 chrono = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+dirs = { workspace = true }
 rusqlite = { workspace = true }
 
 [dev-dependencies]

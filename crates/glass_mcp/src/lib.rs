@@ -9,6 +9,7 @@
 //! All logging goes to stderr; stdout carries only JSON-RPC messages.
 
 pub mod context;
+pub mod ipc_client;
 pub mod tools;
 
 use rmcp::ServiceExt;
