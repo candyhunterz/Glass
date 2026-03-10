@@ -1117,7 +1117,12 @@ mod tests {
     fn decoration_no_decoration_on_spacer() {
         let mut font_system = FontSystem::new();
         let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
-        let cells = vec![make_cell(' ', 1, 0, Flags::WIDE_CHAR_SPACER | Flags::UNDERLINE)];
+        let cells = vec![make_cell(
+            ' ',
+            1,
+            0,
+            Flags::WIDE_CHAR_SPACER | Flags::UNDERLINE,
+        )];
         let snapshot = make_snapshot(cells, 2);
         let rects = renderer.build_decoration_rects(&snapshot);
         assert!(

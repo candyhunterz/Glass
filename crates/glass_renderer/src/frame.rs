@@ -206,6 +206,17 @@ impl FrameRenderer {
             rect_instances.extend(sel_rects);
         }
 
+        // 1a3. Append text decoration rects (underline, strikethrough)
+        {
+            let mut deco_rects = self.grid_renderer.build_decoration_rects(snapshot);
+            if grid_y_offset > 0.0 {
+                for rect in &mut deco_rects {
+                    rect.pos[1] += grid_y_offset;
+                }
+            }
+            rect_instances.extend(deco_rects);
+        }
+
         // 1b. Append block decoration rects (separators, badges)
         // Block lines are absolute; convert viewport start to absolute coords.
         if !blocks.is_empty() {
@@ -836,6 +847,16 @@ impl FrameRenderer {
                     rect.pos[1] += viewport.y as f32;
                 }
                 rect_instances.extend(sel_rects);
+            }
+
+            // Text decoration rects (underline, strikethrough)
+            {
+                let mut deco_rects = self.grid_renderer.build_decoration_rects(snapshot);
+                for rect in &mut deco_rects {
+                    rect.pos[0] += viewport.x as f32;
+                    rect.pos[1] += viewport.y as f32;
+                }
+                rect_instances.extend(deco_rects);
             }
 
             // Focused pane accent border (1px cornflower blue)
