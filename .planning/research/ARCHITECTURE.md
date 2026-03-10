@@ -1,657 +1,316 @@
 # Architecture Patterns
 
-**Domain:** Agent MCP Features (v2.3) for GPU-accelerated terminal emulator
+**Domain:** Rendering correctness features for GPU terminal emulator (v2.4)
 **Researched:** 2026-03-09
 
-## Current Architecture (Relevant Subset)
+## Current Architecture Summary
 
+The rendering stack has three layers:
+
+1. **GridSnapshot** (glass_terminal) -- Flat `Vec<RenderedCell>` with per-cell `Point`, `char`, `fg`, `bg`, `Flags`, `zerowidth`. Flags include UNDERLINE, STRIKETHROUGH (STRIKEOUT), DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE, WIDE_CHAR, WIDE_CHAR_SPACER, BOLD, ITALIC, DIM, INVERSE -- all already preserved from alacritty_terminal.
+
+2. **GridRenderer** (glass_renderer) -- Converts snapshot to GPU primitives:
+   - `build_rects()`: cell bg rects at `column * cell_width`, `line * cell_height`
+   - `build_text_buffers()`: one glyphon `Buffer` per line with rich text spans (fg color, bold, italic)
+   - `build_text_areas()`: positions each line buffer at `line_idx * cell_height`
+
+3. **FrameRenderer** (glass_renderer) -- Orchestrates: rects -> text -> present. Owns GlyphCache (FontSystem, TextAtlas, TextRenderer, SwashCache), GridRenderer, RectRenderer. Has `draw_frame()` for single-pane and `draw_multi_pane_frame()` for split panes.
+
+**Key observation:** The current architecture builds ONE glyphon Buffer per line and lets glyphon handle horizontal glyph placement. This means glyph x-positions are determined by glyphon's shaping, NOT by `column * cell_width`. This is the root cause of horizontal drift in TUI apps.
+
+**Second key observation:** Line height uses `(font_size * scale * 1.2).ceil()` -- a hard-coded 1.2x multiplier. This adds inter-line spacing that prevents box-drawing characters from connecting vertically.
+
+## Integration Analysis: What Changes vs What Gets Added
+
+### Feature 1: Per-Cell Glyph Positioning
+
+**Problem:** glyphon positions glyphs via its own shaping engine. If a glyph's advance width differs from cell_width (common with non-monospace fallback glyphs, combining characters, or rounding), characters drift horizontally. TUI borders misalign.
+
+**What CHANGES (modify existing):**
+
+- `GridRenderer::build_text_buffers()` -- MAJOR REWRITE. Instead of one Buffer per line with all characters concatenated, create one Buffer per cell. Each cell's buffer is positioned at exactly `column * cell_width`.
+
+- `GridRenderer::build_text_areas()` / `build_text_areas_offset()` -- MAJOR REWRITE. Instead of one TextArea per line at `line_idx * cell_height`, produce one TextArea per cell at `(column * cell_width, line_idx * cell_height)`.
+
+- `FrameRenderer::text_buffers` field -- Type stays `Vec<Buffer>` but the count changes from `screen_lines` (~50) to non-empty cells (~2000-4000).
+
+**Recommended approach -- Per-cell Buffers:**
+
+Create one Buffer per non-empty, non-spacer cell. Skip empty/space cells entirely (most terminals are <50% filled). Position each buffer at grid-locked coordinates.
+
+The simpler and more correct approach used by Alacritty itself: render each glyph individually at grid-locked positions.
+
+**New data flow:**
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  glass mcp serve (SEPARATE PROCESS)                             │
-│  ┌───────────────┐                                              │
-│  │  GlassServer   │──→ SQLite only (history.db, snapshots.db,   │
-│  │  (rmcp stdio)  │       agents.db)                            │
-│  │  16 tools      │  spawn_blocking per request                 │
-│  └───────────────┘                                              │
-│  NO access to: SessionMux, PTY, terminal grids, BlockManager   │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│  glass (MAIN GUI PROCESS)                                       │
-│  ┌────────────┐    ┌──────────────┐    ┌─────────────────────┐  │
-│  │ winit       │    │ SessionMux   │    │ PTY reader threads  │  │
-│  │ event loop  │◄──→│ tabs[]       │    │ (std::thread)       │  │
-│  │ user_event()│    │ sessions{}   │    │ → EventProxy →      │  │
-│  │             │    │              │    │   AppEvent to loop   │  │
-│  └────────────┘    └──────────────┘    └─────────────────────┘  │
-│        ▲                  │                                      │
-│        │            ┌─────┴─────┐                                │
-│        │            │ Session   │                                 │
-│        │            │ .term     │ Arc<FairMutex<Term>>            │
-│        │            │ .pty_sender│ PtyMsg mpsc channel            │
-│        │            │ .block_mgr │ command lifecycle tracking     │
-│        │            │ .history_db│ per-session SQLite             │
-│        │            │ .snapshot  │ per-session blob store         │
-│        │            └───────────┘                                │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**The fundamental gap:** MCP server (separate process) cannot access live session state. All features requiring live data (tab orchestration, live output, command status/cancel) need a communication bridge between the MCP server and the main event loop.
-
-## Recommended Architecture: Embedded MCP with Async Channel Bridge
-
-### The Core Decision: Embed MCP in the GUI Process
-
-Move the MCP server from a separate process into the main GUI process as a tokio task. The MCP server communicates with the winit event loop via a bounded `tokio::sync::mpsc` channel, with per-request `tokio::sync::oneshot` channels for responses.
-
-**Why in-process, not IPC:**
-- Avoids named pipes (Windows) or Unix sockets (macOS/Linux) for cross-process communication
-- Zero serialization overhead for grid snapshots and terminal state
-- Still isolated: MCP runs on its own tokio task, not on the winit event loop thread
-- rmcp supports any `AsyncRead + AsyncWrite` transport; embedding changes nothing about the protocol
-- The `glass mcp serve` CLI subcommand remains for backward compatibility and DB-only tools
-
-**Why not keep out-of-process and add IPC:**
-- Would require a listener socket in the GUI process + client in MCP process
-- Platform-divergent socket implementations (named pipes vs Unix sockets)
-- Serialization/deserialization overhead for terminal grid content
-- Two codepaths: DB-only external + live-data internal
-- Process lifecycle coordination (what if GUI crashes? what if MCP outlives GUI?)
-
-### Target Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  glass (MAIN GUI PROCESS)                                           │
-│                                                                     │
-│  ┌──────────────────┐                                               │
-│  │ Tokio runtime     │                                               │
-│  │  ┌──────────────┐ │   tokio::sync::mpsc        ┌───────────────┐ │
-│  │  │ MCP Server   │─│───McpRequest────────────────│ Bridge task   │ │
-│  │  │ (rmcp stdio) │ │   + oneshot::Sender         │               │ │
-│  │  │ GlassServer  │ │                             │ recv request  │ │
-│  │  │ 28 tools     │ │                             │ → proxy.send  │ │
-│  │  └──────────────┘ │                             │   (AppEvent:: │ │
-│  └──────────────────┘                              │    Mcp)       │ │
-│                                                     └───────┬───────┘ │
-│                                                             │         │
-│  ┌────────────┐    ┌──────────────┐         AppEvent::Mcp   │         │
-│  │ winit       │◄───────────────────────────────────────────┘         │
-│  │ event loop  │    │ SessionMux   │                                   │
-│  │ user_event()│───→│ tabs/panes   │──→ Process request               │
-│  │  match Mcp  │    │ sessions     │     Reply via oneshot            │
-│  └────────────┘    └──────────────┘                                   │
-│        ▲                                                              │
-│  ┌─────┴──────────────────────────────────────────┐                   │
-│  │ PTY reader threads (std::thread, unchanged)     │                   │
-│  └─────────────────────────────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────┐
-│  glass mcp serve             │  (STILL WORKS — backward compat)
-│  DB-only tools (16 existing) │  No channel, no live data
-└──────────────────────────────┘
+snapshot.cells
+  -> for each non-spacer, non-empty cell:
+       Buffer::new() with single char (+ zerowidth combining chars)
+       set_size(cell_width, cell_height)  [or 2*cell_width for WIDE_CHAR]
+       shape_until_scroll()
+  -> TextArea { left: col * cell_width + x_offset, top: line * cell_height + y_offset }
 ```
 
-### Component Boundaries
+**Performance mitigation:**
+- Only create Buffers for non-empty cells (skip spaces and WIDE_CHAR_SPACER)
+- Reuse the Buffer Vec capacity between frames (already done with `text_buffers.clear()`)
+- glyphon's TextAtlas caches rasterized glyphs -- same glyph at different positions shares atlas entry
+- The hot path is `Buffer::new()` + `set_text()` + `shape_until_scroll()` per cell -- micro-benchmark needed
 
-| Component | Responsibility | Status | Modification |
-|-----------|---------------|--------|-------------|
-| `glass_core/mcp_channel.rs` | McpRequest/McpResponse enums, channel type aliases | **NEW** | ~80 lines |
-| `glass_core/event.rs` | New `AppEvent::Mcp(McpRequest)` variant | **MODIFY** | +2 lines |
-| `glass_errors/` | Pure error parsing library (`&str` -> `Vec<ParsedError>`) | **NEW CRATE** | ~600 lines |
-| `glass_mcp/tools.rs` | 12 new MCP tool handlers, `McpSender` field on GlassServer | **MODIFY** | +500 lines |
-| `glass_mcp/lib.rs` | New `run_mcp_server_embedded()` accepting sender | **MODIFY** | +25 lines |
-| `glass_mcp/Cargo.toml` | Add deps: glass_core, glass_errors, similar, regex | **MODIFY** | +4 lines |
-| `src/main.rs` | Spawn embedded MCP, bridge task, handle AppEvent::Mcp | **MODIFY** | +300 lines |
-| `Cargo.toml` (workspace) | Add glass_errors to workspace members, add similar + regex | **MODIFY** | +5 lines |
+### Feature 2: Correct Line Height (Box-Drawing)
 
-### Components NOT Modified
+**Problem:** `cell_height = (font_size * scale * 1.2).ceil()` adds inter-line spacing. Box-drawing characters (U+2500-U+257F) need to connect vertically with zero gap.
 
-| Component | Why Unchanged |
-|-----------|---------------|
-| `glass_terminal` | No terminal emulation changes; grid reads use existing FairMutex API |
-| `glass_renderer` | No rendering changes for v2.3; output goes through MCP, not GUI |
-| `glass_mux` | SessionMux API is sufficient; new methods not needed |
-| `glass_history` | Existing query API covers glass_output, glass_cached_result needs |
-| `glass_snapshot` | Existing API covers glass_changed_files needs |
-| `glass_coordination` | Already shipped in v2.2, no changes needed |
-| `glass_pipes` | Pipe capture is orthogonal to MCP features |
+**What CHANGES (modify existing):**
 
-## New Component: MCP Channel Types
+- `GridRenderer::new()` -- Change line height calculation. Use actual font metrics (ascent + descent) from cosmic-text instead of `font_size * 1.2`. Measure via the same Buffer used for cell_width measurement -- examine `layout_runs()` for `line_height`.
 
-Lives in `glass_core` because `event.rs` (which defines `AppEvent`) already lives there. McpRequest must be in the same crate as AppEvent to be a variant payload.
+  Specifically: after shaping "M" to get cell_width, read the `line_y` or metric values from the layout run. The font's own metrics are authoritative. If the resulting line height is too tight (text overlaps), add minimal leading but NOT 20%.
 
-```rust
-// glass_core/src/mcp_channel.rs
+- `GridRenderer::cell_height` -- Value changes. This cascades through `FrameRenderer::update_font()` to ALL consumers: BlockRenderer, StatusBarRenderer, TabBarRenderer, SearchOverlayRenderer. The cascade is already wired correctly.
 
-use tokio::sync::oneshot;
-use serde_json::Value;
+- `main.rs` terminal size calculation -- Uses `cell_height` for computing num_lines. Value changes but code stays the same.
 
-/// Request from an MCP tool handler to the main event loop.
-/// Each variant carries a oneshot::Sender for the response.
-pub enum McpRequest {
-    // --- Tab Orchestration ---
-    TabCreate {
-        name: Option<String>,
-        shell: Option<String>,
-        cwd: Option<String>,
-        reply: oneshot::Sender<McpResponse>,
-    },
-    TabList {
-        reply: oneshot::Sender<McpResponse>,
-    },
-    TabRun {
-        tab_index: usize,
-        command: String,
-        reply: oneshot::Sender<McpResponse>,
-    },
-    TabOutput {
-        tab_index: usize,
-        lines: Option<usize>,
-        pattern: Option<String>,
-        reply: oneshot::Sender<McpResponse>,
-    },
-    TabClose {
-        tab_index: usize,
-        reply: oneshot::Sender<McpResponse>,
-    },
+**What STAYS:** `FrameRenderer::update_font()` already rebuilds all sub-renderers when cell_height changes. No structural change needed.
 
-    // --- Live Command Awareness ---
-    CommandStatus {
-        tab_index: Option<usize>,
-        reply: oneshot::Sender<McpResponse>,
-    },
-    CommandCancel {
-        tab_index: Option<usize>,
-        reply: oneshot::Sender<McpResponse>,
-    },
-}
+**Box-drawing consideration:** Even with correct line height, box-drawing glyphs from the font may not perfectly fill the cell. Two options:
+1. Trust the font (simpler, usually works with good monospace fonts like Cascadia Code)
+2. Custom-render box-drawing characters as GPU rects (pixel-perfect, what Alacritty/WezTerm do)
 
-pub enum McpResponse {
-    Ok(Value),
-    Error(String),
-}
+**Recommendation:** Start with option 1 (correct metrics). If box-drawing still has gaps with specific fonts, add option 2 as a follow-up. Custom box-drawing rendering would add a detection step in `build_cell_buffers()` that emits RectInstances instead of text Buffers for U+2500-U+257F.
 
-pub type McpSender = tokio::sync::mpsc::Sender<McpRequest>;
-pub type McpReceiver = tokio::sync::mpsc::Receiver<McpRequest>;
+### Feature 3: Wide Character / CJK Support
+
+**Problem:** CJK characters occupy 2 columns. `build_text_buffers()` already skips `WIDE_CHAR_SPACER` cells. But with per-line Buffers, the wide char is shaped as part of a line and may not be centered in 2 * cell_width.
+
+**What CHANGES (modify existing):**
+
+- `GridRenderer::build_rects()` -- WIDE_CHAR cells need `2 * cell_width` for their background rect. WIDE_CHAR_SPACER cells should be skipped entirely (currently they get a bg rect if bg != default, which causes a duplicate background).
+
+  ```rust
+  if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+      continue; // skip spacer, wide char already covers 2 cells
+  }
+  let width = if cell.flags.contains(Flags::WIDE_CHAR) {
+      self.cell_width * 2.0
+  } else {
+      self.cell_width
+  };
+  ```
+
+- `build_cell_buffers()` (the replacement for build_text_buffers) -- When a cell has `Flags::WIDE_CHAR`, its Buffer should have `set_size(2 * cell_width, cell_height)` so the glyph is properly shaped and centered within the double-width space.
+
+- `build_selection_rects()` -- May need awareness that a wide char selection should highlight 2 cells, though this likely already works since selection ranges use column indices from alacritty_terminal which handle wide chars.
+
+**What STAYS:** `snapshot_term()` already preserves WIDE_CHAR and WIDE_CHAR_SPACER flags. No changes to glass_terminal.
+
+### Feature 4: Underline and Strikethrough Rendering
+
+**Problem:** Flags (UNDERLINE, STRIKEOUT, DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE) are preserved in `RenderedCell.flags` but never read during rendering.
+
+**What GETS ADDED (new code):**
+
+- `GridRenderer::build_decoration_rects()` -- NEW METHOD. Iterates cells, checks decoration flags, emits RectInstances using the cell's fg color for decoration color.
+
+  Positions (relative to cell top-left at `col * cell_width, line * cell_height`):
+  - UNDERLINE: 1px rect at `y + cell_height - 2` (above cell bottom)
+  - DOUBLE_UNDERLINE: two 1px rects, 2px apart near bottom
+  - STRIKEOUT: 1px rect at `y + cell_height * 0.5` (vertical center)
+  - UNDERCURL: approximate with alternating small rects (wavy). Or defer to simple underline.
+  - DOTTED_UNDERLINE: 1px rects with 1px gaps
+  - DASHED_UNDERLINE: 3px rects with 2px gaps
+  - WIDE_CHAR_SPACER: skip (decoration only on the WIDE_CHAR cell, spanning 2*cell_width)
+
+**What CHANGES (modify existing):**
+
+- `FrameRenderer::draw_frame()` -- Insert `build_decoration_rects()` call. Decoration rects should render between bg rects and text:
+  1. bg rects (existing)
+  2. decoration rects (NEW -- underlines go under text)
+  3. text (existing)
+
+- `FrameRenderer::draw_multi_pane_frame()` -- Same addition with viewport offset applied to decoration rect positions.
+
+**No changes needed to:** RectRenderer (decorations are just more RectInstances), GridSnapshot, snapshot_term.
+
+### Feature 5: Font Fallback Configuration
+
+**What cosmic-text already does:** FontSystem automatically discovers all system fonts at startup and performs font fallback when the primary font family lacks a glyph. glyphon's `Shaping::Advanced` (already used) enables HarfBuzz shaping which includes fallback.
+
+**What CHANGES:** Likely nothing for basic fallback to work. The automatic fallback already handles most CJK and symbol cases.
+
+**What MAY NEED ADDING:**
+
+- If users need to control fallback order (e.g., prioritize "Noto Sans CJK SC" over other CJK fonts), add config support:
+
+  ```toml
+  [font]
+  family = "Cascadia Code"
+  fallback = ["Noto Sans CJK SC", "Segoe UI Symbol"]
+  ```
+
+- `GlyphCache::new()` or `FrameRenderer::new()` -- Load specified fallback fonts with higher priority via `FontSystem::db_mut()`.
+
+- With per-cell positioning (Feature 1), fallback font glyph width mismatches are already handled -- each cell is positioned at `col * cell_width` regardless of the actual glyph width.
+
+**Confidence:** MEDIUM. cosmic-text does automatic font fallback but the quality/ordering may not be ideal without explicit configuration. Need to test with CJK text.
+
+### Feature 6: Dynamic DPI / Scale Factor Handling
+
+**Problem:** `WindowEvent::ScaleFactorChanged` in main.rs is currently log-only. Comment says "FrameRenderer does not yet support dynamic scale factor updates."
+
+**What CHANGES (modify existing):**
+
+- `main.rs` ScaleFactorChanged handler -- Must call:
+  1. `frame_renderer.update_font(font_family, font_size, new_scale_factor)` -- already exists and works
+  2. Get new cell dimensions: `frame_renderer.cell_size()`
+  3. Recalculate columns/rows from window size and new cell dims
+  4. Resize PTY via `pty_sender.send(PtyMsg::Resize { cols, rows })`
+  5. Resize wgpu surface via `renderer.resize(new_width, new_height)` if inner_size changed
+  6. `window.request_redraw()`
+
+**What STAYS:** `FrameRenderer::update_font()` already handles scale_factor. `GlassRenderer::resize()` already handles surface resize. The `update_font` path is already exercised by config hot-reload.
+
+**Key detail:** The `ScaleFactorChanged` event on Windows may come with a new `PhysicalSize` via `inner_size_writer`. The handler must apply the new size.
+
+## Component Boundaries
+
+| Component | Responsibility | Changes For v2.4 |
+|-----------|---------------|-------------------|
+| `GridSnapshot` / `RenderedCell` | Cell data with flags | NO CHANGE -- already has all needed data |
+| `snapshot_term()` | Extract cells from alacritty_terminal | NO CHANGE -- already preserves all flags |
+| `GridRenderer` | Cell -> GPU primitives | MAJOR CHANGE -- per-cell positioning, line height, wide char rects, decoration rects |
+| `RectRenderer` | Instanced quad pipeline | NO CHANGE -- just receives more RectInstances |
+| `GlyphCache` / `FontSystem` | Font discovery, atlas, shaping | MINOR CHANGE -- possible explicit fallback font loading |
+| `FrameRenderer` | Orchestrate draw pipeline | MODERATE CHANGE -- integrate decoration rects, update draw order, per-cell buffer flow |
+| `GlassRenderer` | wgpu surface management | NO CHANGE |
+| `main.rs` | Event loop, window management | MINOR CHANGE -- ScaleFactorChanged handler wiring |
+| `BlockRenderer` et al. | Overlay rendering | NO CHANGE -- cell_size cascades automatically via update_font |
+
+## Data Flow: Current vs New
+
+### Current Flow
+```
+GridSnapshot
+  -> build_rects(): cell bgs at (col*cw, line*ch), each width=cw
+  -> build_text_buffers(): one Buffer per line, chars concatenated as rich text
+  -> build_text_areas(): one TextArea per line at (0, line*ch)
+  -> FrameRenderer: prepare rects, prepare text, render pass (rects then text)
 ```
 
-**Why McpRequest lives in glass_core, not glass_mcp:**
-- `AppEvent::Mcp(McpRequest)` needs McpRequest in the same crate as AppEvent
-- glass_core is the natural hub crate (event.rs, config.rs, coordination_poller.rs)
-- Avoids circular dependency: main.rs depends on glass_mcp AND glass_core; if McpRequest were in glass_mcp, glass_core couldn't reference it in AppEvent
-
-**Tokio dependency in glass_core:** glass_core currently does not depend on tokio. Adding `tokio = { workspace = true, features = ["sync"] }` is necessary for `oneshot::Sender` and `mpsc::Sender/Receiver`. This is a lightweight addition (sync feature only, no runtime). Alternative: define channel types without tokio using std channels, but tokio channels are needed because MCP tools are async and need `await`-able oneshot receivers.
-
-## Data Flow Diagrams
-
-### Tab Orchestration: glass_tab_run
-
+### New Flow
 ```
-AI Agent (Claude Code, via stdio JSON-RPC)
-    │
-    ▼
-rmcp transport layer (tokio task in GUI process)
-    │
-    ▼
-GlassServer.glass_tab_run(tab_index=2, command="cargo test")
-    │
-    ├── let (tx, rx) = oneshot::channel()
-    ├── mcp_sender.send(McpRequest::TabRun { tab_index: 2,
-    │                     command: "cargo test\n", reply: tx })
-    │
-    ▼ (awaits rx)                        Bridge task
-                                          │
-                        mcp_rx.recv() ────┘
-                                          │
-                        proxy.send_event(AppEvent::Mcp(request))
-                                          │
-                                          ▼
-main.rs user_event(AppEvent::Mcp(McpRequest::TabRun { .. }))
-    │
-    ├── let tab = session_mux.tabs()[2]
-    ├── let session = session_mux.session(tab.focused_pane)
-    ├── session.pty_sender.send(PtyMsg::Input("cargo test\n".bytes()))
-    ├── reply.send(McpResponse::Ok(json!({"ok": true})))
-    │
-    ▼ (oneshot fires)
-
-rx.await → McpResponse::Ok → CallToolResult::success
-    │
-    ▼
-AI Agent receives { "ok": true }
+GridSnapshot
+  -> build_rects(): cell bgs at (col*cw, line*ch)
+     - Skip WIDE_CHAR_SPACER cells
+     - WIDE_CHAR cells get width=2*cw
+  -> build_cell_buffers(): one Buffer per non-empty, non-spacer cell
+     - Each positioned at (col*cw, line*ch) via TextArea
+     - WIDE_CHAR gets buffer size 2*cw
+  -> build_decoration_rects(): underline/strikethrough RectInstances
+     - Uses cell fg color for decoration color
+     - WIDE_CHAR decorations span 2*cw, skip WIDE_CHAR_SPACER
+  -> build_cell_text_areas(): one TextArea per cell buffer at exact grid position
+  -> FrameRenderer: prepare bg_rects + decoration_rects, prepare cell text,
+     render pass: bg rects -> decoration rects -> text
 ```
-
-### Tab Output: glass_tab_output
-
-```
-McpRequest::TabOutput { tab_index: 2, lines: 20, pattern: None, reply }
-    │
-    ▼ (in main.rs user_event)
-
-1. Resolve tab → session
-2. let term = session.term.lock()        // FairMutex, <1ms hold
-3. Read last 20 lines from grid content   // scrollback + visible
-4. drop(term)                             // release lock immediately
-5. Strip ANSI escape sequences
-6. Check session.block_manager for Executing state
-7. reply.send(McpResponse::Ok(json!({
-       "output": stripped_text,
-       "total_lines": total,
-       "has_running_command": is_executing
-   })))
-```
-
-### Error Extraction: glass_errors (No Channel — DB Path)
-
-```
-AI Agent calls glass_errors(command_id=42)
-    │
-    ▼
-GlassServer.glass_errors():
-    │
-    ├── spawn_blocking:
-    │   ├── HistoryDb::open(db_path)
-    │   ├── db.get_command(42) → CommandRecord { output, command_text, .. }
-    │   └── glass_errors::parse(output, Some(command_text))
-    │       └── Returns Vec<ParsedError>
-    │
-    ├── Serialize to JSON
-    └── CallToolResult::success
-```
-
-### Token-Saving: glass_changed_files (No Channel — Snapshot DB)
-
-```
-AI Agent calls glass_changed_files(command_id=42)
-    │
-    ▼
-GlassServer.glass_changed_files():
-    │
-    ├── spawn_blocking:
-    │   ├── SnapshotStore::open(glass_dir)
-    │   ├── store.get_snapshot_files(42)
-    │   ├── For each file:
-    │   │   ├── Read blob content from blob store
-    │   │   ├── Read current file from disk
-    │   │   └── similar::TextDiff::from_lines(old, new).unified_diff()
-    │   └── Return file list with diffs
-    │
-    ├── Serialize to JSON
-    └── CallToolResult::success
-```
-
-### Embedded MCP Server Startup
-
-```rust
-// In main.rs, during App initialization:
-
-// 1. Create MCP command channel (bounded at 32 — more than enough
-//    for sequential MCP tool calls from an AI agent)
-let (mcp_tx, mcp_rx) = tokio::sync::mpsc::channel::<McpRequest>(32);
-
-// 2. Spawn embedded MCP server on tokio runtime
-//    Uses stdin/stdout for rmcp transport (same as glass mcp serve)
-let tokio_rt = tokio::runtime::Runtime::new().unwrap();
-tokio_rt.spawn(async move {
-    if let Err(e) = glass_mcp::run_mcp_server_embedded(mcp_tx).await {
-        tracing::error!("Embedded MCP server error: {}", e);
-    }
-});
-
-// 3. Bridge task: forward McpRequests as AppEvents to winit event loop
-let proxy_for_mcp = event_loop_proxy.clone();
-tokio_rt.spawn(async move {
-    while let Some(request) = mcp_rx.recv().await {
-        let _ = proxy_for_mcp.send_event(AppEvent::Mcp(request));
-    }
-});
-```
-
-**Why a bridge task instead of direct try_recv in the event loop:**
-- `mpsc::Receiver` is not `Sync`, so it cannot be polled from the winit event loop
-- The bridge task converts channel messages to AppEvents, which is the established pattern for all async event sources (PTY reader threads use EventProxy, config watcher uses EventLoopProxy, coordination poller uses EventLoopProxy)
-- Consistent: user_event() handles ALL events uniformly
-
-**Startup sequencing concern:** The embedded MCP server reads stdin. But `glass` is a GUI app (`#![windows_subsystem = "windows"]`). stdin is not connected when launched from a desktop shortcut. The MCP server must only be spawned when stdin is available (i.e., when invoked from an existing terminal or by an AI agent). Detection: check if stdin is a pipe or connected.
-
-**Resolution:** The embedded MCP server should be opt-in. Either:
-- A `--mcp` flag on the glass binary: `glass --mcp` spawns the embedded server
-- Or: always spawn, but use a named pipe / Unix socket instead of stdio
-
-**Recommended:** Use `--mcp` flag. When present, spawn the embedded server with stdio transport. When absent (normal GUI launch), do not spawn MCP. This matches the existing `glass mcp serve` pattern but keeps the server in-process.
-
-Alternative for agents: The agent's MCP config points to `glass mcp serve` (separate process). For live-data tools, the separate process communicates with the GUI process via a lightweight IPC mechanism (e.g., a Unix domain socket or Windows named pipe that the GUI always listens on).
-
-**Simplest viable approach for v2.3:** Keep `glass mcp serve` as separate process. Add a small TCP/Unix socket server in the GUI process that handles only the 7 live-data requests (TabCreate, TabList, TabRun, TabOutput, TabClose, CommandStatus, CommandCancel). The MCP server connects to this socket when it needs live data. This avoids the stdin/GUI conflict entirely.
-
-### Revised Architecture: Hybrid Approach
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  glass mcp serve (SEPARATE PROCESS, as today)                │
-│  ┌───────────────┐                                           │
-│  │  GlassServer   │──→ SQLite (DB-only tools: 16 existing    │
-│  │  (rmcp stdio)  │       + glass_output, glass_cached_result│
-│  │  28 tools      │       + glass_changed_files, glass_errors│
-│  │                │       + glass_context budget)             │
-│  │                │                                           │
-│  │  Live tools:   │──→ Connect to GUI's IPC socket            │
-│  │  tab_*, cmd_*  │    for live session data                  │
-│  └───────────────┘                                           │
-└──────────────────────────────────────────────────────────────┘
-         │ IPC (localhost TCP or named pipe)
-         ▼
-┌──────────────────────────────────────────────────────────────┐
-│  glass (MAIN GUI PROCESS)                                    │
-│  ┌────────────────┐                                          │
-│  │ IPC Listener    │  Lightweight: only McpRequest/McpResponse│
-│  │ (tokio task)    │  JSON over TCP/pipe                      │
-│  │                 │──→ EventLoopProxy::send(AppEvent::Mcp)   │
-│  └────────────────┘                                          │
-│         ▲                                                    │
-│  ┌──────┴─────┐    ┌──────────────┐                          │
-│  │ winit loop  │    │ SessionMux   │                          │
-│  │ user_event  │───→│ process req  │──→ reply via oneshot     │
-│  └────────────┘    └──────────────┘                          │
-└──────────────────────────────────────────────────────────────┘
-```
-
-**Trade-off analysis:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Embedded MCP (in-process) | No IPC, no serialization, simplest data flow | stdin conflict with GUI, only works when launched by agent |
-| Hybrid (separate MCP + GUI IPC) | MCP stays external (proven), GUI always works standalone | Requires IPC server in GUI, serialization for live data |
-| Fully embedded with --mcp flag | Clean when it works | Two launch modes to maintain, agent must know to use --mcp |
-
-**Recommendation: Hybrid approach.** The GUI process starts a lightweight IPC listener (tokio TcpListener on localhost or named pipe). The MCP server process (launched by agents via `glass mcp serve`) connects to it when live-data tools are called. DB-only tools continue working without the GUI running.
-
-**IPC discovery:** The GUI writes its listener address to `~/.glass/gui.sock` (or `~/.glass/gui.port`). The MCP server reads this file to discover the GUI. If the file doesn't exist or connection fails, live-data tools return a clear error: "Glass GUI is not running. Live-data tools require the Glass terminal to be open."
-
-### IPC Protocol (Minimal)
-
-```rust
-// Sent over TCP/named pipe as JSON lines
-#[derive(Serialize, Deserialize)]
-pub struct IpcRequest {
-    pub id: u64,
-    pub method: String,          // "tab_create", "tab_list", etc.
-    pub params: serde_json::Value,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct IpcResponse {
-    pub id: u64,
-    pub result: Option<serde_json::Value>,
-    pub error: Option<String>,
-}
-```
-
-JSON lines over TCP on localhost. Simple, debuggable, cross-platform. No need for a full RPC framework — there are only 7 methods.
-
-## New Crate: `glass_errors`
-
-Pure library crate for structured error extraction from compiler/test output.
-
-```
-crates/glass_errors/
-    Cargo.toml          - deps: regex (lazy_static or once_cell for compiled regexes)
-    src/
-        lib.rs          - ParsedError, Severity, parse() dispatcher
-        detect.rs       - Format auto-detection from command hint + content patterns
-        rust.rs         - Rust/cargo: error[E0308] + --> file:line:col, cargo test failures
-        python.rs       - Python: Traceback + File "x", line N
-        node.rs         - Node/TS: SyntaxError/TypeError with .js/.ts paths
-        go.rs           - Go: file.go:line:col: message
-        gcc.rs          - GCC/Clang: file:line:col: error: message
-        generic.rs      - Fallback: file:line: message, file(line,col): message (MSVC)
-```
-
-### Key Types
-
-```rust
-pub struct ParsedError {
-    pub file: String,
-    pub line: u32,
-    pub column: Option<u32>,
-    pub message: String,
-    pub severity: Severity,
-    pub source_line: Option<String>,
-}
-
-pub enum Severity { Error, Warning, Note }
-
-/// Parse command output into structured errors.
-/// `hint` is the command text (e.g., "cargo build") to select parser.
-pub fn parse(output: &str, hint: Option<&str>) -> Vec<ParsedError>
-```
-
-### Parser Selection Strategy
-
-1. If `hint` provided, match command name to parser (cargo/rustc -> rust, python/pytest -> python, etc.)
-2. If no hint or hint doesn't match, scan first 50 lines of output for format signatures
-3. Apply matched parser(s) -- can try multiple and merge results
-4. Deduplicate by (file, line, message) tuple
-
-### Why a Separate Crate
-
-- **Testability:** Unit tests with real compiler output fixtures, no DB or MCP setup needed
-- **Reusability:** Could be used from main.rs (live grid output) or glass_mcp (history DB output)
-- **Independence:** Zero dependency on any glass_* crate -- pure `&str -> Vec<ParsedError>`
-- **Follows precedent:** Same pattern as glass_pipes (parsing logic) and glass_snapshot/command_parser.rs
-
-## Patterns to Follow
-
-### Pattern 1: Request/Reply via Oneshot Channel
-
-**What:** Each McpRequest carries a `oneshot::Sender<McpResponse>`. The MCP tool handler awaits the oneshot receiver while the event loop processes the request synchronously.
-
-**When:** All 7 live-data MCP tools (tab_create, tab_list, tab_run, tab_output, tab_close, command_status, command_cancel).
-
-**Why:** Clean async boundary. No thread blocked while waiting. Oneshot auto-errors if event loop disconnects.
-
-```rust
-// In MCP tool handler (glass_mcp/tools.rs):
-async fn glass_tab_list(&self, ...) -> Result<CallToolResult, McpError> {
-    let (tx, rx) = oneshot::channel();
-    self.mcp_sender.as_ref()
-        .ok_or_else(|| internal_error("GUI not connected"))?
-        .send(McpRequest::TabList { reply: tx })
-        .await
-        .map_err(|_| internal_error("Event loop disconnected"))?;
-
-    match rx.await {
-        Ok(McpResponse::Ok(value)) => Ok(CallToolResult::success(
-            vec![Content::text(value.to_string())]
-        )),
-        Ok(McpResponse::Error(msg)) => Ok(CallToolResult::error(
-            vec![Content::text(msg)]
-        )),
-        Err(_) => Err(internal_error("Event loop dropped request")),
-    }
-}
-```
-
-### Pattern 2: DB-Only Tools Stay DB-Only
-
-**What:** Tools that only need SQLite data continue using the existing `spawn_blocking` pattern with no channel involvement.
-
-**Which tools:** glass_output (with command_id), glass_cached_result, glass_changed_files, glass_context budget, glass_errors (with command_id)
-
-**Why:** Simpler, faster, no IPC round-trip. These tools work even when the GUI process is not running.
-
-### Pattern 3: Tab Index as User-Facing Identifier
-
-**What:** Use 0-based tab index (position in tab bar) in all MCP tool parameters.
-
-**Why:** Intuitive for agents ("run in tab 0"). SessionId is an internal u64 counter with no external meaning. Include session_id in responses for agents that need stable references across tab close/reorder operations.
-
-**Caveat:** Tab indices shift when tabs are closed or reordered. MCP tools should validate the index and return clear errors ("tab index 5 out of range, 3 tabs open").
-
-### Pattern 4: Grid Content Extraction
-
-**What:** Reading terminal grid content for glass_tab_output.
-
-**How:** The terminal grid is behind `Arc<FairMutex<Term<EventProxy>>>`. Lock it, read content, release immediately.
-
-```rust
-// In main.rs AppEvent::Mcp handler:
-fn read_grid_lines(session: &Session, max_lines: usize) -> String {
-    let term = session.term.lock();
-    let grid = term.grid();
-    // Read from (total_lines - max_lines) to total_lines
-    // grid.display_iter() gives Cell references with content
-    // Concatenate into string, strip ANSI
-    drop(term); // explicit drop for clarity
-    result
-}
-```
-
-The FairMutex lock is held for microseconds (same as renderer). No risk of blocking PTY reader threads.
-
-## Anti-Patterns to Avoid
-
-### Anti-Pattern 1: Holding FairMutex Across Await Points
-
-**What:** Locking `session.term` in an async context and holding across `.await`.
-
-**Why bad:** FairMutex is not async-aware. PTY reader thread (std::thread) also locks this mutex to write terminal state. Holding across await could starve the PTY reader, causing visible terminal lag.
-
-**Instead:** All grid reads happen synchronously in `user_event()`. Lock, copy data to owned String, drop lock, then send reply. This is the existing pattern used by the renderer.
-
-### Anti-Pattern 2: Arc<Mutex<SessionMux>> for Direct MCP Access
-
-**What:** Wrapping SessionMux in Arc<Mutex> so MCP tools can access sessions directly.
-
-**Why bad:** SessionMux is owned by the App struct on the main thread. Adding shared ownership means EVERY session access (including the hot rendering path at 60fps) goes through Mutex contention. Frame rate would degrade.
-
-**Instead:** Message-passing via channel. The event loop thread remains the sole owner of SessionMux.
-
-### Anti-Pattern 3: Unbounded Output in MCP Responses
-
-**What:** Returning entire terminal scrollback (10K+ lines) through MCP.
-
-**Why bad:** Memory spike, serialization cost, MCP message size explosion. AI agents cannot usefully consume 10K lines anyway (context window limits).
-
-**Instead:** Default to 50 lines. Cap at 100KB. Require explicit `lines` parameter. Support `pattern` filtering to return only relevant lines.
-
-### Anti-Pattern 4: Blocking IPC in the Event Loop
-
-**What:** Making synchronous IPC calls from user_event() to query external services.
-
-**Why bad:** user_event() runs on the winit main thread. Any blocking call freezes the GUI.
-
-**Instead:** All IPC is async (tokio tasks). Results arrive as AppEvents via the EventLoopProxy. The event loop only does synchronous, fast operations (read atomics, lock FairMutex briefly, send PtyMsg).
 
 ## Suggested Build Order
 
-Build order follows dependency chains. Each phase produces testable, shippable value.
+Order follows dependencies. Each phase produces testable, shippable improvement.
 
-### Phase 1: MCP Command Channel + IPC Foundation
+### Phase 1: Line Height Fix (Foundation)
+**Why first:** Affects cell_height which cascades everywhere. All subsequent work uses correct metrics. Smallest code change, largest visual impact on box-drawing.
+- Change `GridRenderer::new()` to derive line height from font ascent+descent instead of `font_size * 1.2`
+- Verify box-drawing characters (U+2500-U+257F) connect vertically
+- All existing tests pass (cell_height is just a different number)
+- Verify status bar, tab bar, block decorations still render correctly (cascades via update_font)
 
-**What builds:**
-- `glass_core/mcp_channel.rs` — McpRequest, McpResponse, type aliases
-- `glass_core/event.rs` — Add `AppEvent::Mcp(McpRequest)` variant
-- `glass_core/Cargo.toml` — Add `tokio = { features = ["sync"] }` and `serde_json`
-- IPC listener in main.rs (localhost TCP, tokio task)
-- IPC client helper in glass_mcp
-- GUI writes port to `~/.glass/gui.port` on startup, removes on shutdown
+### Phase 2: Per-Cell Glyph Positioning (Core Fix)
+**Why second:** Biggest change and most impactful for TUI correctness. Depends on Phase 1 for correct cell_height.
+- Rename/rewrite `build_text_buffers()` -> `build_cell_buffers()` (per-cell Buffers)
+- Rewrite `build_text_areas()` / `build_text_areas_offset()` for per-cell positioning
+- Update `draw_frame()` and `draw_multi_pane_frame()` to use new buffer flow
+- Performance benchmark: compare frame time per-cell vs per-line
+- Visual test: TUI apps (vim, htop, Claude Code) render with aligned borders
 
-**Test:** Send a dummy IPC request from a test client, receive response. Verify round-trip through event loop.
+### Phase 3: Wide Character / CJK Support
+**Why third:** Builds directly on per-cell positioning. Without it, wide chars cannot be correctly placed.
+- Modify `build_rects()` for WIDE_CHAR (2*cw bg) and skip WIDE_CHAR_SPACER bg
+- Modify `build_cell_buffers()` to use 2*cw for WIDE_CHAR cells
+- Modify `build_selection_rects()` for wide char awareness if needed
+- Test with CJK text, `htop` in CJK locale, mixed ASCII/CJK content
 
-**Why first:** Every live-data feature depends on this. If the channel/IPC doesn't work, tab orchestration and live awareness are blocked.
+### Phase 4: Underline / Strikethrough Rendering
+**Why fourth:** Independent feature, but benefits from correct cell positioning for pixel alignment.
+- Add `build_decoration_rects()` to GridRenderer
+- Integrate into `draw_frame()` and `draw_multi_pane_frame()` render pipeline
+- Support: UNDERLINE, DOUBLE_UNDERLINE, STRIKEOUT (most common)
+- Defer or approximate: UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE (lower priority)
 
-**Risk:** MEDIUM. New tokio dependency in glass_core. IPC listener is new infrastructure. Mitigation: the listener is simple (JSON lines over TCP, 7 methods).
+### Phase 5: Font Fallback Configuration
+**Why fifth:** cosmic-text already does automatic fallback. This phase adds user control.
+- Add `[font] fallback = [...]` to config schema
+- Load fallback fonts into FontSystem on startup and hot-reload
+- Test with mixed Latin/CJK/Symbol text to verify fallback ordering
+- May be unnecessary if automatic fallback proves sufficient
 
-### Phase 2: Multi-Tab Orchestration (5 tools)
+### Phase 6: Dynamic DPI Handling
+**Why last:** Smallest change, isolated to main.rs event handler. Depends on update_font() working correctly (validated by earlier phases).
+- Wire `ScaleFactorChanged` to `update_font()` + PTY resize + surface resize
+- Handle the `inner_size_writer` from the event
+- Test with Windows display scaling changes (100% -> 150% -> 100%)
 
-**What builds:**
-- `glass_tab_list` — Read-only, validates IPC end-to-end
-- `glass_tab_output` — Read grid content, validates FairMutex pattern
-- `glass_tab_create` — Reuses existing `create_session()` flow from main.rs
-- `glass_tab_run` — Write to PTY sender
-- `glass_tab_close` — Session teardown
+### Phase 7: Tech Debt Cleanup
+- Remove 1.2x line height constant (replaced in Phase 1)
+- Consolidate build_rects / build_rects_offset if possible
+- Profile per-cell buffer creation, optimize if >5ms per frame
+- Add box-drawing custom rendering if font-based rendering has gaps
 
-**Dependencies:** Phase 1 (channel/IPC must work)
+## Performance Considerations
 
-**Build order within phase matters:** list -> output -> create -> run -> close. Each validates a deeper integration point.
+| Concern | Current (per-line) | After Per-Cell | Mitigation |
+|---------|-------------------|----------------|------------|
+| Buffer count per frame | ~50 (screen_lines) | ~2000-4000 (non-empty cells) | Skip empty/space cells, reuse Vec capacity |
+| Buffer::new() + set_text() cost | ~50 calls | ~2000-4000 calls | Profile; each call is <1us for single char |
+| TextArea count | ~50 | ~2000-4000 | glyphon TextRenderer handles many TextAreas |
+| Atlas pressure | Low | Same (same glyphs, different positions) | Atlas caches rasterized glyphs by font+size+glyph |
+| Total build time | ~0.5ms typical | ~2-5ms estimate | Must stay under 8ms for 120fps budget |
+| Memory | ~1MB text buffers | ~5-10MB estimate | Reuse Vec capacity between frames |
 
-**Key integration point for glass_tab_create:** The `create_session()` function in main.rs takes 10 parameters (proxy, window_id, session_id, config, working_directory, cell_w, cell_h, window_width, window_height, tab_bar_lines). The MCP handler needs access to all of these. Extract window state (cell dims, window size, config ref) into a struct that the AppEvent::Mcp handler can reference.
+**Critical performance validation:** After Phase 2, benchmark `build_cell_buffers()` + `TextRenderer::prepare()` with a full terminal screen. If >5ms, consider:
+1. Batching runs of identical-attribute ASCII characters (confirmed monospace) into single buffers
+2. Skipping Buffer creation for common ASCII chars that are known to be exactly cell_width
+3. Caching Buffer objects between frames for unchanged cells (complex but effective)
 
-### Phase 3: Token-Saving Tools (4 tools, DB-only)
+## Anti-Patterns to Avoid
 
-**What builds:**
-- `glass_output` — Filtered read from commands table output column
-- `glass_cached_result` — LIKE/FTS query + staleness check via snapshot timestamps
-- `glass_changed_files` — Snapshot query + `similar` crate for unified diff generation
-- `glass_context` budget/focus — Enhance existing tool with budget and focus parameters
+### Anti-Pattern 1: Per-Character String Allocation
+**What:** Creating a new `String` for every cell character.
+**Why bad:** 2000+ allocations per frame at 60fps.
+**Instead:** Use `&str` from a pre-built lookup or a reusable small buffer. For single chars, `char::encode_utf8()` into a stack `[u8; 4]` avoids allocation.
 
-**Dependencies:** None (DB-only, can be built in parallel with Phase 1 or 2)
+### Anti-Pattern 2: Rebuilding FontSystem on DPI Change
+**What:** Destroying and recreating FontSystem (which rediscovers all system fonts).
+**Why bad:** FontSystem::new() takes 50-200ms for font discovery.
+**Instead:** Keep FontSystem, rebuild GridRenderer only. The existing `update_font()` path already does this correctly.
 
-**New dependency:** `similar` crate for diff generation in glass_changed_files
+### Anti-Pattern 3: Custom WGSL Shader for Decorations
+**What:** Writing a new wgpu shader pipeline for underlines/strikethrough.
+**Why bad:** Unnecessary complexity, another GPU pipeline to manage.
+**Instead:** Use existing RectRenderer instanced pipeline. Underlines are just thin rectangles. The pipeline already handles thousands of rects efficiently with alpha blending.
 
-**Why Phase 3 despite no dependencies:** Token-saving tools are high value and low risk. Building them after the channel is validated means they can use `tab_id` parameter for live output (via the channel) in addition to `command_id` parameter (via DB). But they work without the channel using command_id only.
+### Anti-Pattern 4: Modifying RenderedCell for Rendering Hints
+**What:** Adding rendering-specific fields (pixel positions, buffer indices) to RenderedCell.
+**Why bad:** Couples glass_terminal to glass_renderer concerns. RenderedCell is a data transfer type.
+**Instead:** Compute all rendering positions in GridRenderer from `cell.point` and cell dimensions.
 
-### Phase 4: Structured Error Extraction (1 crate + 1 tool)
-
-**What builds:**
-- `glass_errors` crate with ParsedError types
-- Rust parser (most relevant — this is a Rust project)
-- Generic fallback parser (file:line:col: message)
-- Python, Node, Go, GCC parsers
-- `glass_errors` MCP tool wiring
-
-**Dependencies:** None (pure library crate + DB-only MCP tool)
-
-**Can be built in parallel with Phases 1-3.** The crate has zero dependency on any glass_* crate.
-
-### Phase 5: Live Command Awareness (2 tools)
-
-**What builds:**
-- `glass_command_status` — Read BlockManager state via IPC channel
-- `glass_command_cancel` — Send `\x03` (Ctrl+C) to PTY via channel
-
-**Dependencies:** Phase 1 (needs IPC channel)
-
-**Why last:** Smallest scope (2 tools), simplest implementation. CommandStatus reads `block_manager.current_block().state == BlockState::Executing`. CommandCancel writes one byte to pty_sender.
-
-## Integration Risk Assessment
-
-| Integration Point | Risk | Mitigation |
-|-------------------|------|------------|
-| tokio dep in glass_core | LOW | Only `sync` feature, no runtime. glass_core already uses std::sync |
-| AppEvent::Mcp variant | LOW | Follows exact pattern of 8 existing variants |
-| IPC listener in GUI | MEDIUM | New infrastructure; use localhost TCP for simplicity |
-| create_session() from MCP | MEDIUM | Needs window state (cell dims, config); extract into helper struct |
-| FairMutex grid reads | LOW | Already done by renderer; identical lock pattern |
-| PTY input from MCP | LOW | Existing `pty_sender.send(PtyMsg::Input(...))` API |
-| `similar` crate for diffs | LOW | Well-maintained, 0 transitive deps, widely used |
-| glass_errors regex parsers | LOW | Pure library, no integration risk, only testing effort |
-| Ctrl+C via PTY | LOW | Write `\x03` byte, same as keyboard Ctrl+C handler |
-
-## Scalability Considerations
-
-| Concern | At 5 tabs | At 20 tabs | At 50 tabs |
-|---------|-----------|------------|------------|
-| IPC throughput | Trivial | Trivial | Trivial (sequential MCP calls) |
-| Grid read latency | <1ms | <1ms | <1ms (per-tab, not aggregate) |
-| MCP response size | <10KB typical | Same | Same |
-| Memory per tab | ~15MB (PTY + grid) | ~300MB | ~750MB (PTY/grid limit, not MCP) |
-| IPC connections | 1 (one MCP server) | 1 | 1 |
-
-The channel/IPC is not the bottleneck. MCP tool calls are sequential and infrequent. The real constraint is terminal memory per session, which is orthogonal to this architecture.
+### Anti-Pattern 5: Conditional Per-Line vs Per-Cell Based on Content
+**What:** Using per-line buffers for "simple" lines and per-cell for "complex" lines.
+**Why bad:** Two code paths, hard to maintain, edge cases where detection is wrong.
+**Instead:** Always use per-cell positioning. Optimize the per-cell path to be fast enough.
 
 ## Sources
 
-- Glass codebase: `crates/glass_mcp/src/tools.rs` — GlassServer structure, spawn_blocking pattern, tool handler pattern (HIGH confidence)
-- Glass codebase: `crates/glass_core/src/event.rs` — AppEvent variants, EventLoopProxy pattern (HIGH confidence)
-- Glass codebase: `crates/glass_mux/src/session_mux.rs` — SessionMux API, Tab/Session ownership (HIGH confidence)
-- Glass codebase: `crates/glass_mux/src/session.rs` — Session struct fields, FairMutex<Term> (HIGH confidence)
-- Glass codebase: `src/main.rs` — create_session() parameters, user_event() dispatch, PTY spawn flow (HIGH confidence)
-- Glass codebase: `crates/glass_terminal/src/block_manager.rs` — BlockState::Executing, command lifecycle (HIGH confidence)
-- Glass codebase: `AGENT_MCP_FEATURES.md` — feature design document (HIGH confidence)
-- rmcp SDK: transport-io feature supports any AsyncRead+AsyncWrite (HIGH confidence, from Cargo.toml)
-- tokio::sync documentation: mpsc bounded channel, oneshot channel (HIGH confidence)
-- similar crate: unified diff generation, widely used Rust diffing library (HIGH confidence)
+- [alacritty_terminal Flags documentation](https://docs.rs/alacritty_terminal/latest/alacritty_terminal/term/cell/struct.Flags.html) -- confirms UNDERLINE, STRIKEOUT, DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE, WIDE_CHAR, WIDE_CHAR_SPACER flags (HIGH confidence)
+- [cosmic-text FontSystem](https://pop-os.github.io/cosmic-text/cosmic_text/struct.FontSystem.html) -- font discovery and automatic fallback (MEDIUM confidence)
+- [cosmic-text font fallback in Bevy](https://github.com/bevyengine/bevy/issues/16354) -- real-world font fallback behavior with cosmic-text (MEDIUM confidence)
+- Direct source code analysis of grid_renderer.rs, frame.rs, surface.rs, grid_snapshot.rs, rect_renderer.rs, glyph_cache.rs, main.rs (HIGH confidence)

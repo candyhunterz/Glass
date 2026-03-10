@@ -1,173 +1,179 @@
 # Project Research Summary
 
-**Project:** Glass v2.3 -- Agent MCP Features
-**Domain:** AI agent tooling for GPU-accelerated terminal emulator
+**Project:** Glass v2.4 -- Rendering Correctness
+**Domain:** GPU terminal emulator text rendering
 **Researched:** 2026-03-09
-**Confidence:** MEDIUM-HIGH
+**Confidence:** HIGH
 
 ## Executive Summary
 
-Glass v2.3 adds 12 new MCP tools that let AI agents orchestrate multiple terminal tabs, extract structured errors, save tokens through filtered/cached output, and monitor live command state. The core technical challenge is bridging the process boundary between the MCP server (currently a separate process) and the GUI's main event loop (which owns all live session state). Two new runtime dependencies are needed (`similar` for diffs, `regex` for error parsing) plus one new crate (`glass_errors`). Everything else reuses the existing validated stack.
+Glass v2.4 is a rendering correctness milestone for a GPU-accelerated terminal emulator. The core problem is that the current rendering pipeline uses per-line text buffers with a hardcoded 1.2x line height multiplier, causing two fundamental visual bugs: horizontal glyph drift (characters shift off-grid on longer lines, breaking TUI borders) and vertical gaps between lines (box-drawing characters don't connect). Every mature GPU terminal (Alacritty, Ghostty, Kitty, WezTerm) has solved these problems the same way: per-cell glyph positioning locked to grid coordinates and line height derived from font metrics rather than arbitrary multipliers.
 
-The recommended architecture is a hybrid approach: keep the MCP server as a separate process (`glass mcp serve`) but add a lightweight IPC listener (localhost TCP) inside the GUI process for the 7 tools that need live session data. DB-only tools (5 of 12) continue working without the GUI running. This avoids the `#![windows_subsystem = "windows"]` stdin conflict that would block an embedded MCP approach, while keeping the IPC surface minimal (7 JSON-line methods over localhost TCP). The alternative of fully embedding the MCP server is simpler in theory but creates a transport problem on Windows that adds its own complexity.
+The recommended approach requires zero new dependencies. The existing stack (glyphon 0.10.0 / cosmic-text 0.15.0 / wgpu 28.0 / alacritty_terminal 0.25.1) already exposes every API needed. The work is entirely architectural -- changing how `GridRenderer` builds GPU primitives. The central change is rewriting `build_text_buffers()` from one Buffer per line to one Buffer per cell, with each cell's TextArea positioned at exact grid coordinates (`column * cell_width, line * cell_height`). All six features (per-cell positioning, line height fix, CJK wide chars, underline/strikethrough, font fallback, dynamic DPI) share this foundation.
 
-The top risks are: (1) the process boundary itself -- the entire communication design must be settled before writing code, as the wrong choice forces a complete rewrite; (2) FairMutex contention on the terminal grid when MCP reads compete with the PTY reader and renderer; and (3) tab ID instability if tab indices (not stable SessionIds) are used as identifiers. All three are preventable with upfront design decisions documented in the research.
+The primary risk is performance regression from the per-cell Buffer approach: going from ~50 Buffers per frame to ~2000-4000. Mitigation is straightforward (skip empty cells, reuse Vec capacity, glyphon's atlas caches glyphs regardless of Buffer count) but must be benchmarked immediately after implementation. A secondary risk is the confirmed glyphon bug where `TextArea.scale` breaks alignment (issue #117) -- DPI handling must scale font Metrics, never TextArea.scale.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The existing workspace stack (tokio 1.50 full, rmcp 1.1.0, rusqlite 0.38, winit 0.30) is unchanged. Only 2 new runtime dependencies are added. See [STACK.md](./STACK.md) for full details.
+No dependency changes required. The entire v2.4 milestone is implemented by changing how existing APIs are called.
 
-**Core technologies:**
-- `similar` 2.7.0: unified diff generation for `glass_changed_files` -- de facto Rust diffing library, zero transitive deps, pure Rust
-- `regex` 1.12.3: error pattern matching in `glass_errors`, output filtering in `glass_output` -- already a transitive dependency, immune to ReDoS by design
-- `tokio::sync::mpsc` + `oneshot` (existing): request/response channel pattern for MCP-to-event-loop communication -- zero new deps, documented Tokio pattern
-- `std::sync::LazyLock` (stable since Rust 1.80): lazy regex compilation -- replaces need for `lazy_static` or `once_cell`
+**Core technologies (all unchanged):**
+- **glyphon 0.10.0**: Text rendering via Buffer/TextArea/TextRenderer -- per-cell Buffers use the same API
+- **cosmic-text 0.15.0**: Text shaping with built-in font fallback via fontdb -- provides LayoutRun.line_height for correct metrics
+- **wgpu 28.0.0**: Existing instanced RectRenderer handles underline/strikethrough as thin rect quads
+- **alacritty_terminal =0.25.1**: Already exposes all needed Flags (UNDERLINE, STRIKEOUT, WIDE_CHAR, DOUBLE_UNDERLINE, UNDERCURL, etc.)
 
-**What NOT to add:** `crossbeam-channel` (not async-aware), `nom`/`winnow` (overkill for line-oriented error parsing), `lazy_static` (superseded by std), `signal-hook` (PTY cancel is just writing `\x03`), `tokio-rusqlite` (project uses synchronous `spawn_blocking` pattern successfully).
+**What NOT to add:** harfbuzz-rs (cosmic-text already handles shaping), fontdue/ab_glyph (redundant with cosmic-text), custom WGSL shaders for decorations (RectInstance quads suffice).
 
 ### Expected Features
 
-See [FEATURES.md](./FEATURES.md) for full feature landscape and competitor analysis.
-
 **Must have (table stakes):**
-- MCP Command Channel -- async bridge between MCP server and main event loop (infrastructure, not user-facing, but blocks 7 of 12 tools)
-- Multi-tab lifecycle (create/list/close) -- iTerm2 and kitty both expose this; agents expect it
-- Run command in tab + read output -- core agent workflow, every terminal MCP server provides this
-- Filtered/truncated output retrieval -- Claude Code already truncates at 30K chars; pattern filtering is the next step
-- Live command status (running/complete) -- agents need to know when output is final before reading it
-- Basic structured error extraction -- agents waste tokens parsing raw error text; at minimum a generic `file:line:col: message` parser
+- Per-cell glyph positioning -- every glyph at `column * cell_width`; without this, TUI apps (vim, htop, tmux) have misaligned borders
+- Correct line height from font metrics -- `ascent + descent` instead of `font_size * 1.2`; fixes box-drawing gaps
+- Wide character / CJK support -- WIDE_CHAR cells rendered at 2x cell_width with proper background rects
+- Underline rendering (SGR 4) -- universally used by grep, compilers, TUI highlights
+- Strikethrough rendering (SGR 9) -- used by diff tools and TUI frameworks
+- Dynamic DPI handling -- ScaleFactorChanged already logged but ignored; required for multi-monitor setups
 
 **Should have (differentiators):**
-- `glass_cached_result` with staleness detection -- unique to Glass (cross-references history timestamps with file snapshot timestamps)
-- `glass_changed_files` with unified diffs -- unique to Glass (content-addressed blob store enables pre/post command file diffs)
-- Budget-aware `glass_context` -- token-budget-aware context compression after context resets
-- Command cancel via MCP -- enables autonomous "run, check, cancel if stuck" workflows
+- Multiple underline styles (double, curly, dotted, dashed) -- alacritty_terminal already provides all five flags
+- Colored underlines (SGR 58) -- used by LSP error highlighting in Neovim
+- Font fallback configuration -- user-specified fallback font order in config.toml
+- Built-in box-drawing character rendering -- custom GPU geometry for pixel-perfect borders
 
-**Defer:**
-- Python/Node/Go/GCC dedicated error parsers -- generic fallback handles `file:line:col: message` pattern; add based on user demand
-- Streaming output via MCP -- MCP stdio transport does not support server-initiated streaming; polling with `has_running_command` flag is sufficient
-- Persistent named sessions across restarts -- adds state management complexity for ephemeral agent workflows
-- Tab output diffing (delta between polls) -- requires per-caller state management; agents can diff locally
+**Defer (v2+):**
+- Font ligatures -- requires fundamentally different cell model, explicitly out of scope
+- Image protocol support (Kitty, Sixel) -- orthogonal to text rendering
+- Custom glyph atlas rendering -- only if profiling shows glyphon is a bottleneck
+- Sub-pixel anti-aliasing -- let OS/GPU driver handle this
+- Configurable line height / cell padding -- get correct defaults first
 
 ### Architecture Approach
 
-Hybrid architecture: MCP server remains a separate process for backward compatibility and to avoid the Windows `#![windows_subsystem = "windows"]` stdin conflict. The GUI process adds a lightweight IPC listener (tokio TcpListener on localhost) that handles only the 7 live-data requests. The MCP server discovers the GUI via `~/.glass/gui.port`. DB-only tools continue working without the GUI. See [ARCHITECTURE.md](./ARCHITECTURE.md) for component diagrams and data flows.
+The rendering pipeline has three layers: GridSnapshot (data), GridRenderer (GPU primitive generation), and FrameRenderer (orchestration). Only GridRenderer gets a major rewrite. The key change is replacing `build_text_buffers()` (one Buffer per line) with `build_cell_buffers()` (one Buffer per non-empty cell), and adding `build_decoration_rects()` for underline/strikethrough. FrameRenderer's draw order becomes: bg rects -> decoration rects -> text. All downstream consumers (BlockRenderer, StatusBarRenderer, TabBarRenderer) cascade automatically via `update_font()`.
 
-**Major components:**
-1. `glass_core/mcp_channel.rs` (NEW) -- McpRequest/McpResponse enums, `AppEvent::Mcp` variant, IPC protocol types (~80 lines)
-2. `glass_errors/` (NEW CRATE) -- Pure error parsing library: `parse(&str, Option<&str>) -> Vec<ParsedError>`, regex-based, no async deps (~600 lines)
-3. IPC listener in `main.rs` -- Tokio TCP listener on localhost, receives JSON-line requests, routes through EventLoopProxy to winit event loop, replies via oneshot channel
-4. 12 new MCP tool handlers in `glass_mcp/tools.rs` -- 7 live-data tools (route through IPC to GUI), 5 DB-only tools (existing `spawn_blocking` pattern)
-
-**Components NOT modified:** glass_terminal, glass_renderer, glass_mux, glass_history, glass_snapshot, glass_coordination, glass_pipes.
+**Major components affected:**
+1. **GridRenderer** -- MAJOR CHANGE: per-cell positioning, line height, wide char rects, decoration rects
+2. **FrameRenderer** -- MODERATE CHANGE: integrate decoration rects, update draw order
+3. **main.rs** -- MINOR CHANGE: wire ScaleFactorChanged to update_font + PTY resize
+4. **GridSnapshot / RectRenderer / GlyphCache** -- NO CHANGE: data layer and GPU pipeline untouched
 
 ### Critical Pitfalls
 
-See [PITFALLS.md](./PITFALLS.md) for full pitfall analysis with prevention strategies.
+1. **Per-line Buffer horizontal drift** -- The current approach lets cosmic-text shape entire lines, causing cumulative glyph drift. Fix: per-cell Buffers with grid-locked TextArea positions. This is the foundational fix.
 
-1. **Process boundary misconception** -- MCP server and GUI are separate processes; mpsc channels cannot cross process boundaries. Must resolve embed-vs-IPC architecture before writing any code. Recommendation: hybrid IPC approach. *Phase 1 blocking decision.*
-2. **FairMutex grid contention** -- Adding MCP grid reads creates a three-way lock fight (PTY reader, renderer, MCP). Write a minimal text-only grid reader, lock-copy-release pattern, never process strings under lock. Target <5ms lock hold. *Phase 2.*
-3. **Tab ID instability** -- Tab indices shift when tabs close. Use stable SessionId (monotonic u64), not vector index, as the MCP identifier from day one. *Phase 2.*
-4. **Oneshot reply channel drops** -- Every error path in MCP request handlers must send a reply. A dropped oneshot sender hangs the MCP tool indefinitely. Structure handlers as functions that always return a response; add 5-second timeout on recv. *Phase 1.*
-5. **Windows subsystem stdio conflict** -- `#![windows_subsystem = "windows"]` suppresses stdin/stdout. Embedded MCP must use socket transport, not stdio. The hybrid IPC approach sidesteps this entirely. *Phase 1.*
+2. **1.2x line height multiplier** -- Hardcoded in `GridRenderer::new()`. Creates gaps between box-drawing rows. Fix: derive from font ascent + descent via cosmic-text metrics.
+
+3. **glyphon TextArea.scale bug (issue #117)** -- Setting `scale` to anything other than 1.0 breaks horizontal alignment. NEVER use it for DPI. Fix: apply scale factor to `Metrics::new(font_size * scale, line_height * scale)` instead.
+
+4. **Wide char background rect single-width** -- WIDE_CHAR cells need 2x cell_width backgrounds; spacer cells must be skipped entirely. Easy to miss because text rendering handles spacers correctly but background rendering doesn't.
+
+5. **Incomplete DPI rebuild** -- ScaleFactorChanged requires rebuilding fonts, cell metrics, surface, PTY size, AND clearing the glyph atlas. Missing any step causes subtle rendering corruption. Must be atomic.
 
 ## Implications for Roadmap
 
-Based on research, suggested 5-phase structure:
+Based on research, suggested phase structure:
 
-### Phase 1: MCP Command Channel + IPC Foundation
-**Rationale:** Every live-data feature (7 of 12 tools) depends on this. The architecture decision (hybrid IPC) must be implemented and validated before any live-data tools can be built. This phase concentrates the highest-risk technical decisions.
-**Delivers:** McpRequest/McpResponse types in glass_core, AppEvent::Mcp variant, IPC TCP listener in main.rs, IPC client helper in glass_mcp, port file discovery via `~/.glass/gui.port`.
-**Addresses:** MCP Command Channel infrastructure (FEATURES table stakes).
-**Avoids:** Process boundary pitfall (1), Windows subsystem stdio conflict (5), event loop starvation (3), oneshot reply drops (4).
-**Estimated scope:** ~400 lines across glass_core, glass_mcp, main.rs.
+### Phase 1: Line Height Fix
+**Rationale:** Smallest code change with highest visual impact. Changes one calculation in GridRenderer::new(). Cascades correctly through update_font() to all sub-renderers. Must come first because it sets cell_height used by all subsequent phases.
+**Delivers:** Box-drawing characters connect vertically; TUI borders render without gaps.
+**Addresses:** Correct line height (table stakes), partial box-drawing fix.
+**Avoids:** Pitfall 2 (1.2x multiplier breaks box-drawing).
 
-### Phase 2: Multi-Tab Orchestration
-**Rationale:** Core agent workflow -- create tabs, run commands, read output. Depends on Phase 1 IPC. Build in order: list -> output -> create -> run -> close (each validates a deeper integration point).
-**Delivers:** 5 MCP tools (glass_tab_create, glass_tab_list, glass_tab_run, glass_tab_output, glass_tab_close).
-**Addresses:** Tab lifecycle and command execution (FEATURES table stakes).
-**Avoids:** Tab ID instability (use SessionId), FairMutex contention (text-only grid reader), unbounded output (100KB cap, default 50 lines), concurrent PTY writes (serialize per session).
-**Estimated scope:** ~350 lines in glass_mcp/tools.rs + main.rs handlers.
+### Phase 2: Per-Cell Glyph Positioning
+**Rationale:** Core architectural change that all other features depend on. Biggest code change but well-understood pattern (all GPU terminals do this). Depends on Phase 1 for correct cell_height.
+**Delivers:** Every glyph at exact grid position; TUI apps render correctly.
+**Addresses:** Per-cell positioning (table stakes), fixes horizontal drift in all TUI apps.
+**Avoids:** Pitfall 1 (horizontal drift), Pitfall 7 (fallback font width mismatch -- per-cell positioning eliminates this class of bug).
 
-### Phase 3: Token-Saving Tools
-**Rationale:** High value, low risk, mostly DB-only. Can partially overlap with Phase 1/2 since DB-only tools need no IPC. Building after Phase 2 allows adding live-grid mode (via tab_id parameter) in addition to history-DB mode (via command_id).
-**Delivers:** 4 MCP tools (glass_output, glass_cached_result, glass_changed_files, glass_context budget/focus).
-**Uses:** `similar` crate for diff generation, existing HistoryDb and SnapshotStore APIs.
-**Avoids:** Stale cache (check filesystem mtimes, not just snapshot DB; default max_age 120s), large file diffs (50KB cap, skip binary files), history truncation (indicate when output was capped at 50KB).
-**Estimated scope:** ~400 lines in glass_mcp/tools.rs.
+### Phase 3: Wide Character / CJK Support
+**Rationale:** Builds directly on per-cell positioning (Phase 2). Without per-cell Buffers, wide chars cannot be correctly positioned. Includes background rect changes.
+**Delivers:** CJK text renders at correct double width with proper backgrounds.
+**Addresses:** Wide char / CJK support (table stakes).
+**Avoids:** Pitfall 3 (single-width background rects for wide chars).
 
-### Phase 4: Structured Error Extraction
-**Rationale:** Requires building the new glass_errors crate. Can be developed in parallel with Phases 1-3 since the crate has zero dependency on other glass_* crates. Ship with Rust + Generic fallback parsers only -- add others post-launch based on demand.
-**Delivers:** glass_errors crate + glass_errors MCP tool.
-**Uses:** `regex` crate, `std::sync::LazyLock` for compiled patterns.
-**Avoids:** Parser scope creep (start with 2 parsers, not 6), ANSI contamination (strip escapes before parsing, reuse existing stripper).
-**Estimated scope:** ~600 lines in glass_errors crate + ~50 lines MCP wiring.
+### Phase 4: Underline and Strikethrough
+**Rationale:** Independent feature but benefits from correct cell positioning (Phase 2) for pixel-accurate decoration placement. Uses existing RectInstance pipeline -- zero new GPU code.
+**Delivers:** UNDERLINE, STRIKEOUT rendering. Optionally DOUBLE_UNDERLINE.
+**Addresses:** Underline rendering (table stakes), strikethrough rendering (table stakes).
+**Avoids:** Anti-pattern of custom WGSL shaders for decorations.
 
-### Phase 5: Live Command Awareness
-**Rationale:** Smallest scope, simplest implementation. Depends on Phase 1 IPC channel. CommandStatus reads block_manager state; CommandCancel writes one byte to PTY sender.
-**Delivers:** 2 MCP tools (glass_command_status, glass_command_cancel).
-**Avoids:** Cancel race condition (re-check block state before sending Ctrl+C; only send 0x03 byte; return `already_complete` if command finished).
-**Estimated scope:** ~100 lines.
+### Phase 5: Font Fallback Configuration
+**Rationale:** cosmic-text already does automatic fallback. This phase verifies it works and adds user configuration. Must come after per-cell positioning (Phase 2) because per-cell rendering eliminates fallback font width mismatch issues.
+**Delivers:** CJK/emoji/symbol characters render via system font fallback; optional config.toml `font.fallback` array.
+**Addresses:** Font fallback cascade (differentiator).
+**Avoids:** Pitfall 7 (fallback font inconsistent cell width).
+
+### Phase 6: Dynamic DPI Handling
+**Rationale:** Isolated to main.rs event handler. Depends on update_font() working correctly (validated by earlier phases). Smallest change, least risky.
+**Delivers:** Window moved between monitors with different DPI renders correctly.
+**Addresses:** Dynamic DPI handling (table stakes).
+**Avoids:** Pitfall 4 (TextArea.scale bug), Pitfall 5 (incomplete DPI rebuild).
+
+### Phase 7: Polish and Deferred Decorations
+**Rationale:** Extensions that build on the core work. Multiple underline styles, colored underlines, optional built-in box-drawing geometry.
+**Delivers:** UNDERCURL, DOTTED, DASHED underlines; colored underlines (SGR 58); optional custom box-drawing rendering.
+**Addresses:** Multiple underline styles (differentiator), colored underlines (differentiator), built-in box-drawing (differentiator).
 
 ### Phase Ordering Rationale
 
-- **Phase 1 must come first** because 7 of 12 tools depend on the IPC channel. The architecture decision (hybrid vs embedded) is a blocking prerequisite.
-- **Phase 2 before Phase 3** because tab orchestration is table stakes that agents expect, and Phase 3 tools benefit from having live-grid access (via tab_id) in addition to history-DB access.
-- **Phase 4 is parallelizable** with Phases 1-3 because glass_errors is a pure library crate with no cross-crate dependencies. A developer could work on error parsers while the IPC channel is being built.
-- **Phase 5 is last** because it is the smallest scope and least critical. Command status/cancel are useful but agents can work without them by polling output.
-- **Total estimated scope:** ~1,900 lines of new code across all phases.
+- **Phases 1-2 are strictly ordered:** Line height fix sets cell_height, per-cell positioning uses cell_height. Both must precede all other rendering work.
+- **Phase 3 depends on Phase 2:** Wide chars need per-cell Buffers to set double-width sizing.
+- **Phase 4 is semi-independent:** Could theoretically run in parallel with Phase 3, but sequential is safer since both modify GridRenderer.
+- **Phase 5 depends on Phase 2:** Per-cell positioning eliminates the fallback font width mismatch problem, making fallback safe to enable.
+- **Phase 6 is independent:** Only touches main.rs event handling, but validates the full pipeline rebuilt by earlier phases.
+- **Phase 7 is optional polish:** All table-stakes features are complete after Phase 6.
 
 ### Research Flags
 
 Phases likely needing deeper research during planning:
-- **Phase 1:** IPC implementation details -- verify rmcp supports custom AsyncRead+AsyncWrite transports for the hybrid approach. Prototype the localhost TCP listener and port file discovery before committing. Cross-platform socket behavior (Windows named pipes vs TCP) needs validation. The `create_session()` function takes 10 parameters; extracting window state into a helper struct needs design.
-- **Phase 2:** Grid content extraction -- the FairMutex lock pattern for text-only reads needs prototyping to measure actual lock hold times under heavy PTY output.
+- **Phase 2 (Per-cell positioning):** Performance impact needs benchmarking. If >5ms per frame, batching strategies (consecutive identical-attribute cells into single Buffers) may be needed.
+- **Phase 5 (Font fallback):** cosmic-text's automatic fallback quality/ordering is MEDIUM confidence. Needs testing with CJK, emoji, and Nerd Font symbols across platforms.
+- **Phase 7 (Box-drawing GPU rendering):** ~100 characters to implement as procedural geometry. Scope may be too large for a single phase.
 
 Phases with standard patterns (skip research-phase):
-- **Phase 3:** DB-only tools follow the established `spawn_blocking` + SQLite pattern used by all existing MCP tools. `similar` crate usage is well-documented.
-- **Phase 4:** Regex-based text parsing is straightforward. Test fixtures from real compiler output are the main effort, not architectural decisions.
-- **Phase 5:** Writing a byte to PTY sender and reading block_manager state are trivial operations following existing patterns.
+- **Phase 1 (Line height):** One-line change, well-documented font metric APIs.
+- **Phase 4 (Underline/strikethrough):** Straightforward rect rendering, alacritty_terminal flags already verified.
+- **Phase 6 (Dynamic DPI):** Pattern already proven by config hot-reload path.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Only 2 new deps, both well-established. All existing deps unchanged. Verified via cargo search. |
-| Features | MEDIUM-HIGH | Strong prior art from iTerm2, kitty, Claude Code patterns. AI-agent-specific terminal tooling is still emerging -- some feature priorities may shift based on real agent usage. |
-| Architecture | MEDIUM | Hybrid IPC approach is sound but unvalidated in this codebase. The IPC listener is new infrastructure. rmcp custom transport support needs verification. Embedded alternative is viable fallback. |
-| Pitfalls | HIGH | Derived from direct codebase analysis. Process boundary, FairMutex contention, and tab ID instability are concrete, verifiable risks with clear mitigations. |
+| Stack | HIGH | Verified from Cargo.lock; all APIs confirmed via docs.rs; zero new dependencies |
+| Features | HIGH | Feature flags verified in alacritty_terminal =0.25.1; reference implementations studied (Alacritty, Ghostty, WezTerm) |
+| Architecture | HIGH | Based on direct source code analysis; data flow and component boundaries verified |
+| Pitfalls | HIGH | Confirmed against codebase (1.2x multiplier at grid_renderer.rs:49, log-only DPI at main.rs:1052); glyphon scale bug verified via GitHub issue |
 
-**Overall confidence:** MEDIUM-HIGH
+**Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **rmcp custom transport support:** Verify that rmcp 1.1.0 accepts custom `AsyncRead + AsyncWrite` implementations for socket-based transport. If not, the hybrid IPC approach needs a protocol adapter layer. Check rmcp source or docs during Phase 1 planning.
-- **IPC discovery mechanism:** The `~/.glass/gui.port` file approach is simple but has edge cases (stale file from crashed process, multiple Glass instances). May need a PID check or heartbeat mechanism.
-- **create_session() parameter extraction:** The function takes 10 parameters from window state. Need to design a helper struct or closure that captures the needed state for MCP-initiated tab creation without exposing renderer internals.
-- **Output capture limit for errors:** History DB truncates at 50KB. For commands with many errors, this may cut off relevant diagnostics. Consider increasing the limit for failed commands or documenting the limitation clearly.
-- **Concurrent MCP connections:** Two agents connecting to the same terminal could interleave PTY writes. Need to decide whether to serialize writes per session or integrate with the existing coordination lock system.
+- **Per-cell Buffer performance:** No benchmarks yet. Must measure after Phase 2 implementation. If frame time exceeds 5ms, consider batching consecutive cells with identical attributes.
+- **cosmic-text fallback quality:** Automatic fallback works in theory but quality/ordering on Windows vs macOS vs Linux is untested. Validate during Phase 5.
+- **Underline color field:** alacritty_terminal 0.25.1's `Cell` may or may not expose `underline_color` directly. Needs verification at implementation time.
+- **UNDERCURL rendering:** Rect approximation vs custom shader is a design decision deferred to Phase 7. Rect approximation is sufficient for MVP.
+- **winit ScaleFactorChanged + inner_size_writer:** The event may provide a new PhysicalSize that must be applied. Exact winit 0.30 API needs verification during Phase 6.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Glass codebase: main.rs, glass_mcp, glass_core, glass_mux, glass_terminal (direct analysis of event loop, MCP server, session management, PTY, block manager)
-- tokio::sync documentation (mpsc, oneshot channel patterns)
-- similar crate (crates.io, v2.7.0, unified diff generation)
-- regex crate (crates.io, v1.12.3, ReDoS-immune by design)
-- rustc JSON diagnostics format (official docs)
-- alacritty_terminal FairMutex semantics (core design property)
+- [glyphon 0.10.0 docs](https://docs.rs/glyphon/0.10.0/glyphon/) -- TextArea, Buffer, CustomGlyph APIs
+- [cosmic-text FontSystem](https://docs.rs/cosmic-text/latest/cosmic_text/struct.FontSystem.html) -- font fallback, Metrics, LayoutRun
+- [alacritty_terminal 0.25.1 cell Flags](https://docs.rs/alacritty_terminal/0.25.1/alacritty_terminal/term/cell/struct.Flags.html) -- all rendering flags
+- Glass codebase direct analysis -- grid_renderer.rs, frame.rs, main.rs, grid_snapshot.rs
 
 ### Secondary (MEDIUM confidence)
-- iTerm2 Python API, kitty remote control protocol (competitive landscape, feature expectations)
-- Anthropic engineering blog posts on tool design and context engineering (agent pain points, token savings patterns)
-- Claude Code Bash tool behavior and output overflow issues (real agent constraints)
-- rmcp SDK transport flexibility (inferred from Cargo.toml features, needs verification)
+- [Ghostty font system](https://deepwiki.com/ghostty-org/ghostty/5.5-font-system) -- per-cell positioning and fallback patterns
+- [COSMIC Terminal (cosmic-term)](https://github.com/pop-os/cosmic-term) -- reference implementation using same stack
+- [glyphon TextArea.scale bug (Issue #117)](https://github.com/grovesNL/glyphon/issues/117) -- confirmed DPI scaling pitfall
+- [Alacritty builtin box drawing (Issue #5809)](https://github.com/alacritty/alacritty/issues/5809) -- custom box-drawing approach
 
 ### Tertiary (LOW confidence)
-- Terminal MCP server ecosystem (emerging, rapidly changing landscape)
-- Token budget approximation ratios (heuristic, varies by model and content type)
+- [Warp: Adventures in Text Rendering](https://www.warp.dev/blog/adventures-text-rendering-kerning-glyph-atlases) -- general GPU text rendering context
+- [Bevy cosmic-text fallback issue](https://github.com/bevyengine/bevy/issues/16354) -- fallback sizing inconsistencies (different context but same library)
 
 ---
 *Research completed: 2026-03-09*

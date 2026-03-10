@@ -1,160 +1,186 @@
-# Feature Landscape: Agent MCP Features (v2.3)
+# Feature Landscape
 
-**Domain:** AI agent tooling for GPU-accelerated terminal emulator -- multi-tab orchestration, structured error extraction, token-saving tools, live command awareness
+**Domain:** GPU terminal emulator rendering correctness
 **Researched:** 2026-03-09
-**Confidence:** MEDIUM-HIGH (strong prior art from iTerm2 Python API, kitty remote control, rustc JSON diagnostics, Claude Code Bash tool patterns; AI-agent-specific terminal tooling is still emerging)
 
 ## Table Stakes
 
-Features that AI agents and competing terminal tools already provide or that agents need to function effectively. Missing any of these means Glass is not competitive as an agent-capable terminal.
+Features users expect from any terminal emulator claiming TUI app support. Missing = broken rendering in vim, htop, tmux, Claude Code, etc.
 
-| Feature | Why Expected | Complexity | Dependencies |
-|---------|--------------|------------|--------------|
-| Multi-tab create/list/close via API | iTerm2 Python API (`async_create_tab`), kitty remote control (`kitten @ launch`), and multiple terminal MCP servers all expose tab/session management. Any agent-controllable terminal must support programmatic tab lifecycle. | Medium | MCP command channel (new async bridge between MCP server and main event loop) |
-| Run command in specific tab | iTerm2's `async_send_text`, kitty's `send-text`, and every terminal MCP server provides command execution in a named/numbered session. Core agent workflow: run server in tab 1, tests in tab 2. | Low | Tab create + PTY sender access via MCP channel |
-| Read output from specific tab | Every terminal MCP server returns command output. Claude Code's Bash tool returns stdout/stderr (truncated at 30K chars). Agents must read results from the tabs they manage. | Medium | Grid FairMutex lock + ANSI escape stripping + character cap |
-| Filtered/truncated output retrieval | Claude Code truncates at 30K chars and recently added disk persistence for overflow (anthropics/claude-code#12054). Agents routinely hit context overflow from large build/test output. Pattern filtering (like `grep -C`) is expected. | Low | Output access from history DB or live grid |
-| Live command status (running/complete) | Agents need to know if a command is still executing before reading output. Without this, agents poll blindly or read incomplete data. kitty's `ls` returns window state; iTerm2's sessions expose `is_processing`. | Low | Block manager state inspection via MCP channel |
-| Basic structured error extraction | Rust provides `--error-format=json` with rich structured diagnostics (spans, severity, suggestions). GCC/Clang emit `file:line:col: severity: message`. Agents currently waste tokens parsing raw error text. At minimum, a generic `file:line:col: message` parser is expected. | Medium | New glass_errors crate with regex-based parsers |
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| Per-cell glyph positioning | Every glyph must land at column * cell_width. Without it, characters drift horizontally and TUI borders misalign. Every GPU terminal (Alacritty, Ghostty, Kitty, WezTerm) positions glyphs per-cell. | Medium | Current approach: per-line glyphon Buffer with text shaping. Shaping can shift glyphs off-grid. Must switch to per-cell x-offset or post-shaping snap. |
+| Correct line height from font metrics | Line height must equal ascent + descent (+ optional leading) so box-drawing characters (U+2500-U+259F) connect vertically without gaps. The current `1.2 * font_size` multiplier creates visible gaps between lines. | Low | Change `Metrics::new()` to derive line_height from font's actual ascent + descent instead of hardcoded 1.2x multiplier. |
+| Wide character / CJK support | CJK characters occupy 2 cells. Without double-width rendering, Chinese/Japanese/Korean text overlaps or misaligns. alacritty_terminal already sets WIDE_CHAR and WIDE_CHAR_SPACER flags. | Medium | Renderer already skips WIDE_CHAR_SPACER cells. Need: (1) render wide chars at 2x cell_width, (2) background rects span 2 cells, (3) PTY column count must account for wide chars during resize. |
+| Underline rendering | SGR 4 (underline) is universally used. grep --color, compiler errors, TUI highlights all use it. alacritty_terminal provides UNDERLINE flag. | Low | Draw a 1-2px rect at cell bottom (y + ascent + 1px). Color from cell fg or underline_color if set. Reuse existing RectInstance pipeline. |
+| Strikethrough rendering | SGR 9 (strikethrough) used by diff tools, todo apps, and TUI frameworks. alacritty_terminal provides STRIKEOUT flag. | Low | Draw a 1px rect at vertical center of cell (y + ascent/2). Same approach as underline -- rect instance per cell with flag. |
+| Dynamic DPI / scale factor handling | Users drag windows between monitors with different DPI. Without handling ScaleFactorChanged, text becomes blurry or wrong size on the new monitor. | Medium | Infrastructure exists: `update_font()` on FrameRenderer already rebuilds everything. Just need to wire ScaleFactorChanged event to call it with new scale_factor, then resize PTY. |
 
 ## Differentiators
 
-Features that set Glass apart from generic terminal MCP servers and other AI-terminal integrations. Not universally expected, but provide high value by leveraging Glass's unique data infrastructure.
+Features that go beyond baseline but make the terminal feel polished. Not expected, but appreciated.
 
-| Feature | Value Proposition | Complexity | Dependencies |
-|---------|-------------------|------------|--------------|
-| Cached result with staleness detection (`glass_cached_result`) | No other terminal tracks whether files changed since a command ran. Agents can skip re-running `cargo test` if nothing changed -- saves wall-clock time AND tokens. Unique to Glass because it has BOTH command history AND file snapshot data to cross-reference. | Medium | History DB query + snapshot timestamp comparison for staleness heuristic |
-| Changed files with diffs (`glass_changed_files`) | Glass already has pre-command snapshots via content-addressed blob store. Exposing "what did this command change" as unified diffs eliminates the agent pattern of re-reading entire files to check for changes. No other terminal MCP server has snapshot infrastructure to enable this. | Medium | Snapshot DB + `similar` crate for diff generation |
-| Budget-aware context compression (`glass_context --budget`) | After context resets, agents waste tokens on bloated context restoration. A budget parameter that prioritizes failed commands > file modifications > recent commands > successful commands (just counts) is intelligent summarization. No other tool offers token-budget-aware terminal context. | Medium | Existing glass_context tool enhancement with priority-sorted truncation |
-| Auto-detecting error format from command hint | Most error parsing tools require explicit language selection. Glass can infer the parser from command text ("cargo build" implies Rust, "pytest" implies Python) AND from output content ("Traceback" implies Python, "error[E" implies Rust). Multi-language auto-detection in a single tool call is uncommon. | Medium | Command text hint mapping + content-based fallback detection |
-| Command cancel via MCP | Agents can send SIGINT/Ctrl+C to a running command without user intervention. Enables autonomous "run, check output, cancel if stuck" workflows. Most terminal MCP servers only support fire-and-forget execution. | Low | PTY signal byte writing via MCP channel |
-| Cross-tab orchestration with command awareness | Managing a full dev environment (server + watcher + tests in separate tabs) through a single MCP session, with Glass's command-awareness layered on top: check if test tab's command finished, read only errors from build tab, check if server tab is still running. iTerm2 can manage tabs via Python API, but lacks the command lifecycle awareness that Glass's OSC 133 integration provides. | Low (additive) | All tab tools + command status working together |
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| Built-in box drawing character rendering | Custom-draw U+2500-U+259F geometrically instead of using font glyphs. Eliminates font-dependent gaps/overlaps. Alacritty, Kitty, Ghostty, WezTerm all do this. | High | ~100 characters to implement as procedural geometry. Each is a combination of horizontal/vertical lines, arcs, and filled regions. Can be done as RectInstances. Worth doing but deferrable. |
+| Multiple underline styles (double, curly, dotted, dashed) | Modern terminals support SGR 4:2 (double), 4:3 (curly/undercurl), 4:4 (dotted), 4:5 (dashed). Neovim, tmux, and editors rely on these. alacritty_terminal provides all five flags. | Medium | Double underline: two 1px rects. Curly: sine wave via small rect steps or custom shader. Dotted/dashed: alternating rects. Curly is hardest. |
+| Colored underlines (SGR 58) | Underline color independent of foreground. Used heavily by LSP error highlighting in Neovim (red underline under errors). alacritty_terminal stores underline_color in CellExtra. | Low | Need to extract underline_color from Cell during snapshot. Add optional `underline_color: Option<Rgb>` to RenderedCell. Use it instead of fg for underline rect color. |
+| Font fallback cascade | When primary font lacks a glyph (emoji, Nerd Font icons, CJK), automatically find a system font that has it. cosmic-text/glyphon has built-in fallback via fontdb. | Low-Medium | glyphon/cosmic-text already does font fallback internally via FontSystem. The main work is: (1) verify it works with current per-line Buffer approach, (2) ensure fallback glyphs are sized to match primary font metrics, (3) optionally allow configuring fallback font list. |
+| Powerline symbol rendering | Powerline glyphs (U+E0B0-U+E0B3) used by Starship, Oh My Posh, Powerlevel10k. Custom rendering ensures pixel-perfect triangles regardless of font. | Medium | 4 characters: right triangle, left triangle, right half-circle, left half-circle. Can be done as custom geometry alongside box drawing. |
+| DIM text rendering | SGR 2 (faint/dim) reduces text brightness. alacritty_terminal already resolves DIM colors in the grid. | Already done | Color resolution in grid_snapshot.rs already handles DIM via `name.to_dim()`. No renderer changes needed. |
 
 ## Anti-Features
 
-Features to explicitly NOT build. These are tempting but would add complexity without proportionate value, or conflict with Glass's design philosophy.
+Features to explicitly NOT build in this milestone.
 
 | Anti-Feature | Why Avoid | What to Do Instead |
 |--------------|-----------|-------------------|
-| Built-in AI command suggestion | Glass exposes data TO agents; it is not an agent itself. Adding AI suggestions creates product confusion and competes with the very agents Glass serves. Warp does this; Glass should not. | Expose rich context via MCP tools. Let agents decide what to run. |
-| Streaming output via MCP | MCP over stdio does not support server-initiated streaming well. The current MCP spec (2025-03-26) added Streamable HTTP, but Glass uses stdio transport by design (local only, no network security concerns). Implementing streaming adds complexity for marginal benefit. | Provide polling-based `glass_tab_output` with a `has_running_command` flag so agents know when to re-poll. Agents already handle async polling. |
-| Automatic error correction | Parsing errors is valuable; automatically running fix commands crosses into agent territory and creates safety/trust concerns. | Return structured errors with file, line, column, message, and severity. Let the agent decide the fix. |
-| Persistent named sessions across restarts | Session persistence adds significant state management complexity (orphaned PTYs, stale grid state, file handle cleanup). Tab IDs being ephemeral is fine for agent workflows which are themselves ephemeral. | Use numeric tab IDs within a session. Agents can re-create tabs on reconnect. Document this as expected behavior. |
-| Remote MCP transport (HTTP/SSE) | Network transport adds security attack surface for a tool that executes arbitrary commands. PROJECT.md explicitly lists this as out of scope. | Keep MCP over stdio. Agents connect locally. This is a security feature. |
-| Full shell AST parsing for error detection | Shell syntax is Turing-complete. Trying to deeply parse arbitrary shell output is unbounded complexity with diminishing returns. | Use regex-based parsers with language-specific heuristics. Accept that some outputs will fall through to the generic `file:line:col` fallback. This is honest and practical. |
-| Exact token counting in budget mode | Exact token counting requires a tokenizer dependency (tiktoken or similar), adding binary size and complexity for approximate benefit. Different models tokenize differently anyway. | Use character-based approximation (1 token approximately equals 4 chars). Good enough for budget targeting. Over-counting slightly is better than under-counting. |
-| Tab output diffing (delta between polls) | Tracking what changed since the last `glass_tab_output` call requires per-caller state management in the MCP server. Adds complexity for a niche use case. | Return full output (last N lines) each time. Agents can diff locally if needed. The `has_running_command` flag tells them when output is final. |
+| Font ligatures | Requires HarfBuzz shaping pipeline, fundamentally changes per-cell rendering model, massive complexity. Glass already uses `Shaping::Advanced` via cosmic-text but ligatures would merge multiple cells into one glyph. | Explicitly out of scope per PROJECT.md. Would require rethinking the entire cell-grid rendering model. |
+| Image protocol support (Kitty, Sixel) | Separate rendering layer (texture upload, placement, scrolling). Orthogonal to text rendering correctness. | Defer to future milestone. No dependency on text rendering fixes. |
+| Custom glyph atlas / texture atlas rendering | Building a custom glyph atlas and doing texture-mapped quad rendering (like Alacritty does) instead of using glyphon. Would be faster but requires abandoning glyphon entirely. | Use glyphon as-is. The per-cell positioning fix works within glyphon's API. Only consider atlas approach if profiling shows glyphon is a bottleneck. |
+| HarfBuzz text shaping | Full complex text layout for Arabic, Thai, Devanagari, etc. Requires HarfBuzz integration, bidirectional text support, and fundamentally different cell model. | cosmic-text already uses harfrust (a Rust HarfBuzz port) internally. For terminal use, complex scripts aren't grid-aligned anyway. Not a terminal-emulator concern. |
+| Sub-pixel anti-aliasing | ClearType-style rendering with per-subpixel color channels. Would require knowledge of physical pixel layout and changes to the rasterization pipeline. | Let the OS/GPU driver handle sub-pixel rendering. glyphon/swash handle rasterization; Glass doesn't need to intervene. |
+| Configurable line height / cell padding | Allowing users to add extra padding between lines or within cells. Nice for readability but complicates box-drawing alignment. | Get the correct default line height first. Config option can be added later as a simple multiplier. |
 
 ## Feature Dependencies
 
 ```
-MCP Command Channel (new infrastructure)
-    |
-    +-- glass_tab_create
-    +-- glass_tab_list
-    +-- glass_tab_run
-    +-- glass_tab_output ---- glass_output (tab_id mode)
-    +-- glass_tab_close
-    +-- glass_command_status
-    +-- glass_command_cancel
+Correct line height ─────────────┐
+                                 ├──> Box drawing looks correct
+Per-cell glyph positioning ──────┘
+                                 ├──> TUI apps render correctly (vim, htop, tmux)
+Wide char / CJK support ─────────┘
 
-History DB (existing)
-    +-- glass_output (command_id mode)
-    +-- glass_cached_result
-    +-- glass_errors (command_id mode)
+Per-cell glyph positioning ──────> Underline/strikethrough positioned correctly
+                                   (decorations need accurate cell boundaries)
 
-Snapshot DB (existing)
-    +-- glass_changed_files
+Font fallback cascade ───────────> CJK characters actually render
+                                   (without fallback, CJK shows tofu/missing glyphs)
 
-glass_errors crate (new, pure library)
-    +-- glass_errors MCP tool
+Dynamic DPI handling ────────────> Requires: update_font() (already exists)
+                                   Independent of other features.
 
-glass_context (existing)
-    +-- glass_context budget/focus enhancement
+Underline rendering ─────────────> Multiple underline styles (extension)
+                                   Colored underlines (extension)
 ```
-
-**Critical path:** The MCP Command Channel is the foundation for 7 of 12 new tools. It must be built first. The remaining 5 tools (glass_output from history, glass_cached_result, glass_changed_files, glass_errors from history, glass_context budget) can be built independently since they only access existing SQLite databases.
 
 ## MVP Recommendation
 
-### Must-have (builds on critical path):
+Prioritize (in implementation order):
 
-1. **MCP Command Channel** -- Async channel bridge between MCP server and main event loop. Unblocks all live session tools. Without this, half the features are impossible. This is infrastructure, not user-facing, but it is the highest priority.
-2. **glass_tab_create / glass_tab_list / glass_tab_close** -- Basic tab lifecycle. Table stakes for orchestration. Reuses existing create_session/close_session flows.
-3. **glass_tab_run / glass_tab_output** -- Core agent workflow: run command, read output. The entire reason agents want tabs.
-4. **glass_output (filtered)** -- Highest token-saving impact per implementation effort. Pattern filtering on build output saves 80-95% of tokens. Works from both history DB and live grid.
-5. **glass_command_status** -- Agents must know if a command finished before reading output. Without this, glass_tab_output returns incomplete data silently.
+1. **Correct line height from font metrics** -- Lowest complexity, highest visual impact. Changes one line in GridRenderer::new(). Fixes box-drawing gaps immediately.
 
-### Should-have (high value, independent of critical path):
+2. **Per-cell glyph positioning** -- Core fix. Without this, all other features render at wrong positions. Change build_text_buffers() to position each cell's glyph at column * cell_width instead of relying on text shaping to place them.
 
-6. **glass_errors** -- Structured error extraction. High value but requires building parser infrastructure. Rust parser is most relevant to Glass's own development; generic fallback covers most other tools via `file:line:col: message`.
-7. **glass_cached_result** -- Major differentiator. Saves wall-clock time, not just tokens. Requires staleness detection via snapshot timestamp cross-reference.
-8. **glass_changed_files** -- Leverages existing snapshot infrastructure uniquely. Adding `similar` crate for unified diffs is straightforward.
+3. **Underline and strikethrough rendering** -- Low complexity, high value. Read UNDERLINE/STRIKEOUT flags (already in RenderedCell.flags), emit RectInstances at appropriate positions.
 
-### Nice-to-have (lower priority):
+4. **Wide character / CJK support** -- Medium complexity but critical for internationalization. Render WIDE_CHAR cells at 2x width, ensure backgrounds span correctly.
 
-9. **glass_context budget/focus** -- Enhancement to existing tool. Useful but agents can work around it by using glass_output with pattern filters.
-10. **glass_command_cancel** -- Sends SIGINT via PTY. Simple to implement, less frequently needed by agents.
-11. **Additional error parsers** (Python, Node, Go, GCC beyond generic) -- Rust parser and generic fallback cover the primary use cases. Others add breadth but can iterate based on user demand.
+5. **Font fallback cascade** -- Verify/configure cosmic-text's built-in fallback. May already partially work. Test with emoji and CJK characters.
 
-### Defer:
+6. **Dynamic DPI handling** -- Wire ScaleFactorChanged to existing update_font(). Infrastructure already exists, just needs the event handler.
 
-- **Python/Node/Go/GCC dedicated parsers** -- Generic fallback handles the common `file:line:col: message` pattern. Dedicated parsers can be added incrementally based on actual agent usage patterns.
+Defer to later:
+- **Built-in box drawing rendering**: High complexity, and correct line height + per-cell positioning will fix most box-drawing issues with good fonts. Only needed for fonts with poorly-designed box drawing glyphs.
+- **Multiple underline styles**: Extension of basic underline. Add after basic underline works.
+- **Colored underlines**: Requires RenderedCell schema change. Add after basic underline works.
+- **Powerline symbols**: Niche. Most users have Nerd Fonts installed which include these glyphs.
 
-## Complexity Assessment
+## Detailed Feature Specifications
 
-| Feature | Est. Lines | Risk | Key Challenge |
-|---------|-----------|------|---------------|
-| MCP Command Channel | 200-300 | **HIGH** | Crosses crate boundaries (glass_mcp to main.rs). Async channel with oneshot reply. Timeout handling for requests when main event loop is busy. Must not block the winit event loop. |
-| Tab lifecycle (create/list/close) | 150-200 | Medium | Reuses existing create_session/close flows. Main risk: stable tab ID semantics if tabs are reordered. Consider using session_id (UUID) as stable reference. |
-| Tab run/output | 100-150 | Medium | PTY write is trivial (bytes + newline). Grid read requires FairMutex lock + iterating grid rows + ANSI stripping. Must cap output size (100KB). |
-| glass_output (filtered) | 100-150 | Low | Regex pattern compilation, line filtering, character budget. Well-understood problem. |
-| glass_command_status | 50-80 | Low | Read BlockManager state enum. Return running/complete/idle. |
-| glass_command_cancel | 30-50 | Low | Write ETX (0x03) to PTY sender. Cross-platform signal semantics. |
-| glass_errors crate | 300-500 | Medium | Multiple regex parsers. Rust parser is most complex (multi-line error spans with `-->` arrows). But `rustc --error-format=json` exists -- consider parsing JSON output instead of human-readable text. |
-| glass_cached_result | 100-150 | Medium | SQL query for matching command + staleness check. Edge cases: CWD mismatch, fuzzy command matching, partial output in history. |
-| glass_changed_files | 150-200 | Low-Medium | Snapshot query + blob read + `similar` unified diff. Well-understood; `similar` crate is battle-tested. |
-| glass_context budget | 80-120 | Low | Priority-sorted data with character truncation. Enhancement to existing code. |
+### Per-Cell Glyph Positioning
 
-## Competitive Landscape
+**Current behavior:** `build_text_buffers()` creates one glyphon Buffer per line, sets the full line text, and lets cosmic-text's shaper position glyphs. The shaper uses each glyph's advance width, which may differ from cell_width, causing cumulative drift.
 
-### Terminal MCP servers:
+**Expected behavior:** Each glyph's x-position must be `column * cell_width`, regardless of the glyph's natural advance. This is how all GPU terminals work -- the terminal grid dictates position, not the font metrics.
 
-| Tool | Tab Management | Error Parsing | Token Optimization | Command Status |
-|------|---------------|---------------|-------------------|----------------|
-| **terminal-mcp** (generic) | No | No | No | No |
-| **iTerm MCP server** | Yes (via Python API bridge) | No | No | Session state only |
-| **kitty remote control** | Yes (JSON protocol) | No | No | Window state via `ls` |
-| **Warp** | Built-in AI, not MCP-exposed | "Ask Warp AI" for errors (proprietary) | Block model, implicit | Visual indicators |
-| **Claude Code Bash tool** | No (single shell) | No (raw output) | 30K char truncation, disk overflow | No |
-| **Glass v2.3 (proposed)** | Yes (MCP tools) | Yes (structured, auto-detect) | Pattern filter, cache, budget, diffs | Yes (block state) |
+**Implementation approaches:**
+1. **Per-cell Buffer (simple, possibly slow):** Create one glyphon Buffer per cell. Guarantees positioning but creates N*M buffers per frame.
+2. **Post-shaping position override (ideal):** Shape text per-line for shaping benefits, then override each glyph's x-position to snap to grid. Requires glyphon API access to glyph positions after shaping.
+3. **Pre-padded text (hacky):** Insert spaces to force grid alignment. Fragile, doesn't work with variable-width glyphs.
 
-### Glass's unique position:
+Approach 2 is what Alacritty, Ghostty, and other terminals do. The exact API depends on whether glyphon exposes glyph positions for modification after shaping. If not, approach 1 (per-cell Buffer) is the fallback -- performance impact can be mitigated by caching buffers between frames.
 
-Glass is the only terminal that combines: (a) command-aware history with FTS5 search, (b) file snapshots with content-addressed dedup, (c) MCP exposure of all the above to arbitrary AI agents, and (d) multi-agent coordination. The v2.3 tools leverage this data infrastructure to provide capabilities no other terminal can offer -- particularly `glass_cached_result` (cross-referencing history timestamps with snapshot timestamps) and `glass_changed_files` (diffs from pre-command snapshots).
+### Line Height from Font Metrics
 
-### AI agent pain points addressed:
+**Current:** `line_height = (physical_font_size * 1.2).ceil()` -- hardcoded 1.2x multiplier.
 
-| Pain Point | Current Workaround | Glass Solution | Token Savings |
-|-----------|-------------------|----------------|---------------|
-| Large output overflows context | Pipe to head/tail, truncation at 30K chars | `glass_output` with regex pattern filter + line limits | 80-95% for build/test output |
-| Re-running commands after context reset | Run everything again, waste minutes | `glass_cached_result` with file-change staleness check | 100% when cache is valid |
-| Parsing compiler errors from raw text | Regex in system prompt, fragile across languages | `glass_errors` with auto-detected per-language parsers | 60-80% (structured vs raw) |
-| Managing multiple terminal sessions | Single tab, sequential commands, manual switching | `glass_tab_*` orchestration: server + tests + watcher in parallel | Indirect: faster workflows |
-| Not knowing if command is still running | Sleep and hope, or check exit code post-hoc | `glass_command_status` returns live block state | Eliminates wasted polls |
-| Checking what a command changed | Re-read all potentially modified files | `glass_changed_files` returns only the diffs | 70-90% for multi-file edits |
+**Expected:** `line_height = ascent + descent` from the font's actual metrics. cosmic-text provides these via `FontSystem`. The `Metrics` struct takes `(font_size, line_height)` where line_height should match the font's natural height for box-drawing to connect.
+
+**Key detail:** Some terminals use `ascent + descent + leading` while others use just `ascent + descent`. For box-drawing correctness, the line height must exactly match what the font designer intended for the cell height. If the font's `ascent + descent` is smaller than expected, cell_height should be `max(ascent + descent, font_size)` to prevent overlap.
+
+### Wide Character / CJK Support
+
+**Current:** WIDE_CHAR_SPACER cells are skipped in text building. WIDE_CHAR cells are rendered at 1x width.
+
+**Expected:**
+- WIDE_CHAR cells render their glyph centered over 2x cell_width
+- Background rect for WIDE_CHAR spans 2 cells
+- WIDE_CHAR_SPACER cells contribute no glyph but may need background rect if bg differs from default
+- Cursor on a wide char should be 2x cell_width
+- Selection highlighting should cover both cells
+
+**Edge cases:**
+- Wide char at last column wraps to next line (terminal handles this, but renderer must not clip)
+- Half-overwritten wide char (cursor or overwrite in middle) -- alacritty_terminal handles this by clearing the spacer
+- LEADING_WIDE_CHAR_SPACER flag exists for wide chars that wrap -- spacer is at end of previous line
+
+### Underline / Strikethrough
+
+**alacritty_terminal flags available:**
+- `UNDERLINE` -- standard single underline (SGR 4)
+- `DOUBLE_UNDERLINE` -- two parallel lines (SGR 21)
+- `UNDERCURL` -- wavy/curly line (SGR 4:3)
+- `DOTTED_UNDERLINE` -- dotted line (SGR 4:4)
+- `DASHED_UNDERLINE` -- dashed line (SGR 4:5)
+- `STRIKEOUT` -- strikethrough (SGR 9)
+
+**Positioning (standard practice):**
+- Underline: 1-2px below baseline. Position = `y + descent - underline_position` (from font metrics) or `y + cell_height - 2px` as fallback.
+- Strikethrough: centered vertically. Position = `y + ascent * 0.65` (approximate strikethrough position).
+- All decorations span full cell_width, colored with fg color (or underline_color if set via SGR 58).
+
+**For MVP:** Implement UNDERLINE and STRIKEOUT only. Both are simple horizontal rects added to the RectInstance list during `build_rects()`.
+
+### Font Fallback
+
+**How it works in cosmic-text/glyphon:** FontSystem loads all system fonts via fontdb. When shaping text, if the primary font family lacks a glyph, cosmic-text automatically searches loaded fonts for one that has it. This is built-in behavior.
+
+**What Glass needs to do:**
+1. Verify fallback works by testing with CJK text and emoji
+2. Ensure fallback glyph sizes are reasonable (cosmic-text should handle this)
+3. Optionally expose a `font.fallback` config array to let users prioritize specific fallback fonts
+4. Handle the case where NO font has the glyph (show a replacement character, not crash)
+
+**Known issue (from Bevy/cosmic-text research):** cosmic-text's fallback can sometimes produce inconsistent sizing. Ghostty addresses this by adjusting fallback font sizes to match the primary font's metrics. Glass may need similar adjustment if fallback glyphs appear too large/small.
+
+### Dynamic DPI Handling
+
+**Current:** ScaleFactorChanged event is logged but ignored (documented tech debt).
+
+**Required:**
+1. In ScaleFactorChanged handler, call `frame_renderer.update_font(font_family, font_size, new_scale_factor)`
+2. update_font() already rebuilds GridRenderer with new metrics
+3. After font rebuild, recalculate terminal columns/rows and resize PTY
+4. Request redraw
+
+**Platform behavior:**
+- Windows: Per-monitor DPI (125%, 150%, 200% common). Triggered by dragging between monitors.
+- macOS: Retina (2x) vs non-Retina. Less common to change dynamically.
+- Linux/Wayland: Integer scale factors (1x, 2x). X11: global DPI via Xft.dpi.
 
 ## Sources
 
-- [iTerm2 Python API - Tab Management](https://iterm2.com/python-api/examples/launch_and_run.html) -- async_create_tab, async_send_text patterns. HIGH confidence.
-- [kitty Remote Control Protocol](https://sw.kovidgoyal.net/kitty/remote-control/) -- JSON-based programmatic terminal control with tab/window management. HIGH confidence.
-- [rustc JSON Output Format](https://doc.rust-lang.org/rustc/json.html) -- Structured diagnostic messages with spans, severity levels, suggestion applicability. HIGH confidence.
-- [Cargo External Tools](https://doc.rust-lang.org/cargo/reference/external-tools.html) -- `--message-format=json` for machine-readable compiler output. HIGH confidence.
-- [terminal-mcp on GitHub](https://github.com/elleryfamilia/terminal-mcp) -- Generic terminal MCP server as baseline competitor. MEDIUM confidence.
-- [Claude Code Bash Tool](https://docs.claude.com/en/docs/agents-and-tools/tool-use/bash-tool) -- 30K char truncation, output handling patterns. HIGH confidence.
-- [Claude Code Output Overflow Issue #12054](https://github.com/anthropics/claude-code/issues/12054) -- Real agent pain point: tool outputs consuming entire context window. HIGH confidence.
-- [Anthropic: Writing Effective Tools for Agents](https://www.anthropic.com/engineering/writing-tools-for-agents) -- Structured error messages reduce retries; concise responses save tokens. HIGH confidence.
-- [Anthropic: Effective Context Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) -- Budget-aware context management patterns. HIGH confidence.
-- [Warp Terminal Features](https://www.warp.dev/all-features) -- Block model, AI error explanation, competitive landscape. MEDIUM confidence.
-- [MCP Streaming Best Practices](https://www.byteplus.com/en/topic/541918) -- Polling vs streaming trade-offs for MCP transport. MEDIUM confidence.
-- [it2 CLI for iTerm2](https://github.com/mkusaka/it2) -- CLI wrapping iTerm2 Python API for tab management. MEDIUM confidence.
+- [Alacritty box drawing PR](https://github.com/alacritty/alacritty/commit/f7177101eda589596ab08866892bd4629bd1ef44) -- builtin box drawing implementation
+- [Alacritty box drawing issues](https://github.com/alacritty/alacritty/issues/7067) -- community discussion on box drawing rendering
+- [Alacritty cell Flags docs](https://docs.rs/alacritty_terminal/0.25.1/alacritty_terminal/term/cell/struct.Flags.html) -- all available flags including underline variants
+- [Ghostty font system](https://deepwiki.com/ghostty-org/ghostty/5.5-font-system) -- per-cell positioning and fallback size adjustment
+- [Ghostty config reference](https://ghostty.org/docs/config/reference) -- glyph positioning configuration
+- [Contour terminal text stack](https://contour-terminal.org/internals/text-stack/) -- CJK wide char and grid alignment internals
+- [Zutty GPU rendering](https://tomscii.sig7.se/2020/11/How-Zutty-works) -- compute shader approach to grid rendering
+- [WezTerm font height issues](https://github.com/wezterm/wezterm/issues/2753) -- line height discrepancies between terminals
+- [cosmic-text font fallback issue](https://github.com/pop-os/cosmic-term/issues/104) -- fallback font search strictness
+- [Bevy cosmic-text fallback issue](https://github.com/bevyengine/bevy/issues/16354) -- inconsistent fallback rendering
+- [winit DPI documentation](https://docs.rs/winit/latest/winit/dpi/index.html) -- ScaleFactorChanged event semantics
+- [Ghostty CJK height constraining](https://github.com/ghostty-org/ghostty/issues/8709) -- CJK glyph height adjustment
+- [Alacritty underline support PR](https://github.com/alacritty/alacritty/pull/1078) -- underline and strikethrough implementation
