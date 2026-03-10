@@ -1,0 +1,10 @@
+[package]
+name = "glass_errors"
+version = "0.1.0"
+edition = "2021"
+description = "Structured error extraction from compiler output"
+
+[dependencies]
+regex = "1"
+serde = { workspace = true }
+serde_json = "1.0"

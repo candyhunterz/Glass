@@ -155,11 +155,11 @@ Plans:
   2. Rust compiler output (both human-readable and --error-format=json) is parsed into structured errors
   3. Generic fallback parser extracts errors matching the file:line:col: message pattern from any compiler
   4. Parser auto-selects the appropriate language parser based on command text hint or output content patterns
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 38-01: TBD
-- [ ] 38-02: TBD
+- [ ] 38-01-PLAN.md -- Create glass_errors crate with all parsers (Rust JSON, Rust human, generic) and auto-detection
+- [ ] 38-02-PLAN.md -- Wire glass_extract_errors MCP tool in glass_mcp
 
 ### Phase 39: Live Command Awareness
 **Goal**: Agent can monitor and control running commands in real time
@@ -218,5 +218,5 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
 | 36. Multi-Tab Orchestration | v2.3 | Complete    | 2026-03-10 | 2026-03-10 |
 | 37. Token-Saving Tools | 2/2 | Complete    | 2026-03-10 | - |
-| 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |
+| 38. Structured Error Extraction | v2.3 | 0/2 | Not started | - |
 | 39. Live Command Awareness | v2.3 | 0/? | Not started | - |
