@@ -74,7 +74,7 @@ impl std::fmt::Debug for McpEventRequest {
 #[cfg(unix)]
 pub fn ipc_socket_path() -> std::path::PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".glass")
         .join("glass.sock")
 }
