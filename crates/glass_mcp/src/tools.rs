@@ -39,6 +39,8 @@ use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, S
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use serde::{Deserialize, Serialize};
 
+use similar::TextDiff;
+
 use crate::context;
 use crate::ipc_client;
 
@@ -299,6 +301,14 @@ pub struct CacheCheckParams {
     pub command_id: i64,
 }
 
+/// Parameters for glass_command_diff.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CommandDiffParams {
+    /// History command ID to get file diffs for.
+    #[schemars(description = "History command ID to get file diffs for")]
+    pub command_id: i64,
+}
+
 /// Parameters for glass_tab_close.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TabCloseParams {
@@ -360,6 +370,11 @@ impl From<CommandRecord> for HistoryEntry {
 /// Helper to convert anyhow::Error to McpError.
 fn internal_err(e: impl std::fmt::Display) -> McpError {
     McpError::internal_error(e.to_string(), None)
+}
+
+/// Check whether raw bytes look like binary content (contains null byte in first 8 KiB).
+fn is_binary_content(bytes: &[u8]) -> bool {
+    bytes.iter().take(8192).any(|&b| b == 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1678,5 +1693,27 @@ mod tests {
         let json = r#"{"command_id": 42}"#;
         let params: CacheCheckParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.command_id, 42);
+    }
+
+    #[test]
+    fn test_command_diff_params_deserialize() {
+        let json = r#"{"command_id": 99}"#;
+        let params: CommandDiffParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 99);
+    }
+
+    #[test]
+    fn test_is_binary_content_with_null_byte() {
+        assert!(is_binary_content(b"hello\x00world"));
+    }
+
+    #[test]
+    fn test_is_binary_content_without_null_byte() {
+        assert!(!is_binary_content(b"hello world"));
+    }
+
+    #[test]
+    fn test_is_binary_content_empty() {
+        assert!(!is_binary_content(b""));
     }
 }
