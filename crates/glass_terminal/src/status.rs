@@ -73,12 +73,16 @@ pub fn query_git_status(cwd: &str) -> Option<GitInfo> {
     }
 
     // Get current branch
-    let branch_output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(cwd)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .ok()?;
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let branch_output = cmd.output().ok()?;
 
     if !branch_output.status.success() {
         return None; // Not a git repo
@@ -89,12 +93,16 @@ pub fn query_git_status(cwd: &str) -> Option<GitInfo> {
         .to_string();
 
     // Get dirty file count (modified + untracked)
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain"])
+    let mut cmd = Command::new("git");
+    cmd.args(["status", "--porcelain"])
         .current_dir(cwd)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .ok()?;
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let status_output = cmd.output().ok()?;
 
     let dirty_count = if status_output.status.success() {
         String::from_utf8_lossy(&status_output.stdout)

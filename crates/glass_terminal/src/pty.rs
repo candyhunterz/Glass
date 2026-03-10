@@ -119,8 +119,12 @@ fn convert_osc_to_shell(osc: crate::osc_scanner::OscEvent) -> ShellEvent {
 fn default_shell_program() -> String {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW (0x08000000) prevents a visible console flash
+        // when probing for pwsh from a GUI subsystem process.
         if std::process::Command::new("pwsh")
             .arg("--version")
+            .creation_flags(0x08000000)
             .output()
             .is_ok()
         {

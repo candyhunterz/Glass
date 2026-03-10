@@ -14,7 +14,14 @@ use winit::keyboard::ModifiersState;
 /// - Linux: `$SHELL` or `/bin/bash`
 #[cfg(target_os = "windows")]
 pub fn default_shell() -> String {
-    match std::process::Command::new("pwsh").arg("--version").output() {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW (0x08000000) prevents a visible console flash
+    // when probing for pwsh from a GUI subsystem process.
+    match std::process::Command::new("pwsh")
+        .arg("--version")
+        .creation_flags(0x08000000)
+        .output()
+    {
         Ok(output) if output.status.success() => "pwsh".to_string(),
         _ => "powershell".to_string(),
     }
