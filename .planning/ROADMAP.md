@@ -10,6 +10,7 @@
 - [x] **v2.1 Packaging & Polish** -- Phases 26-30 (shipped 2026-03-07)
 - [x] **v2.2 Multi-Agent Coordination** -- Phases 31-34 (shipped 2026-03-10)
 - [x] **v2.3 Agent MCP Features** -- Phases 35-39 (shipped 2026-03-10)
+- [ ] **v2.4 Rendering Correctness** -- Phases 40-44 (in progress)
 
 ## Phases
 
@@ -100,7 +101,72 @@
 
 </details>
 
+### v2.4 Rendering Correctness (In Progress)
+
+**Milestone Goal:** Fix grid-aligned rendering so TUI apps (vim, htop, tmux, Claude Code) render correctly, and add missing text rendering features (wide chars, decorations, font fallback, DPI).
+
+- [ ] **Phase 40: Grid Alignment** - Per-cell glyph positioning and font-metric line height for correct TUI rendering
+- [ ] **Phase 41: Wide Character Support** - CJK and double-width characters render at correct 2-cell width
+- [ ] **Phase 42: Text Decorations** - Underline and strikethrough GPU rendering via rect instances
+- [ ] **Phase 43: Font Fallback** - Missing glyphs resolved via cosmic-text system font fallback
+- [ ] **Phase 44: Dynamic DPI** - ScaleFactorChanged triggers full font and surface rebuild
+
+## Phase Details
+
+### Phase 40: Grid Alignment
+**Goal**: TUI applications render with pixel-perfect grid alignment -- no horizontal drift, no vertical gaps
+**Depends on**: Nothing (first phase of v2.4)
+**Requirements**: GRID-01, GRID-02
+**Success Criteria** (what must be TRUE):
+  1. Running `vim` or `htop` shows box-drawing borders that connect seamlessly with no vertical gaps between lines
+  2. Long lines of text in TUI apps (tmux status bar, vim line numbers) show no horizontal drift -- characters stay aligned to their grid columns
+  3. The terminal grid renders identically to Alacritty or Windows Terminal for the same font and size
+**Plans**: TBD
+
+### Phase 41: Wide Character Support
+**Goal**: CJK text and other double-width characters render correctly spanning two cell widths
+**Depends on**: Phase 40
+**Requirements**: WIDE-01, WIDE-02
+**Success Criteria** (what must be TRUE):
+  1. CJK characters (Chinese, Japanese, Korean) render at double cell width without overlapping adjacent characters
+  2. Cell backgrounds, cursor highlighting, and text selection correctly span 2 cells for wide characters
+  3. Mixed ASCII and CJK text on the same line maintains correct column alignment
+**Plans**: TBD
+
+### Phase 42: Text Decorations
+**Goal**: Underlined and struck-through text renders with visible decoration lines
+**Depends on**: Phase 40
+**Requirements**: DECO-01, DECO-02
+**Success Criteria** (what must be TRUE):
+  1. Text with SGR 4 (underline) shows a visible line below the baseline
+  2. Text with SGR 9 (strikethrough) shows a visible line through the middle of the text
+  3. Decorations render at correct vertical positions within the cell regardless of font size
+**Plans**: TBD
+
+### Phase 43: Font Fallback
+**Goal**: Characters missing from the primary font render via system font fallback
+**Depends on**: Phase 40
+**Requirements**: FONT-01, FONT-02
+**Success Criteria** (what must be TRUE):
+  1. Characters not in the configured font (e.g., CJK glyphs when using a Latin-only font) render instead of showing tofu/missing glyph boxes
+  2. Fallback glyphs render at the correct size and position within the cell grid, not overflowing or misaligned
+**Plans**: TBD
+
+### Phase 44: Dynamic DPI
+**Goal**: Terminal renders correctly after moving between displays with different DPI/scale factors
+**Depends on**: Phase 40
+**Requirements**: DPI-01, DPI-02
+**Success Criteria** (what must be TRUE):
+  1. Moving the Glass window from a 1x display to a 2x HiDPI display triggers automatic font and surface rebuild with no user action required
+  2. After a DPI change, the terminal grid remains correctly aligned with no rendering artifacts, clipping, or blurry text
+  3. The PTY is notified of the new terminal dimensions after a DPI change so running programs reflow correctly
+**Plans**: TBD
+
 ## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 40 -> 41 -> 42 -> 43 -> 44
+Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run in parallel, but sequential execution is safer since all modify GridRenderer.
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -143,3 +209,8 @@
 | 37. Token-Saving Tools | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 38. Structured Error Extraction | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 39. Live Command Awareness | v2.3 | 1/1 | Complete | 2026-03-10 |
+| 40. Grid Alignment | v2.4 | 0/0 | Not started | - |
+| 41. Wide Character Support | v2.4 | 0/0 | Not started | - |
+| 42. Text Decorations | v2.4 | 0/0 | Not started | - |
+| 43. Font Fallback | v2.4 | 0/0 | Not started | - |
+| 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |

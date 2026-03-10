@@ -64,22 +64,22 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| GRID-01 | — | Pending |
-| GRID-02 | — | Pending |
-| WIDE-01 | — | Pending |
-| WIDE-02 | — | Pending |
-| DECO-01 | — | Pending |
-| DECO-02 | — | Pending |
-| FONT-01 | — | Pending |
-| FONT-02 | — | Pending |
-| DPI-01 | — | Pending |
-| DPI-02 | — | Pending |
+| GRID-01 | Phase 40 | Pending |
+| GRID-02 | Phase 40 | Pending |
+| WIDE-01 | Phase 41 | Pending |
+| WIDE-02 | Phase 41 | Pending |
+| DECO-01 | Phase 42 | Pending |
+| DECO-02 | Phase 42 | Pending |
+| FONT-01 | Phase 43 | Pending |
+| FONT-02 | Phase 43 | Pending |
+| DPI-01 | Phase 44 | Pending |
+| DPI-02 | Phase 44 | Pending |
 
 **Coverage:**
 - v2.4 requirements: 10 total
-- Mapped to phases: 0
-- Unmapped: 10 ⚠️
+- Mapped to phases: 10
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-09*
-*Last updated: 2026-03-09 after initial definition*
+*Last updated: 2026-03-10 after roadmap creation*
