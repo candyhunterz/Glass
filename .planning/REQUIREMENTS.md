@@ -19,8 +19,8 @@ Requirements for rendering correctness milestone. Each maps to roadmap phases.
 
 ### Text Decorations
 
-- [ ] **DECO-01**: Underlined text renders with a 1px line below the baseline
-- [ ] **DECO-02**: Strikethrough text renders with a 1px line through the middle
+- [x] **DECO-01**: Underlined text renders with a 1px line below the baseline
+- [x] **DECO-02**: Strikethrough text renders with a 1px line through the middle
 
 ### Font Handling
 
@@ -68,8 +68,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GRID-02 | Phase 40 | Complete |
 | WIDE-01 | Phase 41 | Complete |
 | WIDE-02 | Phase 41 | Complete |
-| DECO-01 | Phase 42 | Pending |
-| DECO-02 | Phase 42 | Pending |
+| DECO-01 | Phase 42 | Complete |
+| DECO-02 | Phase 42 | Complete |
 | FONT-01 | Phase 43 | Pending |
 | FONT-02 | Phase 43 | Pending |
 | DPI-01 | Phase 44 | Pending |

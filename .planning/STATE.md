@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.4
 milestone_name: Rendering Correctness
 status: completed
-stopped_at: Completed 41-02-PLAN.md
-last_updated: "2026-03-10T22:17:25.057Z"
-last_activity: 2026-03-10 -- Completed Phase 41 (wide character support - all plans done)
+stopped_at: Completed 42-01-PLAN.md
+last_updated: "2026-03-10T22:34:06.915Z"
+last_activity: 2026-03-10 -- Completed Phase 42 Plan 01 (text decoration rendering)
 progress:
   total_phases: 5
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 5
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 41 - Wide Character Support (v2.4 Rendering Correctness)
+**Current focus:** Phase 42 - Text Decorations (v2.4 Rendering Correctness)
 
 ## Current Position
 
-Phase: 41 of 44 (Wide Character Support)
-Plan: 2 of 2 in current phase (phase complete)
-Status: Phase 41 Complete
-Last activity: 2026-03-10 -- Completed Phase 41 (wide character support - all plans done)
+Phase: 42 of 44 (Text Decorations)
+Plan: 1 of 1 in current phase (phase complete)
+Status: Phase 42 Complete
+Last activity: 2026-03-10 -- Completed Phase 42 Plan 01 (text decoration rendering)
 
 Progress (v2.4): [██████████] 100%
 
@@ -62,6 +62,7 @@ v2.4-specific decisions:
 - [Phase 40]: All legacy per-line rendering methods removed; per-cell Buffer is now the only rendering pipeline
 - [Phase 41]: Use intersects() for multi-flag spacer skip; buf_width per-cell based on WIDE_CHAR flag
 - [Phase 41]: Cursor wide-char detection scans cells for WIDE_CHAR flag at cursor point; Beam cursor excluded from double-width
+- [Phase 42]: Decoration rects use fg color, 1px height, placed after selection rects before block decorations
 
 ### Pending Todos
 
@@ -77,6 +78,6 @@ v2.4-specific decisions:
 
 ## Session Continuity
 
-Last session: 2026-03-10T22:15:17.022Z
-Stopped at: Completed 41-02-PLAN.md
+Last session: 2026-03-10T22:34:06.914Z
+Stopped at: Completed 42-01-PLAN.md
 Resume file: None
