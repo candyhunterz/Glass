@@ -216,7 +216,7 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 32. MCP Tools | v2.2 | 2/2 | Complete | 2026-03-09 |
 | 33. Integration and Testing | v2.2 | 1/1 | Complete | 2026-03-09 |
 | 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |
-| 35. MCP Command Channel | v2.3 | 0/2 | Not started | - |
+| 35. MCP Command Channel | 1/2 | In Progress|  | - |
 | 36. Multi-Tab Orchestration | v2.3 | 0/? | Not started | - |
 | 37. Token-Saving Tools | v2.3 | 0/? | Not started | - |
 | 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |

@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
-status: active
-stopped_at: null
-last_updated: "2026-03-09"
-last_activity: 2026-03-09 -- Milestone v2.3 started
+status: planning
+stopped_at: Completed 35-01-PLAN.md
+last_updated: "2026-03-10T02:38:38.782Z"
+last_activity: 2026-03-09 -- Roadmap created for v2.3 (5 phases, 16 requirements)
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 2
+  completed_plans: 1
   percent: 0
 ---
 
@@ -21,14 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Defining requirements for v2.3 Agent MCP Features
+**Current focus:** Phase 35 - MCP Command Channel
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-03-09 — Milestone v2.3 started
+Phase: 35 of 39 (MCP Command Channel)
+Plan: --
+Status: Ready to plan
+Last activity: 2026-03-09 -- Roadmap created for v2.3 (5 phases, 16 requirements)
+
+Progress: [..........] 0%
 
 ## Performance Metrics
 
@@ -47,6 +49,7 @@ Last activity: 2026-03-09 — Milestone v2.3 started
 ### Decisions
 
 See PROJECT.md Key Decisions table for full history.
+- [Phase 35]: Dedicated tokio runtime per IPC listener thread; JSON-line protocol; 5s oneshot timeout; Removed Clone from AppEvent for oneshot::Sender compatibility
 
 ### Pending Todos
 
@@ -60,9 +63,10 @@ See PROJECT.md Key Decisions table for full history.
 - ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Package manager manifests have placeholder values needing replacement at publish time
 - Tab-to-agent PID mapping may be infeasible cross-platform (process tree walking)
+- rmcp custom transport support needs verification for hybrid IPC approach (Phase 35 research flag)
 
 ## Session Continuity
 
-Last session: 2026-03-09
-Stopped at: Milestone v2.3 started
+Last session: 2026-03-10T02:38:38.780Z
+Stopped at: Completed 35-01-PLAN.md
 Resume file: None
