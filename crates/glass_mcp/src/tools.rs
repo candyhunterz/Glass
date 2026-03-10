@@ -1407,4 +1407,63 @@ mod tests {
         let params: MessagesParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.agent_id, "abc-123");
     }
+
+    #[test]
+    fn test_tab_create_params_deserialize() {
+        let json = r#"{"shell": "bash", "cwd": "/tmp"}"#;
+        let params: TabCreateParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.shell.as_deref(), Some("bash"));
+        assert_eq!(params.cwd.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn test_tab_create_params_defaults() {
+        let json = r#"{}"#;
+        let params: TabCreateParams = serde_json::from_str(json).unwrap();
+        assert!(params.shell.is_none());
+        assert!(params.cwd.is_none());
+    }
+
+    #[test]
+    fn test_tab_send_params_deserialize() {
+        let json = r#"{"tab_index": 0, "command": "ls -la"}"#;
+        let params: TabSendParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tab_index, Some(0));
+        assert!(params.session_id.is_none());
+        assert_eq!(params.command, "ls -la");
+    }
+
+    #[test]
+    fn test_tab_send_params_with_session_id() {
+        let json = r#"{"session_id": 42, "command": "echo hello"}"#;
+        let params: TabSendParams = serde_json::from_str(json).unwrap();
+        assert!(params.tab_index.is_none());
+        assert_eq!(params.session_id, Some(42));
+    }
+
+    #[test]
+    fn test_tab_output_params_deserialize() {
+        let json = r#"{"tab_index": 1, "lines": 100, "pattern": "error"}"#;
+        let params: TabOutputParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tab_index, Some(1));
+        assert_eq!(params.lines, Some(100));
+        assert_eq!(params.pattern.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn test_tab_output_params_minimal() {
+        let json = r#"{"session_id": 5}"#;
+        let params: TabOutputParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.session_id, Some(5));
+        assert!(params.lines.is_none());
+        assert!(params.pattern.is_none());
+    }
+
+    #[test]
+    fn test_tab_close_params_deserialize() {
+        let json = r#"{"tab_index": 2}"#;
+        let params: TabCloseParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tab_index, Some(2));
+        assert!(params.session_id.is_none());
+    }
 }
