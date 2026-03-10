@@ -662,6 +662,58 @@ mod tests {
         }
     }
 
+    /// Helper to create a GridSnapshot with custom cursor
+    fn make_snapshot_with_cursor(
+        cells: Vec<glass_terminal::RenderedCell>,
+        columns: usize,
+        cursor_col: usize,
+        cursor_shape: CursorShape,
+    ) -> GridSnapshot {
+        use alacritty_terminal::index::{Column, Line, Point};
+        GridSnapshot {
+            cells,
+            cursor: alacritty_terminal::term::RenderableCursor {
+                point: Point {
+                    line: Line(0),
+                    column: Column(cursor_col),
+                },
+                shape: cursor_shape,
+            },
+            display_offset: 0,
+            history_size: 0,
+            mode: alacritty_terminal::term::TermMode::empty(),
+            columns,
+            screen_lines: 1,
+            selection: None,
+        }
+    }
+
+    /// Helper to create a cell with custom background color
+    fn make_cell_with_bg(
+        c: char,
+        col: usize,
+        line: i32,
+        flags: Flags,
+        bg: Rgb,
+    ) -> glass_terminal::RenderedCell {
+        use alacritty_terminal::index::{Column, Line, Point};
+        glass_terminal::RenderedCell {
+            point: Point {
+                line: Line(line),
+                column: Column(col),
+            },
+            c,
+            fg: Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            bg,
+            flags,
+            zerowidth: vec![],
+        }
+    }
+
     /// Test: wide char cell produces a Buffer with double width, spacer is skipped
     #[test]
     fn wide_char_buffer_double_width() {
@@ -739,5 +791,211 @@ mod tests {
         assert_eq!(positions[1], (1, 0), "Y at col 1");
         assert_eq!(positions[2], (2, 0), "CJK wide char at col 2, not col 3");
         assert_eq!(positions[3], (4, 0), "Z at col 4");
+    }
+
+    /// Test: WIDE_CHAR cell background rect is double-width, spacer produces no rect
+    #[test]
+    fn wide_char_bg_rect_double_width() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let default_bg = Rgb { r: 0, g: 0, b: 0 };
+        let red = Rgb {
+            r: 255,
+            g: 0,
+            b: 0,
+        };
+        let blue = Rgb {
+            r: 0,
+            g: 0,
+            b: 255,
+        };
+
+        // col 0: normal cell with red bg, col 1: WIDE_CHAR with blue bg,
+        // col 2: WIDE_CHAR_SPACER with blue bg, col 3: normal cell with default bg
+        let cells = vec![
+            make_cell_with_bg('A', 0, 0, Flags::empty(), red),
+            make_cell_with_bg('\u{4e16}', 1, 0, Flags::WIDE_CHAR, blue),
+            make_cell_with_bg(' ', 2, 0, Flags::WIDE_CHAR_SPACER, blue),
+            make_cell_with_bg('B', 3, 0, Flags::empty(), default_bg),
+        ];
+
+        let snapshot = make_snapshot(cells, 4);
+        let rects = renderer.build_rects(&snapshot, default_bg);
+
+        // Filter out cursor rects -- cursor is at col 0 by default, so last rect(s) are cursor
+        // Background rects come first in the vec
+        let cw = renderer.cell_width;
+
+        // Find bg rect at col 1 (wide char)
+        let wide_bg = rects
+            .iter()
+            .find(|r| (r.pos[0] - 1.0 * cw).abs() < 0.001)
+            .expect("Should have bg rect at col 1");
+        assert!(
+            (wide_bg.pos[2] - 2.0 * cw).abs() < 0.001,
+            "Wide char bg rect width ({}) should be 2*cell_width ({})",
+            wide_bg.pos[2],
+            2.0 * cw
+        );
+
+        // No rect should exist at x = 2*cell_width (spacer should be skipped)
+        let spacer_rect = rects
+            .iter()
+            .find(|r| (r.pos[0] - 2.0 * cw).abs() < 0.001 && r.color != [0.8, 0.8, 0.8, 0.7]);
+        assert!(
+            spacer_rect.is_none(),
+            "Spacer cell should not produce a background rect"
+        );
+
+        // Total bg rects should be 2 (col 0 red + col 1 blue)
+        let bg_rects: Vec<_> = rects
+            .iter()
+            .filter(|r| r.color != [0.8, 0.8, 0.8, 0.7]) // exclude cursor rects
+            .collect();
+        assert_eq!(bg_rects.len(), 2, "Should have exactly 2 bg rects");
+    }
+
+    /// Test: Block cursor on WIDE_CHAR cell has double-width
+    #[test]
+    fn wide_char_cursor_block_double_width() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let default_bg = Rgb { r: 0, g: 0, b: 0 };
+
+        let cells = vec![
+            make_cell('A', 0, 0, Flags::empty()),
+            make_cell('\u{4e16}', 1, 0, Flags::WIDE_CHAR),
+            make_cell(' ', 2, 0, Flags::WIDE_CHAR_SPACER),
+            make_cell('B', 3, 0, Flags::empty()),
+        ];
+
+        // Cursor at col 1 (wide char), Block shape
+        let snapshot = make_snapshot_with_cursor(cells, 4, 1, CursorShape::Block);
+        let rects = renderer.build_rects(&snapshot, default_bg);
+        let cw = renderer.cell_width;
+
+        // Find the cursor rect (Block at col 1)
+        let cursor_rect = rects
+            .iter()
+            .find(|r| {
+                (r.pos[0] - 1.0 * cw).abs() < 0.001 && r.color == [0.8, 0.8, 0.8, 0.7]
+            })
+            .expect("Should have cursor rect at col 1");
+
+        assert!(
+            (cursor_rect.pos[2] - 2.0 * cw).abs() < 0.001,
+            "Block cursor width ({}) should be 2*cell_width ({})",
+            cursor_rect.pos[2],
+            2.0 * cw
+        );
+    }
+
+    /// Test: Underline cursor on WIDE_CHAR cell has double-width
+    #[test]
+    fn wide_char_cursor_underline_double_width() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let default_bg = Rgb { r: 0, g: 0, b: 0 };
+
+        let cells = vec![
+            make_cell('A', 0, 0, Flags::empty()),
+            make_cell('\u{4e16}', 1, 0, Flags::WIDE_CHAR),
+            make_cell(' ', 2, 0, Flags::WIDE_CHAR_SPACER),
+        ];
+
+        let snapshot = make_snapshot_with_cursor(cells, 3, 1, CursorShape::Underline);
+        let rects = renderer.build_rects(&snapshot, default_bg);
+        let cw = renderer.cell_width;
+
+        // Find cursor rect (underline at col 1)
+        let cursor_rect = rects
+            .iter()
+            .find(|r| {
+                (r.pos[0] - 1.0 * cw).abs() < 0.001
+                    && r.color == [0.8, 0.8, 0.8, 0.7]
+                    && (r.pos[3] - 2.0).abs() < 0.001 // underline height = 2.0
+            })
+            .expect("Should have underline cursor rect at col 1");
+
+        assert!(
+            (cursor_rect.pos[2] - 2.0 * cw).abs() < 0.001,
+            "Underline cursor width ({}) should be 2*cell_width ({})",
+            cursor_rect.pos[2],
+            2.0 * cw
+        );
+    }
+
+    /// Test: HollowBlock cursor on WIDE_CHAR cell has double-width edges
+    #[test]
+    fn wide_char_cursor_hollow_block_double_width() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let default_bg = Rgb { r: 0, g: 0, b: 0 };
+
+        let cells = vec![
+            make_cell('A', 0, 0, Flags::empty()),
+            make_cell('\u{4e16}', 1, 0, Flags::WIDE_CHAR),
+            make_cell(' ', 2, 0, Flags::WIDE_CHAR_SPACER),
+        ];
+
+        let snapshot = make_snapshot_with_cursor(cells, 3, 1, CursorShape::HollowBlock);
+        let rects = renderer.build_rects(&snapshot, default_bg);
+        let cw = renderer.cell_width;
+        let ch = renderer.cell_height;
+        let cursor_x = 1.0 * cw;
+
+        // Filter cursor rects (color matches cursor_color)
+        let cursor_rects: Vec<_> = rects
+            .iter()
+            .filter(|r| r.color == [0.8, 0.8, 0.8, 0.7])
+            .collect();
+
+        // HollowBlock has 4 edges
+        assert_eq!(
+            cursor_rects.len(),
+            4,
+            "HollowBlock should produce 4 edge rects"
+        );
+
+        // Top edge: width should be 2*cell_width
+        let top = cursor_rects
+            .iter()
+            .find(|r| (r.pos[1] - 0.0).abs() < 0.001 && (r.pos[3] - 1.0).abs() < 0.001)
+            .expect("Should have top edge rect");
+        assert!(
+            (top.pos[2] - 2.0 * cw).abs() < 0.001,
+            "Top edge width ({}) should be 2*cell_width ({})",
+            top.pos[2],
+            2.0 * cw
+        );
+
+        // Bottom edge: width should be 2*cell_width
+        let bottom = cursor_rects
+            .iter()
+            .find(|r| {
+                (r.pos[1] - (ch - 1.0)).abs() < 0.001 && (r.pos[3] - 1.0).abs() < 0.001
+            })
+            .expect("Should have bottom edge rect");
+        assert!(
+            (bottom.pos[2] - 2.0 * cw).abs() < 0.001,
+            "Bottom edge width ({}) should be 2*cell_width ({})",
+            bottom.pos[2],
+            2.0 * cw
+        );
+
+        // Right edge: x should be cursor_x + 2*cell_width - 1.0
+        let right = cursor_rects
+            .iter()
+            .find(|r| {
+                (r.pos[0] - (cursor_x + 2.0 * cw - 1.0)).abs() < 0.001
+                    && (r.pos[3] - ch).abs() < 0.001
+            })
+            .expect("Should have right edge rect");
+        assert!(
+            (right.pos[0] - (cursor_x + 2.0 * cw - 1.0)).abs() < 0.001,
+            "Right edge x ({}) should be cursor_x + 2*cell_width - 1.0 ({})",
+            right.pos[0],
+            cursor_x + 2.0 * cw - 1.0
+        );
     }
 }
