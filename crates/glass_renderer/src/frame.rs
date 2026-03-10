@@ -1352,6 +1352,127 @@ impl FrameRenderer {
         queue.submit([encoder.finish()]);
     }
 
+    /// Render the conflict warning overlay (amber banner at the bottom of the viewport).
+    ///
+    /// Uses LoadOp::Load to preserve the existing frame content underneath.
+    /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_conflict_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        agent_count: usize,
+        lock_count: usize,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        let overlay = crate::conflict_overlay::ConflictOverlay::new(cell_width, cell_height);
+        let warning_rects =
+            overlay.build_warning_rects(width as f32, height as f32, 1);
+        let warning_labels =
+            overlay.build_warning_text(agent_count, lock_count, height as f32);
+
+        // Reuse self.rect_renderer -- safe because this runs after the main draw
+        self.rect_renderer
+            .prepare(device, queue, &warning_rects, width, height);
+
+        // Build warning text buffer
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut warning_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+        if let Some(label) = warning_labels.first() {
+            warning_buffer.set_size(
+                &mut self.glyph_cache.font_system,
+                Some(width as f32),
+                Some(cell_height),
+            );
+            warning_buffer.set_text(
+                &mut self.glyph_cache.font_system,
+                &label.text,
+                &Attrs::new()
+                    .family(Family::Name(font_family))
+                    .color(GlyphonColor::rgba(
+                        label.color.r,
+                        label.color.g,
+                        label.color.b,
+                        255,
+                    )),
+                Shaping::Advanced,
+                None,
+            );
+            warning_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+        }
+
+        let warning_text_areas: Vec<TextArea<'_>> = warning_labels
+            .iter()
+            .take(1)
+            .map(|label| TextArea {
+                buffer: &warning_buffer,
+                left: label.x,
+                top: label.y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                custom_glyphs: &[],
+            })
+            .collect();
+
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            warning_text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Conflict overlay text prepare error: {:?}", e);
+        }
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("conflict_overlay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer
+                .render(&mut pass, warning_rects.len() as u32);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Conflict overlay text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Free unused glyph atlas space between frames.
     pub fn trim(&mut self) {
         self.glyph_cache.trim();

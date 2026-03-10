@@ -684,9 +684,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .tabs()
                     .iter()
                     .enumerate()
-                    .map(|(i, tab)| TabDisplayInfo {
-                        title: tab.title.clone(),
-                        is_active: i == ctx.session_mux.active_tab_index(),
+                    .map(|(i, tab)| {
+                        let is_active = i == ctx.session_mux.active_tab_index();
+                        TabDisplayInfo {
+                            title: tab.title.clone(),
+                            is_active,
+                            has_locks: is_active && self.coordination_state.lock_count > 0,
+                        }
                     })
                     .collect();
 
@@ -889,6 +893,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                         sc.width,
                         sc.height,
                         config_err,
+                    );
+                }
+
+                // Conflict overlay: render amber warning when 2+ agents active with locks
+                if self.coordination_state.agent_count >= 2
+                    && self.coordination_state.lock_count > 0
+                {
+                    ctx.frame_renderer.draw_conflict_overlay(
+                        ctx.renderer.device(),
+                        ctx.renderer.queue(),
+                        &view,
+                        sc.width,
+                        sc.height,
+                        self.coordination_state.agent_count,
+                        self.coordination_state.lock_count,
                     );
                 }
 
