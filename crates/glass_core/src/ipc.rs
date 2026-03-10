@@ -28,6 +28,31 @@ pub struct McpResponse {
     pub error: Option<String>,
 }
 
+impl McpResponse {
+    /// Create a successful response with a JSON result value.
+    pub fn ok(id: u64, result: serde_json::Value) -> Self {
+        Self {
+            id,
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    /// Create an error response with a message.
+    pub fn err(id: u64, error: String) -> Self {
+        Self {
+            id,
+            result: None,
+            error: Some(error),
+        }
+    }
+}
+
+/// Construct the JSON result value for a "ping" request.
+pub fn ping_result() -> serde_json::Value {
+    serde_json::json!({"status": "ok"})
+}
+
 /// Internal event carrying a request and a reply channel.
 /// Sent from the IPC listener thread to the winit event loop.
 pub struct McpEventRequest {

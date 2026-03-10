@@ -613,6 +613,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 project_root,
                 self.proxy.clone(),
             );
+
+            // Start IPC listener for MCP command channel
+            glass_core::ipc::start_ipc_listener(self.proxy.clone());
         }
     }
 
@@ -2378,6 +2381,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                 for ctx in self.windows.values() {
                     ctx.window.request_redraw();
                 }
+            }
+            AppEvent::McpRequest(mcp_req) => {
+                let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
+                let response = match request.method.as_str() {
+                    "ping" => glass_core::ipc::McpResponse::ok(
+                        request.id,
+                        glass_core::ipc::ping_result(),
+                    ),
+                    _ => glass_core::ipc::McpResponse::err(
+                        request.id,
+                        format!("Unknown method: {}", request.method),
+                    ),
+                };
+                let _ = reply.send(response);
             }
         }
     }
