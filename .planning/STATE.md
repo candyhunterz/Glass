@@ -1,34 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.2
-milestone_name: Multi-Agent Coordination
-status: archived
-stopped_at: Milestone complete
-last_updated: "2026-03-10"
-last_activity: 2026-03-10 -- Milestone v2.2 archived
+milestone: v2.3
+milestone_name: Agent MCP Features
+status: active
+stopped_at: null
+last_updated: "2026-03-09"
+last_activity: 2026-03-09 -- Milestone v2.3 started
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-10)
+See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** Defining requirements for v2.3 Agent MCP Features
 
 ## Current Position
 
-Milestone v2.2 Multi-Agent Coordination shipped 2026-03-10.
-No active milestone. Run `/gsd:new-milestone` to start next.
-
-Progress: [##########] 100% (all milestones through v2.2 complete)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-09 — Milestone v2.3 started
 
 ## Performance Metrics
 
@@ -63,6 +63,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10
-Stopped at: Milestone v2.2 archived
+Last session: 2026-03-09
+Stopped at: Milestone v2.3 started
 Resume file: None

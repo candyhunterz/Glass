@@ -1,144 +1,160 @@
-# Feature Landscape: Multi-Agent Coordination
+# Feature Landscape: Agent MCP Features (v2.3)
 
-**Domain:** Agent orchestration layer for a terminal emulator — enabling multiple AI coding agents (Claude Code, Cursor, Copilot, etc.) to register, coordinate, claim files, and communicate through shared infrastructure
+**Domain:** AI agent tooling for GPU-accelerated terminal emulator -- multi-tab orchestration, structured error extraction, token-saving tools, live command awareness
 **Researched:** 2026-03-09
-**Confidence:** MEDIUM-HIGH (Claude Code Agent Teams, Warp 2.0, Overstory, and mcp_agent_mail provide strong prior art; core patterns are converging but the domain is still young)
+**Confidence:** MEDIUM-HIGH (strong prior art from iTerm2 Python API, kitty remote control, rustc JSON diagnostics, Claude Code Bash tool patterns; AI-agent-specific terminal tooling is still emerging)
 
 ## Table Stakes
 
-Features that are baseline expectations for any agent coordination system in 2026. Without these, agents running in parallel will produce conflicts and wasted work. These map directly to the problems the design document identifies.
+Features that AI agents and competing terminal tools already provide or that agents need to function effectively. Missing any of these means Glass is not competitive as an agent-capable terminal.
 
-| Feature | Why Expected | Complexity | Depends On | Notes |
-|---------|--------------|------------|------------|-------|
-| Agent registration and discovery | Agents must know about each other to coordinate. Claude Code Agent Teams, Overstory, and mcp_agent_mail all implement agent registries as their foundation. Without this, no other coordination feature works. | LOW | New `glass_coordination` crate | UUID-based identity. Design doc covers this well. SQLite schema is straightforward. |
-| Advisory file locking | The single most valuable coordination primitive. Prevents two agents from editing the same file simultaneously. Every multi-agent system implements this: Claude Code uses task-claiming with file locking, Overstory uses git worktrees for physical isolation, mcp_agent_mail uses "file reservations/leases." Glass's advisory lock approach matches mcp_agent_mail's pattern. | MEDIUM | Agent registry | Atomic all-or-nothing lock acquisition eliminates TOCTOU. Path canonicalization critical for cross-platform correctness. |
-| Heartbeat-based liveness detection | Agents crash, users close tabs, processes get killed. Without stale detection, ghost locks block real agents indefinitely. Every coordination system implements this. The AgentHeartbeat pattern recommends 60-90s intervals with 5min timeout, matching the design doc. | LOW | Agent registry | PID fallback is important: if process is dead, prune immediately without waiting for timeout. Design doc already includes this. |
-| Inter-agent messaging (broadcast + directed) | Agents need to communicate: "I'm done with X", "please unlock Y", "starting work on Z." Claude Code Agent Teams uses a mailbox system. Overstory uses a SQLite mail system. mcp_agent_mail has inbox/outbox with threading. This is expected infrastructure. | MEDIUM | Agent registry | Design doc's structured message types (info, conflict_warning, task_complete, request_unlock) are well-chosen. Read-once semantics are appropriate for coordination signals. |
-| MCP tool exposure | The interface between agents and the coordination layer. Agents interact with Glass exclusively through MCP tools. The existing 5 tools (GlassHistory, GlassContext, GlassUndo, GlassFileDiff, GlassPipeInspect) prove the pattern works. | MEDIUM | glass_coordination crate, glass_mcp crate | 11 new tools per design doc. Follows existing rmcp tool_router pattern. spawn_blocking wrapping for synchronous SQLite ops. |
-| Project scoping | Agents on unrelated projects must not interfere. Lock visibility and agent listing should be scoped by project root. Overstory scopes by repository. mcp_agent_mail scopes by project directory. | LOW | Agent registry | Design doc's `project` field on agent registration handles this. |
-| Lock conflict reporting | When a lock attempt fails, the agent must know WHO holds the lock and WHY, so it can decide what to do (wait, ask, work on something else). Every system returns conflict details. | LOW | File locking | Design doc returns `{ path, held_by, reason }` on conflict. This is the right shape. |
-| CLAUDE.md integration instructions | Claude Code reads CLAUDE.md for project-specific behavior. Adding coordination instructions there is how agents learn to self-coordinate. This is the "glue" that makes the system work without human intervention. | LOW | MCP tools working | Design doc has a good draft. Must be tested with real Claude Code sessions. |
+| Feature | Why Expected | Complexity | Dependencies |
+|---------|--------------|------------|--------------|
+| Multi-tab create/list/close via API | iTerm2 Python API (`async_create_tab`), kitty remote control (`kitten @ launch`), and multiple terminal MCP servers all expose tab/session management. Any agent-controllable terminal must support programmatic tab lifecycle. | Medium | MCP command channel (new async bridge between MCP server and main event loop) |
+| Run command in specific tab | iTerm2's `async_send_text`, kitty's `send-text`, and every terminal MCP server provides command execution in a named/numbered session. Core agent workflow: run server in tab 1, tests in tab 2. | Low | Tab create + PTY sender access via MCP channel |
+| Read output from specific tab | Every terminal MCP server returns command output. Claude Code's Bash tool returns stdout/stderr (truncated at 30K chars). Agents must read results from the tabs they manage. | Medium | Grid FairMutex lock + ANSI escape stripping + character cap |
+| Filtered/truncated output retrieval | Claude Code truncates at 30K chars and recently added disk persistence for overflow (anthropics/claude-code#12054). Agents routinely hit context overflow from large build/test output. Pattern filtering (like `grep -C`) is expected. | Low | Output access from history DB or live grid |
+| Live command status (running/complete) | Agents need to know if a command is still executing before reading output. Without this, agents poll blindly or read incomplete data. kitty's `ls` returns window state; iTerm2's sessions expose `is_processing`. | Low | Block manager state inspection via MCP channel |
+| Basic structured error extraction | Rust provides `--error-format=json` with rich structured diagnostics (spans, severity, suggestions). GCC/Clang emit `file:line:col: severity: message`. Agents currently waste tokens parsing raw error text. At minimum, a generic `file:line:col: message` parser is expected. | Medium | New glass_errors crate with regex-based parsers |
 
 ## Differentiators
 
-Features that go beyond what other tools offer. Not expected, but these would make Glass uniquely valuable as an agent orchestration layer.
+Features that set Glass apart from generic terminal MCP servers and other AI-terminal integrations. Not universally expected, but provide high value by leveraging Glass's unique data infrastructure.
 
-| Feature | Value Proposition | Complexity | Depends On | Notes |
-|---------|-------------------|------------|------------|-------|
-| GUI agent status in status bar | No other terminal emulator shows agent coordination state in its GUI. Warp 2.0 has agent status icons per tab, but Glass would be the first to show cross-tab agent awareness in the status bar. Developers get at-a-glance visibility into how many agents are active, who holds locks, and what each is doing. | MEDIUM | Agent registry, StatusBarRenderer | Extends existing status bar (left: CWD, right: git info) with agent count/status. Pattern: `[2 agents] [3 locks]` or similar compact indicator. Requires polling agents.db periodically from the GUI process. |
-| Tab-level agent indicators | Each tab shows whether its session has an active agent, what it's working on, and whether it holds file locks. Warp 2.0 does this with per-tab status icons (in-progress, completed, error, idle). Glass can match and exceed this by showing lock counts and task descriptions. | MEDIUM | Agent registry, TabBarRenderer | Extend TabDisplayInfo with optional agent badge. Requires mapping SessionId to agent_id (currently separate per design doc — may need a bridge). |
-| Conflict warning overlay | When two agents attempt to touch the same file, Glass shows a visual warning overlay before damage is done. No other tool does this proactively in the terminal UI. Conflict resolution today is reactive (merge conflicts after the fact). | HIGH | File locking, FrameRenderer | Requires real-time monitoring: the GUI process would need to watch agents.db for conflict events and trigger overlays. Complex because the overlay system needs new event types. Defer to Phase 4 per design doc. |
-| Agent status broadcasting via task description | Agents set their current task ("refactoring auth module", "running tests"), visible to other agents and the GUI. This goes beyond simple liveness — it's activity awareness. Claude Code Agent Teams has this via task lists. | LOW | Agent registry | Design doc's `set_status(agent_id, status, task)` handles this. The `task` field is free-text, which is flexible. |
-| Structured message types for programmatic triage | Messages carry a `msg_type` field (info, conflict_warning, task_complete, request_unlock) so agents can programmatically decide what to do without parsing natural language. mcp_agent_mail uses importance levels but not structured types. This is a practical improvement. | LOW | Messaging | Already in design doc. The four types cover the most common coordination signals. |
-| Automatic stale agent cleanup with lock cascade | When an agent is detected as stale (heartbeat timeout or dead PID), its locks are automatically released and other agents are unblocked. This is self-healing coordination. Most systems require manual cleanup or restart. | LOW | Liveness detection, file locking | Design doc handles this via `ON DELETE CASCADE` in SQLite schema and `prune_stale()` auto-called on list operations. Elegant approach. |
-| Atomic multi-file lock acquisition | Lock multiple files in a single atomic operation — all succeed or all fail with conflict details. Prevents partial-lock deadlocks. Most systems offer per-file locking only. | LOW | File locking | Design doc specifies this. SQLite transaction provides atomicity. This is a genuine advantage over check-then-lock patterns. |
+| Feature | Value Proposition | Complexity | Dependencies |
+|---------|-------------------|------------|--------------|
+| Cached result with staleness detection (`glass_cached_result`) | No other terminal tracks whether files changed since a command ran. Agents can skip re-running `cargo test` if nothing changed -- saves wall-clock time AND tokens. Unique to Glass because it has BOTH command history AND file snapshot data to cross-reference. | Medium | History DB query + snapshot timestamp comparison for staleness heuristic |
+| Changed files with diffs (`glass_changed_files`) | Glass already has pre-command snapshots via content-addressed blob store. Exposing "what did this command change" as unified diffs eliminates the agent pattern of re-reading entire files to check for changes. No other terminal MCP server has snapshot infrastructure to enable this. | Medium | Snapshot DB + `similar` crate for diff generation |
+| Budget-aware context compression (`glass_context --budget`) | After context resets, agents waste tokens on bloated context restoration. A budget parameter that prioritizes failed commands > file modifications > recent commands > successful commands (just counts) is intelligent summarization. No other tool offers token-budget-aware terminal context. | Medium | Existing glass_context tool enhancement with priority-sorted truncation |
+| Auto-detecting error format from command hint | Most error parsing tools require explicit language selection. Glass can infer the parser from command text ("cargo build" implies Rust, "pytest" implies Python) AND from output content ("Traceback" implies Python, "error[E" implies Rust). Multi-language auto-detection in a single tool call is uncommon. | Medium | Command text hint mapping + content-based fallback detection |
+| Command cancel via MCP | Agents can send SIGINT/Ctrl+C to a running command without user intervention. Enables autonomous "run, check output, cancel if stuck" workflows. Most terminal MCP servers only support fire-and-forget execution. | Low | PTY signal byte writing via MCP channel |
+| Cross-tab orchestration with command awareness | Managing a full dev environment (server + watcher + tests in separate tabs) through a single MCP session, with Glass's command-awareness layered on top: check if test tab's command finished, read only errors from build tab, check if server tab is still running. iTerm2 can manage tabs via Python API, but lacks the command lifecycle awareness that Glass's OSC 133 integration provides. | Low (additive) | All tab tools + command status working together |
 
 ## Anti-Features
 
-Features to explicitly NOT build. These are tempting but would add complexity without proportionate value, or would conflict with Glass's design philosophy.
+Features to explicitly NOT build. These are tempting but would add complexity without proportionate value, or conflict with Glass's design philosophy.
 
 | Anti-Feature | Why Avoid | What to Do Instead |
 |--------------|-----------|-------------------|
-| Enforced file locking (blocking writes) | Would require intercepting file writes at the PTY level or OS level. Fragile, platform-specific, and breaks normal terminal behavior. AI agents follow instructions — advisory locks work because the agents read CLAUDE.md and cooperate. Overstory explicitly warns that "agent swarms are not a universal solution" and enforcement adds more problems than it solves. | Advisory locks with clear CLAUDE.md instructions. Agents that ignore locks get conflicts reported to them. |
-| Full A2A protocol support | Google's Agent2Agent protocol (150+ orgs, HTTP/SSE/JSON-RPC) is designed for enterprise agent interoperability across vendors. Way too heavy for local terminal coordination. Glass agents communicate through shared SQLite, which is simpler, faster, and requires zero network stack. | SQLite WAL for local coordination. A2A is for cloud-scale agent ecosystems, not local dev tools. |
-| Durable message queue (audit log) | Messages are coordination signals, not audit trails. Making them durable adds storage management complexity (retention policies, indexing, querying) without clear value. mcp_agent_mail stores messages in git for audit, but Glass's coordination messages are ephemeral by nature. | Read-once semantics with message preservation for unread recipients. Pruned when recipient is pruned. |
-| Agent permission system / RBAC | Tempting to add "which agent can lock which files" rules, but this adds a configuration surface with no clear benefit. AI agents should coordinate, not compete. Permission enforcement belongs at the OS/git level, not in the coordination layer. | All agents in the same project are peers. Trust is established by being in the same CLAUDE.md scope. |
-| Built-in conflict resolution / auto-merge | When two agents edit the same file despite locks, attempting to auto-merge is the IDE's job (or git's). Glass should detect and report conflicts, not resolve them. Overstory's 4-tier merge resolution is interesting but complex — and still requires human review for semantic conflicts. | Report conflicts clearly. Let agents and humans resolve them using existing tools (git merge, manual review). |
-| Network-based agent discovery | Agents running on different machines discovering each other. Out of scope per PROJECT.md ("MCP over network transport — stdio sufficient for local AI; network adds security concerns"). | All agents share a filesystem. SQLite WAL requires same-host access. This is a feature, not a limitation. |
-| Real-time WebSocket notifications | Push notifications when locks change or messages arrive. Would require a long-lived connection between MCP server processes. SQLite polling on `read_messages` is simpler and sufficient for 60-second heartbeat intervals. | Agents poll via `glass_agent_messages` on their heartbeat cycle. Latency of 0-60s is acceptable for coordination signals. |
-| Thread-based message conversations | mcp_agent_mail supports threading with `thread_id`. For Glass's coordination scope, flat messages with `msg_type` are sufficient. Threading adds complexity for a feature that's mostly used for lock negotiation. | Flat messages with structured types. An agent that needs to discuss can send multiple messages. |
-| Git worktree isolation | Overstory gives each agent its own git worktree to physically prevent file conflicts. This is the nuclear option — it works but requires a complex merge queue with tiered conflict resolution. Glass's advisory locks are much lighter weight. | Advisory locks. If users want physical isolation, they can use git worktrees manually alongside Glass coordination. |
+| Built-in AI command suggestion | Glass exposes data TO agents; it is not an agent itself. Adding AI suggestions creates product confusion and competes with the very agents Glass serves. Warp does this; Glass should not. | Expose rich context via MCP tools. Let agents decide what to run. |
+| Streaming output via MCP | MCP over stdio does not support server-initiated streaming well. The current MCP spec (2025-03-26) added Streamable HTTP, but Glass uses stdio transport by design (local only, no network security concerns). Implementing streaming adds complexity for marginal benefit. | Provide polling-based `glass_tab_output` with a `has_running_command` flag so agents know when to re-poll. Agents already handle async polling. |
+| Automatic error correction | Parsing errors is valuable; automatically running fix commands crosses into agent territory and creates safety/trust concerns. | Return structured errors with file, line, column, message, and severity. Let the agent decide the fix. |
+| Persistent named sessions across restarts | Session persistence adds significant state management complexity (orphaned PTYs, stale grid state, file handle cleanup). Tab IDs being ephemeral is fine for agent workflows which are themselves ephemeral. | Use numeric tab IDs within a session. Agents can re-create tabs on reconnect. Document this as expected behavior. |
+| Remote MCP transport (HTTP/SSE) | Network transport adds security attack surface for a tool that executes arbitrary commands. PROJECT.md explicitly lists this as out of scope. | Keep MCP over stdio. Agents connect locally. This is a security feature. |
+| Full shell AST parsing for error detection | Shell syntax is Turing-complete. Trying to deeply parse arbitrary shell output is unbounded complexity with diminishing returns. | Use regex-based parsers with language-specific heuristics. Accept that some outputs will fall through to the generic `file:line:col` fallback. This is honest and practical. |
+| Exact token counting in budget mode | Exact token counting requires a tokenizer dependency (tiktoken or similar), adding binary size and complexity for approximate benefit. Different models tokenize differently anyway. | Use character-based approximation (1 token approximately equals 4 chars). Good enough for budget targeting. Over-counting slightly is better than under-counting. |
+| Tab output diffing (delta between polls) | Tracking what changed since the last `glass_tab_output` call requires per-caller state management in the MCP server. Adds complexity for a niche use case. | Return full output (last N lines) each time. Agents can diff locally if needed. The `has_running_command` flag tells them when output is final. |
 
 ## Feature Dependencies
 
 ```
-Agent Registry (register, deregister, heartbeat, list, status)
+MCP Command Channel (new infrastructure)
     |
-    +---> File Locking (lock, unlock, list_locks)
-    |         |
-    |         +---> Lock Conflict Reporting (returned by lock attempt)
-    |         |
-    |         +---> Tab Agent Indicators (GUI reads lock count per agent)
-    |         |
-    |         +---> Conflict Warning Overlay (GUI watches for conflicts)
-    |
-    +---> Inter-Agent Messaging (broadcast, send, read_messages)
-    |         |
-    |         +---> Structured Message Types (info, conflict_warning, task_complete, request_unlock)
-    |
-    +---> Liveness Detection (heartbeat timeout + PID check)
-    |         |
-    |         +---> Stale Agent Cleanup (cascade lock release)
-    |
-    +---> Status Bar Agent Indicator (GUI reads agent count/status)
-    |
-    +---> CLAUDE.md Instructions (references all MCP tools)
+    +-- glass_tab_create
+    +-- glass_tab_list
+    +-- glass_tab_run
+    +-- glass_tab_output ---- glass_output (tab_id mode)
+    +-- glass_tab_close
+    +-- glass_command_status
+    +-- glass_command_cancel
 
-MCP Tool Exposure (wraps all coordination API methods)
-    |
-    +---> Depends on glass_coordination crate being complete
-    +---> Follows existing rmcp tool_router pattern from glass_mcp
+History DB (existing)
+    +-- glass_output (command_id mode)
+    +-- glass_cached_result
+    +-- glass_errors (command_id mode)
+
+Snapshot DB (existing)
+    +-- glass_changed_files
+
+glass_errors crate (new, pure library)
+    +-- glass_errors MCP tool
+
+glass_context (existing)
+    +-- glass_context budget/focus enhancement
 ```
 
-Key ordering constraint: the coordination crate (pure library) must be built and tested before MCP tools can wrap it. GUI integration can happen independently once the DB schema is stable, since the GUI process reads agents.db directly.
+**Critical path:** The MCP Command Channel is the foundation for 7 of 12 new tools. It must be built first. The remaining 5 tools (glass_output from history, glass_cached_result, glass_changed_files, glass_errors from history, glass_context budget) can be built independently since they only access existing SQLite databases.
 
 ## MVP Recommendation
 
-### Must-have for v2.2 (this milestone)
+### Must-have (builds on critical path):
 
-Prioritize in this order:
+1. **MCP Command Channel** -- Async channel bridge between MCP server and main event loop. Unblocks all live session tools. Without this, half the features are impossible. This is infrastructure, not user-facing, but it is the highest priority.
+2. **glass_tab_create / glass_tab_list / glass_tab_close** -- Basic tab lifecycle. Table stakes for orchestration. Reuses existing create_session/close_session flows.
+3. **glass_tab_run / glass_tab_output** -- Core agent workflow: run command, read output. The entire reason agents want tabs.
+4. **glass_output (filtered)** -- Highest token-saving impact per implementation effort. Pattern filtering on build output saves 80-95% of tokens. Works from both history DB and live grid.
+5. **glass_command_status** -- Agents must know if a command finished before reading output. Without this, glass_tab_output returns incomplete data silently.
 
-1. **Agent registry with heartbeat/liveness** — Foundation for everything. Without this, no coordination is possible. (Table stakes)
-2. **Advisory file locking with atomic acquisition** — The highest-value coordination primitive. This is why agents need Glass. (Table stakes)
-3. **Inter-agent messaging** — Enables lock negotiation ("please unlock X") and task announcements. (Table stakes)
-4. **11 MCP tools** — The interface. Agents can't use coordination without MCP exposure. (Table stakes)
-5. **CLAUDE.md integration instructions** — The "glue" that makes it all work automatically. (Table stakes)
-6. **Status bar agent indicator** — At-a-glance awareness. Low complexity, high visibility. (Differentiator, but low-hanging fruit)
+### Should-have (high value, independent of critical path):
 
-### Should-have for v2.2
+6. **glass_errors** -- Structured error extraction. High value but requires building parser infrastructure. Rust parser is most relevant to Glass's own development; generic fallback covers most other tools via `file:line:col: message`.
+7. **glass_cached_result** -- Major differentiator. Saves wall-clock time, not just tokens. Requires staleness detection via snapshot timestamp cross-reference.
+8. **glass_changed_files** -- Leverages existing snapshot infrastructure uniquely. Adding `similar` crate for unified diffs is straightforward.
 
-7. **Tab-level agent indicators** — Visual enhancement showing which tabs have active agents. Moderate complexity. (Differentiator)
-8. **Agent status task descriptions** — Agents announce what they're working on. Trivially extends registry. (Differentiator)
+### Nice-to-have (lower priority):
 
-### Defer to future milestone
+9. **glass_context budget/focus** -- Enhancement to existing tool. Useful but agents can work around it by using glass_output with pattern filters.
+10. **glass_command_cancel** -- Sends SIGINT via PTY. Simple to implement, less frequently needed by agents.
+11. **Additional error parsers** (Python, Node, Go, GCC beyond generic) -- Rust parser and generic fallback cover the primary use cases. Others add breadth but can iterate based on user demand.
 
-9. **Conflict warning overlay** — HIGH complexity, requires new overlay event types and real-time DB monitoring. The design doc correctly defers this to Phase 4. (Differentiator)
+### Defer:
 
-### What NOT to build
+- **Python/Node/Go/GCC dedicated parsers** -- Generic fallback handles the common `file:line:col: message` pattern. Dedicated parsers can be added incrementally based on actual agent usage patterns.
 
-Everything in the Anti-Features table. Especially resist the temptation to enforce locks, add network transport, or build conflict resolution.
+## Complexity Assessment
 
-## Competitive Landscape Summary
+| Feature | Est. Lines | Risk | Key Challenge |
+|---------|-----------|------|---------------|
+| MCP Command Channel | 200-300 | **HIGH** | Crosses crate boundaries (glass_mcp to main.rs). Async channel with oneshot reply. Timeout handling for requests when main event loop is busy. Must not block the winit event loop. |
+| Tab lifecycle (create/list/close) | 150-200 | Medium | Reuses existing create_session/close flows. Main risk: stable tab ID semantics if tabs are reordered. Consider using session_id (UUID) as stable reference. |
+| Tab run/output | 100-150 | Medium | PTY write is trivial (bytes + newline). Grid read requires FairMutex lock + iterating grid rows + ANSI stripping. Must cap output size (100KB). |
+| glass_output (filtered) | 100-150 | Low | Regex pattern compilation, line filtering, character budget. Well-understood problem. |
+| glass_command_status | 50-80 | Low | Read BlockManager state enum. Return running/complete/idle. |
+| glass_command_cancel | 30-50 | Low | Write ETX (0x03) to PTY sender. Cross-platform signal semantics. |
+| glass_errors crate | 300-500 | Medium | Multiple regex parsers. Rust parser is most complex (multi-line error spans with `-->` arrows). But `rustc --error-format=json` exists -- consider parsing JSON output instead of human-readable text. |
+| glass_cached_result | 100-150 | Medium | SQL query for matching command + staleness check. Edge cases: CWD mismatch, fuzzy command matching, partial output in history. |
+| glass_changed_files | 150-200 | Low-Medium | Snapshot query + blob read + `similar` unified diff. Well-understood; `similar` crate is battle-tested. |
+| glass_context budget | 80-120 | Low | Priority-sorted data with character truncation. Enhancement to existing code. |
 
-| Tool | Agent Coordination Approach | File Conflict Strategy | GUI Awareness |
-|------|---------------------------|----------------------|---------------|
-| **Claude Code Agent Teams** | Shared task list, TeammateTool, mailbox messaging | Task claiming with file locking; "avoid same-file edits" guidance | In-process teammate cycling or tmux split panes |
-| **Warp 2.0** | Agent Management Panel, per-tab agent status | No explicit file locking; relies on agent isolation | Status icons per tab (in-progress, completed, error, idle), notification dots, toast alerts |
-| **Overstory** | Git worktrees + SQLite mail system | Physical isolation via worktrees; 4-tier merge queue for conflicts | TUI-based (tmux), no rich GUI |
-| **mcp_agent_mail** | MCP-exposed inbox/outbox, agent identities | Advisory file reservations/leases with TTLs | Web UI at /mail for humans |
-| **gptme (Bob)** | File leases, message bus, work claiming | File lease reservations | Terminal-based, no rich GUI |
-| **Glass (proposed)** | Shared SQLite DB, MCP tools, CLAUDE.md instructions | Atomic advisory locks with path canonicalization | GPU-rendered status bar + tab indicators (unique) |
+## Competitive Landscape
 
-Glass's unique position: it is the only tool that combines a GPU-rendered terminal GUI with an agent coordination layer. Claude Code Agent Teams coordinates agents but has no GUI awareness. Warp 2.0 has GUI indicators but ties them to its own agent runtime, not to arbitrary MCP-connected agents. Glass's approach of exposing coordination via MCP and displaying state via GPU rendering is architecturally distinct.
+### Terminal MCP servers:
 
-## Complexity Assessment by Phase
+| Tool | Tab Management | Error Parsing | Token Optimization | Command Status |
+|------|---------------|---------------|-------------------|----------------|
+| **terminal-mcp** (generic) | No | No | No | No |
+| **iTerm MCP server** | Yes (via Python API bridge) | No | No | Session state only |
+| **kitty remote control** | Yes (JSON protocol) | No | No | Window state via `ls` |
+| **Warp** | Built-in AI, not MCP-exposed | "Ask Warp AI" for errors (proprietary) | Block model, implicit | Visual indicators |
+| **Claude Code Bash tool** | No (single shell) | No (raw output) | 30K char truncation, disk overflow | No |
+| **Glass v2.3 (proposed)** | Yes (MCP tools) | Yes (structured, auto-detect) | Pattern filter, cache, budget, diffs | Yes (block state) |
 
-| Phase (per design doc) | Features | Estimated Complexity | Risk |
-|------------------------|----------|---------------------|------|
-| Phase 1: Coordination Crate | Agent registry, file locks, messaging, liveness, SQLite schema | MEDIUM — pure library, no async, well-scoped SQLite operations. Main risk: path canonicalization edge cases on Windows (UNC paths, junction points). | LOW |
-| Phase 2: MCP Tools | 11 new tool handlers, CoordinationDb wiring | MEDIUM — follows established rmcp patterns from existing 5 tools. Main risk: spawn_blocking ergonomics for synchronous DB access. | LOW |
-| Phase 3: Integration & Testing | CLAUDE.md instructions, integration tests, manual multi-agent testing | LOW — mostly documentation and testing. Main risk: verifying that real Claude Code sessions actually follow the CLAUDE.md instructions reliably. | MEDIUM (behavioral, not technical) |
-| Phase 4: GUI Integration | Status bar, tab indicators, conflict overlay | MEDIUM-HIGH — status bar and tab indicators are extensions of existing renderers. Conflict overlay is new overlay type requiring event plumbing from DB to renderer. | MEDIUM |
+### Glass's unique position:
+
+Glass is the only terminal that combines: (a) command-aware history with FTS5 search, (b) file snapshots with content-addressed dedup, (c) MCP exposure of all the above to arbitrary AI agents, and (d) multi-agent coordination. The v2.3 tools leverage this data infrastructure to provide capabilities no other terminal can offer -- particularly `glass_cached_result` (cross-referencing history timestamps with snapshot timestamps) and `glass_changed_files` (diffs from pre-command snapshots).
+
+### AI agent pain points addressed:
+
+| Pain Point | Current Workaround | Glass Solution | Token Savings |
+|-----------|-------------------|----------------|---------------|
+| Large output overflows context | Pipe to head/tail, truncation at 30K chars | `glass_output` with regex pattern filter + line limits | 80-95% for build/test output |
+| Re-running commands after context reset | Run everything again, waste minutes | `glass_cached_result` with file-change staleness check | 100% when cache is valid |
+| Parsing compiler errors from raw text | Regex in system prompt, fragile across languages | `glass_errors` with auto-detected per-language parsers | 60-80% (structured vs raw) |
+| Managing multiple terminal sessions | Single tab, sequential commands, manual switching | `glass_tab_*` orchestration: server + tests + watcher in parallel | Indirect: faster workflows |
+| Not knowing if command is still running | Sleep and hope, or check exit code post-hoc | `glass_command_status` returns live block state | Eliminates wasted polls |
+| Checking what a command changed | Re-read all potentially modified files | `glass_changed_files` returns only the diffs | 70-90% for multi-file edits |
 
 ## Sources
 
-- [Claude Code Agent Teams documentation](https://code.claude.com/docs/en/agent-teams) — official Anthropic docs on multi-agent coordination, task lists, mailbox messaging, teammate management. HIGH confidence.
-- [Warp 2.0 Agentic Development Environment](https://www.warp.dev/blog/reimagining-coding-agentic-development-environment) — Warp's agent status indicators, management panel, notification system. MEDIUM confidence (feature descriptions from marketing + docs).
-- [Warp Agent Management](https://docs.warp.dev/agents/using-agents/managing-agents) — per-tab status icons, agent management panel, notification dots and toasts. MEDIUM confidence.
-- [Overstory multi-agent orchestration](https://github.com/jayminwest/overstory) — git worktree isolation, SQLite mail system, 4-tier merge queue. MEDIUM confidence.
-- [mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail) — MCP-exposed agent mail with file reservations/leases, SQLite+FTS5, advisory locking. MEDIUM confidence.
-- [Google A2A Protocol](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/) — agent-to-agent protocol specification, 150+ orgs. HIGH confidence (for understanding what NOT to build at Glass's scale).
-- [Building a C compiler with parallel Claudes](https://www.anthropic.com/engineering/building-c-compiler) — real-world 16-agent coordination stress test, 100K-line output. HIGH confidence.
-- [SQLite WAL mode documentation](https://sqlite.org/wal.html) — concurrent reader/writer semantics, same-host requirement, checkpoint behavior. HIGH confidence (official SQLite docs).
-- [The Heartbeat Pattern for AI Agents](https://dev.to/askpatrick/the-heartbeat-pattern-how-to-keep-ai-agents-alive-between-tasks-2b0p) — heartbeat intervals, silent-by-default principle, stale detection. LOW confidence (blog post, not authoritative).
-- [Kestra liveness and heartbeat mechanism](https://kestra.io/blogs/2024-04-22-liveness-heartbeat) — liveness coordinator pattern, timeout-based state transitions. MEDIUM confidence.
+- [iTerm2 Python API - Tab Management](https://iterm2.com/python-api/examples/launch_and_run.html) -- async_create_tab, async_send_text patterns. HIGH confidence.
+- [kitty Remote Control Protocol](https://sw.kovidgoyal.net/kitty/remote-control/) -- JSON-based programmatic terminal control with tab/window management. HIGH confidence.
+- [rustc JSON Output Format](https://doc.rust-lang.org/rustc/json.html) -- Structured diagnostic messages with spans, severity levels, suggestion applicability. HIGH confidence.
+- [Cargo External Tools](https://doc.rust-lang.org/cargo/reference/external-tools.html) -- `--message-format=json` for machine-readable compiler output. HIGH confidence.
+- [terminal-mcp on GitHub](https://github.com/elleryfamilia/terminal-mcp) -- Generic terminal MCP server as baseline competitor. MEDIUM confidence.
+- [Claude Code Bash Tool](https://docs.claude.com/en/docs/agents-and-tools/tool-use/bash-tool) -- 30K char truncation, output handling patterns. HIGH confidence.
+- [Claude Code Output Overflow Issue #12054](https://github.com/anthropics/claude-code/issues/12054) -- Real agent pain point: tool outputs consuming entire context window. HIGH confidence.
+- [Anthropic: Writing Effective Tools for Agents](https://www.anthropic.com/engineering/writing-tools-for-agents) -- Structured error messages reduce retries; concise responses save tokens. HIGH confidence.
+- [Anthropic: Effective Context Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) -- Budget-aware context management patterns. HIGH confidence.
+- [Warp Terminal Features](https://www.warp.dev/all-features) -- Block model, AI error explanation, competitive landscape. MEDIUM confidence.
+- [MCP Streaming Best Practices](https://www.byteplus.com/en/topic/541918) -- Polling vs streaming trade-offs for MCP transport. MEDIUM confidence.
+- [it2 CLI for iTerm2](https://github.com/mkusaka/it2) -- CLI wrapping iTerm2 Python API for tab management. MEDIUM confidence.

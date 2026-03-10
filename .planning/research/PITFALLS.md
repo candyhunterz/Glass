@@ -1,418 +1,342 @@
-# Pitfalls Research: Multi-Agent Coordination
+# Domain Pitfalls
 
-**Domain:** Adding multi-agent coordination (SQLite WAL shared DB, advisory locks, heartbeat liveness, inter-agent messaging) to an existing GPU-accelerated terminal emulator
+**Domain:** Adding async MCP channel, multi-tab orchestration, structured error parsers, token-saving tools, and live command awareness to an existing GPU-accelerated terminal emulator (Glass v2.3)
 **Researched:** 2026-03-09
-**Confidence:** HIGH (pitfalls are well-documented across SQLite docs, Rust ecosystem, and distributed systems literature)
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: SQLite WAL Checkpoint Starvation and Unbounded WAL Growth
+Mistakes that cause deadlocks, rewrites, or data corruption.
 
-**What goes wrong:**
-The `agents.db` WAL file grows without bound. Each `glass mcp serve` process opens a connection and performs periodic reads (heartbeats, message checks, lock queries). If there is always at least one active reader holding a snapshot, SQLite cannot checkpoint the WAL file because it cannot overwrite pages that any reader might still need. With multiple MCP servers each polling on their own schedules, there is rarely a "reader gap" where all connections are idle simultaneously. The WAL file grows from kilobytes to hundreds of megabytes over days of continuous use.
+### Pitfall 1: Process Boundary -- MCP Server Runs in a Separate Process
 
-**Why it happens:**
-SQLite WAL checkpointing requires that no reader holds a snapshot of pages being checkpointed. The design calls for multiple MCP processes each with their own connection, plus the GUI polling coordination state. If any of these connections has an open read transaction (even briefly), it prevents checkpoint progress. The default auto-checkpoint (1000 pages) triggers a PASSIVE checkpoint that does its best but silently stops at the first page held by a reader. Developers see "checkpoint succeeded" and assume the WAL was fully recycled, but it was only partially checkpointed.
+**What goes wrong:** The implementation plan describes an `mpsc` channel between `GlassServer` and the main event loop as if they share a process. They do not. `glass mcp serve` creates a separate tokio runtime in a separate OS process (see `McpAction::Serve` handler in `main.rs` line 2732). An `mpsc` channel cannot cross process boundaries. The developer builds the channel infrastructure, discovers it cannot be wired up, and must redesign the entire communication layer.
 
-**How to avoid:**
-1. Set `PRAGMA wal_autocheckpoint = 100;` on `agents.db` connections to checkpoint more aggressively (the coordination DB is tiny -- 3 small tables).
-2. Never hold read transactions open longer than necessary. Each `spawn_blocking` call should open a connection, execute, and close. Do NOT cache a `CoordinationDb` connection across multiple MCP tool calls.
-3. On `CoordinationDb::open()`, attempt a `PRAGMA wal_checkpoint(TRUNCATE)` which truncates the WAL to zero bytes if it can get exclusive access. This opportunistically cleans up on startup.
-4. Consider periodic `PRAGMA wal_checkpoint(RESTART)` calls during `prune_stale()` since pruning already implies a quiet moment.
+**Why it happens:** The design document says "add a bounded async channel pair to GlassServer" without addressing that `run_mcp_server()` runs in a completely separate process with its own tokio runtime. The current GlassServer only accesses SQLite databases on disk -- the only shared state between the processes is the filesystem.
 
-**Warning signs:**
-- `agents.db-wal` file grows beyond 1MB (the actual data should be under 100KB)
-- `PRAGMA wal_checkpoint` returns `(0, N, 0)` where N is large (meaning N pages checkpointed but 0 moved back -- all blocked by readers)
-- Disk usage in `~/.glass/` grows steadily over multi-day sessions
+**Consequences:** Complete redesign of the communication architecture. Every feature that requires live session access (tab orchestration, grid reads, command status, command cancel) is blocked until this is resolved.
 
-**Phase to address:**
-Phase 1 (Coordination Crate) -- bake checkpoint strategy into `CoordinationDb::open()` and expose a `maintenance()` method.
+**Prevention:**
+Two viable architectures exist. Choose one before writing any code:
 
----
+**Option A: Embed MCP server as a task within the terminal process.** The terminal process spawns an async task that serves MCP over a socket transport (not stdio, because `#![windows_subsystem = "windows"]` suppresses the console). Use a local TCP port or platform IPC (named pipe on Windows, Unix domain socket elsewhere). The `glass mcp serve` CLI entry point changes to connect to the running terminal's socket. Pros: in-process channels work, simplest data access. Cons: requires transport change, MCP server lifecycle tied to terminal.
 
-### Pitfall 2: SQLITE_BUSY Despite busy_timeout with Transaction Upgrades
+**Option B: Keep MCP as a separate process, add IPC.** The terminal process listens on a platform IPC channel. The MCP server process connects to it for live state queries. Define a binary or JSON protocol for request/response. Pros: maintains process isolation, current CLI entry point works. Cons: significant IPC layer to build and maintain, serialization overhead.
 
-**What goes wrong:**
-MCP tool handlers get intermittent `SQLITE_BUSY` / "database is locked" errors that surface as MCP error responses to AI agents. The agents retry, get the same error, and eventually give up or hallucinate that coordination is broken. This happens even though `busy_timeout = 5000` is set.
+Recommendation: **Option A** (embedded) is dramatically simpler. The MCP tools that only access SQLite (existing tools, `glass_cached_result`, `glass_changed_files`) work identically either way. Only the live-state tools need the channel, and those are trivial with in-process access.
 
-**Why it happens:**
-The existing codebase uses `PRAGMA busy_timeout = 5000` (seen in both `glass_history/db.rs` and `glass_snapshot/db.rs`). This works for simple read/write patterns. But the coordination crate introduces read-then-write transactions: `lock_files` must read existing locks, check for conflicts, then insert new locks -- all atomically in one transaction. If the transaction starts as a deferred read (`BEGIN` default) and later tries to upgrade to a write lock, SQLite may return `SQLITE_BUSY` immediately without honoring the busy timeout, because another connection already holds a read lock that would conflict with the upgrade.
+If Option A is chosen, the `#![windows_subsystem = "windows"]` constraint must be addressed: the terminal process needs a way for AI agents to connect to the MCP server. The AI agent's MCP client (e.g., Claude Code) would connect via a local socket instead of spawning `glass mcp serve` as a child process.
 
-The design document correctly specifies atomic lock acquisition, but the implementation must use `BEGIN IMMEDIATE` (or `BEGIN EXCLUSIVE`) for any transaction that will write. Rusqlite's `conn.transaction()` defaults to `DEFERRED`.
+**Detection:** If you find yourself passing an `mpsc::Sender` to `run_mcp_server()` and expecting it to work across `glass mcp serve`, you've hit this pitfall.
 
-**How to avoid:**
-1. Use `conn.transaction_with_behavior(TransactionBehavior::Immediate)` for ALL write transactions in `CoordinationDb`. This is critical for `lock_files`, `register`, `deregister`, `heartbeat`, `broadcast`, `send_message`, and `prune_stale`.
-2. Keep the 5000ms busy_timeout but understand it only works when the lock contention happens at `BEGIN IMMEDIATE` time (which is the correct place).
-3. For read-only operations (`list_agents`, `list_locks`, `read_messages`), deferred transactions are fine.
-4. Handle `SQLITE_BUSY` at the MCP layer with a single retry + exponential backoff before returning an error to the agent.
-
-**Warning signs:**
-- Sporadic "database is locked" errors in MCP tool responses
-- Errors correlate with multiple agents performing actions simultaneously
-- Errors disappear when only one agent is active
-
-**Phase to address:**
-Phase 1 (Coordination Crate) -- use `Immediate` for all write transactions from day one. This is not something to "fix later."
+**Phase:** MCP Command Channel (Phase 1) -- this is the FIRST decision. Everything else depends on it.
 
 ---
 
-### Pitfall 3: Path Canonicalization Produces UNC Paths on Windows
+### Pitfall 2: FairMutex Contention -- Three-Way Lock Fight on Terminal Grid
 
-**What goes wrong:**
-Agent A locks `src/main.rs` which gets canonicalized to `\\?\C:\Users\nkngu\apps\Glass\src\main.rs`. Agent B tries to lock the same file, but its CWD resolves differently (or it passes an already-absolute path), producing `C:\Users\nkngu\apps\Glass\src\main.rs` (without UNC prefix). The two strings don't match, so both agents believe they have exclusive locks on the same file. The entire coordination system silently fails.
+**What goes wrong:** The terminal grid (`Arc<FairMutex<Term<EventProxy>>>` in `Session`) is the single most contended resource. Currently two threads compete: the PTY reader thread (writes bytes continuously) and the renderer (reads via `snapshot_term()` every frame). Adding a third contender -- MCP grid reads for `glass_tab_output` -- creates visible rendering stalls, input lag, or MCP timeouts.
 
-**Why it happens:**
-Rust's `std::fs::canonicalize()` on Windows calls `GetFinalPathNameByHandleW` which returns extended-length path syntax (`\\?\`). This is a well-documented Rust issue (rust-lang/rust#42869, open since 2017). The design document specifies `std::fs::canonicalize()` for path normalization, which will produce inconsistent results depending on:
-- Whether the caller passes a relative or absolute path
-- Whether the path goes through junctions or symlinks
-- Whether the file exists at canonicalization time
+**Why it happens:** FairMutex guarantees fairness but not speed. `snapshot_term()` already iterates all cells via `renderable_content()`, allocating and copying per-cell color data. An MCP grid read that similarly iterates all visible cells (for text extraction) would hold the lock for comparable duration. During a `cargo build` flooding output, the PTY reader holds the lock almost continuously. The renderer and MCP reader compete for narrow gaps.
 
-The existing codebase already uses `canonicalize()` in `glass_snapshot/watcher.rs` and `ignore_rules.rs`, but those are single-process -- the same connection always sees the same UNC-prefixed paths. With multi-process coordination, different processes may produce different path forms for the same file.
+**Consequences:** Visible terminal lag (missed frames), MCP tool response times of 100ms+ during heavy output, potential UI freeze if grid read takes too long while PTY reader is queued.
 
-**How to avoid:**
-1. Add the `dunce` crate (small, well-maintained, already used by Deno, Cargo, and many Rust projects). Use `dunce::canonicalize()` instead of `std::fs::canonicalize()` everywhere in `glass_coordination`. This strips the `\\?\` prefix when it's safe to do so, producing consistent paths across all callers.
-2. Additionally normalize path separators to forward slashes before storing in the DB. This handles edge cases where paths come from different shells (PowerShell uses `\`, bash uses `/`).
-3. Store paths as lowercase on Windows (NTFS is case-insensitive by default). Use `path.to_string_lossy().to_lowercase()` on `cfg(target_os = "windows")`.
-4. If `dunce::canonicalize()` fails (file doesn't exist yet), fall back to `std::path::absolute()` + normalization rather than returning an error.
+**Prevention:**
+- Do NOT use `snapshot_term()` for MCP text extraction. That function resolves colors for every cell, which MCP doesn't need. Write a minimal `extract_text_lines()` function that only reads character content and line boundaries.
+- Lock the grid, copy raw text out, release lock, THEN process (filter, strip escapes, serialize JSON). Never do string processing while holding the lock.
+- Set a hard timeout: try to acquire the lock for at most 50ms. If the terminal is flooding output, return `{ error: "terminal busy, try again" }` to the MCP caller rather than blocking the event loop.
+- Limit the number of lines read per lock acquisition. For 200+ lines, consider releasing and re-acquiring the lock in chunks to let the renderer and PTY reader interleave.
+- For `glass_tab_output` with a `pattern` filter: read ALL lines under lock, release, THEN apply regex. Never run regex while holding the lock.
 
-**Warning signs:**
-- Two agents hold locks on what looks like the same file but with different path prefixes
-- Lock conflicts never trigger even when agents are clearly editing the same files
-- Works on macOS/Linux but fails silently on Windows
+**Detection:** Add tracing spans around lock acquisition in the MCP handler. If lock hold time exceeds 5ms, investigate. If it exceeds 16ms (one frame at 60fps), the renderer is stuttering.
 
-**Phase to address:**
-Phase 1 (Coordination Crate) -- the path normalization function must be correct before any lock logic is built on top of it. Write a `normalize_path()` helper with explicit tests for UNC, relative, forward-slash, and case-insensitive scenarios.
+**Phase:** MCP Command Channel (Phase 1) for the text extraction function, Multi-Tab Orchestration (Phase 2) for the tools that use it.
 
 ---
 
-### Pitfall 4: PID Reuse Causing Incorrect Stale Agent Pruning or Ghost Agents
+### Pitfall 3: Event Loop Starvation from MCP Request Processing
 
-**What goes wrong:**
-Two failure modes: (1) A stale agent's PID gets reused by an unrelated process. The liveness check sees the PID is alive, so the stale agent is never pruned. Its file locks persist forever, blocking other agents. (2) A new agent process happens to get the same PID as a recently-crashed agent. The system incorrectly associates the new process with the old agent's registration, causing identity confusion.
+**What goes wrong:** The winit event loop processes MCP requests synchronously in `user_event()`. Each request (grid read, tab create, command status check) takes 1-10ms. An agent sends 5 requests in rapid succession (one per tab). The event loop is blocked for 5-50ms total, causing visible typing lag and dropped frames.
 
-**Why it happens:**
-The design uses PID as a "fast liveness fallback" -- if the PID is dead, the agent is immediately prunable without waiting for the 5-minute heartbeat timeout. On long-running systems, PID reuse is guaranteed (Linux recycles PIDs from a pool of 32768 by default, Windows has no guaranteed minimum cycle time). The race window is: Agent A crashes at time T, its PID is recycled at T+1s, prune_stale runs at T+2s, sees PID alive, keeps the stale agent registered.
+**Why it happens:** `user_event()` in winit's `ApplicationHandler` is called in-line during event dispatch. While processing MCP requests, no keyboard events, mouse events, or redraw requests are handled. The existing AppEvent variants (TerminalDirty, Shell, GitInfo, etc.) are all fast (<1ms). MCP requests involving grid reads or session creation are significantly heavier.
 
-**How to avoid:**
-1. Use PID-based pruning only as an acceleration, never as the sole liveness signal. The heartbeat timeout (5 minutes) is the authoritative signal.
-2. When checking PID liveness, also verify the process start time if the OS provides it. On Windows, use `GetProcessTimes()` via `windows-sys`. On Unix, read `/proc/<pid>/stat` field 22 (start time). If the process start time is newer than the agent's `registered_at`, the PID was reused.
-3. Store the process start time in the `agents` table alongside `pid`. This makes the PID+start_time pair globally unique.
-4. If start-time verification is too complex for Phase 1, accept the limitation: PID liveness is advisory and the 5-minute heartbeat timeout is the real cleanup mechanism. Document this explicitly.
+**Consequences:** Terminal becomes unresponsive during bursts of MCP activity. The user types keystrokes that are delayed by 50-100ms. The renderer skips frames.
 
-**Warning signs:**
-- Stale agents persist in `glass_agent_list` output after their terminal tab is closed
-- Lock conflicts reference agents that no longer exist
-- `prune_stale()` runs but doesn't remove agents it should
+**Prevention:**
+- Process AT MOST one MCP request per event loop iteration. If more are queued, request a redraw and process the next one in the next frame cycle.
+- Use a bounded channel (capacity 16-32). Backpressure naturally limits concurrency.
+- Categorize requests by cost:
+  - **Fast** (< 1ms): `TabList`, `CommandStatus` -- process inline
+  - **Medium** (1-5ms): `TabOutput`, `TabCreate` -- process one per frame
+  - **Heavy** (5ms+): never. Redesign if any request takes this long.
+- For `TabCreate`, do the PTY spawn asynchronously: send the request, return a session ID immediately, let the PTY reader thread start in the background. The agent can poll `glass_tab_list` to know when the tab is ready.
 
-**Phase to address:**
-Phase 1 (Coordination Crate) -- implement PID check with start-time verification, or explicitly document the limitation and rely on heartbeat timeout as primary. Phase 3 (Integration Testing) should include a test that simulates PID reuse.
+**Detection:** Track time spent in `user_event()` for each AppEvent variant. Any MCP request consistently over 5ms needs optimization.
 
----
-
-### Pitfall 5: Atomic Lock Acquisition Deadlock Under Contention
-
-**What goes wrong:**
-Agent A requests locks on `[main.rs, config.rs]`. Agent B simultaneously requests locks on `[config.rs, main.rs]`. Both agents' `lock_files` transactions start concurrently. Under the all-or-nothing design, both fail (each sees the other holding one file). They retry immediately, and the same thing happens. This produces a livelock where neither agent can make progress.
-
-**Why it happens:**
-The design correctly avoids partial-lock states with all-or-nothing semantics. But it doesn't specify retry behavior or lock ordering. Without consistent ordering, concurrent lock requests on overlapping file sets will repeatedly conflict. AI agents following the CLAUDE.md instructions will retry lock acquisition, potentially in a tight loop.
-
-**How to avoid:**
-1. Sort requested paths lexicographically before acquiring locks inside the `lock_files` transaction. This establishes a consistent lock ordering that prevents the A-B / B-A deadlock pattern.
-2. In the MCP tool response for conflicts, include a `retry_after_ms` hint (e.g., 1000-3000ms with jitter) so agents don't retry immediately.
-3. In the CLAUDE.md coordination instructions, explicitly tell agents: "If lock acquisition fails, wait at least 2 seconds before retrying. After 3 failures, use glass_agent_send to negotiate with the lock holder."
-4. Inside the SQLite transaction, insert locks in sorted order to minimize the write-lock hold time.
-
-**Warning signs:**
-- Agents report repeated lock conflicts on the same files
-- MCP tool call volume spikes with lock/unlock cycles
-- Agents get stuck in retry loops visible in their conversation history
-
-**Phase to address:**
-Phase 1 (Coordination Crate) -- sort paths in `lock_files`. Phase 2 (MCP Tools) -- add `retry_after_ms` to conflict responses. Phase 3 (Integration) -- CLAUDE.md retry guidance.
+**Phase:** MCP Command Channel (Phase 1).
 
 ---
 
-### Pitfall 6: Stale Agent Cleanup Race During Concurrent prune_stale Calls
+### Pitfall 4: Tab ID Instability Causing Wrong-Tab Command Execution
 
-**What goes wrong:**
-Two MCP servers call `list_agents()` simultaneously. Both trigger `prune_stale()`. Both identify Agent X as stale. Agent A deletes Agent X. Agent B tries to delete Agent X, fails silently (or causes a cascading FK delete on already-deleted locks). Messages from Agent X are orphaned or double-processed. In the worst case, a new agent that registered between the two prune calls gets its data corrupted.
+**What goes wrong:** The design uses `tab_id: usize` (vector index) as the identifier for tab orchestration. But tab indices shift when tabs are closed or reordered. An agent creates tab 3, stores the ID, another tab closes, and tab 3 is now a different session. The agent then runs a command in the wrong tab.
 
-**Why it happens:**
-The design says `prune_stale()` is called automatically on `list_agents()` and `list_locks()`. Multiple MCP servers calling these concurrently will trigger concurrent prune operations on the same shared DB. Without idempotent delete logic, this creates races.
+**Why it happens:** `SessionMux.tabs` is a `Vec<Tab>`. Removing tab at index 1 shifts all subsequent indices. `tabs[2]` after deletion refers to what was previously `tabs[3]`.
 
-**How to avoid:**
-1. Make `prune_stale()` idempotent: use `DELETE FROM agents WHERE id IN (SELECT id FROM agents WHERE ...)` in a single statement rather than selecting stale IDs then deleting them in separate steps.
-2. Use `BEGIN IMMEDIATE` for the prune transaction (it writes).
-3. Accept that multiple processes may prune concurrently -- the operation should be harmless when repeated.
-4. Consider rate-limiting prune calls: only prune if the last prune was more than 60 seconds ago (store a module-level timestamp or a DB metadata row).
+**Consequences:** Commands sent to wrong sessions. In the best case, a build runs in the wrong directory. In the worst case, destructive commands (`rm -rf`, `git clean`) in the wrong directory.
 
-**Warning signs:**
-- "no such row" or "foreign key constraint failed" errors during prune operations
-- `glass_agent_list` returns inconsistent results between rapid calls
-- Messages disappear unexpectedly
+**Prevention:**
+- Use `SessionId` (the monotonically increasing u64 counter) as the stable identifier, NOT tab index. SessionId is never reused and never shifts.
+- MCP tools should accept `session_id: string` (e.g., "session-3"), not `tab_id: number`.
+- `glass_tab_list` should return `session_id` as the primary identifier, with tab index as a display-only hint.
+- Add `session_by_id()` lookup that returns `Option` and surface clear errors when a session no longer exists: `{ error: "session-3 no longer exists (tab was closed)" }`.
+- The `SessionMux` already has `fn session(&self, id: SessionId) -> Option<&Session>` which is exactly the right lookup.
 
-**Phase to address:**
-Phase 1 (Coordination Crate) -- implement prune as a single idempotent SQL statement.
+**Detection:** If any MCP tool parameter is named `tab_id: usize`, this pitfall is present.
+
+**Phase:** Multi-Tab Orchestration (Phase 2).
+
+---
+
+### Pitfall 5: Unbounded Output Blowing Up MCP Message Size
+
+**What goes wrong:** `glass_tab_output` reads terminal grid content and returns it as JSON. The alacritty_terminal scrollback buffer can hold 10,000+ lines at 200+ columns. A naive read returns 2-4MB of text. MCP transports may have message size limits, and even without limits, this wastes agent tokens.
+
+**Why it happens:** The terminal grid pads every line to the full column width with spaces. 200 columns * 10,000 lines = 2M characters, most of which are trailing whitespace. Add JSON encoding overhead and escape sequences, and the response can hit 4-5MB.
+
+**Consequences:** MCP transport errors, agent token budget exhaustion, slow response times, potential OOM in JSON serialization.
+
+**Prevention:**
+- Hard cap: 100KB maximum response size, always. Truncate from the top (keep most recent output).
+- Default `lines` to 50, not "all". Force the caller to ask for more explicitly.
+- Strip trailing whitespace from every line. This alone typically reduces output size by 60-80%.
+- Count bytes during extraction and stop early once the limit is hit.
+- Return metadata: `{ truncated: true, total_lines: 8743, returned_lines: 50 }` so the caller knows they have a partial view.
+- For `glass_output` reading from history DB: the `output` column is already capped at 50KB during capture (see `output_capture.rs`), so this is only a concern for live grid reads.
+
+**Detection:** Test with `find / -name "*.rs" 2>/dev/null` (thousands of lines) or `cargo build 2>&1` (hundreds of lines with color codes). If the MCP response exceeds 100KB, the cap is missing.
+
+**Phase:** Multi-Tab Orchestration (Phase 2) and Token-Saving Tools (Phase 3).
+
+---
+
+### Pitfall 6: Oneshot Reply Channel Dropped Without Response
+
+**What goes wrong:** An MCP tool sends `McpRequest::TabOutput { session_id, reply: oneshot::Sender }`. The `user_event()` handler looks up the session, it doesn't exist, and returns early without sending a response on the oneshot channel. The MCP tool awaits the oneshot receiver forever, leaking the tokio task and blocking the agent.
+
+**Why it happens:** Error paths in match arms are easy to miss. The happy path sends a reply, but `None` from session lookup, panics in grid reading, or early returns from validation all silently drop the oneshot sender.
+
+**Consequences:** MCP tool hangs indefinitely. The agent's MCP client may time out after 30+ seconds, reporting a generic error. The leaked task consumes memory.
+
+**Prevention:**
+- Structure every MCP request handler as a function that always returns a response:
+  ```rust
+  let response = handle_tab_output(&session_mux, &params);
+  let _ = reply.send(response); // ignore send error = receiver already dropped (MCP tool timed out)
+  ```
+- Add a timeout on the MCP tool's oneshot `recv` (5 seconds). If the main thread panics or is stuck, the tool returns a timeout error rather than hanging.
+- Write a test that sends a request for a non-existent session and verifies the oneshot completes with an error response.
+- Consider a `Drop` guard on the oneshot sender that logs if it's dropped without being used.
+
+**Detection:** If any `user_event()` match arm for MCP requests has an early `return` or `if let Some(...)` without an `else` that sends an error reply, this pitfall is present.
+
+**Phase:** MCP Command Channel (Phase 1).
 
 ---
 
 ## Moderate Pitfalls
 
-### Pitfall 7: Heartbeat Timer Drift in MCP Processes
+### Pitfall 7: ANSI Escape Sequence Contamination in All Output
 
-**What goes wrong:**
-AI agents are instructed to call `glass_agent_heartbeat` every 60 seconds. In practice, MCP tool calls happen as part of agent reasoning, which is inherently irregular. An agent deep in a complex code change may not call any MCP tools for 6+ minutes. The agent gets pruned mid-task, its file locks are released, and another agent swoops in and edits the same files.
+**What goes wrong:** Terminal grid content and stored history output contain ANSI escape sequences (colors, cursor movement, SGR codes). If these leak into MCP tool responses, the AI agent receives `\x1b[31merror\x1b[0m: mismatched types` instead of `error: mismatched types`. Error parsers fail because regex patterns don't match with embedded escape sequences.
 
-**Why it happens:**
-AI agents don't have reliable timer mechanisms. They call MCP tools when their reasoning loop dictates, not on a schedule. The CLAUDE.md instruction "call heartbeat every 60 seconds" is aspirational, not enforceable. Claude Code's internal MCP call patterns are determined by the model's reasoning, not by wall-clock timers.
+**Why it happens:** The terminal grid stores styled content. Reading cells gives you the character plus escape sequences from the original output stream. History DB output may also contain escapes if the command produced colored output and stripping was incomplete.
 
-**How to avoid:**
-1. Piggyback heartbeats on ALL MCP tool calls. Every `glass_agent_*` tool should silently refresh `last_heartbeat` for the calling agent. If Agent A calls `glass_agent_lock`, `glass_agent_status`, or `glass_agent_messages`, each call also updates the heartbeat. This way, any agent activity automatically extends liveness.
-2. Increase the stale timeout from 5 minutes to 10 minutes. A coding agent may easily go 5 minutes between tool calls during complex refactoring.
-3. In CLAUDE.md instructions, add: "If you will be performing a long operation (>3 minutes) without MCP calls, call glass_agent_heartbeat before starting."
-4. Consider making the stale timeout configurable in `config.toml` under a `[coordination]` section.
+**Prevention:**
+- Strip ANSI escapes at the MCP boundary: every tool that returns text content must strip escapes before JSON serialization.
+- Reuse the existing `OutputBuffer::strip_ansi()` in `glass_terminal/src/output_capture.rs`. Do NOT write a new stripping function.
+- Error parsers (glass_errors crate) must operate on pre-stripped text only. Include a debug assertion that input contains no escape sequences.
+- Test with `CARGO_TERM_COLOR=always cargo build` to ensure color-coded output is properly stripped.
+- When reading from the terminal grid (not history DB), extract only the character content of each cell, not the raw byte stream. Grid cells already have escape sequences decoded into flags (bold, color, etc.), so reading `cell.c` gives clean characters.
 
-**Warning signs:**
-- Active agents get pruned during long coding sessions
-- Locks disappear while an agent is still working
-- Agents re-register frequently (sign they were pruned and noticed)
+**Detection:** Search MCP tool responses for `\x1b` or `\u001b`. Any match means stripping is missing.
 
-**Phase to address:**
-Phase 1 (implicit heartbeat on all tool calls), Phase 2 (MCP tool implementations), Phase 3 (CLAUDE.md instructions and timeout tuning).
+**Phase:** All phases -- must be correct from Phase 1.
 
 ---
 
-### Pitfall 8: Message Ordering Not Guaranteed Across Concurrent Writers
+### Pitfall 8: Error Parser Scope Creep -- 6 Parsers Becomes 30+ Format Variations
 
-**What goes wrong:**
-Agent A sends a broadcast "I'm starting work on renderer" at T=0. Agent B sends "I need renderer locks" at T=0.001. Due to SQLite write serialization and the timing of `BEGIN IMMEDIATE` lock acquisition, Agent B's message may get `AUTOINCREMENT` ID 5 while Agent A's gets ID 6. When Agent C reads messages, it sees B's request before A's announcement, leading to incorrect coordination decisions.
+**What goes wrong:** The plan lists 6 error parsers (Rust, Python, Node, Go, GCC, Generic). In practice, each tool has 3-5 output format variations. Rust alone has: cargo errors, clippy lints, `cargo test` failures (with `---- test_name stdout ----` blocks), proc-macro panics, and `cargo bench` output. Python has tracebacks, pytest, mypy, ruff, flake8. The "6 parsers" become 30+ format handlers, each with edge cases.
 
-**Why it happens:**
-SQLite `AUTOINCREMENT` guarantees monotonically increasing IDs within a single connection, but not across concurrent connections. With WAL mode, the write lock is held briefly for each INSERT, and the ordering depends on which connection acquires the write lock first. This is a wall-clock race, not a logical ordering issue.
+**Why it happens:** Error output formats are not standardized. Even within a single tool, different error types produce different patterns. The Rust parser regex for `error[E0308]` doesn't match `cargo test` failure output. Each new variation discovered during testing requires its own pattern.
 
-**How to avoid:**
-1. Accept that message ordering is approximate, not strict. The `created_at` column already uses `unixepoch()` which has 1-second granularity -- messages within the same second are inherently unordered.
-2. Do NOT rely on message ID ordering for correctness. Use `created_at` for display ordering and treat messages as unordered within the same second.
-3. For coordination correctness, rely on the lock mechanism (which IS atomic) rather than message ordering. Messages are informational; locks are authoritative.
-4. If sub-second ordering ever matters, add a `created_at_ms` column using a custom function or application-supplied timestamp.
+**Prevention:**
+- Start with exactly TWO parsers: **Rust (cargo/clippy)** and **Generic fallback** (`file:line:col: message`). These cover 80%+ of use cases for a Rust project, and the generic fallback catches GCC, Go, and many other tools.
+- Each parser should return a `confidence: f32` so the MCP tool can pick the best match when multiple parsers produce results.
+- Auto-detection from output content alone is unreliable. Use the command text hint as the PRIMARY signal (command starts with `cargo` = Rust parser).
+- Add Python and Node parsers only after the first two are battle-tested with real-world output samples.
+- Collect real compiler output as test fixtures from actual builds, not hand-written examples. Hand-written examples miss edge cases (multi-line errors, errors within errors, warnings mixed with errors, etc.).
 
-**Warning signs:**
-- Agents make decisions based on message order that don't match chronological reality
-- "I announced first but the other agent didn't see it" type coordination failures
+**Detection:** If the error parser has more than 3 modules before the first release, scope creep has occurred.
 
-**Phase to address:**
-Phase 2 (MCP Tools) -- document in tool descriptions that messages are informational and ordering is approximate.
+**Phase:** Structured Error Extraction (Phase 4).
 
 ---
 
-### Pitfall 9: GUI Polling Overhead for Coordination State
+### Pitfall 9: Stale Cache Causing False Confidence in `glass_cached_result`
 
-**What goes wrong:**
-The Glass GUI adds a timer to poll `agents.db` every 500ms to update status bar indicators and tab decorations. Each poll opens a SQLite connection (or reuses a cached one), runs queries, and triggers a redraw. With 60fps vsync rendering, this adds measurable latency to the event loop. The terminal feels sluggish, especially when multiple panes are open and each triggers coordination state queries.
+**What goes wrong:** `glass_cached_result` returns old `cargo test` output saying "all tests pass" even though files have changed. The `files_changed_since` counter only checks the snapshot DB, but most file changes happen outside of Glass-tracked commands (e.g., editor saves, `git checkout`). The agent trusts the cached result, skips re-running tests, and pushes broken code.
 
-**Why it happens:**
-The GUI event loop in Glass is driven by winit's `EventLoop<AppEvent>`. The existing pattern uses `EventLoopProxy::send_event()` from background threads (PTY reader, config watcher, update checker). Adding another polling thread for coordination state seems natural, but the frequency must be tuned. Opening a SQLite connection per poll is expensive (~0.5ms per open on Windows). Even reusing a connection, the poll query + event dispatch + redraw cycle adds CPU overhead that compounds with pane count.
+**Why it happens:** The snapshot DB only records files changed by commands that Glass's command parser identified as file-modifying. Editor saves, IDE auto-format, git operations, and direct file writes from other terminals are invisible to the snapshot DB.
 
-**How to avoid:**
-1. Poll coordination state infrequently: every 5 seconds is sufficient for status bar updates. Agent activity doesn't change rapidly.
-2. Use a dedicated background thread (not tokio) that sends `AppEvent::CoordinationUpdate(CoordinationState)` through the existing `EventLoopProxy`. This keeps SQLite I/O off the render thread entirely.
-3. Cache the last coordination state in memory. Only send an event (and trigger redraw) when state actually changes (agent count, lock count, or unread messages differ from cached values).
-4. Open a single `CoordinationDb` connection in the background thread and reuse it. Set `PRAGMA busy_timeout = 1000` (shorter than MCP connections) so the GUI thread doesn't block long on contention.
-5. Do NOT poll during frames -- the background thread should be completely independent of the render loop.
+**Prevention:**
+- Check actual filesystem modification times, not just the snapshot DB. For the cached command's CWD, stat common source directories (`src/`, `lib/`, `tests/`, `Cargo.toml`, etc.) and compare mtimes against the command's `finished_at` timestamp.
+- Add `files_possibly_stale: true` flag when mtime check shows changes, regardless of snapshot DB state. The agent can decide whether to re-run.
+- Default `max_age_seconds` to 120 (not 300). Shorter window reduces risk.
+- Use git as a staleness signal when available: `git diff --stat HEAD` showing changes since the cached command's commit hash is a strong signal of staleness.
+- Always include a disclaimer in the response: `"note": "cache validity is approximate; re-run for certainty"`.
 
-**Warning signs:**
-- Cold start time increases by >50ms after adding coordination GUI
-- Input latency increases measurably (>1ms increase in bench)
-- Status bar flickering or unnecessary redraws
-- CPU usage increases at idle (polling with no agents active)
+**Detection:** Change a source file via an editor (not a Glass command), then call `glass_cached_result`. If it returns `files_changed_since: 0`, the mtime check is missing.
 
-**Phase to address:**
-Phase 4 (GUI Integration) -- design the polling architecture before adding visual elements.
+**Phase:** Token-Saving Tools (Phase 3).
 
 ---
 
-### Pitfall 10: CoordinationDb Connection Shared Across spawn_blocking Calls
+### Pitfall 10: Command Cancel Race Condition
 
-**What goes wrong:**
-The developer caches a `CoordinationDb` instance in `GlassServer` (alongside `db_path` and `glass_dir`) and reuses it across all MCP tool calls. Since `Connection` is `!Send + !Sync`, this either fails to compile or requires `Arc<Mutex<CoordinationDb>>`. With the mutex, all 11 coordination tools serialize through a single lock, creating contention. Worse, a single long-running transaction (like `lock_files` with many paths) blocks all other tool calls including heartbeats.
+**What goes wrong:** Agent checks `glass_command_status` (sees "executing"), then calls `glass_command_cancel`. Between the check and the cancel, the command finishes naturally. The Ctrl+C byte (0x03) is sent to an idle shell prompt. On most shells this is harmless, but on some configurations it can abort an interactive prompt, cancel a partially-typed command, or trigger unexpected behavior.
 
-**Why it happens:**
-The existing `GlassServer` pattern clones `db_path` and opens a fresh `HistoryDb` connection inside each `spawn_blocking` call. This works because each tool call is independent. The temptation with `CoordinationDb` is to optimize by caching the connection, since "it's the same DB and opening connections is expensive." But rusqlite `Connection` is deliberately `!Send` -- you cannot share it across threads without unsafe code.
+**Why it happens:** TOCTOU (time-of-check-time-of-use) race between status check and cancel action. The command state transitions from `Executing` to `Complete` asynchronously (driven by PTY output and OSC 133;D detection).
 
-**How to avoid:**
-1. Follow the existing pattern exactly: clone `agents_db_path` into `GlassServer`, open a fresh `CoordinationDb` inside each `spawn_blocking` call. SQLite connection opens are ~0.5ms, which is negligible for MCP tool call latency.
-2. If connection open overhead proves measurable, use `thread_local!` storage inside the `spawn_blocking` closure to reuse connections within the same OS thread (tokio may schedule multiple spawn_blocking calls on the same thread pool thread).
-3. Do NOT use `Arc<Mutex<Connection>>` -- it serializes all tool calls and defeats SQLite WAL's concurrent read capability.
+**Prevention:**
+- In the cancel handler itself, re-check `BlockManager` state. If the current block is `Complete` or `PromptActive`, do NOT send Ctrl+C. Return `{ cancelled: false, reason: "already_complete" }`.
+- Even with the check, there's still a tiny TOCTOU window. This is inherent and acceptable. Sending Ctrl+C to an idle prompt is harmless in bash/zsh/fish/pwsh (it just prints a new prompt).
+- Never send SIGKILL or SIGTERM through this mechanism. Only send the Ctrl+C byte (0x03) via `pty_sender.send(PtyMsg::Input(...))`.
+- Document the inherent race in the MCP tool description so agents know to handle `already_complete` responses gracefully.
 
-**Warning signs:**
-- Compile errors about `Send`/`Sync` bounds on `Connection`
-- `Arc<Mutex<>>` wrapper around the DB connection
-- All MCP tool calls serialized (visible in tracing output as sequential, never overlapping)
+**Detection:** Write an integration test that cancels a command immediately after it finishes. Verify the response includes `already_complete` and no unexpected behavior occurs.
 
-**Phase to address:**
-Phase 2 (MCP Tools) -- use the same open-per-call pattern as existing tools from the start.
+**Phase:** Live Command Awareness (Phase 5).
 
 ---
 
-### Pitfall 11: File Lock Scope Mismatch With Project Scoping
+### Pitfall 11: `similar` Crate Quadratic Diff for Large Files
 
-**What goes wrong:**
-Agent A registers with project `/home/user/myapp`. Agent B registers with project `/home/user/myapp/` (trailing slash). They are treated as different projects, so their locks don't conflict. Alternatively, Agent A uses the project root while Agent B uses a subdirectory as its project root. Lock scoping fails silently because paths are canonicalized but project strings may not be.
+**What goes wrong:** `glass_changed_files` uses the `similar` crate for unified diffs. The diff algorithm is O(n*m) where n and m are file lengths. For large generated files (1000+ lines), diff computation takes seconds. If the snapshotted file is a 10,000-line `Cargo.lock` or a compiled artifact, the diff is both slow to compute and useless to the agent.
 
-**Why it happens:**
-The `project` field in the `agents` table is a freeform `TEXT` field set by the agent during registration. The design says "scopes locks/visibility" but doesn't specify normalization. Agents pass whatever path their `cwd` resolves to, which may differ in trailing slash, symlink resolution, or case.
+**Why it happens:** Content-addressed blob store doesn't distinguish between source files (small, diffable) and generated/config files (large, not useful to diff). Any modified file gets diffed regardless of size.
 
-**How to avoid:**
-1. Canonicalize the `project` path using the same `normalize_path()` helper used for file locks. Strip trailing separators.
-2. The `lock_files` and `list_locks` queries should match on canonical project path, not on string equality of user-provided paths.
-3. Consider scoping locks by the canonical path prefix: if Agent A's project is `/home/user/myapp` and locks `/home/user/myapp/src/main.rs`, Agent B with project `/home/user/myapp/frontend` should still see the conflict because the locked file is under B's project too.
-4. Store the canonical project path at registration time and use it consistently.
+**Prevention:**
+- Cap diffable file size at 50KB. For larger files, return `{ action: "modified", diff: null, reason: "file_too_large (128KB)" }`.
+- Skip binary files entirely (check for null bytes in the first 8KB).
+- Consider skipping known-generated files (`Cargo.lock`, `package-lock.json`, `yarn.lock`) or at least noting them as `"type": "lockfile"`.
+- The agent can request specific file diffs via `glass_file_diff` if it needs the content of a large file.
 
-**Warning signs:**
-- Agents in the same repo don't see each other's locks
-- `glass_agent_list` shows agents with slightly different project paths for the same repo
-- Locks exist but `list_locks` returns empty (project filter mismatch)
-
-**Phase to address:**
-Phase 1 (Coordination Crate) -- normalize project paths at registration time.
+**Phase:** Token-Saving Tools (Phase 3).
 
 ---
 
-### Pitfall 12: ON DELETE CASCADE Surprises with Foreign Keys
+### Pitfall 12: MCP Embedding Breaks `#![windows_subsystem = "windows"]` stdio
 
-**What goes wrong:**
-Deleting a stale agent via `prune_stale()` cascades to delete all its file locks (correct) but also sets `from_agent = NULL` on all its messages via `ON DELETE SET NULL` (correct by design but potentially surprising). If a message references a pruned agent and the recipient reads it, the `from` field is null. The agent tool response says "message from: null" which is confusing for AI agents trying to coordinate.
+**What goes wrong:** If the MCP server is embedded in the terminal process (per Pitfall 1 recommendation), the terminal process has `#![windows_subsystem = "windows"]` which suppresses the console. This means stdin/stdout are not connected to anything. The existing MCP stdio transport (`rmcp::transport::stdio()`) will fail or produce no output. AI agents that spawn `glass mcp serve` as a child process and communicate via stdio will get nothing.
 
-**Why it happens:**
-The schema correctly uses `ON DELETE CASCADE` for `file_locks` and `ON DELETE SET NULL` for `messages.from_agent`. But the MCP tool `glass_agent_messages` response format shows `from: "Claude B"` by joining against the agents table. After pruning, this join returns NULL, and the response shows `from: null`.
+**Why it happens:** `#![windows_subsystem = "windows"]` tells Windows not to allocate a console for the process. Without a console, there are no standard I/O handles. The current `glass mcp serve` works because it's a separate invocation that IS launched from a terminal (so it inherits the terminal's console).
 
-**How to avoid:**
-1. Store the sender's name in the messages table itself (`from_name TEXT`) in addition to the `from_agent` foreign key. This denormalizes slightly but ensures messages remain readable after the sender is pruned.
-2. Alternatively, in the `read_messages` query, use `COALESCE(agents.name, '(departed agent)')` to provide a human-readable fallback.
-3. The MCP tool response should handle null sender gracefully: `"from": "(departed agent)"` rather than `"from": null`.
+**Prevention:**
+- If embedding MCP, use a socket-based transport instead of stdio. Options:
+  - TCP on localhost with a random port (write port to a known file like `~/.glass/mcp-port`)
+  - Windows named pipe (`\\.\pipe\glass-mcp-{pid}`)
+  - Unix domain socket (`/tmp/glass-mcp-{pid}.sock`)
+- The AI agent's MCP client configuration changes from `command: "glass mcp serve"` to `url: "tcp://localhost:{port}"` or equivalent.
+- Keep the `glass mcp serve` CLI entry point working for backward compatibility: it can either start a standalone server (current behavior) or connect to a running terminal's socket and proxy stdio-to-socket.
+- Verify rmcp supports custom transports. The `serve()` method currently takes `rmcp::transport::stdio()` but likely supports other `AsyncRead + AsyncWrite` implementations.
 
-**Warning signs:**
-- Messages with `from: null` appearing in agent message feeds
-- AI agents confused by messages from "null" and unable to respond
-- Messages becoming useless after sender departure
+**Detection:** If the embedded MCP server starts but no AI agent can connect, this pitfall is the cause.
 
-**Phase to address:**
-Phase 1 (schema design) -- add `from_name` column. Phase 2 (MCP tools) -- handle null sender in response formatting.
+**Phase:** MCP Command Channel (Phase 1) -- blocking decision.
 
 ---
 
-## Technical Debt Patterns
+## Minor Pitfalls
 
-| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
-|----------|-------------------|----------------|-----------------|
-| Skip PID start-time verification | Simpler implementation, no platform-specific code | Rare ghost agents on long-running systems | Phase 1 MVP only; add start-time check before v2.2 release |
-| Open new DB connection per MCP call | Simple, follows existing pattern, no Send/Sync issues | ~0.5ms overhead per tool call | Always acceptable for coordination DB (tiny and infrequent) |
-| String equality for project scoping | No path normalization complexity | Mismatched projects when paths differ in trailing slash/case | Never -- normalize from day one |
-| 5-minute stale timeout without tuning | Works for fast agent sessions | Active agents pruned during long coding tasks | Phase 1 only; increase to 10 minutes and make configurable |
-| No message retention policy | Messages accumulate indefinitely | DB bloat over weeks of use | Phase 1 only; add `max_message_age` pruning in Phase 3 |
-| Case-sensitive path comparison on Windows | Works if all callers use same case | Silent lock bypass when cases differ | Never on Windows -- lowercase normalize from day one |
+### Pitfall 13: Regex ReDoS in Output Pattern Filtering
 
-## Integration Gotchas
+**What goes wrong:** The `pattern` parameter in `glass_output` and `glass_tab_output` accepts user-provided regex. A poorly crafted pattern could cause catastrophic backtracking.
 
-| Integration | Common Mistake | Correct Approach |
-|-------------|----------------|------------------|
-| glass_mcp tool_router | Adding 11 tools to existing `#[tool_router]` makes the impl block massive and hard to navigate | Create a separate `CoordinationTools` struct or split into `coordination_tools.rs` module; delegate to `GlassServer` via composition |
-| rusqlite Connection in async context | Holding a `Connection` reference across an `.await` point causes `!Send` errors | Always clone paths/data INTO the `spawn_blocking` closure; open `CoordinationDb` inside the closure |
-| PRAGMA settings not inherited | Opening a new connection doesn't inherit PRAGMAs from other connections to the same DB | Every `CoordinationDb::open()` must set WAL mode, busy_timeout, and foreign_keys -- these are per-connection settings (except WAL which is persistent but should still be set defensively) |
-| uuid crate feature flags | `uuid = "1"` alone doesn't include generation functions | Use `uuid = { version = "1", features = ["v4"] }` for `Uuid::new_v4()` |
-| Existing `Cargo.toml` workspace | Adding `glass_coordination` crate without updating workspace members | Add to `[workspace] members` in root `Cargo.toml` and verify `cargo build --workspace` succeeds |
-| ON DELETE CASCADE requires PRAGMA | Foreign key constraints are OFF by default in SQLite | Every connection must set `PRAGMA foreign_keys = ON;` BEFORE any operations -- the existing codebase already does this, but the new crate must too |
+**Prevention:** Use Rust's `regex` crate, which uses finite automata and is immune to ReDoS by design. Set `RegexBuilder::size_limit(1 << 20)` to reject absurdly complex patterns. Test with `(a+)+$` to verify no hang occurs.
 
-## Performance Traps
+**Phase:** Token-Saving Tools (Phase 3).
 
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| GUI polling coordination DB every frame | Dropped frames, increased idle CPU, sluggish input | Poll every 5 seconds from a background thread; only trigger redraw on state change | Immediately visible with 2+ panes open |
-| Selecting all messages without pagination | `read_messages` returns thousands of old messages | Add `LIMIT 100` to message queries; prune messages older than 24 hours | After days of active multi-agent use |
-| `canonicalize()` on every lock operation | Filesystem syscall per path per lock call | Cache canonical paths within a single `lock_files` transaction; batch canonicalization | With 20+ files locked per request |
-| WAL file not truncated | Disk usage grows, reads slow as WAL is scanned | Periodic `PRAGMA wal_checkpoint(TRUNCATE)` during maintenance | After hours of continuous multi-agent use |
-| Heartbeat UPDATE without index | Full table scan on every heartbeat | The `agents` table uses `id TEXT PRIMARY KEY` which is already indexed; no action needed | N/A (already handled) |
+---
 
-## Security Mistakes
+### Pitfall 14: Token Budget Approximation Drift
 
-| Mistake | Risk | Prevention |
-|---------|------|------------|
-| Agent IDs are guessable UUIDs | Any process with filesystem access to `agents.db` can impersonate another agent (deregister it, steal locks, read messages) | Accept this risk -- the system is advisory and local-only. Document that coordination is trust-based, not authenticated. No MCP over network transport (already out of scope). |
-| Path traversal in lock paths | Agent locks `../../../etc/passwd` to troll other agents | Validate that locked paths are under the registered project root. Reject paths outside project scope. |
-| Unbounded message content | Agent sends a 100MB message body, bloating the DB | Add a `MAX_MESSAGE_SIZE` constant (e.g., 10KB) and reject messages exceeding it in `send_message` / `broadcast`. |
-| SQLite injection via path strings | Malicious path like `'; DROP TABLE agents; --` | rusqlite uses parameterized queries (`params![]`), which prevent SQL injection. No action needed as long as all queries use parameters (the existing codebase does this correctly). |
+**What goes wrong:** `glass_context` with `budget` parameter approximates tokens as `chars / 4`. This ratio varies: code is closer to 1:3, English text closer to 1:4.5. The actual token count can overshoot the budget by 30-50%.
 
-## UX Pitfalls
+**Prevention:** Use `chars / 3` as the conservative estimate. Undershoot is better than overshoot. Document that `budget` is approximate ("may return up to 30% fewer tokens than requested"). Do not import a tokenizer.
 
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| Lock conflicts show raw canonical paths | User sees `\\?\C:\Users\nkngu\apps\Glass\src\main.rs` in error messages | Strip UNC prefix and show paths relative to project root in MCP responses: `src/main.rs` |
-| No indication which tab has which agent | Human can't tell which Glass tab corresponds to "Claude A" vs "Claude B" | Show agent name in tab title or a small badge on the tab bar |
-| Silent heartbeat-based pruning | Agent gets pruned and its locks vanish without notification | Send a `conflict_warning` message to remaining agents when a stale agent is pruned: "Agent X was pruned due to inactivity; its locks on [files] have been released" |
-| Message flood from chatty agents | Human agent gets spammed with coordination noise | Add a `glass_agent_messages` filter for `msg_type` so agents can read only `conflict_warning` messages and ignore `info` chatter |
-| No way to see coordination state without MCP | Human user in a regular terminal tab can't see what agents are doing | The GUI status bar integration (Phase 4) is essential for human oversight. Before Phase 4, provide a `glass coordination list` CLI subcommand. |
+**Phase:** Token-Saving Tools (Phase 3).
 
-## "Looks Done But Isn't" Checklist
+---
 
-- [ ] **Path canonicalization:** Often missing Windows case-insensitivity handling -- verify with test: `lock("src/Main.rs")` and `lock("src/main.rs")` conflict on Windows
-- [ ] **Heartbeat implicit refresh:** Often missing on non-heartbeat tools -- verify that `glass_agent_lock` also updates `last_heartbeat`
-- [ ] **Transaction behavior:** Often using default `DEFERRED` for writes -- verify ALL write methods use `TransactionBehavior::Immediate`
-- [ ] **WAL checkpoint on open:** Often missing cleanup -- verify `CoordinationDb::open()` attempts a truncate checkpoint
-- [ ] **Foreign key enforcement:** Often forgotten per-connection -- verify `PRAGMA foreign_keys = ON` in `CoordinationDb::open()`
-- [ ] **Prune idempotency:** Often uses SELECT-then-DELETE pattern -- verify prune is a single atomic DELETE statement
-- [ ] **Message sender name:** Often joins only on `from_agent` FK -- verify response handles NULL sender gracefully after pruning
-- [ ] **UUID generation:** Often missing feature flag -- verify `uuid` dependency includes `v4` feature
-- [ ] **Cross-platform PID check:** Often uses Unix-only APIs -- verify PID liveness check compiles on Windows, macOS, and Linux
-- [ ] **Project path normalization:** Often stores raw user input -- verify trailing slash stripped and path canonicalized at registration
+### Pitfall 15: Multiple Concurrent MCP Connections to Same Terminal
 
-## Recovery Strategies
+**What goes wrong:** Two AI agents both connect to the same terminal's MCP server. Both call `glass_tab_run` on the same tab simultaneously. Two commands are typed into the same PTY interleaved, producing garbled input like `carggo o tesbuilt`.
 
-| Pitfall | Recovery Cost | Recovery Steps |
-|---------|---------------|----------------|
-| WAL file grows unbounded | LOW | Run `PRAGMA wal_checkpoint(TRUNCATE)` manually via SQLite CLI on `~/.glass/agents.db`. Add checkpoint to `CoordinationDb::open()` to self-heal. |
-| Ghost agents with stale locks | LOW | `DELETE FROM agents WHERE last_heartbeat < unixepoch() - 600;` manually. Or restart Glass (re-open triggers prune). |
-| UNC path mismatch causing duplicate locks | MEDIUM | Identify affected rows, normalize paths, deduplicate. Requires a schema migration adding a `canonical_path` index. |
-| SQLITE_BUSY errors blocking agents | LOW | Agents retry naturally. Fix by switching to `BEGIN IMMEDIATE`. No data loss. |
-| PID reuse causing ghost agents | LOW | The 5-10 minute heartbeat timeout eventually cleans up. Manual `glass coordination prune` CLI command as escape hatch. |
-| Message ordering confusion | LOW | Not a data integrity issue. Adjust agent instructions to not rely on message order. |
-| GUI polling causing frame drops | MEDIUM | Requires refactoring poll timer from render-coupled to background thread. May need to rearchitect the coordination state cache. |
+**Prevention:**
+- Serialize PTY writes per session: only one `glass_tab_run` call per session can be active at a time. Queue or reject concurrent writes.
+- Alternatively, require agents to use the coordination system (glass_agent_lock) to claim a tab before writing to it. If agent A holds the lock on session-2, agent B's `glass_tab_run` to session-2 returns a conflict error.
+- For read-only tools (`glass_tab_output`, `glass_tab_list`, `glass_command_status`), concurrent access is safe and should not be serialized.
 
-## Pitfall-to-Phase Mapping
+**Phase:** Multi-Tab Orchestration (Phase 2).
 
-| Pitfall | Prevention Phase | Verification |
-|---------|------------------|--------------|
-| WAL checkpoint starvation | Phase 1: Coordination Crate | `agents.db-wal` stays under 1MB after 1 hour of multi-agent use |
-| SQLITE_BUSY with deferred transactions | Phase 1: Coordination Crate | `lock_files` under concurrent load never returns "database is locked" |
-| UNC path canonicalization | Phase 1: Coordination Crate | Unit test: same file locked via relative, absolute, and UNC paths all conflict |
-| PID reuse ghost agents | Phase 1: Coordination Crate | Integration test: simulate PID reuse, verify heartbeat timeout still prunes |
-| Lock acquisition deadlock/livelock | Phase 1: Coordination Crate + Phase 2: MCP Tools | Two agents locking overlapping file sets both succeed within 10 seconds |
-| Concurrent prune_stale race | Phase 1: Coordination Crate | Stress test: 5 concurrent prune calls complete without errors |
-| Heartbeat timer drift | Phase 2: MCP Tools | Agent active for 8 minutes with no explicit heartbeat calls is not pruned |
-| Message ordering assumptions | Phase 2: MCP Tools | Tool documentation states ordering is approximate |
-| GUI polling overhead | Phase 4: GUI Integration | Input latency benchmark shows <0.5ms increase after adding coordination GUI |
-| Connection sharing anti-pattern | Phase 2: MCP Tools | No `Arc<Mutex<Connection>>` in codebase; each spawn_blocking opens fresh |
-| Project scope mismatch | Phase 1: Coordination Crate | Agents with `/path/to/project` and `/path/to/project/` see same locks |
-| FK cascade message sender | Phase 1: Schema + Phase 2: MCP Tools | Messages readable after sender pruned; `from` field shows name not null |
+---
+
+### Pitfall 16: History DB Output Column is Only 50KB
+
+**What goes wrong:** `glass_output` and `glass_errors` can read from the history DB's `output` column. But output capture truncates at 50KB (see `OutputBuffer` in `output_capture.rs`). A `cargo build` with 200 errors easily produces 100KB+ of output. The agent asks for errors, but the stored output is truncated and the last 50 errors are missing.
+
+**Prevention:**
+- When reading from history DB, include `{ truncated: true, note: "output was truncated during capture at 50KB" }` if the stored output is exactly at the cap.
+- For `glass_errors`, recommend using `tab_id` (live grid) instead of `command_id` (history DB) when the command just finished, as the grid has the full output in scrollback.
+- Consider increasing the capture limit for failed commands (exit code != 0) to 200KB, since error output is the most valuable for analysis.
+
+**Phase:** Structured Error Extraction (Phase 4) and Token-Saving Tools (Phase 3).
+
+---
+
+## Phase-Specific Warnings
+
+| Phase Topic | Likely Pitfall | Mitigation |
+|-------------|---------------|------------|
+| MCP Command Channel | Process boundary (Pitfall 1) + Windows subsystem (Pitfall 12) | Resolve embed-vs-IPC and transport mechanism before writing any code. Prototype connection first. |
+| MCP Command Channel | Oneshot reply drops (Pitfall 6) | Every request handler path must send a reply. Add timeout on recv side. |
+| MCP Command Channel | Event loop starvation (Pitfall 3) | Max 1 heavy MCP request per frame. Bounded channel(16). |
+| Multi-Tab Orchestration | Tab ID instability (Pitfall 4) | Use SessionId, not tab index, from day one. |
+| Multi-Tab Orchestration | Grid lock contention (Pitfall 2) | Write a text-only grid reader, minimize lock hold time, never process under lock. |
+| Multi-Tab Orchestration | Unbounded output (Pitfall 5) | 100KB hard cap, default 50 lines, strip trailing whitespace. |
+| Multi-Tab Orchestration | Concurrent PTY writes (Pitfall 15) | Serialize writes per session, or integrate with coordination locks. |
+| Token-Saving Tools (DB) | Stale cache (Pitfall 9) | Check filesystem mtimes, not just snapshot DB. Default max_age 120s. |
+| Token-Saving Tools (DB) | Large file diffs (Pitfall 11) | 50KB cap on diffable files. Skip binary files. |
+| Token-Saving Tools (DB) | History truncation (Pitfall 16) | Indicate truncation in response. Prefer live grid for recent commands. |
+| Structured Error Extraction | Parser scope creep (Pitfall 8) | Ship Rust + Generic only. Add others post-launch. |
+| Structured Error Extraction | ANSI contamination (Pitfall 7) | Strip escapes before parsing. Reuse existing stripper. |
+| Live Command Awareness | Cancel race condition (Pitfall 10) | Re-check state in cancel handler. Document TOCTOU. Only send 0x03 byte. |
+
+---
 
 ## Sources
 
-- [SQLite WAL Mode Documentation](https://sqlite.org/wal.html) -- authoritative source on checkpoint behavior, reader blocking, and WAL growth
-- [SQLite Busy Timeout Pitfalls (Bert Hubert)](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) -- explains why busy_timeout doesn't help with transaction upgrades
-- [SQLite Concurrent Writes Analysis](https://tenthousandmeters.com/blog/sqlite-concurrent-writes-and-database-is-locked-errors/) -- detailed analysis of BEGIN IMMEDIATE vs DEFERRED
-- [Rust std::fs::canonicalize UNC Issue #42869](https://github.com/rust-lang/rust/issues/42869) -- open since 2017, documents Windows UNC path problem
-- [dunce crate](https://docs.rs/dunce) -- drop-in replacement for canonicalize that strips UNC prefix safely
-- [Heartbeat Patterns (Martin Fowler)](https://martinfowler.com/articles/patterns-of-distributed-systems/heartbeat.html) -- authoritative pattern reference for distributed liveness
-- [PID Reuse Race Conditions (LWN.net)](https://lwn.net/Articles/773459/) -- Linux kernel discussion of PID reuse timing
-- [macOS PID Reuse Attacks (HackTricks)](https://book.hacktricks.wiki/en/macos-hardening/macos-security-and-privilege-escalation/macos-proces-abuse/macos-ipc-inter-process-communication/macos-xpc/macos-xpc-connecting-process-check/macos-pid-reuse.html) -- demonstrates real PID reuse exploitation
-- [SQLite WAL Checkpoint Starvation (sqlite-users)](https://sqlite-users.sqlite.narkive.com/muT0rMYt/sqlite-wal-checkpoint-starved) -- community report of unbounded WAL growth
-- [SkyPilot: Abusing SQLite for Concurrency](https://blog.skypilot.co/abusing-sqlite-to-handle-concurrency/) -- patterns for multi-process SQLite coordination
-- [Fixing Claude Code Concurrent Sessions with SQLite WAL (DEV Community)](https://dev.to/daichikudo/fixing-claude-codes-concurrent-session-problem-implementing-memory-mcp-with-sqlite-wal-mode-o7k) -- directly relevant: using SQLite WAL for MCP coordination
-- [NTFS Case Sensitivity Internals (Tyranid's Lair)](https://www.tiraniddo.dev/2019/02/ntfs-case-sensitivity-on-windows.html) -- explains NTFS case-sensitivity edge cases
-- [SQLite WAL File Growth Guide (CopyProgramming)](https://copyprogramming.com/howto/sqlite-wal-file-size-keeps-growing) -- practical guide to WAL size management
+- Direct codebase analysis of: `src/main.rs` (event loop, MCP serve entry point, WindowContext/Processor structs), `crates/glass_mcp/src/lib.rs` (separate process architecture), `crates/glass_mcp/src/tools.rs` (GlassServer struct, spawn_blocking pattern), `crates/glass_core/src/event.rs` (AppEvent enum, SessionId), `crates/glass_mux/src/session.rs` (Session struct with Arc<FairMutex<Term>>), `crates/glass_mux/src/session_mux.rs` (tab vector, session lookup), `crates/glass_terminal/src/pty.rs` (PtyMsg, PtySender), `crates/glass_terminal/src/block_manager.rs` (BlockState lifecycle), `crates/glass_terminal/src/grid_snapshot.rs` (snapshot_term function)
+- `AGENT_MCP_FEATURES.md` -- project-local implementation design document
+- `.planning/PROJECT.md` -- project context, key decisions, constraints
+- alacritty_terminal FairMutex semantics (HIGH confidence -- core design property of alacritty)
+- Rust `regex` crate ReDoS immunity (HIGH confidence -- fundamental design property using Thompson NFA)
+- Windows subsystem behavior with stdio (HIGH confidence -- well-known Win32 API behavior)
+- rmcp transport flexibility (MEDIUM confidence -- verify custom transport support in rmcp 1.1.0 before committing to socket transport)
 
 ---
-*Pitfalls research for: Multi-Agent Coordination (Glass v2.2)*
+*Pitfalls research for: Agent MCP Features (Glass v2.3)*
 *Researched: 2026-03-09*

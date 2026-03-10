@@ -1,666 +1,657 @@
-# Architecture Patterns: Multi-Agent Coordination Integration
+# Architecture Patterns
 
-**Domain:** Multi-agent coordination layer for GPU-accelerated terminal emulator
+**Domain:** Agent MCP Features (v2.3) for GPU-accelerated terminal emulator
 **Researched:** 2026-03-09
-**Overall confidence:** HIGH
 
-## Recommended Architecture
-
-The coordination feature integrates as a new crate (`glass_coordination`) with modifications to two existing crates (`glass_mcp`, `glass_renderer`) and the root binary (`src/main.rs`). The design follows established patterns already proven in the codebase.
+## Current Architecture (Relevant Subset)
 
 ```
-                   src/main.rs (MODIFIED)
-                   - Reads agents.db periodically for GUI indicators
-                   - Passes coordination state to renderer
-                        |
-         +--------------+--------------+
-         |              |              |
-   glass_mux       glass_renderer    glass_mcp (MODIFIED)
-   (unchanged)     (MODIFIED)        - Adds glass_coordination dep
-                   - Status bar:     - 11 new MCP tool handlers
-                     agent count     - Opens CoordinationDb on startup
-                   - Tab bar:        - Wraps sync calls in spawn_blocking
-                     lock indicators
-                        |              |
-                        +------+-------+
-                               |
-                    glass_coordination (NEW)
-                    - CoordinationDb struct
-                    - SQLite schema (agents.db)
-                    - Agent registry, file locks, messaging
-                    - Path canonicalization
-                    - Stale agent pruning (heartbeat + PID)
-                               |
-                         rusqlite (existing workspace dep)
-                         uuid (NEW workspace dep)
+┌─────────────────────────────────────────────────────────────────┐
+│  glass mcp serve (SEPARATE PROCESS)                             │
+│  ┌───────────────┐                                              │
+│  │  GlassServer   │──→ SQLite only (history.db, snapshots.db,   │
+│  │  (rmcp stdio)  │       agents.db)                            │
+│  │  16 tools      │  spawn_blocking per request                 │
+│  └───────────────┘                                              │
+│  NO access to: SessionMux, PTY, terminal grids, BlockManager   │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  glass (MAIN GUI PROCESS)                                       │
+│  ┌────────────┐    ┌──────────────┐    ┌─────────────────────┐  │
+│  │ winit       │    │ SessionMux   │    │ PTY reader threads  │  │
+│  │ event loop  │◄──→│ tabs[]       │    │ (std::thread)       │  │
+│  │ user_event()│    │ sessions{}   │    │ → EventProxy →      │  │
+│  │             │    │              │    │   AppEvent to loop   │  │
+│  └────────────┘    └──────────────┘    └─────────────────────┘  │
+│        ▲                  │                                      │
+│        │            ┌─────┴─────┐                                │
+│        │            │ Session   │                                 │
+│        │            │ .term     │ Arc<FairMutex<Term>>            │
+│        │            │ .pty_sender│ PtyMsg mpsc channel            │
+│        │            │ .block_mgr │ command lifecycle tracking     │
+│        │            │ .history_db│ per-session SQLite             │
+│        │            │ .snapshot  │ per-session blob store         │
+│        │            └───────────┘                                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Component Classification
+**The fundamental gap:** MCP server (separate process) cannot access live session state. All features requiring live data (tab orchestration, live output, command status/cancel) need a communication bridge between the MCP server and the main event loop.
 
-| Component | Status | Role |
-|-----------|--------|------|
-| `crates/glass_coordination/` | **NEW** | Pure library: SQLite coordination DB, all agent/lock/message operations |
-| `crates/glass_mcp/src/tools.rs` | **MODIFIED** | Add 11 tool handlers, wire CoordinationDb into GlassServer |
-| `crates/glass_mcp/src/lib.rs` | **MODIFIED** | Open CoordinationDb path during server startup |
-| `crates/glass_mcp/Cargo.toml` | **MODIFIED** | Add `glass_coordination` dependency |
-| `crates/glass_renderer/src/status_bar.rs` | **MODIFIED** | Add agent count display to status bar |
-| `crates/glass_renderer/src/tab_bar.rs` | **MODIFIED** | Add lock indicator (colored dot) per tab |
-| `crates/glass_renderer/src/frame.rs` | **MODIFIED** | Pass coordination display state through to status bar |
-| `src/main.rs` | **MODIFIED** | Periodic coordination state polling, pass to renderer |
-| `Cargo.toml` (workspace root) | **MODIFIED** | Add `uuid` to workspace deps, add `glass_coordination` to root deps |
-| `CLAUDE.md` | **MODIFIED** | Add coordination instructions for AI agents |
+## Recommended Architecture: Embedded MCP with Async Channel Bridge
+
+### The Core Decision: Embed MCP in the GUI Process
+
+Move the MCP server from a separate process into the main GUI process as a tokio task. The MCP server communicates with the winit event loop via a bounded `tokio::sync::mpsc` channel, with per-request `tokio::sync::oneshot` channels for responses.
+
+**Why in-process, not IPC:**
+- Avoids named pipes (Windows) or Unix sockets (macOS/Linux) for cross-process communication
+- Zero serialization overhead for grid snapshots and terminal state
+- Still isolated: MCP runs on its own tokio task, not on the winit event loop thread
+- rmcp supports any `AsyncRead + AsyncWrite` transport; embedding changes nothing about the protocol
+- The `glass mcp serve` CLI subcommand remains for backward compatibility and DB-only tools
+
+**Why not keep out-of-process and add IPC:**
+- Would require a listener socket in the GUI process + client in MCP process
+- Platform-divergent socket implementations (named pipes vs Unix sockets)
+- Serialization/deserialization overhead for terminal grid content
+- Two codepaths: DB-only external + live-data internal
+- Process lifecycle coordination (what if GUI crashes? what if MCP outlives GUI?)
+
+### Target Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  glass (MAIN GUI PROCESS)                                           │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │ Tokio runtime     │                                               │
+│  │  ┌──────────────┐ │   tokio::sync::mpsc        ┌───────────────┐ │
+│  │  │ MCP Server   │─│───McpRequest────────────────│ Bridge task   │ │
+│  │  │ (rmcp stdio) │ │   + oneshot::Sender         │               │ │
+│  │  │ GlassServer  │ │                             │ recv request  │ │
+│  │  │ 28 tools     │ │                             │ → proxy.send  │ │
+│  │  └──────────────┘ │                             │   (AppEvent:: │ │
+│  └──────────────────┘                              │    Mcp)       │ │
+│                                                     └───────┬───────┘ │
+│                                                             │         │
+│  ┌────────────┐    ┌──────────────┐         AppEvent::Mcp   │         │
+│  │ winit       │◄───────────────────────────────────────────┘         │
+│  │ event loop  │    │ SessionMux   │                                   │
+│  │ user_event()│───→│ tabs/panes   │──→ Process request               │
+│  │  match Mcp  │    │ sessions     │     Reply via oneshot            │
+│  └────────────┘    └──────────────┘                                   │
+│        ▲                                                              │
+│  ┌─────┴──────────────────────────────────────────┐                   │
+│  │ PTY reader threads (std::thread, unchanged)     │                   │
+│  └─────────────────────────────────────────────────┘                   │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────┐
+│  glass mcp serve             │  (STILL WORKS — backward compat)
+│  DB-only tools (16 existing) │  No channel, no live data
+└──────────────────────────────┘
+```
+
+### Component Boundaries
+
+| Component | Responsibility | Status | Modification |
+|-----------|---------------|--------|-------------|
+| `glass_core/mcp_channel.rs` | McpRequest/McpResponse enums, channel type aliases | **NEW** | ~80 lines |
+| `glass_core/event.rs` | New `AppEvent::Mcp(McpRequest)` variant | **MODIFY** | +2 lines |
+| `glass_errors/` | Pure error parsing library (`&str` -> `Vec<ParsedError>`) | **NEW CRATE** | ~600 lines |
+| `glass_mcp/tools.rs` | 12 new MCP tool handlers, `McpSender` field on GlassServer | **MODIFY** | +500 lines |
+| `glass_mcp/lib.rs` | New `run_mcp_server_embedded()` accepting sender | **MODIFY** | +25 lines |
+| `glass_mcp/Cargo.toml` | Add deps: glass_core, glass_errors, similar, regex | **MODIFY** | +4 lines |
+| `src/main.rs` | Spawn embedded MCP, bridge task, handle AppEvent::Mcp | **MODIFY** | +300 lines |
+| `Cargo.toml` (workspace) | Add glass_errors to workspace members, add similar + regex | **MODIFY** | +5 lines |
 
 ### Components NOT Modified
 
 | Component | Why Unchanged |
 |-----------|---------------|
-| `glass_terminal` | No terminal emulation changes needed; coordination is above PTY layer |
-| `glass_core` | No new AppEvent variants needed (coordination state is polled, not event-driven) |
-| `glass_history` | History DB is separate from agents.db; no schema changes |
-| `glass_snapshot` | Snapshot operations are independent of coordination |
-| `glass_pipes` | Pipe capture is orthogonal to agent coordination |
-| `glass_mux` | Session multiplexer does not need coordination awareness; tab metadata flows through main.rs |
+| `glass_terminal` | No terminal emulation changes; grid reads use existing FairMutex API |
+| `glass_renderer` | No rendering changes for v2.3; output goes through MCP, not GUI |
+| `glass_mux` | SessionMux API is sufficient; new methods not needed |
+| `glass_history` | Existing query API covers glass_output, glass_cached_result needs |
+| `glass_snapshot` | Existing API covers glass_changed_files needs |
+| `glass_coordination` | Already shipped in v2.2, no changes needed |
+| `glass_pipes` | Pipe capture is orthogonal to MCP features |
 
-## New Crate: `glass_coordination`
+## New Component: MCP Channel Types
 
-### Design Principles
-
-Follow the exact patterns established by `glass_history` and `glass_snapshot`:
-
-1. **Pure synchronous library** -- no async runtime, no Tokio dependency. All SQLite operations are blocking. The MCP layer wraps them in `tokio::task::spawn_blocking`.
-2. **Own its database** -- `agents.db` lives in `~/.glass/` alongside `history.db` and `snapshots.db`. Separate DB for independent lifecycle and no migration risk to existing data.
-3. **WAL mode with busy_timeout** -- identical PRAGMA configuration to `HistoryDb` and `SnapshotDb`: `journal_mode = WAL`, `synchronous = NORMAL`, `busy_timeout = 5000`, `foreign_keys = ON`.
-4. **PRAGMA user_version for migrations** -- same migration pattern used by glass_history (v0 -> v1 -> v2) and glass_snapshot (v0).
-
-### Internal Structure
-
-```
-crates/glass_coordination/
-  Cargo.toml
-  src/
-    lib.rs          -- CoordinationDb struct, open(), resolve_agents_db_path()
-    schema.rs       -- CREATE TABLE statements, migrations
-    agents.rs       -- register, deregister, heartbeat, set_status, list_agents, get_agent
-    locks.rs        -- lock_files (atomic), unlock_file, unlock_all, list_locks
-    messages.rs     -- broadcast, send_message, read_messages
-    types.rs        -- AgentInfo, FileLock, Message, LockResult, LockConflict structs
-    prune.rs        -- prune_stale(), PID liveness check (cross-platform)
-```
-
-### Cargo.toml
-
-```toml
-[package]
-name = "glass_coordination"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rusqlite = { workspace = true }
-uuid = { version = "1", features = ["v4"] }
-anyhow = { workspace = true }
-tracing = { workspace = true }
-chrono = { workspace = true }
-
-[dev-dependencies]
-tempfile = "3"
-```
-
-### Key API Design Decisions
-
-**CoordinationDb holds a `Connection`, not `Arc<Mutex<Connection>>`**. This matches `HistoryDb` and `SnapshotDb`. Thread safety is handled by the caller (MCP layer uses `spawn_blocking` with the DB path cloned into the closure, opening per-call).
-
-**`lock_files` is atomic (all-or-nothing)**. Uses a single SQLite transaction with `BEGIN IMMEDIATE`. If any path is already locked by another agent, the entire request fails with conflict details, and no locks are acquired. This eliminates TOCTOU races and prevents partial-lock deadlocks.
-
-**Path canonicalization happens inside `lock_files`/`unlock_file`**, not at the caller. This ensures consistency regardless of how the path arrives. Uses `std::fs::canonicalize()` which resolves symlinks and produces absolute paths. On Windows, this produces UNC paths (`\\?\C:\...`) -- stored as-is since all paths go through the same canonicalization.
-
-**DB location: `~/.glass/agents.db`** (always global, never per-project). Unlike history and snapshots which can be project-local (`.glass/` in project root), coordination must be global so agents in different CWDs within the same project can discover each other. The `project` field in the agents table handles scoping by project root path.
-
-### Database Schema: `~/.glass/agents.db`
-
-```sql
--- Schema version 0
-
-CREATE TABLE agents (
-    id              TEXT PRIMARY KEY,        -- UUID v4, assigned on register
-    name            TEXT NOT NULL,            -- Human-readable label ("Claude A")
-    agent_type      TEXT NOT NULL,            -- "claude-code", "cursor", "copilot", "human"
-    project         TEXT NOT NULL,            -- Canonical project root (scopes visibility)
-    cwd             TEXT NOT NULL,            -- Working directory
-    pid             INTEGER,                 -- OS process ID (liveness fallback)
-    status          TEXT NOT NULL DEFAULT 'active',  -- active | busy | idle
-    task            TEXT,                     -- Current task description
-    registered_at   INTEGER NOT NULL,
-    last_heartbeat  INTEGER NOT NULL
-);
-
-CREATE TABLE file_locks (
-    path       TEXT PRIMARY KEY,             -- Canonical absolute path
-    agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    reason     TEXT,
-    locked_at  INTEGER NOT NULL
-);
-CREATE INDEX idx_locks_agent ON file_locks(agent_id);
-
-CREATE TABLE messages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_agent  TEXT REFERENCES agents(id) ON DELETE SET NULL,
-    to_agent    TEXT,                         -- NULL = broadcast
-    msg_type    TEXT NOT NULL DEFAULT 'info', -- info | conflict_warning | task_complete | request_unlock
-    content     TEXT NOT NULL,
-    created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-    read        INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX idx_messages_unread ON messages(to_agent, read);
-```
-
-### Concurrency Model: Why SQLite WAL Works Here
-
-SQLite WAL mode supports concurrent readers with a single writer. Multiple `glass mcp serve` processes safely share `agents.db`:
-
-- **Reads** (list_agents, list_locks, read_messages): Fully concurrent, never blocked by writers.
-- **Writes** (register, lock_files, heartbeat, send_message): Serialized by SQLite's write lock. With `busy_timeout = 5000ms`, a writer waits up to 5 seconds. Coordination writes are small and fast (single-row INSERTs/UPDATEs), so contention is negligible even with 10+ agents.
-- **Atomic transactions** (`lock_files`): Uses `BEGIN IMMEDIATE` to acquire the write lock at transaction start, preventing the upgrade deadlock where two readers try to simultaneously upgrade to writers.
-
-This is the identical pattern used by `HistoryDb` and `SnapshotDb`. WAL mode, synchronous=NORMAL, busy_timeout=5000 are already proven in the codebase across hundreds of tests.
-
-### PID Liveness Check (Cross-Platform)
-
-For stale agent detection, `prune_stale()` needs to check if a PID is still running. Two approaches, in order of preference:
-
-**Approach A (Recommended): Manual platform-specific checks.** Zero new dependencies. Small amount of platform-specific code behind `#[cfg]`:
+Lives in `glass_core` because `event.rs` (which defines `AppEvent`) already lives there. McpRequest must be in the same crate as AppEvent to be a variant payload.
 
 ```rust
-fn is_pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // kill(pid, 0) checks process existence without sending a signal
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+// glass_core/src/mcp_channel.rs
+
+use tokio::sync::oneshot;
+use serde_json::Value;
+
+/// Request from an MCP tool handler to the main event loop.
+/// Each variant carries a oneshot::Sender for the response.
+pub enum McpRequest {
+    // --- Tab Orchestration ---
+    TabCreate {
+        name: Option<String>,
+        shell: Option<String>,
+        cwd: Option<String>,
+        reply: oneshot::Sender<McpResponse>,
+    },
+    TabList {
+        reply: oneshot::Sender<McpResponse>,
+    },
+    TabRun {
+        tab_index: usize,
+        command: String,
+        reply: oneshot::Sender<McpResponse>,
+    },
+    TabOutput {
+        tab_index: usize,
+        lines: Option<usize>,
+        pattern: Option<String>,
+        reply: oneshot::Sender<McpResponse>,
+    },
+    TabClose {
+        tab_index: usize,
+        reply: oneshot::Sender<McpResponse>,
+    },
+
+    // --- Live Command Awareness ---
+    CommandStatus {
+        tab_index: Option<usize>,
+        reply: oneshot::Sender<McpResponse>,
+    },
+    CommandCancel {
+        tab_index: Option<usize>,
+        reply: oneshot::Sender<McpResponse>,
+    },
+}
+
+pub enum McpResponse {
+    Ok(Value),
+    Error(String),
+}
+
+pub type McpSender = tokio::sync::mpsc::Sender<McpRequest>;
+pub type McpReceiver = tokio::sync::mpsc::Receiver<McpRequest>;
+```
+
+**Why McpRequest lives in glass_core, not glass_mcp:**
+- `AppEvent::Mcp(McpRequest)` needs McpRequest in the same crate as AppEvent
+- glass_core is the natural hub crate (event.rs, config.rs, coordination_poller.rs)
+- Avoids circular dependency: main.rs depends on glass_mcp AND glass_core; if McpRequest were in glass_mcp, glass_core couldn't reference it in AppEvent
+
+**Tokio dependency in glass_core:** glass_core currently does not depend on tokio. Adding `tokio = { workspace = true, features = ["sync"] }` is necessary for `oneshot::Sender` and `mpsc::Sender/Receiver`. This is a lightweight addition (sync feature only, no runtime). Alternative: define channel types without tokio using std channels, but tokio channels are needed because MCP tools are async and need `await`-able oneshot receivers.
+
+## Data Flow Diagrams
+
+### Tab Orchestration: glass_tab_run
+
+```
+AI Agent (Claude Code, via stdio JSON-RPC)
+    │
+    ▼
+rmcp transport layer (tokio task in GUI process)
+    │
+    ▼
+GlassServer.glass_tab_run(tab_index=2, command="cargo test")
+    │
+    ├── let (tx, rx) = oneshot::channel()
+    ├── mcp_sender.send(McpRequest::TabRun { tab_index: 2,
+    │                     command: "cargo test\n", reply: tx })
+    │
+    ▼ (awaits rx)                        Bridge task
+                                          │
+                        mcp_rx.recv() ────┘
+                                          │
+                        proxy.send_event(AppEvent::Mcp(request))
+                                          │
+                                          ▼
+main.rs user_event(AppEvent::Mcp(McpRequest::TabRun { .. }))
+    │
+    ├── let tab = session_mux.tabs()[2]
+    ├── let session = session_mux.session(tab.focused_pane)
+    ├── session.pty_sender.send(PtyMsg::Input("cargo test\n".bytes()))
+    ├── reply.send(McpResponse::Ok(json!({"ok": true})))
+    │
+    ▼ (oneshot fires)
+
+rx.await → McpResponse::Ok → CallToolResult::success
+    │
+    ▼
+AI Agent receives { "ok": true }
+```
+
+### Tab Output: glass_tab_output
+
+```
+McpRequest::TabOutput { tab_index: 2, lines: 20, pattern: None, reply }
+    │
+    ▼ (in main.rs user_event)
+
+1. Resolve tab → session
+2. let term = session.term.lock()        // FairMutex, <1ms hold
+3. Read last 20 lines from grid content   // scrollback + visible
+4. drop(term)                             // release lock immediately
+5. Strip ANSI escape sequences
+6. Check session.block_manager for Executing state
+7. reply.send(McpResponse::Ok(json!({
+       "output": stripped_text,
+       "total_lines": total,
+       "has_running_command": is_executing
+   })))
+```
+
+### Error Extraction: glass_errors (No Channel — DB Path)
+
+```
+AI Agent calls glass_errors(command_id=42)
+    │
+    ▼
+GlassServer.glass_errors():
+    │
+    ├── spawn_blocking:
+    │   ├── HistoryDb::open(db_path)
+    │   ├── db.get_command(42) → CommandRecord { output, command_text, .. }
+    │   └── glass_errors::parse(output, Some(command_text))
+    │       └── Returns Vec<ParsedError>
+    │
+    ├── Serialize to JSON
+    └── CallToolResult::success
+```
+
+### Token-Saving: glass_changed_files (No Channel — Snapshot DB)
+
+```
+AI Agent calls glass_changed_files(command_id=42)
+    │
+    ▼
+GlassServer.glass_changed_files():
+    │
+    ├── spawn_blocking:
+    │   ├── SnapshotStore::open(glass_dir)
+    │   ├── store.get_snapshot_files(42)
+    │   ├── For each file:
+    │   │   ├── Read blob content from blob store
+    │   │   ├── Read current file from disk
+    │   │   └── similar::TextDiff::from_lines(old, new).unified_diff()
+    │   └── Return file list with diffs
+    │
+    ├── Serialize to JSON
+    └── CallToolResult::success
+```
+
+### Embedded MCP Server Startup
+
+```rust
+// In main.rs, during App initialization:
+
+// 1. Create MCP command channel (bounded at 32 — more than enough
+//    for sequential MCP tool calls from an AI agent)
+let (mcp_tx, mcp_rx) = tokio::sync::mpsc::channel::<McpRequest>(32);
+
+// 2. Spawn embedded MCP server on tokio runtime
+//    Uses stdin/stdout for rmcp transport (same as glass mcp serve)
+let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+tokio_rt.spawn(async move {
+    if let Err(e) = glass_mcp::run_mcp_server_embedded(mcp_tx).await {
+        tracing::error!("Embedded MCP server error: {}", e);
     }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-        use windows_sys::Win32::Foundation::CloseHandle;
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle == 0 { return false; }
-        unsafe { CloseHandle(handle); }
-        true
-    }
-}
-```
+});
 
-This avoids adding libc/windows-sys as direct dependencies to glass_coordination. Instead, use `std::process::Command` to call platform tools:
-- Unix: `kill -0 <pid>` (returns success if process exists)
-- Windows: `tasklist /FI "PID eq <pid>"` or use `windows-sys` (already a workspace dependency)
-
-**Approach B: Use `process_alive` crate.** Adds one tiny dependency. Handles all platform nuances. If the manual approach proves fragile, fall back to this.
-
-## Modified Component: `glass_mcp`
-
-### GlassServer Changes
-
-The `GlassServer` struct gains a new field for the coordination DB path:
-
-```rust
-#[derive(Clone)]
-pub struct GlassServer {
-    tool_router: ToolRouter<Self>,
-    db_path: PathBuf,        // existing: history DB path
-    glass_dir: PathBuf,      // existing: snapshot glass_dir
-    agents_db_path: PathBuf, // NEW: coordination DB path (~/.glass/agents.db)
-}
-```
-
-**Why store the path, not an open `CoordinationDb`?** Same pattern as `glass_dir` for snapshots. `CoordinationDb` wraps `rusqlite::Connection` which is `!Send`. `GlassServer` must be `Clone + Send` for rmcp's `ServerHandler` trait. Each tool handler opens the DB inside `spawn_blocking` on a dedicated thread. This is the exact pattern used by the existing `glass_undo` and `glass_file_diff` handlers which open `SnapshotStore` per-request.
-
-### 11 New Tool Handlers
-
-Each follows the identical pattern to existing handlers. Example:
-
-```rust
-#[tool(description = "Register this agent for coordination. Returns agent_id and count of active agents.")]
-async fn glass_agent_register(
-    &self,
-    Parameters(params): Parameters<RegisterParams>,
-) -> Result<CallToolResult, McpError> {
-    let agents_db_path = self.agents_db_path.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let db = CoordinationDb::open(&agents_db_path).map_err(internal_err)?;
-        db.register(&params.name, &params.agent_type, &params.project, &params.cwd, None)
-            .map_err(internal_err)
-    })
-    .await
-    .map_err(internal_err)??;
-
-    let content = Content::json(&serde_json::json!({
-        "agent_id": result.agent_id,
-        "agents_active": result.active_count,
-    }))?;
-    Ok(CallToolResult::success(vec![content]))
-}
-```
-
-### MCP Server Startup Changes
-
-In `lib.rs`, `run_mcp_server()` adds agents DB path resolution:
-
-```rust
-pub async fn run_mcp_server() -> anyhow::Result<()> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let db_path = glass_history::resolve_db_path(&cwd);
-    let glass_dir = glass_snapshot::resolve_glass_dir(&cwd);
-    let agents_db_path = glass_coordination::resolve_agents_db_path(); // NEW
-
-    let server = tools::GlassServer::new(db_path, glass_dir, agents_db_path);
-    let service = server.serve(rmcp::transport::stdio()).await?;
-    service.waiting().await?;
-    Ok(())
-}
-```
-
-`resolve_agents_db_path()` always returns `~/.glass/agents.db` (global, no per-project walk).
-
-### Heartbeat Strategy
-
-The MCP server process is long-lived (runs for the entire Claude Code session). Heartbeats must be sent every 60 seconds to prevent stale pruning (5-minute timeout).
-
-**Use explicit heartbeat tool calls.** The agent (Claude Code) is instructed via CLAUDE.md to call `glass_agent_heartbeat` periodically. This keeps the MCP server stateless -- it does not self-register or maintain its own agent identity. The MCP server is a tool provider; the agent using the tools is the registered entity.
-
-This is the approach specified in the design document. Each tool call is independent and stateless from the MCP server's perspective.
-
-## Modified Component: `glass_renderer`
-
-### Status Bar: Agent Count
-
-Extend `StatusBarRenderer::build_status_text()` to accept optional coordination state:
-
-```rust
-pub struct CoordinationDisplay {
-    pub agent_count: usize,
-    pub lock_count: usize,
-}
-```
-
-The `build_status_text` method signature adds one parameter:
-
-```rust
-pub fn build_status_text(
-    &self,
-    cwd: &str,
-    git_info: Option<&GitInfo>,
-    update_text: Option<&str>,
-    coordination: Option<&CoordinationDisplay>, // NEW
-    viewport_height: f32,
-) -> StatusLabel { ... }
-```
-
-When `coordination` is `Some` and `agent_count > 0`, append to `right_text` after git info:
-
-```
-main +3 | 2 agents, 5 locks
-```
-
-If no git info, show just coordination:
-
-```
-2 agents, 5 locks
-```
-
-**Why extend right_text rather than using center_text?** Center text is reserved for the update notification. Right text already shows git info and naturally extends with coordination info using a `|` separator.
-
-### Tab Bar: Lock Indicators (Phase 4, Deferred)
-
-Extend `TabDisplayInfo` with optional lock state:
-
-```rust
-pub struct TabDisplayInfo {
-    pub title: String,
-    pub is_active: bool,
-    pub has_agent_locks: bool, // NEW: true if an agent in this tab holds file locks
-}
-```
-
-**Challenge: Mapping MCP agents to Glass tabs.** MCP servers are separate processes spawned by Claude Code, which runs inside a shell that runs inside a Glass tab's PTY. The Glass GUI knows each tab's shell PID (from PTY spawn), but the MCP agent knows its own PID. Correlating requires process tree walking (MCP PID -> parent shell PID -> Glass PTY PID).
-
-**Recommendation:** Defer per-tab lock indicators to Phase 4. For Phase 3, show aggregate agent/lock counts in the status bar only. This avoids process tree walking complexity while still providing coordination visibility.
-
-### Frame Renderer Changes
-
-Both `draw_frame()` and `draw_multi_pane_frame()` need the coordination display data passed through. The signature change cascades from `main.rs` through to `build_status_text()`. This is the same pattern used when `update_text` was added -- a new optional parameter threaded through the rendering pipeline.
-
-## Modified Component: `src/main.rs`
-
-### Coordination State Polling
-
-The main event loop needs periodic access to coordination state for GUI display.
-
-**Use a background polling thread with `Arc<AtomicUsize>` pairs.** This avoids adding new `AppEvent` variants (keeping `glass_core` unchanged) and matches the lightweight pattern used for `update_info`.
-
-```rust
-struct GlassApp {
-    // ... existing fields ...
-    coordination_agent_count: Arc<AtomicUsize>, // NEW
-    coordination_lock_count: Arc<AtomicUsize>,  // NEW
-}
-```
-
-On startup, spawn a background `std::thread` (not Tokio -- same as git status queries):
-
-```rust
-let agent_count = Arc::clone(&self.coordination_agent_count);
-let lock_count = Arc::clone(&self.coordination_lock_count);
-let agents_db_path = glass_coordination::resolve_agents_db_path();
-
-std::thread::spawn(move || {
-    loop {
-        if let Ok(db) = CoordinationDb::open(&agents_db_path) {
-            if let Ok(agents) = db.list_agents() {
-                agent_count.store(agents.len(), Ordering::Relaxed);
-            }
-            if let Ok(locks) = db.list_locks(None) {
-                lock_count.store(locks.len(), Ordering::Relaxed);
-            }
-        }
-        std::thread::sleep(Duration::from_secs(5));
+// 3. Bridge task: forward McpRequests as AppEvents to winit event loop
+let proxy_for_mcp = event_loop_proxy.clone();
+tokio_rt.spawn(async move {
+    while let Some(request) = mcp_rx.recv().await {
+        let _ = proxy_for_mcp.send_event(AppEvent::Mcp(request));
     }
 });
 ```
 
-**Why not `AppEvent`-driven?** Adding a `CoordinationUpdate` variant to `AppEvent` in `glass_core` would require modifying `glass_core`, which is depended on by 5 other crates. The atomic approach is simpler: the render loop reads two atomics (essentially free, no event handling code) and passes the values to the renderer. This is appropriate because coordination state is non-urgent display-only data.
+**Why a bridge task instead of direct try_recv in the event loop:**
+- `mpsc::Receiver` is not `Sync`, so it cannot be polled from the winit event loop
+- The bridge task converts channel messages to AppEvents, which is the established pattern for all async event sources (PTY reader threads use EventProxy, config watcher uses EventLoopProxy, coordination poller uses EventLoopProxy)
+- Consistent: user_event() handles ALL events uniformly
 
-**Why not `notify` file watcher on agents.db?** SQLite WAL creates `-wal` and `-shm` companion files. Every write to any table triggers filesystem events on multiple files, causing excessive redundant GUI updates. Simple 5-second polling is sufficient for a status bar display.
+**Startup sequencing concern:** The embedded MCP server reads stdin. But `glass` is a GUI app (`#![windows_subsystem = "windows"]`). stdin is not connected when launched from a desktop shortcut. The MCP server must only be spawned when stdin is available (i.e., when invoked from an existing terminal or by an AI agent). Detection: check if stdin is a pipe or connected.
 
-### Render Loop Integration
+**Resolution:** The embedded MCP server should be opt-in. Either:
+- A `--mcp` flag on the glass binary: `glass --mcp` spawns the embedded server
+- Or: always spawn, but use a named pipe / Unix socket instead of stdio
 
-In the `RedrawRequested` handler, read atomics and construct `CoordinationDisplay`:
+**Recommended:** Use `--mcp` flag. When present, spawn the embedded server with stdio transport. When absent (normal GUI launch), do not spawn MCP. This matches the existing `glass mcp serve` pattern but keeps the server in-process.
+
+Alternative for agents: The agent's MCP config points to `glass mcp serve` (separate process). For live-data tools, the separate process communicates with the GUI process via a lightweight IPC mechanism (e.g., a Unix domain socket or Windows named pipe that the GUI always listens on).
+
+**Simplest viable approach for v2.3:** Keep `glass mcp serve` as separate process. Add a small TCP/Unix socket server in the GUI process that handles only the 7 live-data requests (TabCreate, TabList, TabRun, TabOutput, TabClose, CommandStatus, CommandCancel). The MCP server connects to this socket when it needs live data. This avoids the stdin/GUI conflict entirely.
+
+### Revised Architecture: Hybrid Approach
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  glass mcp serve (SEPARATE PROCESS, as today)                │
+│  ┌───────────────┐                                           │
+│  │  GlassServer   │──→ SQLite (DB-only tools: 16 existing    │
+│  │  (rmcp stdio)  │       + glass_output, glass_cached_result│
+│  │  28 tools      │       + glass_changed_files, glass_errors│
+│  │                │       + glass_context budget)             │
+│  │                │                                           │
+│  │  Live tools:   │──→ Connect to GUI's IPC socket            │
+│  │  tab_*, cmd_*  │    for live session data                  │
+│  └───────────────┘                                           │
+└──────────────────────────────────────────────────────────────┘
+         │ IPC (localhost TCP or named pipe)
+         ▼
+┌──────────────────────────────────────────────────────────────┐
+│  glass (MAIN GUI PROCESS)                                    │
+│  ┌────────────────┐                                          │
+│  │ IPC Listener    │  Lightweight: only McpRequest/McpResponse│
+│  │ (tokio task)    │  JSON over TCP/pipe                      │
+│  │                 │──→ EventLoopProxy::send(AppEvent::Mcp)   │
+│  └────────────────┘                                          │
+│         ▲                                                    │
+│  ┌──────┴─────┐    ┌──────────────┐                          │
+│  │ winit loop  │    │ SessionMux   │                          │
+│  │ user_event  │───→│ process req  │──→ reply via oneshot     │
+│  └────────────┘    └──────────────┘                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Trade-off analysis:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Embedded MCP (in-process) | No IPC, no serialization, simplest data flow | stdin conflict with GUI, only works when launched by agent |
+| Hybrid (separate MCP + GUI IPC) | MCP stays external (proven), GUI always works standalone | Requires IPC server in GUI, serialization for live data |
+| Fully embedded with --mcp flag | Clean when it works | Two launch modes to maintain, agent must know to use --mcp |
+
+**Recommendation: Hybrid approach.** The GUI process starts a lightweight IPC listener (tokio TcpListener on localhost or named pipe). The MCP server process (launched by agents via `glass mcp serve`) connects to it when live-data tools are called. DB-only tools continue working without the GUI running.
+
+**IPC discovery:** The GUI writes its listener address to `~/.glass/gui.sock` (or `~/.glass/gui.port`). The MCP server reads this file to discover the GUI. If the file doesn't exist or connection fails, live-data tools return a clear error: "Glass GUI is not running. Live-data tools require the Glass terminal to be open."
+
+### IPC Protocol (Minimal)
 
 ```rust
-let coordination = {
-    let ac = self.coordination_agent_count.load(Ordering::Relaxed);
-    let lc = self.coordination_lock_count.load(Ordering::Relaxed);
-    if ac > 0 {
-        Some(CoordinationDisplay { agent_count: ac, lock_count: lc })
-    } else {
-        None
-    }
-};
+// Sent over TCP/named pipe as JSON lines
+#[derive(Serialize, Deserialize)]
+pub struct IpcRequest {
+    pub id: u64,
+    pub method: String,          // "tab_create", "tab_list", etc.
+    pub params: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct IpcResponse {
+    pub id: u64,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
 ```
 
-Pass this to `build_status_text()` alongside existing `update_text`.
+JSON lines over TCP on localhost. Simple, debuggable, cross-platform. No need for a full RPC framework — there are only 7 methods.
 
-## Data Flow Diagrams
+## New Crate: `glass_errors`
 
-### Agent Registration Flow (MCP Process)
-
-```
-Claude Code                glass mcp serve              agents.db
-    |                           |                           |
-    |-- glass_agent_register -->|                           |
-    |                           |-- spawn_blocking -------->|
-    |                           |   CoordinationDb::open()  |
-    |                           |   db.register(...)        |
-    |                           |   INSERT INTO agents      |
-    |                           |<-- agent_id (UUID) -------|
-    |<-- { agent_id, count } ---|                           |
-```
-
-### File Lock Flow (Atomic All-or-Nothing)
+Pure library crate for structured error extraction from compiler/test output.
 
 ```
-Claude Code                glass mcp serve              agents.db
-    |                           |                           |
-    |-- glass_agent_lock ------>|                           |
-    |   paths: [a.rs, b.rs]    |-- spawn_blocking -------->|
-    |                           |   BEGIN IMMEDIATE         |
-    |                           |   canonicalize(a.rs)      |
-    |                           |   canonicalize(b.rs)      |
-    |                           |   SELECT from file_locks  |
-    |                           |   -- no conflicts? -->    |
-    |                           |   INSERT INTO file_locks  |
-    |                           |   COMMIT                  |
-    |<-- { locked: [...] } -----|                           |
-    |                           |                           |
-    |   -- OR if conflict: --   |                           |
-    |                           |   ROLLBACK                |
-    |<-- { conflicts: [...] } --|                           |
+crates/glass_errors/
+    Cargo.toml          - deps: regex (lazy_static or once_cell for compiled regexes)
+    src/
+        lib.rs          - ParsedError, Severity, parse() dispatcher
+        detect.rs       - Format auto-detection from command hint + content patterns
+        rust.rs         - Rust/cargo: error[E0308] + --> file:line:col, cargo test failures
+        python.rs       - Python: Traceback + File "x", line N
+        node.rs         - Node/TS: SyntaxError/TypeError with .js/.ts paths
+        go.rs           - Go: file.go:line:col: message
+        gcc.rs          - GCC/Clang: file:line:col: error: message
+        generic.rs      - Fallback: file:line: message, file(line,col): message (MSVC)
 ```
 
-### GUI Coordination Display Flow (Glass Terminal Process)
+### Key Types
 
-```
-Glass main.rs          Background Thread         agents.db
-    |                       |                       |
-    | (startup)             |                       |
-    |-- spawn thread ------>|                       |
-    |                       |-- poll every 5s ----->|
-    |                       |   SELECT COUNT(*)     |
-    |                       |<-- agent_count -------|
-    |                       |-- store AtomicUsize   |
-    |                       |                       |
-    | (render frame)        |                       |
-    |-- read atomics        |                       |
-    |-- pass to renderer    |                       |
-    |-- status bar shows    |                       |
-    |   "2 agents, 5 locks" |                       |
-```
+```rust
+pub struct ParsedError {
+    pub file: String,
+    pub line: u32,
+    pub column: Option<u32>,
+    pub message: String,
+    pub severity: Severity,
+    pub source_line: Option<String>,
+}
 
-### Cross-Process Coordination (Two Agents)
+pub enum Severity { Error, Warning, Note }
 
-```
-Glass Tab 1              agents.db              Glass Tab 2
-(Claude A)                                      (Claude B)
-    |                       |                       |
-    |-- register ---------->|                       |
-    |<-- agent_id: AAA -----|                       |
-    |                       |<-- register ----------|
-    |                       |--- agent_id: BBB ---->|
-    |                       |                       |
-    |-- lock src/main.rs -->|                       |
-    |<-- locked ------------|                       |
-    |                       |                       |
-    |                       |<-- lock src/main.rs --|
-    |                       |--- conflict: AAA ---->|
-    |                       |                       |
-    |                       |<-- send_message ------|
-    |                       |   "need main.rs"      |
-    |                       |                       |
-    |-- read_messages ----->|                       |
-    |<-- "need main.rs" ----|                       |
-    |                       |                       |
-    |-- unlock src/main.rs->|                       |
-    |                       |<-- lock src/main.rs --|
-    |                       |--- locked ----------->|
+/// Parse command output into structured errors.
+/// `hint` is the command text (e.g., "cargo build") to select parser.
+pub fn parse(output: &str, hint: Option<&str>) -> Vec<ParsedError>
 ```
 
-## Path Canonicalization Strategy
+### Parser Selection Strategy
 
-### The Problem
+1. If `hint` provided, match command name to parser (cargo/rustc -> rust, python/pytest -> python, etc.)
+2. If no hint or hint doesn't match, scan first 50 lines of output for format signatures
+3. Apply matched parser(s) -- can try multiple and merge results
+4. Deduplicate by (file, line, message) tuple
 
-File paths arrive at the coordination layer from different agents running in different working directories. The same file could be referenced as:
-- `src/main.rs` (relative)
-- `./src/main.rs` (relative with dot)
-- `C:\Users\nkngu\apps\Glass\src\main.rs` (Windows absolute)
-- `/c/Users/nkngu/apps/Glass/src/main.rs` (Git Bash style)
-- `\\?\C:\Users\nkngu\apps\Glass\src\main.rs` (Windows UNC)
+### Why a Separate Crate
 
-### The Solution
-
-`std::fs::canonicalize()` inside `lock_files()` and `unlock_file()` before any DB operation. This produces a canonical absolute path that resolves symlinks. All agents go through the same canonicalization, so identical files produce identical DB keys.
-
-### Interaction with Existing Canonicalization
-
-The existing `glass_snapshot` crate already uses `canonicalize()` in two places:
-- `IgnoreRules::new()` canonicalizes CWD for gitignore matching
-- `FsWatcher::new()` canonicalizes the watch directory
-
-The coordination crate's canonicalization is **completely independent** -- it operates on a different database (`agents.db` vs `snapshots.db`) and different path sets (advisory locks vs watched files). No interaction or conflicts.
-
-### Windows UNC Path Consistency
-
-On Windows, `canonicalize()` returns extended-length paths like `\\?\C:\Users\...`. Since ALL paths go through the same `canonicalize()` call, they consistently use this format. Two agents locking the same file produce identical UNC paths. No special handling needed.
-
-### Non-Existent File Paths
-
-`std::fs::canonicalize()` requires the file to exist on disk. For locking files that do not exist yet (agent is about to create them), use a fallback strategy:
-
-1. Canonicalize the parent directory (which must exist)
-2. Append the filename
-
-This matches the pattern in `glass_snapshot::IgnoreRules::canonicalize_path()`. Duplicate the logic in glass_coordination rather than creating a shared utility, to avoid coupling between crates that have no other dependency relationship.
+- **Testability:** Unit tests with real compiler output fixtures, no DB or MCP setup needed
+- **Reusability:** Could be used from main.rs (live grid output) or glass_mcp (history DB output)
+- **Independence:** Zero dependency on any glass_* crate -- pure `&str -> Vec<ParsedError>`
+- **Follows precedent:** Same pattern as glass_pipes (parsing logic) and glass_snapshot/command_parser.rs
 
 ## Patterns to Follow
 
-### Pattern 1: Per-Request DB Opening (from glass_mcp/tools.rs)
+### Pattern 1: Request/Reply via Oneshot Channel
 
-**What:** Open SQLite DB inside `spawn_blocking` for each MCP tool call, not at server startup.
-**When:** All coordination tool handlers.
-**Why:** `rusqlite::Connection` is `!Send`. Storing it in `GlassServer` (which must be `Clone + Send` for rmcp) would require `Arc<Mutex<>>`. Per-request opening is cheap (SQLite open is <1ms) and matches the existing pattern used by all 5 existing tools.
-**Example:** See existing `glass_undo` handler in `tools.rs` lines 251-257.
+**What:** Each McpRequest carries a `oneshot::Sender<McpResponse>`. The MCP tool handler awaits the oneshot receiver while the event loop processes the request synchronously.
 
-### Pattern 2: PRAGMA Configuration (from glass_history/db.rs)
+**When:** All 7 live-data MCP tools (tab_create, tab_list, tab_run, tab_output, tab_close, command_status, command_cancel).
 
-**What:** Set WAL mode, synchronous=NORMAL, busy_timeout=5000, foreign_keys=ON on every connection open.
-**When:** `CoordinationDb::open()`.
-**Why:** WAL mode persists in the database file but PRAGMAs like `busy_timeout` and `foreign_keys` are per-connection settings. Must be set every time a connection is opened. Exact same 4-line PRAGMA block as `HistoryDb::open()` and `SnapshotDb::open()`.
+**Why:** Clean async boundary. No thread blocked while waiting. Oneshot auto-errors if event loop disconnects.
 
-### Pattern 3: Schema Migration via user_version (from glass_history/db.rs, glass_snapshot/db.rs)
+```rust
+// In MCP tool handler (glass_mcp/tools.rs):
+async fn glass_tab_list(&self, ...) -> Result<CallToolResult, McpError> {
+    let (tx, rx) = oneshot::channel();
+    self.mcp_sender.as_ref()
+        .ok_or_else(|| internal_error("GUI not connected"))?
+        .send(McpRequest::TabList { reply: tx })
+        .await
+        .map_err(|_| internal_error("Event loop disconnected"))?;
 
-**What:** Use `PRAGMA user_version` to track schema version. Apply migrations in a match statement.
-**When:** `CoordinationDb::open()` after initial schema creation.
-**Why:** Simple, built-in, proven in two existing crates. History DB has migrated from v0 -> v1 -> v2 successfully. No migration framework dependency needed.
+    match rx.await {
+        Ok(McpResponse::Ok(value)) => Ok(CallToolResult::success(
+            vec![Content::text(value.to_string())]
+        )),
+        Ok(McpResponse::Error(msg)) => Ok(CallToolResult::error(
+            vec![Content::text(msg)]
+        )),
+        Err(_) => Err(internal_error("Event loop dropped request")),
+    }
+}
+```
 
-### Pattern 4: BEGIN IMMEDIATE for Write Transactions
+### Pattern 2: DB-Only Tools Stay DB-Only
 
-**What:** Use `BEGIN IMMEDIATE` instead of plain `BEGIN` for transactions that will write.
-**When:** `lock_files()` -- the only multi-statement write operation.
-**Why:** Plain `BEGIN` starts a deferred transaction (read-only initially). If two connections both start deferred transactions and then try to upgrade to write, one gets `SQLITE_BUSY`. `BEGIN IMMEDIATE` acquires the write lock upfront, so the second connection waits (up to busy_timeout) rather than failing.
+**What:** Tools that only need SQLite data continue using the existing `spawn_blocking` pattern with no channel involvement.
 
-### Pattern 5: Atomic State via Arc + AtomicUsize (from main.rs update_info pattern)
+**Which tools:** glass_output (with command_id), glass_cached_result, glass_changed_files, glass_context budget, glass_errors (with command_id)
 
-**What:** Background thread stores results in `Arc<AtomicUsize>`. Render loop reads with `Ordering::Relaxed`.
-**When:** GUI coordination state display.
-**Why:** Avoids adding `AppEvent` variants (keeping glass_core unchanged), avoids event loop overhead for non-urgent display data, and is essentially zero-cost in the render path.
+**Why:** Simpler, faster, no IPC round-trip. These tools work even when the GUI process is not running.
+
+### Pattern 3: Tab Index as User-Facing Identifier
+
+**What:** Use 0-based tab index (position in tab bar) in all MCP tool parameters.
+
+**Why:** Intuitive for agents ("run in tab 0"). SessionId is an internal u64 counter with no external meaning. Include session_id in responses for agents that need stable references across tab close/reorder operations.
+
+**Caveat:** Tab indices shift when tabs are closed or reordered. MCP tools should validate the index and return clear errors ("tab index 5 out of range, 3 tabs open").
+
+### Pattern 4: Grid Content Extraction
+
+**What:** Reading terminal grid content for glass_tab_output.
+
+**How:** The terminal grid is behind `Arc<FairMutex<Term<EventProxy>>>`. Lock it, read content, release immediately.
+
+```rust
+// In main.rs AppEvent::Mcp handler:
+fn read_grid_lines(session: &Session, max_lines: usize) -> String {
+    let term = session.term.lock();
+    let grid = term.grid();
+    // Read from (total_lines - max_lines) to total_lines
+    // grid.display_iter() gives Cell references with content
+    // Concatenate into string, strip ANSI
+    drop(term); // explicit drop for clarity
+    result
+}
+```
+
+The FairMutex lock is held for microseconds (same as renderer). No risk of blocking PTY reader threads.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Sharing Connection Across Threads
+### Anti-Pattern 1: Holding FairMutex Across Await Points
 
-**What:** Wrapping `rusqlite::Connection` in `Arc<Mutex<>>` and sharing between the Tokio runtime and tool handlers.
-**Why bad:** Creates unnecessary contention. The Mutex must be held for the entire DB operation duration. Under load, tool handlers queue up waiting for the lock.
-**Instead:** Open a fresh connection per `spawn_blocking` call. SQLite connections are cheap to create (<1ms). WAL mode handles the real concurrency at the DB level.
+**What:** Locking `session.term` in an async context and holding across `.await`.
 
-### Anti-Pattern 2: Polling agents.db from the Render Loop
+**Why bad:** FairMutex is not async-aware. PTY reader thread (std::thread) also locks this mutex to write terminal state. Holding across await could starve the PTY reader, causing visible terminal lag.
 
-**What:** Opening and querying `agents.db` synchronously during frame rendering in the `RedrawRequested` handler.
-**Why bad:** SQLite I/O in the render loop would block frame submission. Even a 1ms query at 60fps (16.6ms budget) causes visible jank.
-**Instead:** Background thread polls every 5 seconds, stores results in atomics. Render loop reads atomics (effectively zero-cost).
+**Instead:** All grid reads happen synchronously in `user_event()`. Lock, copy data to owned String, drop lock, then send reply. This is the existing pattern used by the renderer.
 
-### Anti-Pattern 3: Event-Driven Coordination State via notify
+### Anti-Pattern 2: Arc<Mutex<SessionMux>> for Direct MCP Access
 
-**What:** Using `notify` file watcher on `agents.db` to trigger GUI updates when coordination state changes.
-**Why bad:** SQLite WAL creates `-wal` and `-shm` companion files. Every write to any table triggers filesystem events on multiple files, causing excessive redundant redraws. Also, `notify` events don't tell you WHAT changed, so you'd still have to query the DB.
-**Instead:** Simple periodic polling (5-second interval) is appropriate for non-urgent status bar display.
+**What:** Wrapping SessionMux in Arc<Mutex> so MCP tools can access sessions directly.
 
-### Anti-Pattern 4: Making glass_coordination Async
+**Why bad:** SessionMux is owned by the App struct on the main thread. Adding shared ownership means EVERY session access (including the hot rendering path at 60fps) goes through Mutex contention. Frame rate would degrade.
 
-**What:** Adding Tokio as a dependency to glass_coordination for async DB operations.
-**Why bad:** Rusqlite is synchronous. Wrapping sync calls in async adds complexity without benefit. The MCP layer already handles the sync-to-async bridge via `spawn_blocking`. Adding Tokio would also break the pattern established by glass_history and glass_snapshot (both pure sync).
-**Instead:** Keep glass_coordination purely synchronous. Let the consumer (glass_mcp) handle threading.
+**Instead:** Message-passing via channel. The event loop thread remains the sole owner of SessionMux.
 
-### Anti-Pattern 5: Coupling Agent ID to SessionId
+### Anti-Pattern 3: Unbounded Output in MCP Responses
 
-**What:** Using Glass's internal `SessionId` (u64 counter) as the agent identifier.
-**Why bad:** MCP servers are separate processes spawned by the AI tool (e.g., Claude Code). They have no access to Glass's internal session IDs. There is no IPC channel between the Glass GUI process and MCP server processes to communicate SessionIds.
-**Instead:** Use UUID v4 for agent IDs. Self-generated, globally unique, no coordination with Glass GUI needed.
+**What:** Returning entire terminal scrollback (10K+ lines) through MCP.
 
-### Anti-Pattern 6: Per-Project agents.db
+**Why bad:** Memory spike, serialization cost, MCP message size explosion. AI agents cannot usefully consume 10K lines anyway (context window limits).
 
-**What:** Using the same `resolve_glass_dir()` walk-up-and-find pattern used by history.db and snapshots.db.
-**Why bad:** Two agents working on the same project but from different subdirectories might resolve to different `.glass/` directories. One agent in `/project/` finds `/project/.glass/agents.db`; another in `/project/subdir/` might find a different `.glass/` or fall back to `~/.glass/`. They would not see each other.
-**Instead:** Always use `~/.glass/agents.db` (global). The `project` column in the agents table handles scoping.
+**Instead:** Default to 50 lines. Cap at 100KB. Require explicit `lines` parameter. Support `pattern` filtering to return only relevant lines.
 
-## Build Order (Dependency-Respecting)
+### Anti-Pattern 4: Blocking IPC in the Event Loop
 
-The components have a strict dependency chain. Build in this order:
+**What:** Making synchronous IPC calls from user_event() to query external services.
 
-### Phase 1: `glass_coordination` crate (foundation, no dependents yet)
+**Why bad:** user_event() runs on the winit main thread. Any blocking call freezes the GUI.
 
-**What to build:**
-- `Cargo.toml` with rusqlite, uuid, anyhow, chrono, tracing
-- `src/lib.rs` -- CoordinationDb struct, open(), resolve_agents_db_path()
-- `src/schema.rs` -- CREATE TABLE statements, user_version = 0
-- `src/types.rs` -- AgentInfo, FileLock, Message, LockResult, LockConflict
-- `src/agents.rs` -- register, deregister, heartbeat, set_status, list_agents, get_agent
-- `src/locks.rs` -- lock_files (atomic), unlock_file, unlock_all, list_locks, path canonicalization
-- `src/messages.rs` -- broadcast, send_message, read_messages
-- `src/prune.rs` -- prune_stale with PID liveness check
+**Instead:** All IPC is async (tokio tasks). Results arrive as AppEvents via the EventLoopProxy. The event loop only does synchronous, fast operations (read atomics, lock FairMutex briefly, send PtyMsg).
 
-**Tests:** Unit tests for every public method. Use `tempfile` for DB paths. Test concurrent access by opening two connections to the same WAL-mode DB. Test atomic lock_files failure (partial conflicts return no locks). Test stale pruning with expired timestamps. Test path canonicalization (relative paths resolve correctly).
+## Suggested Build Order
 
-**Dependencies:** Only workspace deps (rusqlite) + new uuid. Zero dependency on any glass_* crate.
+Build order follows dependency chains. Each phase produces testable, shippable value.
 
-**Must complete before:** Phase 2 (glass_mcp depends on it).
+### Phase 1: MCP Command Channel + IPC Foundation
 
-### Phase 2: `glass_mcp` integration (depends on Phase 1)
+**What builds:**
+- `glass_core/mcp_channel.rs` — McpRequest, McpResponse, type aliases
+- `glass_core/event.rs` — Add `AppEvent::Mcp(McpRequest)` variant
+- `glass_core/Cargo.toml` — Add `tokio = { features = ["sync"] }` and `serde_json`
+- IPC listener in main.rs (localhost TCP, tokio task)
+- IPC client helper in glass_mcp
+- GUI writes port to `~/.glass/gui.port` on startup, removes on shutdown
 
-**What to build:**
-- Add `glass_coordination` to glass_mcp/Cargo.toml
-- Add `agents_db_path: PathBuf` field to GlassServer
-- Update `GlassServer::new()` signature (3 args -> 3 args, backward compatible if we add to end)
-- Add 11 new parameter structs (RegisterParams, LockParams, StatusParams, etc.) with schemars derives
-- Add 11 new `#[tool]` handlers following existing spawn_blocking pattern
-- Update `run_mcp_server()` to resolve and pass agents_db_path
-- Update `ServerHandler::get_info()` instructions text to mention coordination tools
+**Test:** Send a dummy IPC request from a test client, receive response. Verify round-trip through event loop.
 
-**Tests:** Param deserialization tests (existing pattern). Integration test: open real tempdir DB, register agent, lock files, send message, verify round-trip.
+**Why first:** Every live-data feature depends on this. If the channel/IPC doesn't work, tab orchestration and live awareness are blocked.
 
-**Must complete before:** Phase 3.
+**Risk:** MEDIUM. New tokio dependency in glass_core. IPC listener is new infrastructure. Mitigation: the listener is simple (JSON lines over TCP, 7 methods).
 
-### Phase 3: Integration testing + CLAUDE.md (depends on Phase 2)
+### Phase 2: Multi-Tab Orchestration (5 tools)
 
-**What to build:**
-- CLAUDE.md coordination instructions section (7-bullet protocol)
-- Integration test: two GlassServer instances sharing same agents.db via tempdir
-- Test: register from server A, see agent from server B's list
-- Test: lock from A, conflict from B, unlock from A, lock from B succeeds
+**What builds:**
+- `glass_tab_list` — Read-only, validates IPC end-to-end
+- `glass_tab_output` — Read grid content, validates FairMutex pattern
+- `glass_tab_create` — Reuses existing `create_session()` flow from main.rs
+- `glass_tab_run` — Write to PTY sender
+- `glass_tab_close` — Session teardown
 
-**Must complete before:** Phase 4 (GUI needs real data to display).
+**Dependencies:** Phase 1 (channel/IPC must work)
 
-### Phase 4: GUI integration (depends on Phase 1; can start in parallel with Phase 3)
+**Build order within phase matters:** list -> output -> create -> run -> close. Each validates a deeper integration point.
 
-**What to build:**
-- Add `glass_coordination` to root Cargo.toml dependencies
-- Add `Arc<AtomicUsize>` fields to `GlassApp` struct (or equivalent Processor struct in main.rs)
-- Background polling thread (5-second interval, reads agents.db)
-- Add `CoordinationDisplay` struct to glass_renderer
-- Extend `StatusBarRenderer::build_status_text()` with `coordination` parameter
-- Update `draw_frame()` and `draw_multi_pane_frame()` signatures in frame.rs
-- Update call sites in main.rs `RedrawRequested` handler
-- Future: TabDisplayInfo `has_agent_locks` field (defer per-tab mapping)
+**Key integration point for glass_tab_create:** The `create_session()` function in main.rs takes 10 parameters (proxy, window_id, session_id, config, working_directory, cell_w, cell_h, window_width, window_height, tab_bar_lines). The MCP handler needs access to all of these. Extract window state (cell dims, window size, config ref) into a struct that the AppEvent::Mcp handler can reference.
 
-**Note:** Phase 4 modifies `src/main.rs` and `glass_renderer` -- both in the hot rendering path. Changes must be minimal (reading two atomics, passing one extra Option parameter) to avoid performance regression.
+### Phase 3: Token-Saving Tools (4 tools, DB-only)
+
+**What builds:**
+- `glass_output` — Filtered read from commands table output column
+- `glass_cached_result` — LIKE/FTS query + staleness check via snapshot timestamps
+- `glass_changed_files` — Snapshot query + `similar` crate for unified diff generation
+- `glass_context` budget/focus — Enhance existing tool with budget and focus parameters
+
+**Dependencies:** None (DB-only, can be built in parallel with Phase 1 or 2)
+
+**New dependency:** `similar` crate for diff generation in glass_changed_files
+
+**Why Phase 3 despite no dependencies:** Token-saving tools are high value and low risk. Building them after the channel is validated means they can use `tab_id` parameter for live output (via the channel) in addition to `command_id` parameter (via DB). But they work without the channel using command_id only.
+
+### Phase 4: Structured Error Extraction (1 crate + 1 tool)
+
+**What builds:**
+- `glass_errors` crate with ParsedError types
+- Rust parser (most relevant — this is a Rust project)
+- Generic fallback parser (file:line:col: message)
+- Python, Node, Go, GCC parsers
+- `glass_errors` MCP tool wiring
+
+**Dependencies:** None (pure library crate + DB-only MCP tool)
+
+**Can be built in parallel with Phases 1-3.** The crate has zero dependency on any glass_* crate.
+
+### Phase 5: Live Command Awareness (2 tools)
+
+**What builds:**
+- `glass_command_status` — Read BlockManager state via IPC channel
+- `glass_command_cancel` — Send `\x03` (Ctrl+C) to PTY via channel
+
+**Dependencies:** Phase 1 (needs IPC channel)
+
+**Why last:** Smallest scope (2 tools), simplest implementation. CommandStatus reads `block_manager.current_block().state == BlockState::Executing`. CommandCancel writes one byte to pty_sender.
+
+## Integration Risk Assessment
+
+| Integration Point | Risk | Mitigation |
+|-------------------|------|------------|
+| tokio dep in glass_core | LOW | Only `sync` feature, no runtime. glass_core already uses std::sync |
+| AppEvent::Mcp variant | LOW | Follows exact pattern of 8 existing variants |
+| IPC listener in GUI | MEDIUM | New infrastructure; use localhost TCP for simplicity |
+| create_session() from MCP | MEDIUM | Needs window state (cell dims, config); extract into helper struct |
+| FairMutex grid reads | LOW | Already done by renderer; identical lock pattern |
+| PTY input from MCP | LOW | Existing `pty_sender.send(PtyMsg::Input(...))` API |
+| `similar` crate for diffs | LOW | Well-maintained, 0 transitive deps, widely used |
+| glass_errors regex parsers | LOW | Pure library, no integration risk, only testing effort |
+| Ctrl+C via PTY | LOW | Write `\x03` byte, same as keyboard Ctrl+C handler |
 
 ## Scalability Considerations
 
-| Concern | 2 agents | 10 agents | 50+ agents |
-|---------|----------|-----------|------------|
-| DB write contention | Negligible | Minimal (~5ms worst case) | busy_timeout may trigger; consider connection pooling |
-| Lock table size | <20 entries | <100 entries | May need index on project column for filtered queries |
-| Message broadcast fan-out | Trivial | Moderate (N-1 message rows per broadcast) | Need message TTL/auto-prune to prevent table growth |
-| GUI poll cost | <1ms | <1ms | <5ms (still fine at 5s poll interval) |
-| Stale pruning | Instant | Instant | Consider batch DELETE with LIMIT for large agent tables |
+| Concern | At 5 tabs | At 20 tabs | At 50 tabs |
+|---------|-----------|------------|------------|
+| IPC throughput | Trivial | Trivial | Trivial (sequential MCP calls) |
+| Grid read latency | <1ms | <1ms | <1ms (per-tab, not aggregate) |
+| MCP response size | <10KB typical | Same | Same |
+| Memory per tab | ~15MB (PTY + grid) | ~300MB | ~750MB (PTY/grid limit, not MCP) |
+| IPC connections | 1 (one MCP server) | 1 | 1 |
 
-The design is comfortable for the expected use case of 2-5 concurrent agents. This is the realistic scenario for a developer using Glass with Claude Code instances.
+The channel/IPC is not the bottleneck. MCP tool calls are sequential and infrequent. The real constraint is terminal memory per session, which is orthogonal to this architecture.
 
 ## Sources
 
-- Glass codebase: `crates/glass_history/src/db.rs` lines 48-61 (WAL + PRAGMA pattern, HIGH confidence)
-- Glass codebase: `crates/glass_mcp/src/tools.rs` lines 145-410 (spawn_blocking tool handler pattern, HIGH confidence)
-- Glass codebase: `crates/glass_snapshot/src/ignore_rules.rs` lines 23-82 (canonicalize pattern, HIGH confidence)
-- Glass codebase: `crates/glass_renderer/src/status_bar.rs` (status bar rendering pattern, HIGH confidence)
-- Glass codebase: `crates/glass_renderer/src/tab_bar.rs` (tab bar rendering pattern, HIGH confidence)
-- Glass codebase: `src/main.rs` lines 661-840 (render loop, draw_frame call sites, HIGH confidence)
-- AGENT_COORDINATION_DESIGN.md (design document for this milestone, HIGH confidence)
-- [SQLite WAL mode](https://www.sqlite.org/wal.html) -- concurrent reader/single writer semantics (HIGH confidence)
-- [uuid crate v1.22.0](https://crates.io/crates/uuid) -- features=["v4"] for random UUIDs (HIGH confidence)
-- [process_alive crate](https://lib.rs/crates/process_alive) -- cross-platform PID liveness checking (MEDIUM confidence, alternative approach)
+- Glass codebase: `crates/glass_mcp/src/tools.rs` — GlassServer structure, spawn_blocking pattern, tool handler pattern (HIGH confidence)
+- Glass codebase: `crates/glass_core/src/event.rs` — AppEvent variants, EventLoopProxy pattern (HIGH confidence)
+- Glass codebase: `crates/glass_mux/src/session_mux.rs` — SessionMux API, Tab/Session ownership (HIGH confidence)
+- Glass codebase: `crates/glass_mux/src/session.rs` — Session struct fields, FairMutex<Term> (HIGH confidence)
+- Glass codebase: `src/main.rs` — create_session() parameters, user_event() dispatch, PTY spawn flow (HIGH confidence)
+- Glass codebase: `crates/glass_terminal/src/block_manager.rs` — BlockState::Executing, command lifecycle (HIGH confidence)
+- Glass codebase: `AGENT_MCP_FEATURES.md` — feature design document (HIGH confidence)
+- rmcp SDK: transport-io feature supports any AsyncRead+AsyncWrite (HIGH confidence, from Cargo.toml)
+- tokio::sync documentation: mpsc bounded channel, oneshot channel (HIGH confidence)
+- similar crate: unified diff generation, widely used Rust diffing library (HIGH confidence)

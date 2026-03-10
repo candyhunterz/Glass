@@ -1,19 +1,19 @@
-# Technology Stack: v2.2 Multi-Agent Coordination
+# Technology Stack: v2.3 Agent MCP Features
 
-**Project:** Glass v2.2 -- Shared coordination DB, agent registry, file locks, messaging
+**Project:** Glass v2.3 -- MCP command channel, multi-tab orchestration, structured errors, token-saving tools, live command awareness
 **Researched:** 2026-03-09
 **Overall Confidence:** HIGH
 
 ## Scope
 
-This document covers ONLY new stack additions for multi-agent coordination. The existing validated workspace (rusqlite 0.38 bundled, rmcp MCP server, tokio async, blake3, etc.) is unchanged and not re-researched.
+This document covers ONLY new stack additions for v2.3 features. The existing validated workspace (tokio 1.50 with "full", rmcp 1.1.0, rusqlite 0.38 bundled, serde/serde_json, etc.) is unchanged and not re-researched.
 
 New capabilities needed:
-1. Shared SQLite DB with WAL mode for multi-process concurrent access
-2. UUID generation for agent IDs
-3. Cross-platform PID liveness checking (Windows/macOS/Linux)
-4. Path canonicalization that avoids Windows UNC prefix issues
-5. No new async runtime, no IPC framework
+1. Async channel between MCP server and main event loop (request/response pattern)
+2. Multi-tab orchestration via MCP tools (create, list, run, output, close)
+3. Structured error extraction with language-specific regex parsers
+4. Token-saving tools: filtered output, file change diffs, cached results, compressed context
+5. Live command status checking and cancellation via PTY signals
 
 ---
 
@@ -21,152 +21,202 @@ New capabilities needed:
 
 ### Core Framework (No Changes)
 
-The existing rusqlite 0.38 (bundled) handles everything needed for the coordination database. No version bump or feature additions required.
+The existing tokio 1.50.0 with `features = ["full"]` already provides everything needed for the MCP command channel (`tokio::sync::mpsc`, `tokio::sync::oneshot`). No version bump required.
 
 ### New Runtime Dependencies
 
 | Technology | Version | Purpose | Why |
 |------------|---------|---------|-----|
-| `uuid` | 1.22 | Agent ID generation (v4 random) | De facto Rust UUID crate. 1.22.0 is latest stable. With features `["v4"]` it generates random UUIDs using `getrandom`. Minimal footprint: the base crate has zero dependencies; `v4` adds only `getrandom`. No-std compatible. |
-| `dunce` | 1.0.5 | Windows-safe path canonicalization | Wraps `std::fs::canonicalize()` but strips the `\\?\` UNC prefix on Windows when safe. Zero dependencies, 150 lines. The project already uses `std::fs::canonicalize()` in glass_snapshot (ignore_rules.rs, watcher.rs) which produces UNC paths on Windows -- dunce fixes this for path comparison in the lock table. |
+| `similar` | 2.7.0 | Unified diff generation for `glass_changed_files` tool | De facto Rust diffing library. 32M downloads, actively maintained. Provides `TextDiff` with unified diff output format. Pure Rust, no system dependencies. Only dependency is `borrow` (zero-cost). The `unified_diff` feature module produces standard unified diff strings directly. |
+| `regex` | 1.12.3 | Error pattern matching in `glass_errors` parsers, output filtering in `glass_output` | The standard Rust regex engine. Already a transitive dependency of several workspace crates but not directly depended upon. Needed for structured parsing of compiler output formats (Rust error codes, Python tracebacks, GCC-style file:line:col patterns). |
 
-**Total new runtime crates: 2** (uuid + getrandom, dunce). Minimal dependency footprint.
+**Total new runtime crates: 2** (`similar`, `regex`). Both are well-established, widely-used crates.
+
+### Why `similar` Over Alternatives
+
+| Crate | Why Not |
+|-------|---------|
+| `diff` | Abandoned (last release 2020). `similar` is its maintained successor by the same author (Armin Ronacher). |
+| `unified-diff` 0.2.1 | Wrapper around `similar`. Use `similar` directly for fewer dependencies and more control over diff formatting. |
+| `diffy` | Less maintained, smaller user base. `similar` is the community standard. |
+| Manual line-by-line comparison | Misses moved lines, insertions, and context windows. Diff algorithms (Myers, patience) are non-trivial. |
+
+### Why `regex` Over `regex-lite`
+
+| Option | Verdict |
+|--------|---------|
+| `regex` 1.12.3 | Use this. Already a transitive dependency (zero added weight). Full Unicode support, compiled DFA for performance. Error parsers will run many patterns per invocation. |
+| `regex-lite` 0.1.9 | Optimized for binary size and compile time. Glass is a desktop app where binary size is not a constraint. `regex-lite` lacks features like `(?x)` verbose mode which improves readability of complex error patterns. |
 
 ### Existing Dependencies Reused (No Version Changes)
 
 | Technology | Current Version | Reuse For | Notes |
 |------------|----------------|-----------|-------|
-| `rusqlite` | 0.38.0 (bundled) | Coordination DB (agents.db) | Already used by glass_history and glass_snapshot with identical WAL+PRAGMA pattern. The new glass_coordination crate reuses the workspace dependency unchanged. |
-| `anyhow` | 1.0.102 | Error handling | Standard workspace error type. |
-| `tracing` | 0.1.44 | Logging | Structured logging for agent registration, lock conflicts, stale pruning. |
-| `dirs` | 6 | `~/.glass/` path resolution | Already used by glass_history for locating the glass data directory. |
-| `serde` | 1.0.228 | Serialization for MCP tool params/responses | Already in glass_mcp. |
-| `schemars` | 1.0 | JSON Schema generation for MCP tools | Already in glass_mcp for tool parameter schemas. |
-| `serde_json` | 1.0 | JSON serialization for MCP responses | Already in glass_mcp. |
-| `chrono` | 0.4 | Timestamp formatting in messages | Already in workspace. |
-| `windows-sys` | 0.59 | PID liveness checking on Windows (extended features) | Already in workspace for Console APIs. Needs additional feature `Win32_System_Threading` for `OpenProcess` / `GetExitCodeProcess`. |
+| `tokio` | 1.50.0 (full) | `mpsc::channel` for MCP requests, `oneshot::channel` for responses | Already has `sync` feature via `full`. The mpsc+oneshot request/response pattern is the documented Tokio approach for this exact use case. |
+| `serde` | 1.0.228 | MCP tool parameter structs for new tools | Already in glass_mcp. |
+| `serde_json` | 1.0 | `McpResponse::Ok(serde_json::Value)` and JSON formatting | Already in glass_mcp and glass_core. |
+| `schemars` | 1.0 | JSON Schema for new MCP tool parameter types | Already in glass_mcp. |
+| `chrono` | 0.4 | Timestamps in `glass_cached_result` age calculations | Already in workspace. |
+| `anyhow` | 1.0.102 | Error handling in glass_errors crate | Standard workspace error type. |
+| `tracing` | 0.1.44 | Logging in MCP request handling and error parsing | Already in workspace. |
+| `rusqlite` | 0.38.0 | History/snapshot queries for token-saving tools | Already used by glass_history, glass_snapshot. |
+| `winit` | 0.30.13 | `EventLoopProxy` for sending `AppEvent::McpRequest` from MCP server to main loop | Already the event loop driver. `EventLoopProxy::send_event()` is the thread-safe mechanism. |
 
-### Platform-Specific PID Checking (No New Crates)
+---
 
-PID liveness checking is implemented using platform APIs already available or transitively present:
+## MCP Command Channel Architecture
 
-| Platform | API | Source | Implementation |
-|----------|-----|--------|----------------|
-| **Windows** | `OpenProcess` + `GetExitCodeProcess` | `windows-sys` 0.59 (already in workspace) | Open process handle with `PROCESS_QUERY_LIMITED_INFORMATION`, check if exit code equals `STILL_ACTIVE` (259). Close handle after. |
-| **Unix (macOS/Linux)** | `kill(pid, 0)` | `libc` (already a transitive dependency) | Signal 0 tests process existence without sending a signal. Returns 0 if alive, ESRCH if not. |
+### Why tokio::sync::mpsc + oneshot (Not Alternatives)
 
-**Why NOT add `process_alive` or `sysinfo` crate:**
+The MCP server needs to send requests to the main event loop (which owns `SessionMux`) and receive responses. This is a classic request/response-over-channel pattern.
 
-| Rejected Crate | Why Not |
-|----------------|---------|
-| `process_alive` 0.2.0 | Adds `windows-sys` 0.61 as a dependency -- version conflict with workspace's 0.59. Its entire implementation is ~30 lines of `kill(0)` / `OpenProcess`. Not worth a dependency for trivial platform code. |
-| `sysinfo` | Massive crate (~3MB compiled) that enumerates ALL system processes. We need a single `is_pid_alive(u32) -> bool` check. Overkill by orders of magnitude. |
+**Chosen: `tokio::sync::mpsc` (requests) + `tokio::sync::oneshot` (per-request response)**
 
-The PID checking logic is approximately 30 lines of platform-gated code:
+This is already in `tokio 1.50.0` with `features = ["full"]`. Zero new dependencies.
+
+```
+MCP tool handler (async, in tokio runtime)
+  -> creates oneshot::channel()
+  -> sends McpRequest { ..., reply: oneshot::Sender } via mpsc::Sender
+  -> awaits oneshot::Receiver for response
+
+main.rs event loop (winit, not async)
+  -> receives McpRequest from mpsc::Receiver (polled via try_recv or AppEvent)
+  -> processes with full SessionMux access
+  -> sends McpResponse via oneshot::Sender
+```
+
+| Alternative | Why Not |
+|-------------|---------|
+| `crossbeam-channel` | Not async-aware. MCP tool handlers are async (rmcp uses tokio). Would need `spawn_blocking` wrappers to bridge, adding complexity. tokio channels integrate naturally. |
+| `flume` | Good crate but adds a dependency for something tokio already provides identically. |
+| Direct `Arc<Mutex<SessionMux>>` sharing | SessionMux interacts with winit event loop, PTY handles, and GPU renderer state. Sharing across threads would require extensive refactoring and introduce lock contention. The channel pattern keeps ownership clear. |
+| `EventLoopProxy` only (no mpsc) | `EventLoopProxy::send_event()` can push events into the winit loop, but there's no built-in response mechanism. Still need oneshot for the response half. Could use `EventLoopProxy` to deliver requests instead of mpsc, routing through `AppEvent`. This is a valid alternative and may be cleaner since main.rs already processes `AppEvent` variants. |
+
+### Integration Decision: EventLoopProxy vs mpsc
+
+Two viable approaches for delivering MCP requests to main.rs:
+
+**Option A: Pure mpsc** -- MCP server holds `mpsc::Sender<McpRequest>`, main.rs polls `mpsc::Receiver` in the event loop (e.g., via a timer or a dedicated `AppEvent::PollMcp` trigger).
+
+**Option B: EventLoopProxy bridge** -- MCP server holds `EventLoopProxy<AppEvent>` and sends `AppEvent::McpRequest(request)` directly into the winit event loop. Response still via oneshot.
+
+**Recommendation: Option B (EventLoopProxy).** Because:
+1. main.rs already dispatches all work via `AppEvent` variants -- this is the established pattern
+2. No polling/timer needed -- winit wakes automatically on `send_event()`
+3. The `EventLoopProxy` is already `Clone + Send` and used by the coordination poller, config watcher, and updater
+4. The MCP server already runs in a separate process (`glass mcp serve`), so it needs the proxy passed at construction time -- same as the coordination poller pattern
+
+The oneshot response channel is embedded in the `McpRequest` enum variant, so the main loop can respond directly after processing.
+
+---
+
+## Structured Error Parsing (glass_errors crate)
+
+### Why `regex` is Sufficient (No Parser Combinator Needed)
+
+| Approach | Verdict |
+|----------|---------|
+| `regex` patterns | Use this. Compiler error formats are line-oriented with well-defined patterns. Regex handles `error[E0308]: ...`, `File "app.py", line 15`, and `file:line:col: message` efficiently. |
+| `nom` / `winnow` (parser combinators) | Overkill. Error output is not a formal grammar -- it's line-by-line pattern matching. Parser combinators add complexity and a learning curve for what amounts to `Regex::captures()` calls. |
+| `pest` / `tree-sitter` | Grammar-based parsers designed for programming languages, not compiler diagnostic output. Wrong tool. |
+| `aho-corasick` | Multi-pattern string matching. Useful if scanning for many literal strings, but we need capture groups (file, line, column, message). regex handles both matching and extraction. |
+
+### Parser Crate Design
+
+`glass_errors` should be a pure library crate with zero async dependencies:
+
+```toml
+[package]
+name = "glass_errors"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+regex = "1"
+serde = { workspace = true }
+
+[dev-dependencies]
+# No special dev deps -- tests use inline string fixtures
+```
+
+Dependencies: `regex` for pattern matching, `serde` for `Serialize` on `ParsedError` (needed for MCP JSON response). That's it. No `tokio`, no `anyhow`, no `tracing` -- pure input/output transformation.
+
+### Regex Compilation Strategy
+
+Use `std::sync::LazyLock` (stable since Rust 1.80) to compile regex patterns once:
 
 ```rust
-/// Check if a process with the given PID is still running.
-pub fn is_pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // kill(pid, 0) checks existence without sending a signal
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        use windows_sys::Win32::Foundation::CloseHandle;
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle == 0 {
-                return false;
-            }
-            let mut exit_code: u32 = 0;
-            let ok = GetExitCodeProcess(handle, &mut exit_code);
-            CloseHandle(handle);
-            ok != 0 && exit_code == 259 // STILL_ACTIVE
-        }
-    }
-}
+use std::sync::LazyLock;
+use regex::Regex;
+
+static RUST_ERROR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(error|warning)\[E\d+\]: (.+)$").unwrap()
+});
+
+static RUST_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*--> (.+):(\d+):(\d+)$").unwrap()
+});
+```
+
+This avoids recompiling regexes on every `parse()` call. `LazyLock` is in `std` -- no `lazy_static` or `once_cell` dependency needed.
+
+---
+
+## Token-Saving Tools: Diff Generation
+
+### `similar` Usage for `glass_changed_files`
+
+The `glass_changed_files` tool needs to produce unified diffs between snapshot blobs and current file contents. `similar` 2.7.0 provides this directly:
+
+```rust
+use similar::{TextDiff, ChangeTag};
+
+let diff = TextDiff::from_lines(old_content, new_content);
+let unified = diff.unified_diff()
+    .context_radius(3)
+    .header("a/path", "b/path")
+    .to_string();
+```
+
+This produces standard unified diff format that agents can parse. The `context_radius` controls how many unchanged lines surround each change hunk.
+
+### `similar` Integration Point
+
+`similar` is used in glass_mcp (for the `glass_changed_files` tool) where it reads blob content from `SnapshotStore` and current file content, then diffs them. The existing `glass_file_diff` MCP tool already does a conceptually similar operation -- `similar` replaces manual comparison with proper diff output.
+
+```
+glass_mcp/src/tools.rs:
+  glass_changed_files()
+    -> spawn_blocking {
+         SnapshotStore::open()
+         For each snapshot_file:
+           old = blob_store.read(blob_hash)
+           new = std::fs::read_to_string(path)
+           diff = TextDiff::from_lines(&old, &new).unified_diff()
+       }
 ```
 
 ---
 
-## SQLite WAL Mode Configuration for Multi-Process Access
+## Live Command Cancel: PTY Signal Sending
 
-### Existing Pattern (Validated)
+### No New Dependencies Needed
 
-Glass already uses WAL mode in two databases with identical PRAGMA blocks:
-
-```sql
--- glass_history/src/db.rs:57-60 and glass_snapshot/src/db.rs:25-28
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 5000;
-PRAGMA foreign_keys = ON;
-```
-
-### Coordination DB Pattern (Same + One Addition)
-
-The new `glass_coordination` crate uses the exact same PRAGMA block, with one critical addition for write-heavy coordination:
-
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 5000;
-PRAGMA foreign_keys = ON;
-```
-
-**Key multi-process behaviors with WAL mode:**
-
-| Behavior | Detail |
-|----------|--------|
-| **Concurrent reads** | Multiple MCP server processes can read agents/locks/messages simultaneously without blocking. |
-| **Write serialization** | Only one writer at a time. SQLite queues writers automatically; `busy_timeout = 5000` means a writer waits up to 5 seconds for the lock before failing. |
-| **No IPC needed** | WAL uses shared memory (the `-shm` file) for coordination between processes on the same host. This replaces any need for pipes, sockets, or message queues. |
-| **Crash safety** | If an MCP process crashes, its connection is released. Other processes are not affected. The WAL file self-recovers on next open. |
-
-**Transaction pattern for atomic lock acquisition:**
-
-Use `BEGIN IMMEDIATE` (via `conn.transaction_with_behavior(TransactionBehavior::Immediate)`) for all write operations. This acquires the write lock at transaction start rather than on first write statement, which:
-1. Prevents upgrade-from-read deadlocks
-2. Makes `busy_timeout` apply from the start
-3. Is the recommended pattern for SQLite multi-process writes
-
-This is supported directly by rusqlite 0.38:
+Sending Ctrl+C (SIGINT) to a PTY process requires writing the interrupt byte (`\x03`) to the PTY master. This is already how keyboard input works in Glass:
 
 ```rust
-use rusqlite::TransactionBehavior;
-
-let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-// All writes within this transaction are atomic
-tx.commit()?;
+// Existing pattern in main.rs for keyboard input:
+session.pty_sender.send(PtyMsg::Input(bytes))
 ```
 
----
+For `glass_command_cancel`, the implementation sends `\x03` (ETX, the Ctrl+C byte) through the same channel:
 
-## Path Canonicalization Strategy
+```rust
+session.pty_sender.send(PtyMsg::Input(vec![0x03]))
+```
 
-### The Problem
-
-`std::fs::canonicalize()` on Windows produces UNC paths like `\\?\C:\Users\nkngu\apps\Glass\src\main.rs`. These paths:
-- Are not comparable with normal paths (`C:\Users\nkngu\apps\Glass\src\main.rs`)
-- Break many Windows tools and libraries
-- Would cause file lock mismatches if one agent uses `canonicalize()` and another constructs paths normally
-
-### The Solution: `dunce::canonicalize()`
-
-`dunce` 1.0.5 wraps `std::fs::canonicalize()` and strips the `\\?\` prefix when the path can be expressed as a standard Windows path (drive-letter paths). It passes through unchanged on Unix. Zero dependencies, battle-tested (10M+ downloads).
-
-### Integration
-
-The new `glass_coordination` crate uses `dunce::canonicalize()` in `lock_files()` before storing paths. This also benefits the existing `glass_snapshot` crate -- the `ignore_rules.rs` and `watcher.rs` files currently use raw `std::fs::canonicalize()` which produces UNC paths on Windows. Consider migrating those to `dunce` as a followup.
-
-### Existing Canonicalization Code
-
-`glass_snapshot/src/ignore_rules.rs` already has a `canonicalize_path()` method that handles non-existent files by canonicalizing the deepest existing ancestor. The coordination crate should reuse this pattern for lock paths that reference files not yet created.
+On Windows (ConPTY), writing `\x03` to the PTY input triggers the same behavior as the user pressing Ctrl+C. On Unix, it's equivalent to `SIGINT`. No platform-specific signal APIs needed.
 
 ---
 
@@ -176,51 +226,53 @@ The new `glass_coordination` crate uses `dunce::canonicalize()` in `lock_files()
 
 ```toml
 [workspace.dependencies]
-# Agent ID generation
-uuid = { version = "1", features = ["v4"] }
+# Diff generation for file change tracking
+similar = "2"
 
-# Windows-safe path canonicalization
-dunce = "1"
+# Error pattern matching
+regex = "1"
 ```
 
-### New Crate: `crates/glass_coordination/Cargo.toml`
+### New Crate: `crates/glass_errors/Cargo.toml`
 
 ```toml
 [package]
-name = "glass_coordination"
+name = "glass_errors"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rusqlite = { workspace = true }
-uuid = { workspace = true }
-dunce = { workspace = true }
-anyhow = { workspace = true }
-tracing = { workspace = true }
-dirs = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_System_Threading",
-    "Win32_Foundation",
-] }
-
-[dev-dependencies]
-tempfile = "3"
+regex = { workspace = true }
+serde = { workspace = true }
 ```
+
+Minimal dependency footprint. No async runtime, no IO, no framework dependencies.
 
 ### Modified Crate: `crates/glass_mcp/Cargo.toml`
 
-Add one dependency:
+Add dependencies for new tools:
 
 ```toml
 [dependencies]
 # ... existing deps ...
-glass_coordination = { path = "../glass_coordination" }
+glass_errors = { path = "../glass_errors" }
+similar = { workspace = true }
+regex = { workspace = true }
 ```
+
+### Modified Crate: `crates/glass_core/Cargo.toml`
+
+Add tokio for channel types in McpRequest/McpResponse (if types live in glass_core):
+
+```toml
+[dependencies]
+# ... existing deps ...
+tokio = { workspace = true }  # For oneshot::Sender in McpRequest
+```
+
+Note: glass_core currently does NOT depend on tokio. Adding it is necessary because `McpRequest` contains `tokio::sync::oneshot::Sender<McpResponse>` for the reply channel. Since `AppEvent` and related types live in glass_core, the channel types must be available there.
+
+**Alternative:** Define `McpRequest`/`McpResponse` in glass_mcp instead of glass_core, and use a simpler bridge type in `AppEvent` (e.g., `AppEvent::McpRequest(Box<dyn FnOnce(&mut SessionMux) + Send>)`). This avoids adding tokio to glass_core but reduces type safety. The tokio dependency is lightweight when only using `sync` types, so the direct approach is cleaner.
 
 ---
 
@@ -228,31 +280,17 @@ glass_coordination = { path = "../glass_coordination" }
 
 | Temptation | Why Not |
 |------------|---------|
-| **`process_alive` crate** | Pulls `windows-sys` 0.61 (version conflict with workspace 0.59). The implementation is ~30 lines of trivial platform code. Write it inline. |
-| **`sysinfo` crate** | 3MB compiled weight to check if one PID is alive. Enumerates all system processes. Absurd overkill. |
-| **`nix` crate** | Large Unix abstraction layer. We need one function: `kill(pid, 0)`. Use raw `libc` call. |
-| **`tokio::sync::watch` or channels for IPC** | The design explicitly chose SQLite WAL over IPC. No inter-process channels needed. Each MCP process polls the shared DB. |
-| **`crossbeam-channel` or message queue** | Same as above. SQLite `messages` table IS the message queue. No in-memory IPC. |
-| **`notify` for DB change watching** | Watching SQLite files for changes is unreliable (WAL writes to `-wal` and `-shm` files, not the main DB). Agents poll via `read_messages()`. |
-| **`async-sqlite` or `tokio-rusqlite`** | The design specifies synchronous SQLite wrapped in `spawn_blocking` at the MCP layer. This is the same pattern used by glass_mcp for glass_history and glass_snapshot. Adding async SQLite would break the established pattern for no benefit. |
-| **`parking_lot` or custom locks** | SQLite handles all locking via its internal lock manager. No Rust-level synchronization needed between processes. |
-| **`uuid` v7 (time-ordered)** | v4 random UUIDs are sufficient. Agent IDs don't need time-ordering. v4 avoids any clock dependency. |
-
----
-
-## Alternatives Considered
-
-| Category | Recommended | Alternative | Why Not Alternative |
-|----------|-------------|-------------|---------------------|
-| UUID generation | `uuid` 1.22 with v4 | `nanoid` | UUID v4 is the standard for distributed IDs. nanoid produces shorter strings but loses the universal tooling and format recognition. |
-| UUID generation | `uuid` 1.22 with v4 | `ulid` | ULIDs are time-ordered. Agent IDs don't need ordering. uuid is more widely used and understood. |
-| Path canonicalization | `dunce` 1.0.5 | Manual `\\?\` prefix stripping | Stripping `\\?\` is correct for drive-letter paths but incorrect for device paths (`\\?\GLOBALROOT\...`). dunce handles the edge cases correctly. 150 lines, zero deps -- no reason not to use it. |
-| Path canonicalization | `dunce` 1.0.5 | `normpath` | normpath does lexical normalization (no filesystem I/O). We need actual canonicalization (symlink resolution, existence check). |
-| PID checking | Raw `libc` / `windows-sys` | `process_alive` 0.2.0 | Version conflict with workspace `windows-sys` 0.59 vs 0.61. Implementation is trivial. |
-| PID checking | Raw `libc` / `windows-sys` | `sysinfo` | Massive dependency for a single boolean check. |
-| Coordination mechanism | SQLite WAL | Redis / ZeroMQ | External service dependency. Glass is a local desktop app. SQLite is embedded and already in the stack. |
-| Coordination mechanism | SQLite WAL | Named pipes / Unix domain sockets | Requires designing a wire protocol, connection management, reconnection logic. SQLite gives ACID transactions for free. |
-| Coordination mechanism | SQLite WAL | Shared memory (mmap) | Requires manual synchronization, no schema, crash recovery is manual. SQLite provides all of this. |
+| **`tokio-rusqlite` or `async-sqlite`** | The project uses synchronous rusqlite in `spawn_blocking`. This pattern is proven across glass_history, glass_snapshot, and glass_coordination. Async SQLite wrappers add complexity for zero benefit in this architecture. |
+| **`crossbeam-channel`** | Not async-aware. tokio channels work naturally in the async MCP handler context. Adding crossbeam would require bridge code. |
+| **`nom`, `winnow`, `pest`** | Parser combinators/generators for compiler error output is overkill. Error formats are line-oriented patterns, not formal grammars. `regex` handles all target formats cleanly. |
+| **`tree-sitter`** | Designed for parsing source code, not diagnostic output. Requires grammar files and C compilation. |
+| **`lazy_static` or `once_cell`** | `std::sync::LazyLock` is stable since Rust 1.80 and covers all lazy initialization needs. No external crate needed. |
+| **`strip-ansi-escapes` crate** | Glass already has ANSI stripping in glass_terminal (output capture path). Reuse existing code or extract to a shared utility. |
+| **`lru` or caching crate** | `glass_cached_result` does not need an in-process cache. It queries SQLite history directly. The "cache" is the history database itself. |
+| **`signal-hook` or `nix`** | PTY signal sending is just writing `\x03` to the PTY master fd. No signal crate needed. |
+| **`flume`** | Async channel alternative. tokio::sync::mpsc is already available and sufficient. Adding flume duplicates functionality. |
+| **`async-trait`** | Not needed. rmcp's `#[tool]` macro handles async tool methods. No custom async traits required for v2.3 features. |
+| **`regex-lite`** | Smaller but lacks verbose mode (`(?x)`) and has slower matching. Glass is a desktop app where binary size is not a constraint, and regex is already a transitive dependency. |
 
 ---
 
@@ -260,90 +298,95 @@ glass_coordination = { path = "../glass_coordination" }
 
 | Addition | New Transitive Deps | Compile Impact | Binary Size | Notes |
 |----------|---------------------|----------------|-------------|-------|
-| `uuid` 1.22 (v4 feature) | `getrandom` (likely already present via other deps) | MINIMAL (~1s) | ~5 KB | Tiny crate. getrandom is a common transitive dep. |
-| `dunce` 1.0.5 | None | MINIMAL (<1s) | ~2 KB | 150 lines, zero dependencies. |
-| `libc` 0.2 (unix only) | None | NONE (already transitive) | 0 KB | Already pulled in by alacritty_terminal, notify, and others. |
-| `windows-sys` feature additions | None (features on existing dep) | MINIMAL | ~1 KB | Just adds Threading/Foundation bindings to already-compiled crate. |
-| **Total** | ~1 new transitive crate (getrandom, if not already present) | ~2s | ~8 KB | Negligible impact. |
-
-This is the lightest-weight milestone in terms of new dependencies. The design intentionally reuses SQLite infrastructure that's already proven in the workspace.
+| `similar` 2.7.0 | 0 (only `borrow` trait, zero-cost) | MINIMAL (~2s) | ~15 KB | Pure Rust diff algorithms (Myers, patience). |
+| `regex` 1.12.3 | `regex-automata`, `regex-syntax`, `aho-corasick`, `memchr` | LOW (~5s, likely already compiled as transitive dep) | ~200 KB | Likely already in the dependency tree via transitive deps. Check with `cargo tree -d`. |
+| `glass_errors` crate | 0 (only workspace deps) | MINIMAL (~1s) | ~10 KB | Pure parsing logic, no framework code. |
+| **Total** | ~0-4 new transitive crates | ~3-8s | ~225 KB | `regex` is the largest addition but is likely already transitively compiled. |
 
 ---
 
 ## Integration Points with Existing Architecture
 
-### glass_coordination (New Crate)
+### MCP Command Channel (glass_core + glass_mcp + main.rs)
 
 ```
-CoordinationDb::open()
-  -> Opens ~/.glass/agents.db
-  -> Same WAL + PRAGMA pattern as HistoryDb and SnapshotDb
-  -> Schema: agents, file_locks, messages tables
-  -> Pure synchronous API (no async, no tokio)
+glass_core/src/event.rs:
+  + McpRequest enum (TabCreate, TabList, TabRun, TabOutput, TabClose, CommandStatus, CommandCancel)
+  + McpResponse enum (Ok(Value), Error(String))
+  + AppEvent::McpRequest(McpRequest) variant
+
+glass_mcp/src/tools.rs (GlassServer):
+  + mcp_sender: Option<EventLoopProxy<AppEvent>>  (set when running embedded, None for standalone)
+  + 12 new #[tool] methods following existing pattern
+  + Channel-dependent tools check mcp_sender.is_some() and return helpful error if None
+
+main.rs:
+  + Handle AppEvent::McpRequest in user_event()
+  + Route requests to SessionMux methods
+  + Send responses via embedded oneshot::Sender
 ```
 
-### glass_mcp Integration
+### Error Extraction (glass_errors + glass_mcp)
 
 ```
-GlassServer (existing)
-  -> Currently holds: glass_dir (PathBuf) for snapshot operations
-  -> Add: CoordinationDb instance (opened once at server startup)
-  -> 11 new #[tool_handler] methods following existing pattern
-  -> Write operations use spawn_blocking (same as existing undo/snapshot tools)
+glass_errors/src/lib.rs:
+  + parse(output: &str, hint: Option<&str>) -> Vec<ParsedError>
+  + No IO, no async, no framework deps
+
+glass_mcp/src/tools.rs:
+  + glass_errors tool: get output from history or live grid, call glass_errors::parse()
 ```
 
-**Pattern precedent:** The existing `glass_undo` tool in glass_mcp opens `SnapshotStore` in `spawn_blocking`:
+### Token-Saving Tools (glass_mcp + glass_history + glass_snapshot)
 
-```rust
-#[tool_handler]
-async fn glass_undo(&self, params: UndoParams) -> Result<CallToolResult, McpError> {
-    let glass_dir = self.glass_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        // Synchronous SQLite operations here
-    }).await.map_err(/* ... */)?;
-    // ...
-}
 ```
-
-The new coordination tools follow this exact pattern.
-
-### windows-sys Feature Extension
-
-Current workspace definition:
-```toml
-windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+glass_mcp/src/tools.rs:
+  + glass_output: query HistoryDb, apply regex/line filters
+  + glass_changed_files: query SnapshotStore, generate diffs with similar
+  + glass_cached_result: query HistoryDb with age filter, check snapshot timestamps
+  + glass_context enhancement: add budget/focus params to existing tool
 ```
-
-The glass_coordination crate adds its own platform-specific dependency with additional features. This does NOT modify the workspace-level definition -- the crate declares its own `windows-sys` dependency with the features it needs. Cargo merges features when resolving.
 
 ---
 
 ## Version Compatibility Matrix
 
-| Package | Compatible With | Verified |
-|---------|-----------------|----------|
-| `uuid` 1.22.0 | Rust 2021 edition, no async runtime needed | Version confirmed via docs.rs (HIGH confidence) |
-| `dunce` 1.0.5 | Any Rust edition, zero deps | Version confirmed via docs.rs (HIGH confidence) |
-| `libc` 0.2.x | Already resolved in Cargo.lock as transitive dep | Confirmed in Cargo.lock (HIGH confidence) |
-| `windows-sys` 0.59 | Threading + Foundation features available | Features confirmed via docs.rs (HIGH confidence) |
-| `rusqlite` 0.38.0 | WAL mode, `TransactionBehavior::Immediate`, `busy_timeout` pragma | Existing usage in glass_history and glass_snapshot validates all needed APIs (HIGH confidence) |
+| Package | Version | Compatible With | Confidence |
+|---------|---------|-----------------|------------|
+| `similar` | 2.7.0 | Rust 2021, no async needed, no platform deps | HIGH (cargo search confirmed) |
+| `regex` | 1.12.3 | Rust 2021, no async needed, stable API since 1.0 | HIGH (cargo search confirmed) |
+| `tokio::sync::mpsc` | 1.50.0 (existing) | Already in workspace with "full" features | HIGH (existing validated dep) |
+| `tokio::sync::oneshot` | 1.50.0 (existing) | Already in workspace with "full" features | HIGH (existing validated dep) |
+| `std::sync::LazyLock` | Rust 1.80+ | Glass uses Rust 2021 edition, any recent stable toolchain | HIGH (std library, stable since 1.80) |
+
+---
+
+## Summary of Changes
+
+| Category | What Changes | What Stays |
+|----------|-------------|------------|
+| **New workspace deps** | `similar = "2"`, `regex = "1"` | All existing workspace deps unchanged |
+| **New crate** | `glass_errors` (pure parsing library) | All existing 13 crates unchanged |
+| **Modified crates** | `glass_mcp` (+glass_errors, +similar, +regex), `glass_core` (+tokio for channel types) | glass_terminal, glass_renderer, glass_mux, glass_history, glass_snapshot, glass_coordination, glass_pipes unchanged |
+| **Channel mechanism** | tokio mpsc+oneshot via EventLoopProxy bridge | Existing AppEvent dispatch pattern |
+| **Signal sending** | Write `\x03` to existing PTY sender | PTY architecture unchanged |
+
+**Net new runtime dependencies: 2** (similar, regex). Everything else reuses the existing stack.
 
 ---
 
 ## Sources
 
-- [uuid crate docs (docs.rs)](https://docs.rs/uuid/latest/uuid/) -- v1.22.0, features confirmed (HIGH confidence)
-- [dunce crate docs (docs.rs)](https://docs.rs/dunce/latest/dunce/) -- v1.0.5, UNC stripping behavior confirmed (HIGH confidence)
-- [SQLite WAL mode documentation (sqlite.org)](https://sqlite.org/wal.html) -- Multi-process concurrency guarantees (HIGH confidence)
-- [SQLite recommended PRAGMAs](https://highperformancesqlite.com/articles/sqlite-recommended-pragmas) -- busy_timeout and WAL configuration (MEDIUM confidence)
-- [rusqlite TransactionBehavior (docs.rs)](https://docs.rs/rusqlite/latest/rusqlite/enum.TransactionBehavior.html) -- BEGIN IMMEDIATE support confirmed (HIGH confidence)
-- [std::fs::canonicalize UNC issue (rust-lang/rust#42869)](https://github.com/rust-lang/rust/issues/42869) -- Windows UNC path problem documented (HIGH confidence)
-- [windows-sys Threading module (docs.rs)](https://docs.rs/windows-sys/latest/windows_sys/Win32/System/Threading/index.html) -- OpenProcess, GetExitCodeProcess available (HIGH confidence)
-- [process_alive crate (lib.rs)](https://lib.rs/crates/process_alive) -- v0.2.0, uses windows-sys 0.61 (version conflict confirmed) (HIGH confidence)
-- [SQLite busy_timeout behavior (berthub.eu)](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) -- BEGIN IMMEDIATE recommended for writes (MEDIUM confidence)
-- [Existing glass_history/src/db.rs WAL pattern](../../../crates/glass_history/src/db.rs) -- Validated working WAL configuration (HIGH confidence)
-- [Existing glass_snapshot/src/ignore_rules.rs canonicalization](../../../crates/glass_snapshot/src/ignore_rules.rs) -- Existing canonicalize_path pattern for non-existent files (HIGH confidence)
+- [tokio::sync::mpsc documentation](https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html) -- Channel API reference (HIGH confidence)
+- [tokio::sync::oneshot documentation](https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html) -- Oneshot channel for request/response (HIGH confidence)
+- [Tokio channels tutorial](https://tokio.rs/tokio/tutorial/channels) -- mpsc+oneshot request/response pattern (HIGH confidence)
+- [similar crate (crates.io)](https://crates.io/crates/similar) -- v2.7.0, unified diff generation (HIGH confidence, cargo search confirmed)
+- [regex crate (crates.io)](https://crates.io/crates/regex) -- v1.12.3, pattern matching (HIGH confidence, cargo search confirmed)
+- [regex-lite crate (crates.io)](https://crates.io/crates/regex-lite) -- v0.1.9, considered and rejected (HIGH confidence)
+- [std::sync::LazyLock](https://doc.rust-lang.org/std/sync/struct.LazyLock.html) -- Stable since Rust 1.80 (HIGH confidence)
+- [Existing glass_mcp/Cargo.toml](../../../crates/glass_mcp/Cargo.toml) -- Current MCP dependencies (HIGH confidence)
+- [Existing glass_core/src/event.rs](../../../crates/glass_core/src/event.rs) -- AppEvent pattern for EventLoopProxy integration (HIGH confidence)
 
 ---
-*Stack research for: Glass v2.2 Multi-Agent Coordination*
+*Stack research for: Glass v2.3 Agent MCP Features*
 *Researched: 2026-03-09*

@@ -84,7 +84,16 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-(No active milestone — run `/gsd:new-milestone` to plan next)
+## Current Milestone: v2.3 Agent MCP Features
+
+**Goal:** Make Glass the most token-efficient, capable terminal for AI agents by exposing multi-tab orchestration, structured error extraction, and token-saving tools through new MCP tools.
+
+**Target features:**
+- MCP Command Channel — async channel bridge between MCP server and main event loop
+- Multi-tab orchestration — glass_tab_create, glass_tab_list, glass_tab_run, glass_tab_output, glass_tab_close
+- Token-saving tools — glass_output (filtered), glass_changed_files (diffs), glass_cached_result, glass_context budget/focus
+- Structured error extraction — glass_errors crate + MCP tool (Rust, Python, Node, Go, GCC parsers)
+- Live command awareness — glass_command_status, glass_command_cancel
 
 ### Deferred (Future Milestones)
 
@@ -213,4 +222,4 @@ Known tech debt:
 | 5-second polling interval with startup delay | Balance freshness vs I/O; delay avoids startup spike | ✓ Good -- responsive without overhead |
 
 ---
-*Last updated: 2026-03-10 after v2.2 milestone complete*
+*Last updated: 2026-03-09 after v2.3 milestone started*
