@@ -134,7 +134,10 @@ Plans:
   1. CJK characters (Chinese, Japanese, Korean) render at double cell width without overlapping adjacent characters
   2. Cell backgrounds, cursor highlighting, and text selection correctly span 2 cells for wide characters
   3. Mixed ASCII and CJK text on the same line maintains correct column alignment
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 41-01-PLAN.md — Wide char Buffer creation with double-width and spacer skip (WIDE-01)
+- [ ] 41-02-PLAN.md — Double-width background rects, cursor, and visual verification (WIDE-02)
 
 ### Phase 42: Text Decorations
 **Goal**: Underlined and struck-through text renders with visible decoration lines
@@ -213,7 +216,7 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 38. Structured Error Extraction | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 39. Live Command Awareness | v2.3 | 1/1 | Complete | 2026-03-10 |
 | 40. Grid Alignment | 2/2 | Complete    | 2026-03-10 | - |
-| 41. Wide Character Support | v2.4 | 0/0 | Not started | - |
+| 41. Wide Character Support | v2.4 | 0/2 | Not started | - |
 | 42. Text Decorations | v2.4 | 0/0 | Not started | - |
 | 43. Font Fallback | v2.4 | 0/0 | Not started | - |
 | 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |
