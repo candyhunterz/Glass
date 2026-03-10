@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
-status: completed
-stopped_at: Completed 37-02-PLAN.md
-last_updated: "2026-03-10T04:54:36.195Z"
-last_activity: 2026-03-10 -- Completed 37-02 command diff and compressed context tools
+status: in-progress
+stopped_at: Completed 38-01-PLAN.md
+last_updated: "2026-03-10T05:17:58.723Z"
+last_activity: 2026-03-10 -- Completed 38-01 error parser library
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 8
+  completed_plans: 7
   percent: 60
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 37 - Token-Saving Tools
+**Current focus:** Phase 38 - Structured Error Extraction
 
 ## Current Position
 
-Phase: 37 of 39 (Token-Saving Tools)
-Plan: 2 of 2
-Status: Phase Complete
-Last activity: 2026-03-10 -- Completed 37-02 command diff and compressed context tools
+Phase: 38 of 39 (Structured Error Extraction)
+Plan: 1 of 2
+Status: In Progress
+Last activity: 2026-03-10 -- Completed 38-01 error parser library
 
-Progress: [######....] 60%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ See PROJECT.md Key Decisions table for full history.
 - [Phase 36]: Used Parameters<T> wrapper for rmcp tool params; inline tab_index/session_id in each struct avoiding serde flatten
 - [Phase 37]: Head/tail mode applied before regex filter; cache check uses parser-sourced files only; extraction capped at 10000 lines
 - [Phase 37]: similar crate for unified diffs; token budget at 1 token ~ 4 chars; focus modes split budget into thirds; binary detection via null byte in first 8KiB
+- [Phase 38]: Enum dispatch for parser selection; OnceLock regex compilation; state machine for rust human parser two-line patterns
 
 ### Pending Todos
 
@@ -72,6 +73,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T04:50:37Z
-Stopped at: Completed 37-02-PLAN.md
+Last session: 2026-03-10T05:17:20Z
+Stopped at: Completed 38-01-PLAN.md
 Resume file: None

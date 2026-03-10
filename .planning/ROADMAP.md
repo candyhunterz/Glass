@@ -218,5 +218,5 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
 | 36. Multi-Tab Orchestration | v2.3 | Complete    | 2026-03-10 | 2026-03-10 |
 | 37. Token-Saving Tools | 2/2 | Complete    | 2026-03-10 | - |
-| 38. Structured Error Extraction | v2.3 | 0/2 | Not started | - |
+| 38. Structured Error Extraction | 1/2 | In Progress|  | - |
 | 39. Live Command Awareness | v2.3 | 0/? | Not started | - |

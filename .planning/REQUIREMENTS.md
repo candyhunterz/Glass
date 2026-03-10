@@ -31,9 +31,9 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 ### Error Extraction
 
 - [ ] **ERR-01**: Agent can extract structured errors (file, line, column, message, severity) from command output via MCP
-- [ ] **ERR-02**: Rust parser handles both human-readable and `--error-format=json` compiler output
-- [ ] **ERR-03**: Generic fallback parser handles `file:line:col: message` patterns from any compiler
-- [ ] **ERR-04**: Parser auto-detects language from command text hint and output content
+- [x] **ERR-02**: Rust parser handles both human-readable and `--error-format=json` compiler output
+- [x] **ERR-03**: Generic fallback parser handles `file:line:col: message` patterns from any compiler
+- [x] **ERR-04**: Parser auto-detects language from command text hint and output content
 
 ### Live Awareness
 
@@ -84,9 +84,9 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 | TOKEN-03 | Phase 37 | Complete |
 | TOKEN-04 | Phase 37 | Complete |
 | ERR-01 | Phase 38 | Pending |
-| ERR-02 | Phase 38 | Pending |
-| ERR-03 | Phase 38 | Pending |
-| ERR-04 | Phase 38 | Pending |
+| ERR-02 | Phase 38 | Complete |
+| ERR-03 | Phase 38 | Complete |
+| ERR-04 | Phase 38 | Complete |
 | LIVE-01 | Phase 39 | Pending |
 | LIVE-02 | Phase 39 | Pending |
 
