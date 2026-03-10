@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.2
 milestone_name: Multi-Agent Coordination
 status: in-progress
-stopped_at: Completed 34-01-PLAN.md
-last_updated: "2026-03-10T00:00:16.000Z"
-last_activity: 2026-03-09 -- Completed 34-01 (coordination poller + status bar wiring)
+stopped_at: Completed 34-02-PLAN.md
+last_updated: "2026-03-10T00:06:53.000Z"
+last_activity: 2026-03-10 -- Completed 34-02 (tab lock indicators + conflict overlay)
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 8
+  completed_plans: 8
   percent: 100
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 ## Current Position
 
 Phase: 34 of 34 (GUI Integration)
-Plan: 1 of 1 (34-01 complete)
-Status: Plan 01 Complete
-Last activity: 2026-03-09 -- Completed 34-01 (coordination poller + status bar wiring)
+Plan: 2 of 2 (34-02 complete)
+Status: Plan 02 Complete
+Last activity: 2026-03-10 -- Completed 34-02 (tab lock indicators + conflict overlay)
 
 Progress: [██████████] 100%
 
@@ -68,6 +68,7 @@ Recent decisions for v2.2:
 - [Phase 33]: Cross-connection tests use canonicalized project paths and real TempDir files for Windows compatibility
 - [Phase 34]: Coordination text positioned left of git info with soft purple color (180,140,255)
 - [Phase 34]: Poll thread sleeps before first DB access to avoid startup I/O delay
+- [Phase 34]: Active tab only shows lock indicator; conflict overlay requires 2+ agents AND locks
 
 ### Pending Todos
 
@@ -94,9 +95,10 @@ Recent decisions for v2.2:
 | 32 | 02 | 4min | 2 | 1 |
 | 33 | 01 | 2min | 2 | 2 |
 | 34 | 01 | 5min | 2 | 8 |
+| 34 | 02 | 3min | 2 | 5 |
 
 ## Session Continuity
 
-Last session: 2026-03-10T00:00:16.000Z
-Stopped at: Completed 34-01-PLAN.md
+Last session: 2026-03-10T00:06:53.000Z
+Stopped at: Completed 34-02-PLAN.md
 Resume file: None
