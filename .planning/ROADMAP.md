@@ -140,11 +140,11 @@ Plans:
   2. Agent can check if a previous command's cached result is still valid based on whether files it touched have been modified since
   3. Agent can see which files a command modified along with unified diffs of the changes
   4. Agent can request a compressed context summary that respects a token budget and focuses on specified aspects (errors, files, history)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 37-01: TBD
-- [ ] 37-02: TBD
+- [ ] 37-01-PLAN.md -- Extend glass_tab_output with head/tail mode + command_id fallback, add glass_cache_check tool
+- [ ] 37-02-PLAN.md -- Add glass_command_diff with unified diffs via similar crate, add glass_compressed_context with token budget
 
 ### Phase 38: Structured Error Extraction
 **Goal**: Agent can extract structured, machine-readable errors from raw command output
@@ -217,6 +217,6 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |
 | 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
 | 36. Multi-Tab Orchestration | v2.3 | Complete    | 2026-03-10 | 2026-03-10 |
-| 37. Token-Saving Tools | v2.3 | 0/? | Not started | - |
+| 37. Token-Saving Tools | v2.3 | 0/2 | Not started | - |
 | 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |
 | 39. Live Command Awareness | v2.3 | 0/? | Not started | - |
