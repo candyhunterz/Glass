@@ -168,10 +168,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. Agent can query whether a command is currently running in a specific tab and see its elapsed time
   2. Agent can cancel a running command (equivalent to Ctrl+C) and receive confirmation that the signal was sent
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 39-01: TBD
+- [ ] 39-01-PLAN.md -- Add glass_has_running_command and glass_cancel_command MCP tools with IPC handlers
 
 ## Progress
 
@@ -218,5 +218,5 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
 | 36. Multi-Tab Orchestration | v2.3 | Complete    | 2026-03-10 | 2026-03-10 |
 | 37. Token-Saving Tools | 2/2 | Complete    | 2026-03-10 | - |
-| 38. Structured Error Extraction | 2/2 | Complete   | 2026-03-10 | - |
-| 39. Live Command Awareness | v2.3 | 0/? | Not started | - |
+| 38. Structured Error Extraction | 2/2 | Complete    | 2026-03-10 | - |
+| 39. Live Command Awareness | v2.3 | 0/1 | Not started | - |
