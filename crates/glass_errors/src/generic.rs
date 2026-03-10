@@ -34,9 +34,7 @@ fn regex_no_col() -> &'static Regex {
 /// Regex for file:line:col: message (no explicit severity, assume error).
 fn regex_no_severity() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^([A-Za-z]:\\[^:]+|[^:\s][^:]*):(\d+):(\d+):\s*(.+)$").unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^([A-Za-z]:\\[^:]+|[^:\s][^:]*):(\d+):(\d+):\s*(.+)$").unwrap())
 }
 
 /// Map severity string to Severity enum (case-insensitive).

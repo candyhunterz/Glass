@@ -155,10 +155,7 @@ mod tests {
         assert_eq!(map_level("warning"), Severity::Warning);
         assert_eq!(map_level("note"), Severity::Note);
         assert_eq!(map_level("help"), Severity::Help);
-        assert_eq!(
-            map_level("error: internal compiler error"),
-            Severity::Error
-        );
+        assert_eq!(map_level("error: internal compiler error"), Severity::Error);
     }
 
     #[test]

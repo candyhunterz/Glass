@@ -2695,6 +2695,94 @@ impl ApplicationHandler<AppEvent> for Processor {
                             )
                         }
                     }
+                    "has_running_command" => {
+                        if let Some(ctx) = self.windows.values().next() {
+                            match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                Ok(tab_idx) => {
+                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
+                                        let (is_running, elapsed_seconds) = session
+                                            .block_manager
+                                            .current_block_index()
+                                            .and_then(|idx| session.block_manager.blocks().get(idx))
+                                            .filter(|b| {
+                                                b.state == glass_terminal::BlockState::Executing
+                                            })
+                                            .map(|b| {
+                                                let elapsed = b
+                                                    .started_at
+                                                    .map(|s| s.elapsed().as_secs_f64())
+                                                    .unwrap_or(0.0);
+                                                (true, Some(elapsed))
+                                            })
+                                            .unwrap_or((false, None));
+                                        glass_core::ipc::McpResponse::ok(
+                                            request.id,
+                                            serde_json::json!({
+                                                "is_running": is_running,
+                                                "elapsed_seconds": elapsed_seconds,
+                                                "session_id": focused_sid.val(),
+                                            }),
+                                        )
+                                    } else {
+                                        glass_core::ipc::McpResponse::err(
+                                            request.id,
+                                            format!("Session {} not found", focused_sid.val()),
+                                        )
+                                    }
+                                }
+                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                            }
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
+                    "cancel_command" => {
+                        if let Some(ctx) = self.windows.values().next() {
+                            match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                Ok(tab_idx) => {
+                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
+                                        let was_running = session
+                                            .block_manager
+                                            .current_block_index()
+                                            .and_then(|idx| session.block_manager.blocks().get(idx))
+                                            .map(|b| {
+                                                b.state == glass_terminal::BlockState::Executing
+                                            })
+                                            .unwrap_or(false);
+                                        // Send ETX byte (Ctrl+C) to PTY
+                                        let input = vec![0x03u8];
+                                        let _ = session
+                                            .pty_sender
+                                            .send(PtyMsg::Input(Cow::Owned(input)));
+                                        glass_core::ipc::McpResponse::ok(
+                                            request.id,
+                                            serde_json::json!({
+                                                "signal_sent": true,
+                                                "was_running": was_running,
+                                                "session_id": focused_sid.val(),
+                                            }),
+                                        )
+                                    } else {
+                                        glass_core::ipc::McpResponse::err(
+                                            request.id,
+                                            format!("Session {} not found", focused_sid.val()),
+                                        )
+                                    }
+                                }
+                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                            }
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
                     _ => glass_core::ipc::McpResponse::err(
                         request.id,
                         format!("Unknown method: {}", request.method),

@@ -15,9 +15,7 @@ use crate::{Severity, StructuredError};
 /// Regex for error/warning header line: `error[E0308]: message` or `warning: message`.
 fn header_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^(error|warning|note|help)(\[([A-Z]\d+)\])?:\s*(.+)$").unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^(error|warning|note|help)(\[([A-Z]\d+)\])?:\s*(.+)$").unwrap())
 }
 
 /// Regex for span line: ` --> file:line:col`.
