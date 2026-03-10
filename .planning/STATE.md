@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.4
 milestone_name: Rendering Correctness
-status: ready_to_plan
-stopped_at: Roadmap created, ready to plan Phase 40
-last_updated: "2026-03-10T12:00:00.000Z"
-last_activity: 2026-03-10 -- Roadmap created for v2.4 Rendering Correctness
+status: executing
+stopped_at: Completed 40-01-PLAN.md
+last_updated: "2026-03-10T18:52:30.000Z"
+last_activity: 2026-03-10 -- Completed Plan 01 of Phase 40 (GridRenderer core rewrite)
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 2
+  completed_plans: 1
+  percent: 10
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-10)
 ## Current Position
 
 Phase: 40 of 44 (Grid Alignment)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-03-10 -- Roadmap created for v2.4 Rendering Correctness
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-03-10 -- Completed Plan 01 (GridRenderer core rewrite with per-cell buffers)
 
-Progress (v2.4): [..........] 0%
+Progress (v2.4): [#.........] 10%
 
 ## Performance Metrics
 
@@ -56,6 +56,8 @@ v2.4-specific decisions:
 - Line height from font metrics (ascent+descent) instead of hardcoded 1.2x multiplier
 - Never use glyphon TextArea.scale for DPI -- scale Metrics instead (glyphon issue #117)
 - Zero new dependencies -- all features via existing API changes
+- cell_height from LayoutRun.line_height.max(physical_font_size).ceil() with safety floor
+- Legacy build_text_buffers kept as wrapper for Plan 02 migration
 
 ### Pending Todos
 
@@ -72,5 +74,5 @@ v2.4-specific decisions:
 ## Session Continuity
 
 Last session: 2026-03-10
-Stopped at: Roadmap created for v2.4 milestone
+Stopped at: Completed 40-01-PLAN.md
 Resume file: None

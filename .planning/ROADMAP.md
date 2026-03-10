@@ -123,7 +123,7 @@
   3. The terminal grid renders identically to Alacritty or Windows Terminal for the same font and size
 **Plans:** 2 plans
 Plans:
-- [ ] 40-01-PLAN.md — Rewrite GridRenderer core with per-cell Buffers and font-metric cell height
+- [x] 40-01-PLAN.md — Rewrite GridRenderer core with per-cell Buffers and font-metric cell height
 - [ ] 40-02-PLAN.md — Migrate frame.rs call sites and visual verification
 
 ### Phase 41: Wide Character Support
@@ -212,7 +212,7 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 37. Token-Saving Tools | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 38. Structured Error Extraction | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 39. Live Command Awareness | v2.3 | 1/1 | Complete | 2026-03-10 |
-| 40. Grid Alignment | v2.4 | 0/2 | Not started | - |
+| 40. Grid Alignment | v2.4 | 1/2 | In progress | - |
 | 41. Wide Character Support | v2.4 | 0/0 | Not started | - |
 | 42. Text Decorations | v2.4 | 0/0 | Not started | - |
 | 43. Font Fallback | v2.4 | 0/0 | Not started | - |

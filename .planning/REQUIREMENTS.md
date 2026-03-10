@@ -9,8 +9,8 @@ Requirements for rendering correctness milestone. Each maps to roadmap phases.
 
 ### Grid Alignment
 
-- [ ] **GRID-01**: Terminal renders each glyph at exactly column * cell_width, eliminating horizontal drift
-- [ ] **GRID-02**: Line height derived from font ascent+descent metrics, box-drawing characters connect seamlessly vertically
+- [x] **GRID-01**: Terminal renders each glyph at exactly column * cell_width, eliminating horizontal drift
+- [x] **GRID-02**: Line height derived from font ascent+descent metrics, box-drawing characters connect seamlessly vertically
 
 ### Wide Characters
 
@@ -64,8 +64,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| GRID-01 | Phase 40 | Pending |
-| GRID-02 | Phase 40 | Pending |
+| GRID-01 | Phase 40 | Complete |
+| GRID-02 | Phase 40 | Complete |
 | WIDE-01 | Phase 41 | Pending |
 | WIDE-02 | Phase 41 | Pending |
 | DECO-01 | Phase 42 | Pending |
