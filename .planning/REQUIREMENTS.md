@@ -14,12 +14,12 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 
 ### Tab Orchestration
 
-- [ ] **TAB-01**: Agent can create a new tab with optional shell and working directory via MCP
-- [ ] **TAB-02**: Agent can list all open tabs with their state (name, cwd, running command) via MCP
-- [ ] **TAB-03**: Agent can send a command to a specific tab's PTY via MCP
-- [ ] **TAB-04**: Agent can read the last N lines of output from a specific tab, with optional regex filtering, via MCP
-- [ ] **TAB-05**: Agent can close a tab via MCP (refuses to close the last tab)
-- [ ] **TAB-06**: Tab tools accept both numeric tab_id and stable session_id as identifiers
+- [x] **TAB-01**: Agent can create a new tab with optional shell and working directory via MCP
+- [x] **TAB-02**: Agent can list all open tabs with their state (name, cwd, running command) via MCP
+- [x] **TAB-03**: Agent can send a command to a specific tab's PTY via MCP
+- [x] **TAB-04**: Agent can read the last N lines of output from a specific tab, with optional regex filtering, via MCP
+- [x] **TAB-05**: Agent can close a tab via MCP (refuses to close the last tab)
+- [x] **TAB-06**: Tab tools accept both numeric tab_id and stable session_id as identifiers
 
 ### Token Saving
 
@@ -73,12 +73,12 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 |-------------|-------|--------|
 | INFRA-01 | Phase 35 | Complete |
 | INFRA-02 | Phase 35 | Complete |
-| TAB-01 | Phase 36 | Pending |
-| TAB-02 | Phase 36 | Pending |
-| TAB-03 | Phase 36 | Pending |
-| TAB-04 | Phase 36 | Pending |
-| TAB-05 | Phase 36 | Pending |
-| TAB-06 | Phase 36 | Pending |
+| TAB-01 | Phase 36 | Complete |
+| TAB-02 | Phase 36 | Complete |
+| TAB-03 | Phase 36 | Complete |
+| TAB-04 | Phase 36 | Complete |
+| TAB-05 | Phase 36 | Complete |
+| TAB-06 | Phase 36 | Complete |
 | TOKEN-01 | Phase 37 | Pending |
 | TOKEN-02 | Phase 37 | Pending |
 | TOKEN-03 | Phase 37 | Pending |

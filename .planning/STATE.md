@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
-status: planning
-stopped_at: Completed 35-02-PLAN.md
-last_updated: "2026-03-10T02:46:39.028Z"
-last_activity: 2026-03-09 -- Roadmap created for v2.3 (5 phases, 16 requirements)
+status: executing
+stopped_at: Completed 36-01-PLAN.md
+last_updated: "2026-03-10T03:40:49.000Z"
+last_activity: 2026-03-10 -- Completed 36-01 tab orchestration IPC handlers
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 0
+  total_plans: 3
+  completed_plans: 3
+  percent: 20
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 35 - MCP Command Channel
+**Current focus:** Phase 36 - Multi-Tab Orchestration
 
 ## Current Position
 
-Phase: 35 of 39 (MCP Command Channel)
-Plan: --
-Status: Ready to plan
-Last activity: 2026-03-09 -- Roadmap created for v2.3 (5 phases, 16 requirements)
+Phase: 36 of 39 (Multi-Tab Orchestration)
+Plan: 1 of 2
+Status: Executing
+Last activity: 2026-03-10 -- Completed 36-01 tab orchestration IPC handlers
 
-Progress: [..........] 0%
+Progress: [##........] 20%
 
 ## Performance Metrics
 
@@ -51,6 +51,7 @@ Progress: [..........] 0%
 See PROJECT.md Key Decisions table for full history.
 - [Phase 35]: Dedicated tokio runtime per IPC listener thread; JSON-line protocol; 5s oneshot timeout; Removed Clone from AppEvent for oneshot::Sender compatibility
 - [Phase 35]: Duplicated socket/pipe paths in ipc_client.rs to avoid glass_core dependency; Arc-wrapped IpcClient for Clone compatibility; fresh connection per request
+- [Phase 36]: Config clone for shell override in tab_create; early return for regex errors in tab_output; tab_close checks count before resolve
 
 ### Pending Todos
 
@@ -68,6 +69,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T02:44:01.252Z
-Stopped at: Completed 35-02-PLAN.md
+Last session: 2026-03-10T03:40:49.000Z
+Stopped at: Completed 36-01-PLAN.md
 Resume file: None
