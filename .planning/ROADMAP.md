@@ -158,7 +158,9 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. Characters not in the configured font (e.g., CJK glyphs when using a Latin-only font) render instead of showing tofu/missing glyph boxes
   2. Fallback glyphs render at the correct size and position within the cell grid, not overflowing or misaligned
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 43-01-PLAN.md — Validate font fallback with unit tests for CJK and multi-script glyphs (FONT-01, FONT-02)
 
 ### Phase 44: Dynamic DPI
 **Goal**: Terminal renders correctly after moving between displays with different DPI/scale factors
@@ -220,5 +222,5 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 40. Grid Alignment | 2/2 | Complete    | 2026-03-10 | - |
 | 41. Wide Character Support | 2/2 | Complete    | 2026-03-10 | - |
 | 42. Text Decorations | 1/1 | Complete    | 2026-03-10 | - |
-| 43. Font Fallback | v2.4 | 0/0 | Not started | - |
+| 43. Font Fallback | v2.4 | 0/1 | Not started | - |
 | 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |
