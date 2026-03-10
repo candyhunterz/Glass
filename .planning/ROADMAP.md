@@ -147,7 +147,9 @@ Plans:
   1. Text with SGR 4 (underline) shows a visible line below the baseline
   2. Text with SGR 9 (strikethrough) shows a visible line through the middle of the text
   3. Decorations render at correct vertical positions within the cell regardless of font size
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 42-01-PLAN.md — Add build_decoration_rects and integrate into frame rendering (DECO-01, DECO-02)
 
 ### Phase 43: Font Fallback
 **Goal**: Characters missing from the primary font render via system font fallback
@@ -217,6 +219,6 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 39. Live Command Awareness | v2.3 | 1/1 | Complete | 2026-03-10 |
 | 40. Grid Alignment | 2/2 | Complete    | 2026-03-10 | - |
 | 41. Wide Character Support | 2/2 | Complete    | 2026-03-10 | - |
-| 42. Text Decorations | v2.4 | 0/0 | Not started | - |
+| 42. Text Decorations | v2.4 | 0/1 | In progress | - |
 | 43. Font Fallback | v2.4 | 0/0 | Not started | - |
 | 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |
