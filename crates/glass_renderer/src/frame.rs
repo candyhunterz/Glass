@@ -447,8 +447,7 @@ impl FrameRenderer {
                 } else {
                     cell_width * 0.5
                 };
-                let coord_x =
-                    w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
+                let coord_x = w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,
@@ -1045,8 +1044,7 @@ impl FrameRenderer {
                 } else {
                     cell_width * 0.5
                 };
-                let coord_x =
-                    w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
+                let coord_x = w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,
@@ -1369,10 +1367,8 @@ impl FrameRenderer {
     ) {
         let (cell_width, cell_height) = self.grid_renderer.cell_size();
         let overlay = crate::conflict_overlay::ConflictOverlay::new(cell_width, cell_height);
-        let warning_rects =
-            overlay.build_warning_rects(width as f32, height as f32, 1);
-        let warning_labels =
-            overlay.build_warning_text(agent_count, lock_count, height as f32);
+        let warning_rects = overlay.build_warning_rects(width as f32, height as f32, 1);
+        let warning_labels = overlay.build_warning_text(agent_count, lock_count, height as f32);
 
         // Reuse self.rect_renderer -- safe because this runs after the main draw
         self.rect_renderer

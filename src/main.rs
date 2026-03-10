@@ -603,9 +603,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             // Spawn coordination poller for agent/lock status
             let project_root = std::env::current_dir()
                 .ok()
-                .and_then(|cwd| {
-                    glass_coordination::canonicalize_path(&cwd).ok()
-                })
+                .and_then(|cwd| glass_coordination::canonicalize_path(&cwd).ok())
                 .unwrap_or_else(|| {
                     std::env::current_dir()
                         .map(|p| p.to_string_lossy().to_string())
@@ -746,8 +744,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let coordination_text = if self.coordination_state.agent_count > 0 {
                         Some(format!(
                             "agents: {} locks: {}",
-                            self.coordination_state.agent_count,
-                            self.coordination_state.lock_count
+                            self.coordination_state.agent_count, self.coordination_state.lock_count
                         ))
                     } else {
                         None
@@ -862,8 +859,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let coordination_text = if self.coordination_state.agent_count > 0 {
                         Some(format!(
                             "agents: {} locks: {}",
-                            self.coordination_state.agent_count,
-                            self.coordination_state.lock_count
+                            self.coordination_state.agent_count, self.coordination_state.lock_count
                         ))
                     } else {
                         None

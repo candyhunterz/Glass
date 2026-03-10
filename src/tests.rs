@@ -160,9 +160,17 @@ mod codepage_tests {
     #[cfg(target_os = "windows")]
     fn test_utf8_codepage_65001_active() {
         // Call the same function that main() calls at startup
-        unsafe {
-            windows_sys::Win32::System::Console::SetConsoleCP(65001);
-            windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
+        let set_ok = unsafe {
+            let a = windows_sys::Win32::System::Console::SetConsoleCP(65001);
+            let b = windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
+            a != 0 && b != 0
+        };
+
+        // CI runners may not have an attached console, so SetConsoleCP
+        // returns 0 (failure). Skip the assertion in that case.
+        if !set_ok {
+            eprintln!("No attached console — skipping codepage assertion");
+            return;
         }
 
         let output_cp = unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() };

@@ -772,9 +772,7 @@ impl GlassServer {
     }
 
     /// List all active file locks, optionally filtered by project.
-    #[tool(
-        description = "List all active file locks, optionally filtered by project."
-    )]
+    #[tool(description = "List all active file locks, optionally filtered by project.")]
     async fn glass_agent_locks(
         &self,
         Parameters(params): Parameters<ListLocksParams>,
@@ -796,9 +794,7 @@ impl GlassServer {
     }
 
     /// Broadcast a typed message to all agents in the same project.
-    #[tool(
-        description = "Broadcast a typed message to all agents in the same project."
-    )]
+    #[tool(description = "Broadcast a typed message to all agents in the same project.")]
     async fn glass_agent_broadcast(
         &self,
         Parameters(params): Parameters<BroadcastParams>,
@@ -852,9 +848,7 @@ impl GlassServer {
     }
 
     /// Read unread messages. Messages are marked as read after retrieval.
-    #[tool(
-        description = "Read unread messages. Messages are marked as read after retrieval."
-    )]
+    #[tool(description = "Read unread messages. Messages are marked as read after retrieval.")]
     async fn glass_agent_messages(
         &self,
         Parameters(params): Parameters<MessagesParams>,
