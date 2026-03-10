@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with twenty-six tools:
+//! Defines `GlassServer` with twenty-eight tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -27,6 +27,8 @@
 //! - `glass_command_diff`: Show unified diffs of files a command modified
 //! - `glass_compressed_context`: Get budget-aware compressed context summary
 //! - `glass_extract_errors`: Extract structured errors from raw command output
+//! - `glass_has_running_command`: Check if a command is running in a tab with elapsed time
+//! - `glass_cancel_command`: Cancel a running command (Ctrl+C) in a tab
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -339,6 +341,28 @@ pub struct ExtractErrorsParams {
         description = "Optional command hint for parser auto-detection (e.g. 'cargo build', 'gcc')"
     )]
     pub command_hint: Option<String>,
+}
+
+/// Parameters for glass_has_running_command.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct HasRunningCommandParams {
+    /// 0-based tab index.
+    #[schemars(description = "0-based tab index (provide this OR session_id)")]
+    pub tab_index: Option<u64>,
+    /// Stable session ID.
+    #[schemars(description = "Stable session ID (provide this OR tab_index)")]
+    pub session_id: Option<u64>,
+}
+
+/// Parameters for glass_cancel_command.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CancelCommandParams {
+    /// 0-based tab index.
+    #[schemars(description = "0-based tab index (provide this OR session_id)")]
+    pub tab_index: Option<u64>,
+    /// Stable session ID.
+    #[schemars(description = "Stable session ID (provide this OR tab_index)")]
+    pub session_id: Option<u64>,
 }
 
 /// Parameters for glass_tab_close.
@@ -1564,6 +1588,78 @@ impl GlassServer {
         let json = build_extract_errors_json(&params.output, params.command_hint.as_deref());
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    /// Check if a command is currently running in a specific tab.
+    /// Returns is_running boolean and elapsed_seconds if running.
+    /// Use this to poll command completion or decide whether to cancel.
+    #[tool(
+        description = "Check if a command is currently running in a specific tab. Returns is_running boolean and elapsed_seconds if running. Use this to poll command completion or decide whether to cancel."
+    )]
+    async fn glass_has_running_command(
+        &self,
+        Parameters(input): Parameters<HasRunningCommandParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let mut params = serde_json::json!({});
+        if let Some(idx) = input.tab_index {
+            params["tab_index"] = serde_json::json!(idx);
+        }
+        if let Some(sid) = input.session_id {
+            params["session_id"] = serde_json::json!(sid);
+        }
+        match client.send_request("has_running_command", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// Cancel the currently running command in a tab by sending Ctrl+C (SIGINT).
+    /// Idempotent -- safe to call even if no command is running.
+    /// Returns was_running to indicate if a command was actually interrupted.
+    #[tool(
+        description = "Cancel the currently running command in a tab by sending Ctrl+C (SIGINT). Idempotent -- safe to call even if no command is running. Returns was_running to indicate if a command was actually interrupted."
+    )]
+    async fn glass_cancel_command(
+        &self,
+        Parameters(input): Parameters<CancelCommandParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let mut params = serde_json::json!({});
+        if let Some(idx) = input.tab_index {
+            params["tab_index"] = serde_json::json!(idx);
+        }
+        if let Some(sid) = input.session_id {
+            params["session_id"] = serde_json::json!(sid);
+        }
+        match client.send_request("cancel_command", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
 }
 
 /// Build the errors section for compressed context.
@@ -1743,7 +1839,9 @@ impl ServerHandler for GlassServer {
                  Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs. \
                  Token saving: glass_tab_output supports head/tail mode and command_id for history DB lookup. glass_cache_check to verify if a command's result is still valid. \
                  glass_command_diff for unified diffs of command file changes. glass_compressed_context for budget-aware context summaries with focus modes. \
-                 glass_extract_errors to extract structured errors from raw command output.",
+                 glass_extract_errors to extract structured errors from raw command output. \
+                 glass_has_running_command to check if a command is running with elapsed time. \
+                 glass_cancel_command to cancel a running command (Ctrl+C).",
             )
     }
 }
@@ -2205,6 +2303,48 @@ mod tests {
         assert_eq!(errors[0]["column"], 5);
         assert_eq!(errors[0]["severity"], "error");
         assert_eq!(errors[0]["message"], "undeclared identifier 'foo'");
+    }
+
+    #[test]
+    fn test_has_running_command_params_deserialize() {
+        let json = r#"{"tab_index": 0}"#;
+        let params: HasRunningCommandParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tab_index, Some(0));
+        assert!(params.session_id.is_none());
+
+        let json = r#"{"session_id": 42}"#;
+        let params: HasRunningCommandParams = serde_json::from_str(json).unwrap();
+        assert!(params.tab_index.is_none());
+        assert_eq!(params.session_id, Some(42));
+    }
+
+    #[test]
+    fn test_has_running_command_params_empty() {
+        let json = r#"{}"#;
+        let params: HasRunningCommandParams = serde_json::from_str(json).unwrap();
+        assert!(params.tab_index.is_none());
+        assert!(params.session_id.is_none());
+    }
+
+    #[test]
+    fn test_cancel_command_params_deserialize() {
+        let json = r#"{"tab_index": 1}"#;
+        let params: CancelCommandParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.tab_index, Some(1));
+        assert!(params.session_id.is_none());
+
+        let json = r#"{"session_id": 99}"#;
+        let params: CancelCommandParams = serde_json::from_str(json).unwrap();
+        assert!(params.tab_index.is_none());
+        assert_eq!(params.session_id, Some(99));
+    }
+
+    #[test]
+    fn test_cancel_command_params_empty() {
+        let json = r#"{}"#;
+        let params: CancelCommandParams = serde_json::from_str(json).unwrap();
+        assert!(params.tab_index.is_none());
+        assert!(params.session_id.is_none());
     }
 
     #[test]
