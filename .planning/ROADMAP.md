@@ -97,7 +97,7 @@
 - [x] **Phase 36: Multi-Tab Orchestration** - Agent can create, list, command, read, and close tabs via MCP tools (completed 2026-03-10)
 - [x] **Phase 37: Token-Saving Tools** - Filtered output, cached results, file diffs, and budget-aware context via MCP (completed 2026-03-10)
 - [x] **Phase 38: Structured Error Extraction** - New glass_errors crate with language-aware parsers and MCP tool (completed 2026-03-10)
-- [ ] **Phase 39: Live Command Awareness** - Agent can check command status and cancel running commands via MCP
+- [x] **Phase 39: Live Command Awareness** - Agent can check command status and cancel running commands via MCP (completed 2026-03-10)
 
 ## Phase Details
 
@@ -219,4 +219,4 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 36. Multi-Tab Orchestration | v2.3 | Complete    | 2026-03-10 | 2026-03-10 |
 | 37. Token-Saving Tools | 2/2 | Complete    | 2026-03-10 | - |
 | 38. Structured Error Extraction | 2/2 | Complete    | 2026-03-10 | - |
-| 39. Live Command Awareness | v2.3 | 0/1 | Not started | - |
+| 39. Live Command Awareness | 1/1 | Complete   | 2026-03-10 | - |

@@ -37,8 +37,8 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 
 ### Live Awareness
 
-- [ ] **LIVE-01**: Agent can check whether a command is currently running in a tab via MCP
-- [ ] **LIVE-02**: Agent can cancel a running command (send SIGINT) in a tab via MCP
+- [x] **LIVE-01**: Agent can check whether a command is currently running in a tab via MCP
+- [x] **LIVE-02**: Agent can cancel a running command (send SIGINT) in a tab via MCP
 
 ## Future Requirements
 
@@ -87,8 +87,8 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 | ERR-02 | Phase 38 | Complete |
 | ERR-03 | Phase 38 | Complete |
 | ERR-04 | Phase 38 | Complete |
-| LIVE-01 | Phase 39 | Pending |
-| LIVE-02 | Phase 39 | Pending |
+| LIVE-01 | Phase 39 | Complete |
+| LIVE-02 | Phase 39 | Complete |
 
 **Coverage:**
 - v2.3 requirements: 16 total
