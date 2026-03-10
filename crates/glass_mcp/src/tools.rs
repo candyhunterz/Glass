@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with twenty-five tools:
+//! Defines `GlassServer` with twenty-six tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -26,6 +26,7 @@
 //! - `glass_cache_check`: Check if a previous command's cached result is still valid
 //! - `glass_command_diff`: Show unified diffs of files a command modified
 //! - `glass_compressed_context`: Get budget-aware compressed context summary
+//! - `glass_extract_errors`: Extract structured errors from raw command output
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -325,6 +326,19 @@ pub struct CompressedContextParams {
     /// Time filter: only include activity after this time. Supports '1h', '2d', ISO dates.
     #[schemars(description = "Time filter: '1h', '2d', ISO date. Default: last 1 hour")]
     pub after: Option<String>,
+}
+
+/// Parameters for glass_extract_errors.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExtractErrorsParams {
+    /// Raw command output text to extract errors from.
+    #[schemars(description = "Raw command output text to extract errors from")]
+    pub output: String,
+    /// Optional command hint for parser auto-detection (e.g. 'cargo build', 'gcc').
+    #[schemars(
+        description = "Optional command hint for parser auto-detection (e.g. 'cargo build', 'gcc')"
+    )]
+    pub command_hint: Option<String>,
 }
 
 /// Parameters for glass_tab_close.
@@ -1539,6 +1553,17 @@ impl GlassServer {
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
+
+    #[tool(
+        description = "Extract structured errors (file, line, column, message, severity) from raw command output. Auto-detects the compiler/language from the command hint or output patterns. Supports Rust (JSON and human-readable), and generic file:line:col formats."
+    )]
+    async fn glass_extract_errors(
+        &self,
+        Parameters(params): Parameters<ExtractErrorsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let json = build_extract_errors_json(&params.output, params.command_hint.as_deref());
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 /// Build the errors section for compressed context.
@@ -1691,6 +1716,17 @@ fn build_files_section(
     Ok(truncate_to_budget(&section, budget))
 }
 
+/// Build JSON response for extract_errors tool.
+fn build_extract_errors_json(output: &str, command_hint: Option<&str>) -> String {
+    let errors = glass_errors::extract_errors(output, command_hint);
+    let count = errors.len();
+    let response = serde_json::json!({
+        "errors": errors,
+        "count": count,
+    });
+    serde_json::to_string(&response).unwrap_or_else(|_| r#"{"errors":[],"count":0}"#.to_string())
+}
+
 #[tool_handler]
 impl ServerHandler for GlassServer {
     fn get_info(&self) -> ServerInfo {
@@ -1706,7 +1742,8 @@ impl ServerHandler for GlassServer {
                  Live GUI tools: glass_ping to check if the GUI is running and responsive. \
                  Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs. \
                  Token saving: glass_tab_output supports head/tail mode and command_id for history DB lookup. glass_cache_check to verify if a command's result is still valid. \
-                 glass_command_diff for unified diffs of command file changes. glass_compressed_context for budget-aware context summaries with focus modes.",
+                 glass_command_diff for unified diffs of command file changes. glass_compressed_context for budget-aware context summaries with focus modes. \
+                 glass_extract_errors to extract structured errors from raw command output.",
             )
     }
 }
@@ -2130,5 +2167,56 @@ mod tests {
         let text = "abcde";
         let result = truncate_to_budget(text, 5);
         assert_eq!(result, "abcde");
+    }
+
+    #[test]
+    fn test_extract_errors_params_deserialize() {
+        let json = r#"{"output":"src/main.rs:10:5: error: test","command_hint":"rustc"}"#;
+        let params: ExtractErrorsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.output, "src/main.rs:10:5: error: test");
+        assert_eq!(params.command_hint, Some("rustc".to_string()));
+    }
+
+    #[test]
+    fn test_extract_errors_params_no_hint() {
+        let json = r#"{"output":"hello world"}"#;
+        let params: ExtractErrorsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.output, "hello world");
+        assert!(params.command_hint.is_none());
+    }
+
+    #[test]
+    fn test_extract_errors_empty_output() {
+        let result = build_extract_errors_json("", None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["count"], 0);
+        assert!(parsed["errors"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_extract_errors_generic_gcc() {
+        let output = "src/main.c:10:5: error: undeclared identifier 'foo'";
+        let result = build_extract_errors_json(output, None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["count"], 1);
+        let errors = parsed["errors"].as_array().unwrap();
+        assert_eq!(errors[0]["file"], "src/main.c");
+        assert_eq!(errors[0]["line"], 10);
+        assert_eq!(errors[0]["column"], 5);
+        assert_eq!(errors[0]["severity"], "error");
+        assert_eq!(errors[0]["message"], "undeclared identifier 'foo'");
+    }
+
+    #[test]
+    fn test_extract_errors_rust_json_cargo() {
+        let output = r#"{"reason":"compiler-message","package_id":"test","manifest_path":"Cargo.toml","message":{"message":"mismatched types","code":{"code":"E0308","explanation":null},"level":"error","spans":[{"file_name":"src/main.rs","byte_start":100,"byte_end":110,"line_start":10,"line_end":10,"column_start":5,"column_end":15,"is_primary":true,"text":[],"label":null}],"children":[],"rendered":"error[E0308]"}}"#;
+        let result = build_extract_errors_json(output, Some("cargo build"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["count"], 1);
+        let errors = parsed["errors"].as_array().unwrap();
+        assert_eq!(errors[0]["file"], "src/main.rs");
+        assert_eq!(errors[0]["line"], 10);
+        assert_eq!(errors[0]["severity"], "error");
+        assert_eq!(errors[0]["code"], "E0308");
     }
 }
