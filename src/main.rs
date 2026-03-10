@@ -464,10 +464,7 @@ fn cleanup_session(session: Session) {
 
 /// Resolve a tab by either tab_index or session_id from IPC params.
 /// Returns the tab index or an error string.
-fn resolve_tab_index(
-    mux: &SessionMux,
-    params: &serde_json::Value,
-) -> Result<usize, String> {
+fn resolve_tab_index(mux: &SessionMux, params: &serde_json::Value) -> Result<usize, String> {
     let tab_index = params.get("tab_index").and_then(|v| v.as_u64());
     let session_id = params.get("session_id").and_then(|v| v.as_u64());
     match (tab_index, session_id) {
@@ -498,10 +495,7 @@ fn resolve_tab_index(
 }
 
 /// Extract the last `n` text lines from a terminal grid.
-fn extract_term_lines(
-    term: &Arc<FairMutex<Term<EventProxy>>>,
-    n: usize,
-) -> Vec<String> {
+fn extract_term_lines(term: &Arc<FairMutex<Term<EventProxy>>>, n: usize) -> Vec<String> {
     let term = term.lock();
     let grid = term.grid();
     let total = grid.screen_lines();
@@ -2444,10 +2438,9 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
-                    "ping" => glass_core::ipc::McpResponse::ok(
-                        request.id,
-                        glass_core::ipc::ping_result(),
-                    ),
+                    "ping" => {
+                        glass_core::ipc::McpResponse::ok(request.id, glass_core::ipc::ping_result())
+                    }
                     "tab_list" => {
                         if let Some(ctx) = self.windows.values().next() {
                             let active_idx = ctx.session_mux.active_tab_index();
@@ -2458,24 +2451,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .enumerate()
                                 .map(|(i, tab)| {
                                     let primary_sid = tab.focused_pane;
-                                    let (cwd, has_running_command) =
-                                        if let Some(session) = ctx.session_mux.session(primary_sid)
-                                        {
-                                            let cwd = session.status.cwd().to_string();
-                                            let running = session
-                                                .block_manager
-                                                .current_block_index()
-                                                .and_then(|idx| {
-                                                    session.block_manager.blocks().get(idx)
-                                                })
-                                                .map(|b| {
-                                                    b.state == glass_terminal::BlockState::Executing
-                                                })
-                                                .unwrap_or(false);
-                                            (cwd, running)
-                                        } else {
-                                            (String::new(), false)
-                                        };
+                                    let (cwd, has_running_command) = if let Some(session) =
+                                        ctx.session_mux.session(primary_sid)
+                                    {
+                                        let cwd = session.status.cwd().to_string();
+                                        let running = session
+                                            .block_manager
+                                            .current_block_index()
+                                            .and_then(|idx| session.block_manager.blocks().get(idx))
+                                            .map(|b| {
+                                                b.state == glass_terminal::BlockState::Executing
+                                            })
+                                            .unwrap_or(false);
+                                        (cwd, running)
+                                    } else {
+                                        (String::new(), false)
+                                    };
                                     serde_json::json!({
                                         "index": i,
                                         "title": tab.title,
@@ -2487,10 +2478,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     })
                                 })
                                 .collect();
-                            glass_core::ipc::McpResponse::ok(
-                                request.id,
-                                serde_json::json!(tabs),
-                            )
+                            glass_core::ipc::McpResponse::ok(request.id, serde_json::json!(tabs))
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
@@ -2513,9 +2501,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             let cwd_path = cwd_param
                                 .as_deref()
                                 .or_else(|| {
-                                    ctx.session_mux
-                                        .focused_session()
-                                        .map(|s| s.status.cwd())
+                                    ctx.session_mux.focused_session().map(|s| s.status.cwd())
                                 })
                                 .map(std::path::PathBuf::from);
                             let session_id = ctx.session_mux.next_session_id();
@@ -2574,8 +2560,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .unwrap_or("");
                                     let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
                                     if let Some(session) = ctx.session_mux.session(focused_sid) {
-                                        let input =
-                                            format!("{}\r", command).into_bytes();
+                                        let input = format!("{}\r", command).into_bytes();
                                         let _ = session
                                             .pty_sender
                                             .send(PtyMsg::Input(Cow::Owned(input)));
@@ -2589,16 +2574,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     } else {
                                         glass_core::ipc::McpResponse::err(
                                             request.id,
-                                            format!(
-                                                "Session {} not found",
-                                                focused_sid.val()
-                                            ),
+                                            format!("Session {} not found", focused_sid.val()),
                                         )
                                     }
                                 }
-                                Err(e) => {
-                                    glass_core::ipc::McpResponse::err(request.id, e)
-                                }
+                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
                             }
                         } else {
                             glass_core::ipc::McpResponse::err(
@@ -2616,7 +2596,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .get("lines")
                                         .and_then(|v| v.as_u64())
                                         .unwrap_or(50)
-                                        .min(10000) as usize;
+                                        .min(10000)
+                                        as usize;
+                                    let mode = request
+                                        .params
+                                        .get("mode")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tail");
                                     let pattern = request
                                         .params
                                         .get("pattern")
@@ -2624,8 +2610,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .map(|s| s.to_string());
                                     let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
                                     if let Some(session) = ctx.session_mux.session(focused_sid) {
+                                        // Cap extraction at 10000 to prevent unbounded allocation
+                                        let max_extract = n.min(10000);
                                         let mut lines =
-                                            extract_term_lines(&session.term, n);
+                                            extract_term_lines(&session.term, max_extract);
+                                        // Apply head/tail slicing
+                                        if mode == "head" {
+                                            lines.truncate(n);
+                                        } else {
+                                            let start = lines.len().saturating_sub(n);
+                                            lines = lines[start..].to_vec();
+                                        }
                                         if let Some(ref pat) = pattern {
                                             match regex::Regex::new(pat) {
                                                 Ok(re) => {
@@ -2635,10 +2630,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                     let _ = reply.send(
                                                         glass_core::ipc::McpResponse::err(
                                                             request.id,
-                                                            format!(
-                                                                "Invalid regex: {}",
-                                                                e
-                                                            ),
+                                                            format!("Invalid regex: {}", e),
                                                         ),
                                                     );
                                                     return;
@@ -2657,16 +2649,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     } else {
                                         glass_core::ipc::McpResponse::err(
                                             request.id,
-                                            format!(
-                                                "Session {} not found",
-                                                focused_sid.val()
-                                            ),
+                                            format!("Session {} not found", focused_sid.val()),
                                         )
                                     }
                                 }
-                                Err(e) => {
-                                    glass_core::ipc::McpResponse::err(request.id, e)
-                                }
+                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
                             }
                         } else {
                             glass_core::ipc::McpResponse::err(
@@ -2685,9 +2672,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             } else {
                                 match resolve_tab_index(&ctx.session_mux, &request.params) {
                                     Ok(tab_idx) => {
-                                        if let Some(session) =
-                                            ctx.session_mux.close_tab(tab_idx)
-                                        {
+                                        if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
                                             cleanup_session(session);
                                         }
                                         let remaining = ctx.session_mux.tab_count();
@@ -2700,9 +2685,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }),
                                         )
                                     }
-                                    Err(e) => {
-                                        glass_core::ipc::McpResponse::err(request.id, e)
-                                    }
+                                    Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
                                 }
                             }
                         } else {

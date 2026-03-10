@@ -21,8 +21,9 @@
 //! - `glass_tab_list`: List all open tabs with their state
 //! - `glass_tab_create`: Create a new terminal tab with optional shell and cwd
 //! - `glass_tab_send`: Send a command to a specific tab's terminal
-//! - `glass_tab_output`: Read the last N lines of output from a tab
+//! - `glass_tab_output`: Read output from a tab (head/tail mode) or from history DB by command_id
 //! - `glass_tab_close`: Close a specific tab
+//! - `glass_cache_check`: Check if a previous command's cached result is still valid
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -272,12 +273,20 @@ pub struct TabOutputParams {
     /// Stable session ID.
     #[schemars(description = "Stable session ID (provide this OR tab_index)")]
     pub session_id: Option<u64>,
-    /// Number of lines to return from the end of output (default 50).
-    #[schemars(description = "Number of lines to return from the end (default 50, max 10000)")]
+    /// Number of lines to return (default 50).
+    #[schemars(description = "Number of lines to return (default 50, max 10000)")]
     pub lines: Option<usize>,
     /// Regex pattern to filter lines.
     #[schemars(description = "Regex pattern to filter output lines")]
     pub pattern: Option<String>,
+    /// Output mode: 'head' for first N lines, 'tail' for last N lines (default 'tail').
+    #[schemars(description = "Output mode: 'head' for first N lines, 'tail' for last N lines (default 'tail')")]
+    pub mode: Option<String>,
+    /// History command ID. If provided, returns filtered output from history DB instead of live terminal (no GUI required).
+    #[schemars(
+        description = "History command ID. If provided, returns filtered output from history DB instead of live terminal (no GUI required)"
+    )]
+    pub command_id: Option<i64>,
 }
 
 /// Parameters for glass_tab_close.
@@ -1059,12 +1068,66 @@ impl GlassServer {
 
     /// Read the last N lines of output from a specific tab.
     #[tool(
-        description = "Read the last N lines of output from a specific tab. Optionally filter lines by regex pattern. Default 50 lines, max 10000."
+        description = "Read output from a specific tab or from history. Supports head/tail mode and optional regex filter. Default 50 lines, max 10000. If command_id is provided, returns output from history DB (no GUI required)."
     )]
     async fn glass_tab_output(
         &self,
         Parameters(input): Parameters<TabOutputParams>,
     ) -> Result<CallToolResult, McpError> {
+        // If command_id is provided, bypass IPC and read from history DB directly.
+        if let Some(cmd_id) = input.command_id {
+            let db_path = self.db_path.clone();
+            let lines_count = input.lines.unwrap_or(50).min(10000);
+            let mode = input.mode.clone().unwrap_or_else(|| "tail".to_string());
+            let pattern = input.pattern.clone();
+
+            let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+                let db = HistoryDb::open(&db_path).map_err(|e| format!("Failed to open history DB: {}", e))?;
+                let record = db
+                    .get_command(cmd_id)
+                    .map_err(|e| format!("DB error: {}", e))?
+                    .ok_or_else(|| format!("Command not found: {}", cmd_id))?;
+
+                let output = record.output.unwrap_or_default();
+                let all_lines: Vec<&str> = output.lines().collect();
+
+                // Apply head/tail mode
+                let sliced: Vec<&str> = if mode == "head" {
+                    all_lines.into_iter().take(lines_count).collect()
+                } else {
+                    let len = all_lines.len();
+                    let start = len.saturating_sub(lines_count);
+                    all_lines[start..].to_vec()
+                };
+
+                // Apply regex filter
+                let filtered: Vec<String> = if let Some(ref pat) = pattern {
+                    let re = regex::Regex::new(pat).map_err(|e| format!("Invalid regex: {}", e))?;
+                    sliced.into_iter().filter(|l| re.is_match(l)).map(|s| s.to_string()).collect()
+                } else {
+                    sliced.into_iter().map(|s| s.to_string()).collect()
+                };
+
+                let count = filtered.len();
+                Ok(serde_json::json!({
+                    "lines": filtered,
+                    "line_count": count,
+                    "command_id": cmd_id,
+                    "source": "history",
+                }))
+            })
+            .await
+            .map_err(|e| McpError::internal_error(format!("Task join error: {}", e), None))?;
+
+            return match result {
+                Ok(json) => Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&json).unwrap_or_default(),
+                )])),
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            };
+        }
+
+        // Live IPC path
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1085,6 +1148,9 @@ impl GlassServer {
         }
         if let Some(pattern) = &input.pattern {
             params["pattern"] = serde_json::json!(pattern);
+        }
+        if let Some(mode) = &input.mode {
+            params["mode"] = serde_json::json!(mode);
         }
         match client.send_request("tab_output", params).await {
             Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
@@ -1465,5 +1531,31 @@ mod tests {
         let params: TabCloseParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.tab_index, Some(2));
         assert!(params.session_id.is_none());
+    }
+
+    #[test]
+    fn test_tab_output_params_mode() {
+        let json = r#"{"tab_index": 0, "mode": "head", "lines": 10}"#;
+        let params: TabOutputParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.mode.as_deref(), Some("head"));
+        assert_eq!(params.tab_index, Some(0));
+        assert_eq!(params.lines, Some(10));
+    }
+
+    #[test]
+    fn test_tab_output_params_command_id() {
+        let json = r#"{"command_id": 42, "lines": 20}"#;
+        let params: TabOutputParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, Some(42));
+        assert_eq!(params.lines, Some(20));
+        assert!(params.tab_index.is_none());
+    }
+
+    #[test]
+    fn test_tab_output_params_backward_compat() {
+        let json = r#"{"tab_index": 0}"#;
+        let params: TabOutputParams = serde_json::from_str(json).unwrap();
+        assert!(params.mode.is_none());
+        assert!(params.command_id.is_none());
     }
 }
