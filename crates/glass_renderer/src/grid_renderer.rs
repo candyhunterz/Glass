@@ -1230,6 +1230,98 @@ mod tests {
         }
     }
 
+    // ===== Font fallback grid alignment tests (FONT-02) =====
+
+    /// Test: Fallback glyph respects set_monospace_width constraint for grid alignment
+    /// set_monospace_width ensures the glyph advance fits within the buffer width,
+    /// so the total layout width (line_w) should not exceed the set monospace width.
+    #[test]
+    fn fallback_glyph_respects_monospace_width() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        let buf_width = renderer.cell_width * 2.0;
+        let metrics = Metrics::new(14.0, renderer.cell_height);
+        let mut buffer = Buffer::new(&mut font_system, metrics);
+        buffer.set_size(
+            &mut font_system,
+            Some(buf_width),
+            Some(renderer.cell_height),
+        );
+        buffer.set_monospace_width(&mut font_system, Some(buf_width));
+        buffer.set_text(
+            &mut font_system,
+            "\u{4E16}",
+            &Attrs::new().family(Family::Name("monospace")),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        let run = buffer
+            .layout_runs()
+            .next()
+            .expect("Should have a layout run");
+        assert!(
+            !run.glyphs.is_empty(),
+            "Should have at least one glyph"
+        );
+        // The layout run's total width (line_w) should not exceed the buffer width,
+        // proving set_monospace_width constrains the fallback glyph's advance
+        assert!(
+            run.line_w <= buf_width + 0.5,
+            "Layout run width ({}) should not exceed buf_width ({}) -- monospace constraint",
+            run.line_w,
+            buf_width
+        );
+        // Additionally, the glyph should be positioned within the buffer bounds
+        let glyph = run.glyphs.first().unwrap();
+        assert!(
+            glyph.x >= 0.0 && glyph.x < buf_width,
+            "Glyph x position ({}) should be within buffer bounds [0, {})",
+            glyph.x,
+            buf_width
+        );
+    }
+
+    /// Test: build_cell_buffers correctly handles CJK cells with WIDE_CHAR flag through fallback
+    #[test]
+    fn build_cell_buffers_handles_cjk_fallback() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        let cells = vec![
+            make_cell('A', 0, 0, Flags::empty()),
+            make_cell('\u{4E16}', 1, 0, Flags::WIDE_CHAR),
+            make_cell(' ', 2, 0, Flags::WIDE_CHAR_SPACER),
+            make_cell('B', 3, 0, Flags::empty()),
+        ];
+        let snapshot = make_snapshot(cells, 4);
+
+        let mut buffers = Vec::new();
+        let mut positions = Vec::new();
+        renderer.build_cell_buffers(&mut font_system, &snapshot, &mut buffers, &mut positions);
+
+        // Should have 3 buffers: A, CJK, B (spacer skipped)
+        assert_eq!(
+            buffers.len(),
+            3,
+            "Should create 3 buffers: A, CJK, B (spacer skipped)"
+        );
+
+        // The CJK buffer (index 1) should have a layout run with glyphs from fallback
+        let cjk_buffer = &buffers[1];
+        let run = cjk_buffer.layout_runs().next();
+        assert!(
+            run.is_some(),
+            "CJK buffer should have at least one layout run via font fallback"
+        );
+        assert!(
+            !run.unwrap().glyphs.is_empty(),
+            "CJK buffer layout run should contain at least one shaped glyph"
+        );
+    }
+
     /// Test: HollowBlock cursor on WIDE_CHAR cell has double-width edges
     #[test]
     fn wide_char_cursor_hollow_block_double_width() {
