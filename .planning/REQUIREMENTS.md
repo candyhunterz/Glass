@@ -23,8 +23,8 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 
 ### Token Saving
 
-- [ ] **TOKEN-01**: Agent can retrieve filtered command output (by pattern, line count, head/tail) via MCP
-- [ ] **TOKEN-02**: Agent can check if a previous command's result is still valid (cached result with file-change staleness detection) via MCP
+- [x] **TOKEN-01**: Agent can retrieve filtered command output (by pattern, line count, head/tail) via MCP
+- [x] **TOKEN-02**: Agent can check if a previous command's result is still valid (cached result with file-change staleness detection) via MCP
 - [ ] **TOKEN-03**: Agent can see which files a command modified with unified diffs via MCP
 - [ ] **TOKEN-04**: Agent can request compressed context with a token budget and focus mode via MCP
 
@@ -79,8 +79,8 @@ Requirements for milestone v2.3 Agent MCP Features. Each maps to roadmap phases.
 | TAB-04 | Phase 36 | Complete |
 | TAB-05 | Phase 36 | Complete |
 | TAB-06 | Phase 36 | Complete |
-| TOKEN-01 | Phase 37 | Pending |
-| TOKEN-02 | Phase 37 | Pending |
+| TOKEN-01 | Phase 37 | Complete |
+| TOKEN-02 | Phase 37 | Complete |
 | TOKEN-03 | Phase 37 | Pending |
 | TOKEN-04 | Phase 37 | Pending |
 | ERR-01 | Phase 38 | Pending |

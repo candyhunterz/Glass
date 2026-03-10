@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
 status: executing
-stopped_at: Completed 36-02-PLAN.md
-last_updated: "2026-03-10T03:50:00.062Z"
-last_activity: 2026-03-10 -- Completed 36-02 MCP tab tool handlers
+stopped_at: Completed 37-01-PLAN.md
+last_updated: "2026-03-10T04:43:27Z"
+last_activity: 2026-03-10 -- Completed 37-01 token-saving tools (tab output head/tail + cache check)
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 4
-  completed_plans: 4
-  percent: 40
+  completed_plans: 5
+  percent: 50
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 36 - Multi-Tab Orchestration
+**Current focus:** Phase 37 - Token-Saving Tools
 
 ## Current Position
 
-Phase: 36 of 39 (Multi-Tab Orchestration)
-Plan: 2 of 2 (PHASE COMPLETE)
+Phase: 37 of 39 (Token-Saving Tools)
+Plan: 1 of 2
 Status: Executing
-Last activity: 2026-03-10 -- Completed 36-02 MCP tab tool handlers
+Last activity: 2026-03-10 -- Completed 37-01 token-saving tools (tab output head/tail + cache check)
 
-Progress: [####......] 40%
+Progress: [#####.....] 50%
 
 ## Performance Metrics
 
@@ -53,6 +53,7 @@ See PROJECT.md Key Decisions table for full history.
 - [Phase 35]: Duplicated socket/pipe paths in ipc_client.rs to avoid glass_core dependency; Arc-wrapped IpcClient for Clone compatibility; fresh connection per request
 - [Phase 36]: Config clone for shell override in tab_create; early return for regex errors in tab_output; tab_close checks count before resolve
 - [Phase 36]: Used Parameters<T> wrapper for rmcp tool params; inline tab_index/session_id in each struct avoiding serde flatten
+- [Phase 37]: Head/tail mode applied before regex filter; cache check uses parser-sourced files only; extraction capped at 10000 lines
 
 ### Pending Todos
 
@@ -70,6 +71,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T03:46:08.000Z
-Stopped at: Completed 36-02-PLAN.md
+Last session: 2026-03-10T04:43:27Z
+Stopped at: Completed 37-01-PLAN.md
 Resume file: None
