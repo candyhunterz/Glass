@@ -1,5 +1,25 @@
 # Milestones
 
+## v2.2 Multi-Agent Coordination (Shipped: 2026-03-10)
+
+**Phases completed:** 4 phases, 8 plans, 16 tasks
+**Lines of code:** 24,047 Rust (up from ~19,455)
+**Timeline:** 2026-03-09 to 2026-03-10 (2 days)
+**Git range:** feat(31-01) to feat(34-02)
+**Files changed:** 32 files, +4,592 / -29 lines
+
+**Delivered:** Multi-agent coordination layer enabling AI agents in separate tabs to register, claim advisory file locks, exchange messages, and avoid conflicts through a shared SQLite database, with full MCP tool exposure and GUI integration.
+
+**Key accomplishments:**
+- glass_coordination crate with agent registry, heartbeat liveness, PID detection, and SQLite WAL mode with IMMEDIATE transactions
+- Atomic all-or-nothing file locking with conflict detection, path canonicalization via dunce, and project-scoped isolation
+- Inter-agent messaging (broadcast + directed) with per-recipient fan-out rows and mark-as-read semantics
+- 11 MCP tools exposing all coordination capabilities with conflict-as-success pattern and implicit heartbeat refresh
+- CLAUDE.md coordination protocol for AI agents plus cross-connection integration tests proving concurrent WAL access
+- GUI integration: status bar agent/lock counts with 5s polling, tab lock indicators, and conflict warning overlay
+
+---
+
 ## v2.1 Packaging & Polish (Shipped: 2026-03-07)
 
 **Phases completed:** 5 phases, 11 plans

@@ -2,6 +2,54 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v2.2 -- Multi-Agent Coordination
+
+**Shipped:** 2026-03-10
+**Phases:** 4 | **Plans:** 8 | **Sessions:** ~2
+
+### What Was Built
+- glass_coordination crate with agent registry, heartbeat liveness, PID detection, and SQLite WAL mode with IMMEDIATE transactions
+- Atomic all-or-nothing file locking with conflict detection, path canonicalization via dunce, and project-scoped isolation
+- Inter-agent messaging (broadcast + directed) with per-recipient fan-out rows and mark-as-read semantics
+- 11 MCP tools exposing coordination capabilities with conflict-as-success pattern and implicit heartbeat refresh
+- CLAUDE.md coordination protocol for AI agents plus 4 cross-connection integration tests proving concurrent WAL access
+- Status bar agent/lock counts with 5-second background polling, tab lock indicators, conflict warning overlay
+
+### What Worked
+- Zero-dependency crate design: glass_coordination has no glass_* dependencies, enabling parallel development of Phase 33 and 34
+- Open-per-call CoordinationDb pattern (matching HistoryDb) avoided Send/Sync issues entirely
+- BEGIN IMMEDIATE for all write transactions eliminated SQLITE_BUSY under concurrent WAL access
+- Conflict-as-success MCP pattern (returning lock conflicts as success responses, not errors) enabled graceful agent handling
+- Audit passed with 31/31 requirements, 18/18 integration connections, 4/4 E2E flows -- cleanest milestone yet
+- Atomic polling (Arc<AtomicUsize>) for GUI integration avoided new AppEvent variants and kept coupling minimal
+
+### What Was Inefficient
+- Tab-to-agent PID mapping remains unsolved -- process tree walking is platform-specific and fragile
+- Nyquist validation still partial across all 4 phases (7th consecutive milestone with this gap)
+- Per-recipient message fan-out creates O(N) rows per broadcast -- could become expensive with many agents, but acceptable for current scale
+
+### Patterns Established
+- Open-per-call SQLite pattern for thread safety without Arc<Mutex> (CoordinationDb matches HistoryDb)
+- BEGIN IMMEDIATE transaction mode for all WAL write operations
+- Conflict-as-success MCP response pattern (structured data, not errors, for expected conflict states)
+- Arc<AtomicUsize> polling for background-to-renderer state transfer (avoids event system coupling)
+- Per-recipient message fan-out for independent read tracking in broadcast messaging
+- Path canonicalization at library boundary (dunce inside lock/unlock, not at caller)
+
+### Key Lessons
+1. Zero-dependency crate design enables maximum parallel development -- Phase 34 started immediately after Phase 31 without waiting for 32/33
+2. Open-per-call SQLite is the right pattern for multi-threaded Rust -- no Send/Sync gymnastics, no contention
+3. BEGIN IMMEDIATE is essential for SQLite WAL mode under concurrent writes -- default DEFERRED causes SQLITE_BUSY
+4. Return conflicts as success with structured data -- errors should mean "something broke", not "expected condition occurred"
+5. Atomic types are sufficient for simple background-to-UI state transfer -- full event systems are overkill for counters
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~2 sessions across 2 days
+- Notable: 8 plans in ~30 min, averaging ~4 min/plan (consistent with v2.0/v2.1 velocity; clean crate boundaries kept plans focused)
+
+---
+
 ## Milestone: v2.1 -- Packaging & Polish
 
 **Shipped:** 2026-03-07
@@ -305,6 +353,7 @@
 | v1.3 | ~3 | 6 | Audit-driven gap closure phase, dead code removal as explicit phase, three-layer config gating |
 | v2.0 | ~3 | 5 | Multi-session architecture, binary tree TDD, asset existence verification |
 | v2.1 | ~2 | 5 | Feature-gated instrumentation, pattern reuse (watcher/overlay), honest baselines |
+| v2.2 | ~2 | 4 | Zero-dependency crate, open-per-call SQLite, atomic GUI polling, conflict-as-success MCP pattern |
 
 ### Cumulative Quality
 
@@ -316,6 +365,7 @@
 | v1.3 | 376+ (full workspace) | Partial (Phase 17 verified, 5 phases partial) | 2 |
 | v2.0 | 436 (full workspace) | Partial (Nyquist partial across phases 21-25) | 4 |
 | v2.1 | 436 (full workspace) | Partial (Nyquist partial across phases 26-30) | 6 |
+| v2.2 | 527+ (full workspace) | Partial (Nyquist partial across phases 31-34) | 1 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -329,3 +379,5 @@
 8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs in v1.3, config_dir/data_dir in v2.0)
 9. Verify asset existence alongside code paths -- code referencing non-existent files passes compilation but fails at runtime (glass.fish in v2.0)
 10. Reuse existing architectural patterns when adding new features -- consistency reduces bugs (v2.1: watcher/overlay/event patterns)
+11. Open-per-call SQLite is the right pattern for multi-threaded Rust -- confirmed in v1.1 (HistoryDb), v2.2 (CoordinationDb)
+12. Return expected conditions as success with structured data, not as errors -- errors should mean something broke (v2.2: lock conflicts)

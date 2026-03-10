@@ -8,7 +8,7 @@
 - [x] **v1.3 Pipe Visualization** -- Phases 15-20 (shipped 2026-03-06)
 - [x] **v2.0 Cross-Platform & Tabs** -- Phases 21-25 (shipped 2026-03-07)
 - [x] **v2.1 Packaging & Polish** -- Phases 26-30 (shipped 2026-03-07)
-- [ ] **v2.2 Multi-Agent Coordination** -- Phases 31-34 (in progress)
+- [x] **v2.2 Multi-Agent Coordination** -- Phases 31-34 (shipped 2026-03-10)
 
 ## Phases
 
@@ -78,81 +78,17 @@
 
 </details>
 
-### v2.2 Multi-Agent Coordination (In Progress)
+<details>
+<summary>v2.2 Multi-Agent Coordination (Phases 31-34) -- SHIPPED 2026-03-10</summary>
 
-**Milestone Goal:** Make Glass an agent orchestration layer so AI agents in separate tabs can register, claim files, exchange messages, and avoid conflicts through shared coordination.
+- [x] Phase 31: Coordination Crate (3/3 plans) -- completed 2026-03-09
+- [x] Phase 32: MCP Tools (2/2 plans) -- completed 2026-03-09
+- [x] Phase 33: Integration and Testing (1/1 plan) -- completed 2026-03-09
+- [x] Phase 34: GUI Integration (2/2 plans) -- completed 2026-03-10
 
-- [x] **Phase 31: Coordination Crate** - Pure synchronous library with agent registry, atomic file locking, messaging, and stale pruning (completed 2026-03-09)
-- [x] **Phase 32: MCP Tools** - 11 new MCP tool handlers exposing coordination primitives to AI agents (completed 2026-03-09)
-- [x] **Phase 33: Integration and Testing** - CLAUDE.md coordination protocol and multi-agent integration tests (completed 2026-03-09)
-- [x] **Phase 34: GUI Integration** - Status bar agent/lock display, background polling, tab indicators, and conflict overlay (completed 2026-03-10)
-
-## Phase Details
-
-### Phase 31: Coordination Crate
-**Goal**: Agents can register, lock files, and exchange messages through a shared coordination database
-**Depends on**: Nothing (new crate, zero glass_* dependencies)
-**Requirements**: COORD-01, COORD-02, COORD-03, COORD-04, COORD-05, COORD-06, COORD-07, COORD-08, COORD-09, COORD-10, COORD-11
-**Success Criteria** (what must be TRUE):
-  1. An agent can register with name/type/project/CWD/PID and receives a unique UUID, then deregister and all its locks are released
-  2. Two agents requesting overlapping file locks get atomic conflict detection -- the second agent sees who holds each conflicting file and why
-  3. An agent can broadcast a typed message to all project agents and send a directed message to a specific agent, and recipients can read their unread messages
-  4. A stale agent (no heartbeat for 10 minutes, or dead PID) is automatically pruned along with its locks
-  5. File paths are canonicalized (dunce on Windows) so two agents locking the same file via different path representations correctly detect the conflict
-**Plans**: 3 plans
-
-Plans:
-- [ ] 31-01-PLAN.md -- Crate scaffold, types, PID liveness, and agent registry operations
-- [ ] 31-02-PLAN.md -- Atomic file locking with conflict detection and path canonicalization
-- [ ] 31-03-PLAN.md -- Inter-agent messaging (broadcast, directed, read with mark-as-read)
-
-### Phase 32: MCP Tools
-**Goal**: AI agents can use all coordination capabilities through MCP tool calls
-**Depends on**: Phase 31
-**Requirements**: MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07, MCP-08, MCP-09, MCP-10, MCP-11, MCP-12
-**Success Criteria** (what must be TRUE):
-  1. An AI agent can call `glass_agent_register` and receive its UUID, then call `glass_agent_list` and see itself among active agents
-  2. An AI agent can call `glass_agent_lock` to claim files and `glass_agent_unlock` to release them, with conflict responses including holder identity and retry hint
-  3. An AI agent can call `glass_agent_broadcast` or `glass_agent_send` to communicate, and another agent can call `glass_agent_messages` to read those messages
-  4. Every MCP tool call implicitly refreshes the calling agent's heartbeat timestamp, so active agents never go stale
-  5. An AI agent can call `glass_agent_status` to update its task description and `glass_agent_heartbeat` for explicit liveness refresh
-**Plans**: 2 plans
-
-Plans:
-- [ ] 32-01-PLAN.md -- Add coordination dependency, extend GlassServer, implement agent lifecycle tools (register, deregister, list, status, heartbeat)
-- [ ] 32-02-PLAN.md -- File locking tools (lock, unlock, locks), messaging tools (broadcast, send, messages), update ServerInfo
-
-### Phase 33: Integration and Testing
-**Goal**: Multi-agent coordination works end-to-end with real AI agents following documented instructions
-**Depends on**: Phase 32
-**Requirements**: INTG-01, INTG-02, INTG-03
-**Success Criteria** (what must be TRUE):
-  1. CLAUDE.md contains a coordination protocol section that instructs AI agents to register on start, lock files before editing, check messages periodically, and deregister on finish
-  2. An integration test spawns two MCP server instances against the same shared DB and validates that agent registration, lock conflict detection, and message exchange work across processes
-  3. An integration test validates that when agent A holds a lock on file X, agent B's lock request for file X returns a conflict identifying agent A as the holder
-**Plans**: 1 plans
-
-Plans:
-- [ ] 33-01-PLAN.md -- CLAUDE.md coordination protocol and cross-connection integration tests
-
-### Phase 34: GUI Integration
-**Goal**: Users can see multi-agent activity at a glance in the terminal UI
-**Depends on**: Phase 31 (DB schema only; can run in parallel with Phase 33)
-**Requirements**: GUI-01, GUI-02, GUI-03, GUI-04, GUI-05
-**Success Criteria** (what must be TRUE):
-  1. The status bar displays the count of active agents and active file locks, updating every 5 seconds via a background polling thread
-  2. A tab whose agent holds file locks shows a visual lock indicator distinguishing it from tabs without locks
-  3. When two agents hold locks on the same file (or one agent edits a file another has locked), a conflict warning overlay appears with details about the conflicting agents and file
-**Plans**: 2 plans
-
-Plans:
-- [ ] 34-01-PLAN.md -- Coordination poller thread, CoordinationState types, status bar agent/lock counts
-- [ ] 34-02-PLAN.md -- Tab lock indicator, conflict warning overlay
+</details>
 
 ## Progress
-
-**Execution Order:**
-Phases execute in numeric order: 31 -> 32 -> 33 (and 34 can start after 31)
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -186,7 +122,7 @@ Phases execute in numeric order: 31 -> 32 -> 33 (and 34 can start after 31)
 | 28. Platform Packaging & CI Release | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 29. Auto-Update | v2.1 | 2/2 | Complete | 2026-03-07 |
 | 30. Documentation & Distribution | v2.1 | 3/3 | Complete | 2026-03-07 |
-| 31. Coordination Crate | 3/3 | Complete    | 2026-03-09 | - |
-| 32. MCP Tools | 2/2 | Complete    | 2026-03-09 | - |
-| 33. Integration and Testing | 1/1 | Complete    | 2026-03-09 | - |
-| 34. GUI Integration | 2/2 | Complete   | 2026-03-10 | - |
+| 31. Coordination Crate | v2.2 | 3/3 | Complete | 2026-03-09 |
+| 32. MCP Tools | v2.2 | 2/2 | Complete | 2026-03-09 |
+| 33. Integration and Testing | v2.2 | 1/1 | Complete | 2026-03-09 |
+| 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |

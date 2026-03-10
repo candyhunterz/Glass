@@ -74,20 +74,17 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ README overhaul with installation, features, and CI badges -- v2.1
 - ✓ Winget manifest and Homebrew cask for package manager distribution -- v2.1
 
+- ✓ glass_coordination crate with agent registry, heartbeat liveness, PID detection, SQLite WAL mode -- v2.2
+- ✓ Atomic advisory file locking with all-or-nothing conflict detection and path canonicalization (dunce) -- v2.2
+- ✓ Inter-agent messaging: broadcast, directed send, read-with-mark-as-read using per-recipient fan-out -- v2.2
+- ✓ 11 MCP tools exposing coordination (register, deregister, list, status, heartbeat, lock, unlock, locks, broadcast, send, messages) -- v2.2
+- ✓ CLAUDE.md coordination protocol for AI agents with cross-connection integration tests -- v2.2
+- ✓ Status bar agent/lock count display with 5-second background polling -- v2.2
+- ✓ Tab lock indicators and conflict warning overlay for multi-agent awareness -- v2.2
+
 ### Active
 
-## Current Milestone: v2.2 Multi-Agent Coordination
-
-**Goal:** Make Glass an agent orchestration layer so AI agents in separate tabs can register, claim files, exchange messages, and avoid conflicts through shared coordination.
-
-**Target features:**
-- New `glass_coordination` crate with shared SQLite DB (WAL mode)
-- Agent registry with heartbeat-based liveness and PID fallback
-- Atomic advisory file locks with path canonicalization and project scoping
-- Inter-agent messaging (broadcast + directed) with structured message types
-- 11 new MCP tools exposing coordination capabilities
-- CLAUDE.md integration instructions for auto-coordination
-- GUI integration (status bar, tab indicators, conflict warnings)
+(No active milestone — run `/gsd:new-milestone` to plan next)
 
 ### Deferred (Future Milestones)
 
@@ -122,10 +119,10 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v2.1 with 36,692 LOC Rust across 12 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux + root binary).
-Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.35.0, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3.
+Shipped v2.2 with 24,047 LOC Rust across 13 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination + root binary).
+Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
-Built across 6 milestones (30 phases, 71 plans) in 4 days. 436 tests passing.
+Built across 7 milestones (34 phases, 79 plans) in 6 days. 91+ coordination tests, 436+ workspace tests.
 Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
 Known tech debt:
@@ -140,6 +137,7 @@ Known tech debt:
 - Installation docs hardcode `anthropics/glass` repo owner
 - Package manager manifests have placeholder values for publish-time substitution
 - macOS/Windows code signing deferred
+- Tab-to-agent PID mapping may be infeasible cross-platform (process tree walking)
 
 ## Constraints
 
@@ -205,6 +203,14 @@ Known tech debt:
 | Center-text status bar for update notification | Visible without disrupting terminal content | ✓ Good -- clear UX |
 | Winget multi-file manifest v1.6.0 | Standard format accepted by winget-pkgs repo | ✓ Good -- publishable |
 | Homebrew cask targets custom tap | Notarization deferred; tap avoids homebrew-cask review | ✓ Good -- practical distribution |
+| Global agents.db (~/.glass/agents.db) | One DB for all projects, scoped by project_root column | ✓ Good -- simple discovery, project isolation via queries |
+| Synchronous CoordinationDb with open-per-call | Thread safety without Arc<Mutex>, matches HistoryDb pattern | ✓ Good -- no contention in MCP spawn_blocking |
+| BEGIN IMMEDIATE for all write transactions | Prevents SQLITE_BUSY under WAL concurrent access | ✓ Good -- zero busy errors in integration tests |
+| Path canonicalization via dunce inside lock/unlock | Caller doesn't need to pre-canonicalize; Windows long path support | ✓ Good -- transparent correctness |
+| Lock conflicts returned as success (not McpError) | Agents can programmatically parse conflicts and retry | ✓ Good -- graceful multi-agent coordination |
+| Broadcast fans out to per-recipient rows | Independent read tracking per agent; deregister preserves messages | ✓ Good -- clean message lifecycle |
+| Atomic polling with Arc<AtomicUsize> for GUI | No AppEvent variants needed; renderer reads atomics directly | ✓ Good -- minimal coupling between poller and renderer |
+| 5-second polling interval with startup delay | Balance freshness vs I/O; delay avoids startup spike | ✓ Good -- responsive without overhead |
 
 ---
-*Last updated: 2026-03-09 after v2.2 milestone started*
+*Last updated: 2026-03-10 after v2.2 milestone complete*
