@@ -18,6 +18,8 @@ pub struct StatusLabel {
     pub right_text: Option<String>,
     /// Center-aligned text (update notification)
     pub center_text: Option<String>,
+    /// Coordination status text (agent/lock counts)
+    pub coordination_text: Option<String>,
     /// Y position in pixels
     pub y: f32,
     /// Color for left text (CWD)
@@ -26,6 +28,8 @@ pub struct StatusLabel {
     pub right_color: Rgb,
     /// Color for center text (update notification)
     pub center_color: Rgb,
+    /// Color for coordination text (soft purple)
+    pub coordination_color: Rgb,
 }
 
 /// Renders the bottom-pinned status bar.
@@ -69,6 +73,7 @@ impl StatusBarRenderer {
         cwd: &str,
         git_info: Option<&GitInfo>,
         update_text: Option<&str>,
+        coordination_text: Option<&str>,
         viewport_height: f32,
     ) -> StatusLabel {
         let y = viewport_height - self.cell_height;
@@ -89,6 +94,7 @@ impl StatusBarRenderer {
         });
 
         let center_text = update_text.map(|t| t.to_string());
+        let coordination_text = coordination_text.map(|t| t.to_string());
 
         // Git branch color: cyan if clean, with yellow dirty count appended
         // For simplicity, use cyan as the base right_color
@@ -105,10 +111,18 @@ impl StatusBarRenderer {
             b: 50,
         };
 
+        // Soft purple for coordination info
+        let coordination_color = Rgb {
+            r: 180,
+            g: 140,
+            b: 255,
+        };
+
         StatusLabel {
             left_text,
             right_text,
             center_text,
+            coordination_text,
             y,
             left_color: Rgb {
                 r: 204,
@@ -117,6 +131,7 @@ impl StatusBarRenderer {
             },
             right_color,
             center_color,
+            coordination_color,
         }
     }
 }

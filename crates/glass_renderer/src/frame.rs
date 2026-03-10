@@ -167,6 +167,7 @@ impl FrameRenderer {
         search_overlay: Option<&SearchOverlayRenderData>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
         update_text: Option<&str>,
+        coordination_text: Option<&str>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -355,6 +356,7 @@ impl FrameRenderer {
                 status_state.cwd(),
                 status_state.git_info(),
                 update_text,
+                coordination_text,
                 h,
             );
 
@@ -426,6 +428,56 @@ impl FrameRenderer {
                         status_label.right_color.r,
                         status_label.right_color.g,
                         status_label.right_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Coordination text (agent/lock counts) -- positioned left of git info
+            if let Some(ref coord_text) = status_label.coordination_text {
+                // Position: right-aligned but offset further left than git info
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_width = coord_text.len() as f32 * cell_width;
+                let gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let coord_x =
+                    w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    coord_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.coordination_color.r,
+                            status_label.coordination_color.g,
+                            status_label.coordination_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: coord_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.coordination_color.r,
+                        status_label.coordination_color.g,
+                        status_label.coordination_color.b,
                         255,
                     ),
                 });
@@ -755,6 +807,7 @@ impl FrameRenderer {
         status: Option<&StatusState>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
         update_text: Option<&str>,
+        coordination_text: Option<&str>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -902,6 +955,7 @@ impl FrameRenderer {
                 status_state.cwd(),
                 status_state.git_info(),
                 update_text,
+                coordination_text,
                 h,
             );
 
@@ -973,6 +1027,55 @@ impl FrameRenderer {
                         status_label.right_color.r,
                         status_label.right_color.g,
                         status_label.right_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Coordination text (agent/lock counts) -- positioned left of git info
+            if let Some(ref coord_text) = status_label.coordination_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_width = coord_text.len() as f32 * cell_width;
+                let gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let coord_x =
+                    w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    coord_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.coordination_color.r,
+                            status_label.coordination_color.g,
+                            status_label.coordination_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: coord_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.coordination_color.r,
+                        status_label.coordination_color.g,
+                        status_label.coordination_color.b,
                         255,
                     ),
                 });

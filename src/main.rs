@@ -1,3 +1,7 @@
+// Suppress the console window on Windows when launching the GUI.
+// CLI subcommands (history, undo, mcp) still work when launched from an existing terminal.
+#![windows_subsystem = "windows"]
+
 mod history;
 
 use std::borrow::Cow;
@@ -174,6 +178,8 @@ struct Processor {
     watcher_spawned: bool,
     /// Available update info, if a newer version was found.
     update_info: Option<glass_core::updater::UpdateInfo>,
+    /// Current coordination state from background poller.
+    coordination_state: glass_core::coordination_poller::CoordinationState,
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -593,6 +599,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                 env!("CARGO_PKG_VERSION"),
                 self.proxy.clone(),
             );
+
+            // Spawn coordination poller for agent/lock status
+            let project_root = std::env::current_dir()
+                .ok()
+                .and_then(|cwd| {
+                    glass_coordination::canonicalize_path(&cwd).ok()
+                })
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                });
+            glass_core::coordination_poller::spawn_coordination_poller(
+                project_root,
+                self.proxy.clone(),
+            );
         }
     }
 
@@ -717,6 +739,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .as_ref()
                         .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
 
+                    let coordination_text = if self.coordination_state.agent_count > 0 {
+                        Some(format!(
+                            "agents: {} locks: {}",
+                            self.coordination_state.agent_count,
+                            self.coordination_state.lock_count
+                        ))
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -729,6 +761,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         search_overlay_data.as_ref(),
                         Some(&tab_display),
                         update_text.as_deref(),
+                        coordination_text.as_deref(),
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -822,6 +855,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .as_ref()
                         .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
 
+                    let coordination_text = if self.coordination_state.agent_count > 0 {
+                        Some(format!(
+                            "agents: {} locks: {}",
+                            self.coordination_state.agent_count,
+                            self.coordination_state.lock_count
+                        ))
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -833,6 +876,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&status_clone),
                         Some(&tab_display),
                         update_text.as_deref(),
+                        coordination_text.as_deref(),
                     );
                 }
 
@@ -2313,6 +2357,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
+            AppEvent::CoordinationUpdate(state) => {
+                self.coordination_state = state;
+                // Request redraw on all windows to show updated coordination info
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
         }
     }
 
@@ -2481,8 +2532,10 @@ fn install_crash_handler() {
         // Open in browser
         #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
             let _ = std::process::Command::new("cmd")
                 .args(["/C", "start", "", &url])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
                 .spawn();
         }
         #[cfg(target_os = "macos")]
@@ -2529,6 +2582,13 @@ fn main() {
         use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
         SetConsoleCP(65001);
         SetConsoleOutputCP(65001);
+    }
+
+    // Default to the user's home directory when launched without a terminal
+    // (e.g. double-clicking glass.exe) so the shell starts in ~/ instead of
+    // wherever the binary happens to live.
+    if let Some(home) = dirs::home_dir() {
+        let _ = std::env::set_current_dir(&home);
     }
 
     // Parse CLI BEFORE creating the event loop — subcommands must not open a window.
@@ -2593,6 +2653,7 @@ fn main() {
                 config_error: None,
                 watcher_spawned: false,
                 update_info: None,
+                coordination_state: Default::default(),
             };
 
             event_loop
