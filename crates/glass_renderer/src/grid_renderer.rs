@@ -104,11 +104,24 @@ impl GridRenderer {
 
         // Cell background rects
         for cell in &snapshot.cells {
+            // Skip spacer cells -- covered by the primary wide char's double-width rect
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
             if cell.bg != default_bg {
+                let is_wide = cell.flags.contains(Flags::WIDE_CHAR);
+                let rect_width = if is_wide {
+                    self.cell_width * 2.0
+                } else {
+                    self.cell_width
+                };
                 let x = cell.point.column.0 as f32 * self.cell_width;
                 let y = (cell.point.line.0 + line_offset) as f32 * self.cell_height;
                 rects.push(RectInstance {
-                    pos: [x, y, self.cell_width, self.cell_height],
+                    pos: [x, y, rect_width, self.cell_height],
                     color: rgb_to_color(cell.bg, 1.0),
                 });
             }
@@ -120,14 +133,26 @@ impl GridRenderer {
         let cursor_y = (cursor.point.line.0 + line_offset) as f32 * self.cell_height;
         let cursor_color = [0.8, 0.8, 0.8, 0.7]; // semi-transparent light gray
 
+        // Determine if cursor is on a wide char cell for double-width cursor
+        let cursor_is_wide = snapshot
+            .cells
+            .iter()
+            .any(|c| c.point == cursor.point && c.flags.contains(Flags::WIDE_CHAR));
+        let cursor_cell_width = if cursor_is_wide {
+            self.cell_width * 2.0
+        } else {
+            self.cell_width
+        };
+
         match cursor.shape {
             CursorShape::Block => {
                 rects.push(RectInstance {
-                    pos: [cursor_x, cursor_y, self.cell_width, self.cell_height],
+                    pos: [cursor_x, cursor_y, cursor_cell_width, self.cell_height],
                     color: cursor_color,
                 });
             }
             CursorShape::Beam => {
+                // Beam cursor stays 2px wide regardless of wide char
                 rects.push(RectInstance {
                     pos: [cursor_x, cursor_y, 2.0, self.cell_height],
                     color: cursor_color,
@@ -138,7 +163,7 @@ impl GridRenderer {
                     pos: [
                         cursor_x,
                         cursor_y + self.cell_height - 2.0,
-                        self.cell_width,
+                        cursor_cell_width,
                         2.0,
                     ],
                     color: cursor_color,
@@ -149,7 +174,7 @@ impl GridRenderer {
                 let t = 1.0; // border thickness
                              // Top
                 rects.push(RectInstance {
-                    pos: [cursor_x, cursor_y, self.cell_width, t],
+                    pos: [cursor_x, cursor_y, cursor_cell_width, t],
                     color: cursor_color,
                 });
                 // Bottom
@@ -157,7 +182,7 @@ impl GridRenderer {
                     pos: [
                         cursor_x,
                         cursor_y + self.cell_height - t,
-                        self.cell_width,
+                        cursor_cell_width,
                         t,
                     ],
                     color: cursor_color,
@@ -170,7 +195,7 @@ impl GridRenderer {
                 // Right
                 rects.push(RectInstance {
                     pos: [
-                        cursor_x + self.cell_width - t,
+                        cursor_x + cursor_cell_width - t,
                         cursor_y,
                         t,
                         self.cell_height,
@@ -799,16 +824,8 @@ mod tests {
         let mut font_system = FontSystem::new();
         let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
         let default_bg = Rgb { r: 0, g: 0, b: 0 };
-        let red = Rgb {
-            r: 255,
-            g: 0,
-            b: 0,
-        };
-        let blue = Rgb {
-            r: 0,
-            g: 0,
-            b: 255,
-        };
+        let red = Rgb { r: 255, g: 0, b: 0 };
+        let blue = Rgb { r: 0, g: 0, b: 255 };
 
         // col 0: normal cell with red bg, col 1: WIDE_CHAR with blue bg,
         // col 2: WIDE_CHAR_SPACER with blue bg, col 3: normal cell with default bg
@@ -877,9 +894,7 @@ mod tests {
         // Find the cursor rect (Block at col 1)
         let cursor_rect = rects
             .iter()
-            .find(|r| {
-                (r.pos[0] - 1.0 * cw).abs() < 0.001 && r.color == [0.8, 0.8, 0.8, 0.7]
-            })
+            .find(|r| (r.pos[0] - 1.0 * cw).abs() < 0.001 && r.color == [0.8, 0.8, 0.8, 0.7])
             .expect("Should have cursor rect at col 1");
 
         assert!(
@@ -972,9 +987,7 @@ mod tests {
         // Bottom edge: width should be 2*cell_width
         let bottom = cursor_rects
             .iter()
-            .find(|r| {
-                (r.pos[1] - (ch - 1.0)).abs() < 0.001 && (r.pos[3] - 1.0).abs() < 0.001
-            })
+            .find(|r| (r.pos[1] - (ch - 1.0)).abs() < 0.001 && (r.pos[3] - 1.0).abs() < 0.001)
             .expect("Should have bottom edge rect");
         assert!(
             (bottom.pos[2] - 2.0 * cw).abs() < 0.001,
