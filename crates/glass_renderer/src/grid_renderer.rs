@@ -1145,6 +1145,91 @@ mod tests {
         );
     }
 
+    // ===== Font fallback validation tests (FONT-01) =====
+
+    /// Test: CJK character U+4E16 produces a shaped glyph via cosmic-text font fallback
+    #[test]
+    fn fallback_renders_cjk_glyph() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        let buf_width = renderer.cell_width * 2.0;
+        let metrics = Metrics::new(14.0, renderer.cell_height);
+        let mut buffer = Buffer::new(&mut font_system, metrics);
+        buffer.set_size(&mut font_system, Some(buf_width), Some(renderer.cell_height));
+        buffer.set_monospace_width(&mut font_system, Some(buf_width));
+        buffer.set_text(
+            &mut font_system,
+            "\u{4E16}",
+            &Attrs::new().family(Family::Name("monospace")),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        let run = buffer.layout_runs().next();
+        assert!(
+            run.is_some(),
+            "CJK U+4E16 should produce at least one layout run via font fallback"
+        );
+        assert!(
+            !run.unwrap().glyphs.is_empty(),
+            "CJK U+4E16 layout run should contain at least one glyph"
+        );
+    }
+
+    /// Test: Multiple scripts (Arabic, Cyrillic, CJK, Thai) all produce glyphs via fallback
+    #[test]
+    fn fallback_renders_multi_script() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+
+        let scripts: &[(char, &str, bool)] = &[
+            ('\u{0639}', "Arabic", false),
+            ('\u{0414}', "Cyrillic", false),
+            ('\u{4E16}', "CJK", true),
+            ('\u{0E01}', "Thai", false),
+        ];
+
+        for &(ch, script_name, is_cjk) in scripts {
+            let buf_width = if is_cjk {
+                renderer.cell_width * 2.0
+            } else {
+                renderer.cell_width
+            };
+            let metrics = Metrics::new(14.0, renderer.cell_height);
+            let mut buffer = Buffer::new(&mut font_system, metrics);
+            buffer.set_size(
+                &mut font_system,
+                Some(buf_width),
+                Some(renderer.cell_height),
+            );
+            buffer.set_monospace_width(&mut font_system, Some(buf_width));
+            buffer.set_text(
+                &mut font_system,
+                &ch.to_string(),
+                &Attrs::new().family(Family::Name("monospace")),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut font_system, false);
+
+            let run = buffer.layout_runs().next();
+            assert!(
+                run.is_some(),
+                "{} character U+{:04X} should produce a layout run via font fallback",
+                script_name,
+                ch as u32
+            );
+            assert!(
+                !run.unwrap().glyphs.is_empty(),
+                "{} character U+{:04X} should produce at least one glyph",
+                script_name,
+                ch as u32
+            );
+        }
+    }
+
     /// Test: HollowBlock cursor on WIDE_CHAR cell has double-width edges
     #[test]
     fn wide_char_cursor_hollow_block_double_width() {
