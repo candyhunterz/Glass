@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2.4
 milestone_name: Rendering Correctness
-status: completed
-stopped_at: Completed 40-02-PLAN.md (Phase 40 complete)
-last_updated: "2026-03-10T20:23:12.380Z"
-last_activity: 2026-03-10 -- Completed Plan 02 (frame.rs migration to per-cell API, visual verification approved)
+status: in-progress
+stopped_at: Completed 41-01-PLAN.md
+last_updated: "2026-03-10T21:59:00.000Z"
+last_activity: 2026-03-10 -- Completed Plan 01 (wide char double-width Buffer rendering)
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
 ---
 
 # Project State
@@ -20,16 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 40 - Grid Alignment (v2.4 Rendering Correctness)
+**Current focus:** Phase 41 - Wide Character Support (v2.4 Rendering Correctness)
 
 ## Current Position
 
-Phase: 40 of 44 (Grid Alignment)
-Plan: 2 of 2 in current phase (Phase 40 COMPLETE)
-Status: Phase Complete
-Last activity: 2026-03-10 -- Completed Plan 02 (frame.rs migration to per-cell API, visual verification approved)
+Phase: 41 of 44 (Wide Character Support)
+Plan: 1 of 2 in current phase
+Status: In Progress
+Last activity: 2026-03-10 -- Completed Plan 01 (wide char double-width Buffer rendering)
 
-Progress (v2.4): [██████████] 100%
+Progress (v2.4): [████████░░] 75%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ v2.4-specific decisions:
 - All legacy per-line rendering methods removed after Plan 02 migration
 - cell_positions Vec tracked alongside text_buffers in FrameRenderer for per-cell positioning
 - [Phase 40]: All legacy per-line rendering methods removed; per-cell Buffer is now the only rendering pipeline
+- [Phase 41]: Use intersects() for multi-flag spacer skip; buf_width per-cell based on WIDE_CHAR flag
 
 ### Pending Todos
 
@@ -75,6 +76,6 @@ v2.4-specific decisions:
 
 ## Session Continuity
 
-Last session: 2026-03-10T20:19:50.399Z
-Stopped at: Completed 40-02-PLAN.md (Phase 40 complete)
+Last session: 2026-03-10T21:59:00.000Z
+Stopped at: Completed 41-01-PLAN.md
 Resume file: None
