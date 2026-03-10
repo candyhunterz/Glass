@@ -311,6 +311,22 @@ pub struct CommandDiffParams {
     pub command_id: i64,
 }
 
+/// Parameters for glass_compressed_context.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompressedContextParams {
+    /// Maximum number of tokens in the response (approximate, 1 token ~ 4 chars).
+    #[schemars(description = "Maximum tokens in response (approximate, 1 token ~ 4 chars)")]
+    pub token_budget: usize,
+    /// Focus mode: 'errors' (failed commands), 'files' (file changes), 'history' (recent commands), or null for balanced.
+    #[schemars(
+        description = "Focus: 'errors', 'files', 'history', or null for balanced across all"
+    )]
+    pub focus: Option<String>,
+    /// Time filter: only include activity after this time. Supports '1h', '2d', ISO dates.
+    #[schemars(description = "Time filter: '1h', '2d', ISO date. Default: last 1 hour")]
+    pub after: Option<String>,
+}
+
 /// Parameters for glass_tab_close.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TabCloseParams {
@@ -377,6 +393,15 @@ fn internal_err(e: impl std::fmt::Display) -> McpError {
 /// Check whether raw bytes look like binary content (contains null byte in first 8 KiB).
 fn is_binary_content(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+/// Truncate text to a character budget, appending "..." if truncated.
+fn truncate_to_budget(text: &str, char_budget: usize) -> String {
+    if text.len() <= char_budget {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(char_budget.saturating_sub(3)).collect();
+    format!("{}...", truncated)
 }
 
 // ---------------------------------------------------------------------------
@@ -1819,5 +1844,54 @@ mod tests {
     #[test]
     fn test_is_binary_content_empty() {
         assert!(!is_binary_content(b""));
+    }
+
+    #[test]
+    fn test_compressed_context_params_deserialize() {
+        let json = r#"{"token_budget": 500, "focus": "errors"}"#;
+        let params: CompressedContextParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.token_budget, 500);
+        assert_eq!(params.focus.as_deref(), Some("errors"));
+        assert!(params.after.is_none());
+    }
+
+    #[test]
+    fn test_compressed_context_params_defaults() {
+        let json = r#"{"token_budget": 1000}"#;
+        let params: CompressedContextParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.token_budget, 1000);
+        assert!(params.focus.is_none());
+        assert!(params.after.is_none());
+    }
+
+    #[test]
+    fn test_compressed_context_params_with_after() {
+        let json = r#"{"token_budget": 200, "focus": "history", "after": "1h"}"#;
+        let params: CompressedContextParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.token_budget, 200);
+        assert_eq!(params.focus.as_deref(), Some("history"));
+        assert_eq!(params.after.as_deref(), Some("1h"));
+    }
+
+    #[test]
+    fn test_truncate_to_budget_long_text() {
+        let text = "a".repeat(100);
+        let result = truncate_to_budget(&text, 50);
+        assert!(result.len() <= 50);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_to_budget_no_truncation() {
+        let text = "hello world";
+        let result = truncate_to_budget(text, 50);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_truncate_to_budget_exact_boundary() {
+        let text = "abcde";
+        let result = truncate_to_budget(text, 5);
+        assert_eq!(result, "abcde");
     }
 }
