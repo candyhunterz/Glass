@@ -1,32 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.3
-milestone_name: Agent MCP Features
-status: shipped
-stopped_at: Milestone v2.3 archived
-last_updated: "2026-03-10T08:00:00.000Z"
-last_activity: 2026-03-10 -- Milestone v2.3 shipped and archived
+milestone: v2.4
+milestone_name: Rendering Correctness
+status: defining_requirements
+stopped_at: Defining requirements
+last_updated: "2026-03-09T12:00:00.000Z"
+last_activity: 2026-03-09 -- Milestone v2.4 started
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-10)
+See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** v2.4 Rendering Correctness
 
 ## Current Position
 
-Milestone v2.3 Agent MCP Features: SHIPPED 2026-03-10
-Next: `/gsd:new-milestone` to start next milestone
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-09 — Milestone v2.4 started
 
 ## Performance Metrics
 
@@ -56,12 +58,11 @@ See PROJECT.md Key Decisions table for full history.
 - macOS code signing deferred -- unsigned DMG triggers Gatekeeper
 - Windows code signing deferred -- SmartScreen warnings
 - pruner.rs max_size_mb not enforced (minor, count/age pruning sufficient)
-- ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Package manager manifests have placeholder values needing replacement at publish time
 - Tab-to-agent PID mapping may be infeasible cross-platform (process tree walking)
 
 ## Session Continuity
 
-Last session: 2026-03-10T08:00:00Z
-Stopped at: Milestone v2.3 archived
+Last session: 2026-03-09T12:00:00Z
+Stopped at: Defining requirements for v2.4
 Resume file: None

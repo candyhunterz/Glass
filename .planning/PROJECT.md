@@ -95,6 +95,26 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
+- [ ] Per-cell glyph positioning locked to column * cell_width grid
+- [ ] Line height derived from font metrics (ascent+descent) for seamless box-drawing
+- [ ] Wide character (CJK) support with double-width cell spanning
+- [ ] Underline and strikethrough GPU rendering
+- [ ] Font fallback cascade for missing glyphs
+- [ ] Dynamic DPI/scale factor handling with font metric recalculation
+- [ ] Rendering tech debt cleanup
+
+## Current Milestone: v2.4 Rendering Correctness
+
+**Goal:** Fix grid-aligned rendering so TUI apps (Claude Code, vim, htop, tmux) render correctly, and add missing text rendering features.
+
+**Target features:**
+- Per-cell glyph positioning (fix horizontal drift)
+- Correct line height (fix vertical gaps in box-drawing)
+- Wide character / CJK support
+- Underline / strikethrough rendering
+- Font fallback for missing glyphs
+- Dynamic DPI handling (ScaleFactorChanged)
+
 ### Deferred (Future Milestones)
 
 - Block collapse/expand, URL detection, block keyboard navigation -- UI polish
