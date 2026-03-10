@@ -75,9 +75,9 @@ impl IpcClient {
             params,
         };
 
-        let mut stream = connect().await.map_err(|e| {
-            format!("Glass GUI is not running ({})", e)
-        })?;
+        let mut stream = connect()
+            .await
+            .map_err(|e| format!("Glass GUI is not running ({})", e))?;
 
         // Serialize request as a JSON line
         let mut payload = serde_json::to_vec(&request)
@@ -90,16 +90,13 @@ impl IpcClient {
             .map_err(|e| format!("Failed to send request: {}", e))?;
 
         // Read response line with 5-second timeout
-        let response_line = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                let mut lines = BufReader::new(&mut stream).lines();
-                lines
-                    .next_line()
-                    .await
-                    .map_err(|e| format!("Failed to read response: {}", e))
-            },
-        )
+        let response_line = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut lines = BufReader::new(&mut stream).lines();
+            lines
+                .next_line()
+                .await
+                .map_err(|e| format!("Failed to read response: {}", e))
+        })
         .await
         .map_err(|_| "Request timed out (5s)".to_string())?
         .and_then(|opt| opt.ok_or_else(|| "Connection closed before response".to_string()))?;
@@ -181,9 +178,7 @@ mod tests {
     #[tokio::test]
     async fn send_request_returns_error_when_gui_not_running() {
         let client = IpcClient::new();
-        let result = client
-            .send_request("ping", serde_json::json!({}))
-            .await;
+        let result = client.send_request("ping", serde_json::json!({})).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(

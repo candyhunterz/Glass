@@ -14,6 +14,9 @@ Every terminal today treats output as a flat text stream. Glass treats it as str
 | **Debug pipelines** | Insert `tee` at each stage | Click to inspect intermediate output |
 | **Search history** | `history \| grep ...` gives you command text | Full-text search across commands, exit codes, timestamps, and output |
 | **AI assistant context** | Lost every time the context window resets | MCP server gives AI tools access to your full session history |
+| **AI agent terminal control** | Manual copy-paste between agent and terminal | Agents create tabs, run commands, read output, and extract errors via MCP |
+| **Token efficiency** | Agents read entire command output | Filtered output, cache checks, diffs, and budget-aware context compression |
+| **Multi-agent coordination** | Agents overwrite each other's files | Advisory locks, conflict detection, and inter-agent messaging |
 | **Command metadata** | None | Every command shows exit code, duration, and working directory |
 
 ### What makes Glass different
@@ -26,6 +29,16 @@ Every terminal today treats output as a flat text stream. Glass treats it as str
 
 - **MCP server for AI assistants.** Glass exposes your terminal context (recent commands, outputs, working directory) over the Model Context Protocol. AI coding assistants like Claude Code can read what happened in your terminal and pick up where they left off, even after a context reset.
 
+- **Agent terminal control.** AI agents can create tabs, run commands, read output, and close tabs -- all through MCP tools. Agents orchestrate multiple terminal sessions as parallel workspaces without human intervention.
+
+- **Token-efficient agent tools.** Agents don't need to read entire command outputs. Glass provides filtered output (head/tail/regex), cache staleness checks, file diffs for modified files, and budget-aware compressed context that respects token limits.
+
+- **Structured error extraction.** Glass parses compiler output into structured errors with file path, line, column, message, and severity. Supports Rust compiler output (human-readable and JSON format) and a generic parser for any `file:line:col: message` pattern.
+
+- **Live command awareness.** Agents can check whether a command is still running and cancel it if needed -- no more blind waits or manual Ctrl+C.
+
+- **Multi-agent coordination.** Run multiple AI agents in separate Glass tabs and they stay out of each other's way. Glass provides a shared coordination layer with agent registration, advisory file locks, and inter-agent messaging -- all through MCP tools backed by a shared SQLite database. Agents can claim files before editing, detect conflicts, and communicate without human intervention.
+
 - **GPU-accelerated rendering.** Built on wgpu with sub-10us input latency and ~90MB idle memory. Cold start under 500ms.
 
 ## Features
@@ -36,6 +49,9 @@ Every terminal today treats output as a flat text stream. Glass treats it as str
 - **File undo** with automatic filesystem snapshots
 - **Pipeline inspection** with per-stage output capture
 - **Mouse selection** -- drag to select text, auto-copies to clipboard
+- **Agent terminal orchestration** -- AI agents create tabs, run commands, read output, extract errors, and cancel commands via MCP
+- **Token-saving tools** -- filtered output, cache checks, file diffs, and budget-aware context compression for AI agents
+- **Multi-agent coordination** -- advisory file locks, agent registry, and messaging across AI agents
 - **Hot-reloadable configuration** -- edit `~/.glass/config.toml`, changes apply instantly
 - **Shell integration** for Bash, Zsh, Fish, and PowerShell
 - **Auto-update notifications**
@@ -164,6 +180,33 @@ glass undo <command-id>      # Undo a command's file changes
 glass mcp serve              # Start MCP server (for AI assistants)
 ```
 
+## Multi-Agent Coordination
+
+When multiple AI agents (Claude Code, Cursor, etc.) work on the same project in separate Glass tabs, Glass coordinates them through a shared SQLite database (`~/.glass/agents.db`). Each agent's MCP server connects to the same database, enabling:
+
+- **Agent registry** -- agents register on session start and deregister on exit, so every agent knows who else is active
+- **Advisory file locks** -- before editing a file, an agent claims it atomically; if another agent holds the lock, the request returns a conflict identifying the holder
+- **Inter-agent messaging** -- agents can broadcast to all peers or send directed messages (e.g., requesting another agent to release a lock)
+- **Status tracking** -- agents publish their current task so others can see what's in progress
+
+All coordination is exposed as MCP tools (`glass_agent_register`, `glass_agent_lock`, `glass_agent_send`, etc.) -- no special client integration required. Any MCP-compatible agent can participate.
+
+## MCP Tools for AI Agents
+
+Glass exposes 25 MCP tools through `glass mcp serve`. Any MCP-compatible AI agent can use them.
+
+| Category | Tools | Description |
+|---|---|---|
+| **History & Context** | `glass_history`, `glass_context` | Search command history, get session context |
+| **Undo & Diffs** | `glass_undo`, `glass_file_diff` | Undo file changes, inspect pre-command file state |
+| **Pipes** | `glass_pipe_inspect` | Inspect pipeline stage output |
+| **Tab Orchestration** | `glass_tab_create`, `glass_tab_list`, `glass_tab_send`, `glass_tab_output`, `glass_tab_close` | Create, list, command, read, and close tabs |
+| **Token Saving** | `glass_cache_check`, `glass_command_diff`, `glass_compressed_context` | Check cache validity, get file diffs, budget-aware context |
+| **Error Extraction** | `glass_extract_errors` | Structured errors (file, line, column, message, severity) |
+| **Live Awareness** | `glass_has_running_command`, `glass_cancel_command` | Check command status, cancel running commands |
+| **Coordination** | `glass_agent_register`, `glass_agent_deregister`, `glass_agent_list`, `glass_agent_status`, `glass_agent_heartbeat`, `glass_agent_lock`, `glass_agent_unlock`, `glass_agent_locks`, `glass_agent_broadcast`, `glass_agent_send`, `glass_agent_messages` | Multi-agent coordination |
+| **Health** | `glass_ping` | Verify MCP-to-GUI connection |
+
 ## Architecture
 
 ```
@@ -175,7 +218,9 @@ glass (binary)
   +-- glass_history    SQLite command history with FTS5
   +-- glass_snapshot   Filesystem snapshots, blob store, undo
   +-- glass_pipes      Pipeline parser and stage capture
-  +-- glass_mcp        MCP server for AI assistant integration
+  +-- glass_mcp        MCP server for AI assistant integration (25 tools)
+  +-- glass_errors     Structured error extraction (Rust, generic parsers)
+  +-- glass_coordination  Multi-agent coordination (locks, messaging, registry)
 ```
 
 Built on [alacritty_terminal](https://github.com/alacritty/alacritty) for VT parsing and [wgpu](https://wgpu.rs/) for cross-platform GPU rendering.
