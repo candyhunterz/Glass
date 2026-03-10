@@ -44,9 +44,9 @@ Requirements for multi-agent coordination milestone. Each maps to roadmap phases
 
 ### GUI
 
-- [ ] **GUI-01**: Status bar displays active agent count from coordination DB
-- [ ] **GUI-02**: Status bar displays active lock count from coordination DB
-- [ ] **GUI-03**: Background polling thread reads agents.db every 5 seconds with atomic state transfer
+- [x] **GUI-01**: Status bar displays active agent count from coordination DB
+- [x] **GUI-02**: Status bar displays active lock count from coordination DB
+- [x] **GUI-03**: Background polling thread reads agents.db every 5 seconds with atomic state transfer
 - [ ] **GUI-04**: Tab shows visual indicator when its agent holds file locks
 - [ ] **GUI-05**: Conflict warning overlay appears when two agents touch the same file
 
@@ -105,9 +105,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTG-01 | Phase 33 | Complete |
 | INTG-02 | Phase 33 | Complete |
 | INTG-03 | Phase 33 | Complete |
-| GUI-01 | Phase 34 | Pending |
-| GUI-02 | Phase 34 | Pending |
-| GUI-03 | Phase 34 | Pending |
+| GUI-01 | Phase 34 | Complete |
+| GUI-02 | Phase 34 | Complete |
+| GUI-03 | Phase 34 | Complete |
 | GUI-04 | Phase 34 | Pending |
 | GUI-05 | Phase 34 | Pending |
 
