@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
 status: executing
-stopped_at: Completed 37-01-PLAN.md
-last_updated: "2026-03-10T04:43:27Z"
-last_activity: 2026-03-10 -- Completed 37-01 token-saving tools (tab output head/tail + cache check)
+stopped_at: Completed 37-02-PLAN.md
+last_updated: "2026-03-10T04:50:37Z"
+last_activity: 2026-03-10 -- Completed 37-02 command diff and compressed context tools
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 4
-  completed_plans: 5
-  percent: 50
+  completed_plans: 6
+  percent: 60
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 ## Current Position
 
 Phase: 37 of 39 (Token-Saving Tools)
-Plan: 1 of 2
-Status: Executing
-Last activity: 2026-03-10 -- Completed 37-01 token-saving tools (tab output head/tail + cache check)
+Plan: 2 of 2
+Status: Phase Complete
+Last activity: 2026-03-10 -- Completed 37-02 command diff and compressed context tools
 
-Progress: [#####.....] 50%
+Progress: [######....] 60%
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ See PROJECT.md Key Decisions table for full history.
 - [Phase 36]: Config clone for shell override in tab_create; early return for regex errors in tab_output; tab_close checks count before resolve
 - [Phase 36]: Used Parameters<T> wrapper for rmcp tool params; inline tab_index/session_id in each struct avoiding serde flatten
 - [Phase 37]: Head/tail mode applied before regex filter; cache check uses parser-sourced files only; extraction capped at 10000 lines
+- [Phase 37]: similar crate for unified diffs; token budget at 1 token ~ 4 chars; focus modes split budget into thirds; binary detection via null byte in first 8KiB
 
 ### Pending Todos
 
@@ -71,6 +72,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-10T04:43:27Z
-Stopped at: Completed 37-01-PLAN.md
+Last session: 2026-03-10T04:50:37Z
+Stopped at: Completed 37-02-PLAN.md
 Resume file: None

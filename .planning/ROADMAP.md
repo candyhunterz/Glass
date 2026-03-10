@@ -95,7 +95,7 @@
 
 - [x] **Phase 35: MCP Command Channel** - Async channel bridge between MCP server and GUI event loop with IPC listener (completed 2026-03-10)
 - [x] **Phase 36: Multi-Tab Orchestration** - Agent can create, list, command, read, and close tabs via MCP tools (completed 2026-03-10)
-- [ ] **Phase 37: Token-Saving Tools** - Filtered output, cached results, file diffs, and budget-aware context via MCP
+- [x] **Phase 37: Token-Saving Tools** - Filtered output, cached results, file diffs, and budget-aware context via MCP (completed 2026-03-10)
 - [ ] **Phase 38: Structured Error Extraction** - New glass_errors crate with language-aware parsers and MCP tool
 - [ ] **Phase 39: Live Command Awareness** - Agent can check command status and cancel running commands via MCP
 
@@ -217,6 +217,6 @@ Note: Phases 37 and 38 are independent of Phase 36 (both only need Phase 35's ch
 | 34. GUI Integration | v2.2 | 2/2 | Complete | 2026-03-10 |
 | 35. MCP Command Channel | 2/2 | Complete    | 2026-03-10 | - |
 | 36. Multi-Tab Orchestration | v2.3 | Complete    | 2026-03-10 | 2026-03-10 |
-| 37. Token-Saving Tools | 1/2 | In Progress|  | - |
+| 37. Token-Saving Tools | 2/2 | Complete   | 2026-03-10 | - |
 | 38. Structured Error Extraction | v2.3 | 0/? | Not started | - |
 | 39. Live Command Awareness | v2.3 | 0/? | Not started | - |
