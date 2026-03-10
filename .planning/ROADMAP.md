@@ -216,7 +216,7 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 38. Structured Error Extraction | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 39. Live Command Awareness | v2.3 | 1/1 | Complete | 2026-03-10 |
 | 40. Grid Alignment | 2/2 | Complete    | 2026-03-10 | - |
-| 41. Wide Character Support | 2/2 | Complete   | 2026-03-10 | - |
+| 41. Wide Character Support | 2/2 | Complete    | 2026-03-10 | - |
 | 42. Text Decorations | v2.4 | 0/0 | Not started | - |
 | 43. Font Fallback | v2.4 | 0/0 | Not started | - |
 | 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |
