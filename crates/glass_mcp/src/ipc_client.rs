@@ -42,6 +42,12 @@ pub struct IpcClient {
     next_id: AtomicU64,
 }
 
+impl Default for IpcClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IpcClient {
     /// Create a new IPC client. Does not connect eagerly.
     pub fn new() -> Self {

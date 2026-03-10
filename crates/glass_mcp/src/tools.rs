@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with sixteen tools:
+//! Defines `GlassServer` with seventeen tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -17,11 +17,13 @@
 //! - `glass_agent_broadcast`: Broadcast a message to all project agents
 //! - `glass_agent_send`: Send a directed message to a specific agent
 //! - `glass_agent_messages`: Read unread messages
+//! - `glass_ping`: Check if the Glass GUI process is running and responsive
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use glass_history::db::{CommandRecord, HistoryDb};
 use glass_history::query::{self, QueryFilter};
@@ -32,6 +34,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 use serde::{Deserialize, Serialize};
 
 use crate::context;
+use crate::ipc_client;
 
 // ---------------------------------------------------------------------------
 // Parameter types (schemars for auto-schema generation)
@@ -286,25 +289,35 @@ fn internal_err(e: impl std::fmt::Display) -> McpError {
 // GlassServer
 // ---------------------------------------------------------------------------
 
-/// MCP server exposing Glass terminal history, undo, and file diff tools.
+/// MCP server exposing Glass terminal history, undo, file diff, and live GUI tools.
 #[derive(Clone)]
 pub struct GlassServer {
     tool_router: ToolRouter<Self>,
     db_path: PathBuf,
     glass_dir: PathBuf,
     coord_db_path: PathBuf,
+    /// IPC client for communicating with the live Glass GUI process.
+    /// `None` only if explicitly disabled; the client itself handles connection
+    /// failures gracefully (returns clear error messages).
+    ipc_client: Option<Arc<ipc_client::IpcClient>>,
 }
 
 #[tool_router]
 impl GlassServer {
     /// Create a new GlassServer pointing at the given history database, glass directory,
-    /// and coordination database.
-    pub fn new(db_path: PathBuf, glass_dir: PathBuf, coord_db_path: PathBuf) -> Self {
+    /// and coordination database. Optionally accepts an IPC client for live GUI communication.
+    pub fn new(
+        db_path: PathBuf,
+        glass_dir: PathBuf,
+        coord_db_path: PathBuf,
+        ipc_client: Option<ipc_client::IpcClient>,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             db_path,
             glass_dir,
             coord_db_path,
+            ipc_client: ipc_client.map(Arc::new),
         }
     }
 
@@ -866,6 +879,33 @@ impl GlassServer {
         let content = Content::json(&result)?;
         Ok(CallToolResult::success(vec![content]))
     }
+
+    /// Check if the Glass GUI process is running and responsive.
+    /// Returns status "ok" if the GUI is reachable via IPC, or an error if not.
+    /// This is the pattern all future live MCP tools follow:
+    /// check ipc_client -> send_request -> handle result/error.
+    #[tool(
+        description = "Check if the Glass GUI process is running and responsive. Returns status 'ok' if the GUI is reachable via IPC, or an error if not."
+    )]
+    async fn glass_ping(&self) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        match client.send_request("ping", serde_json::json!({})).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
 }
 
 #[tool_handler]
@@ -874,12 +914,13 @@ impl ServerHandler for GlassServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("glass-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Glass terminal server with history, undo, and multi-agent coordination tools. \
+                "Glass terminal server with history, undo, multi-agent coordination, and live GUI tools. \
                  Use glass_history to search commands, glass_context for activity overview, \
                  glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents, \
                  glass_pipe_inspect to inspect pipeline stage output. \
                  For multi-agent coordination: glass_agent_register to join, glass_agent_lock/unlock for file locks, \
-                 glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness.",
+                 glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness. \
+                 Live GUI tools: glass_ping to check if the GUI is running and responsive.",
             )
     }
 }
@@ -893,9 +934,10 @@ mod tests {
         let db_path = PathBuf::from("/tmp/history.db");
         let glass_dir = PathBuf::from("/tmp/.glass");
         let coord_db_path = PathBuf::from("/tmp/agents.db");
-        let server = GlassServer::new(db_path.clone(), glass_dir.clone(), coord_db_path.clone());
+        let server = GlassServer::new(db_path.clone(), glass_dir.clone(), coord_db_path.clone(), None);
         assert_eq!(server.db_path, db_path);
         assert_eq!(server.glass_dir, glass_dir);
+        assert!(server.ipc_client.is_none());
         assert_eq!(server.coord_db_path, coord_db_path);
     }
 

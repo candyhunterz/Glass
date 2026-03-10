@@ -35,7 +35,11 @@ pub async fn run_mcp_server() -> anyhow::Result<()> {
         coord_db_path.display()
     );
 
-    let server = tools::GlassServer::new(db_path, glass_dir, coord_db_path);
+    // Always create the IPC client -- it handles connection failures lazily
+    // (returns clear error messages when the GUI isn't running).
+    let ipc_client = Some(ipc_client::IpcClient::new());
+
+    let server = tools::GlassServer::new(db_path, glass_dir, coord_db_path, ipc_client);
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
