@@ -1453,6 +1453,242 @@ impl GlassServer {
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
+
+    /// Get a compressed context summary within a token budget.
+    /// Focus on errors, files, history, or get a balanced overview.
+    #[tool(
+        description = "Get a compressed context summary of terminal activity within a token budget. Focus on specific aspects (errors, files, history) or get a balanced overview. Uses approximate token counting (1 token ~ 4 chars)."
+    )]
+    async fn glass_compressed_context(
+        &self,
+        Parameters(params): Parameters<CompressedContextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db_path = self.db_path.clone();
+        let glass_dir = self.glass_dir.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let char_budget = params.token_budget * 4;
+
+            // Parse time filter (default to "1h")
+            let after_str = params.after.as_deref().unwrap_or("1h");
+            let after_epoch =
+                query::parse_time(after_str).map_err(|e| format!("Invalid time: {}", e))?;
+
+            // Open history DB and build summary
+            let db = HistoryDb::open(&db_path)
+                .map_err(|e| format!("Failed to open history DB: {}", e))?;
+            let summary = context::build_context_summary(db.conn(), Some(after_epoch))
+                .map_err(|e| format!("Failed to build context: {}", e))?;
+
+            // Always-included summary header
+            let header = format!(
+                "## Context Summary\nCommands: {}, Failed: {}, Dirs: {}\n\n",
+                summary.command_count,
+                summary.failure_count,
+                summary.recent_directories.len(),
+            );
+
+            if char_budget <= header.len() {
+                return Ok(truncate_to_budget(&header, char_budget));
+            }
+            let remaining = char_budget - header.len();
+
+            // Build section content based on focus mode
+            let section = match params.focus.as_deref() {
+                Some("errors") => build_errors_section(&db, Some(after_epoch), remaining)?,
+                Some("files") => {
+                    build_files_section(&glass_dir, &db, Some(after_epoch), remaining)?
+                }
+                Some("history") => build_history_section(&db, Some(after_epoch), remaining)?,
+                _ => {
+                    // Balanced: errors first, then history, then files
+                    let third = remaining / 3;
+                    let mut parts = String::new();
+
+                    let errors = build_errors_section(&db, Some(after_epoch), third)?;
+                    if !errors.is_empty() {
+                        parts.push_str(&errors);
+                        parts.push('\n');
+                    }
+
+                    let history = build_history_section(&db, Some(after_epoch), third)?;
+                    if !history.is_empty() {
+                        parts.push_str(&history);
+                        parts.push('\n');
+                    }
+
+                    let files_budget = remaining.saturating_sub(parts.len());
+                    let files =
+                        build_files_section(&glass_dir, &db, Some(after_epoch), files_budget)?;
+                    if !files.is_empty() {
+                        parts.push_str(&files);
+                    }
+
+                    parts
+                }
+            };
+
+            let full = format!("{}{}", header, section);
+            Ok(truncate_to_budget(&full, char_budget))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("Task join error: {}", e), None))?;
+
+        match result {
+            Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+}
+
+/// Build the errors section for compressed context.
+fn build_errors_section(
+    db: &HistoryDb,
+    after: Option<i64>,
+    budget: usize,
+) -> Result<String, String> {
+    let filter = QueryFilter {
+        text: None,
+        exit_code: None,
+        after,
+        before: None,
+        cwd: None,
+        limit: 50,
+    };
+    let commands = db
+        .filtered_query(&filter)
+        .map_err(|e| format!("Query error: {}", e))?;
+    let failed: Vec<&CommandRecord> = commands.iter().filter(|c| c.exit_code != Some(0)).collect();
+
+    if failed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut section = String::from("### Errors\n");
+    for cmd in &failed {
+        let line = format!(
+            "- [{}] `{}` in {}\n",
+            cmd.exit_code.unwrap_or(-1),
+            cmd.command,
+            cmd.cwd,
+        );
+        if section.len() + line.len() > budget {
+            break;
+        }
+        section.push_str(&line);
+    }
+    Ok(truncate_to_budget(&section, budget))
+}
+
+/// Build the history section for compressed context.
+fn build_history_section(
+    db: &HistoryDb,
+    after: Option<i64>,
+    budget: usize,
+) -> Result<String, String> {
+    let filter = QueryFilter {
+        text: None,
+        exit_code: None,
+        after,
+        before: None,
+        cwd: None,
+        limit: 50,
+    };
+    let commands = db
+        .filtered_query(&filter)
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    if commands.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut section = String::from("### Recent Commands\n");
+    for cmd in &commands {
+        let line = format!(
+            "- `{}` [{}] ({}ms) in {}\n",
+            cmd.command,
+            cmd.exit_code.unwrap_or(-1),
+            cmd.duration_ms,
+            cmd.cwd,
+        );
+        if section.len() + line.len() > budget {
+            break;
+        }
+        section.push_str(&line);
+    }
+    Ok(truncate_to_budget(&section, budget))
+}
+
+/// Build the files section for compressed context using snapshot store.
+fn build_files_section(
+    glass_dir: &std::path::Path,
+    db: &HistoryDb,
+    after: Option<i64>,
+    budget: usize,
+) -> Result<String, String> {
+    // Get recent commands, then check which have snapshots
+    let filter = QueryFilter {
+        text: None,
+        exit_code: None,
+        after,
+        before: None,
+        cwd: None,
+        limit: 25,
+    };
+    let commands = db
+        .filtered_query(&filter)
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let store = match glass_snapshot::SnapshotStore::open(glass_dir) {
+        Ok(s) => s,
+        Err(_) => return Ok(String::new()),
+    };
+
+    let mut section = String::from("### File Changes\n");
+    let mut found_any = false;
+
+    for cmd in &commands {
+        let cmd_id = match cmd.id {
+            Some(id) => id,
+            None => continue,
+        };
+        let snapshots = store
+            .db()
+            .get_snapshots_by_command(cmd_id)
+            .unwrap_or_default();
+
+        for snapshot in &snapshots {
+            let files = store
+                .db()
+                .get_snapshot_files(snapshot.id)
+                .unwrap_or_default();
+
+            for file_rec in &files {
+                if file_rec.source != "parser" {
+                    continue;
+                }
+                found_any = true;
+                let change_type = if file_rec.blob_hash.is_some() {
+                    "modified"
+                } else {
+                    "created"
+                };
+                let line = format!(
+                    "- {} ({}): `{}`\n",
+                    file_rec.file_path, change_type, cmd.command
+                );
+                if section.len() + line.len() > budget {
+                    return Ok(truncate_to_budget(&section, budget));
+                }
+                section.push_str(&line);
+            }
+        }
+    }
+
+    if !found_any {
+        return Ok(String::new());
+    }
+    Ok(truncate_to_budget(&section, budget))
 }
 
 #[tool_handler]
@@ -1469,7 +1705,8 @@ impl ServerHandler for GlassServer {
                  glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness. \
                  Live GUI tools: glass_ping to check if the GUI is running and responsive. \
                  Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs. \
-                 Token saving: glass_tab_output supports head/tail mode and command_id for history DB lookup. glass_cache_check to verify if a command's result is still valid.",
+                 Token saving: glass_tab_output supports head/tail mode and command_id for history DB lookup. glass_cache_check to verify if a command's result is still valid. \
+                 glass_command_diff for unified diffs of command file changes. glass_compressed_context for budget-aware context summaries with focus modes.",
             )
     }
 }
