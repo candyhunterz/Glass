@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with twenty-three tools:
+//! Defines `GlassServer` with twenty-five tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -24,6 +24,8 @@
 //! - `glass_tab_output`: Read output from a tab (head/tail mode) or from history DB by command_id
 //! - `glass_tab_close`: Close a specific tab
 //! - `glass_cache_check`: Check if a previous command's cached result is still valid
+//! - `glass_command_diff`: Show unified diffs of files a command modified
+//! - `glass_compressed_context`: Get budget-aware compressed context summary
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -1312,6 +1314,108 @@ impl GlassServer {
                 "stale": stale,
                 "changed_files": changed_files,
                 "checked_files": checked_count,
+            }))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("Task join error: {}", e), None))?;
+
+        match result {
+            Ok(json) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    /// Show which files a command modified with unified diffs.
+    /// Compares pre-command snapshot content against current file content.
+    #[tool(
+        description = "Show which files a command modified with unified diffs. Compares pre-command snapshot content against current file content. Returns unified diff format for each changed file."
+    )]
+    async fn glass_command_diff(
+        &self,
+        Parameters(params): Parameters<CommandDiffParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let glass_dir = self.glass_dir.clone();
+        let command_id = params.command_id;
+
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+            let store = glass_snapshot::SnapshotStore::open(&glass_dir)
+                .map_err(|e| format!("Failed to open snapshot store: {}", e))?;
+            let snapshots = store
+                .db()
+                .get_snapshots_by_command(command_id)
+                .map_err(|e| format!("Failed to query snapshots: {}", e))?;
+
+            let mut files = Vec::new();
+            for snapshot in &snapshots {
+                let file_recs = store
+                    .db()
+                    .get_snapshot_files(snapshot.id)
+                    .map_err(|e| format!("Failed to query snapshot files: {}", e))?;
+
+                for file_rec in &file_recs {
+                    if file_rec.source != "parser" {
+                        continue;
+                    }
+
+                    // Read pre-command content from blob store
+                    let pre_bytes: Vec<u8> = file_rec
+                        .blob_hash
+                        .as_ref()
+                        .and_then(|hash| store.blobs().read_blob(hash).ok())
+                        .unwrap_or_default();
+
+                    // Read current file content (empty if file deleted)
+                    let current_bytes: Vec<u8> =
+                        std::fs::read(&file_rec.file_path).unwrap_or_default();
+
+                    // Binary detection
+                    if is_binary_content(&pre_bytes) || is_binary_content(&current_bytes) {
+                        files.push(serde_json::json!({
+                            "path": file_rec.file_path,
+                            "status": "binary",
+                            "diff": "[binary file]",
+                        }));
+                        continue;
+                    }
+
+                    let pre_content = String::from_utf8_lossy(&pre_bytes);
+                    let current_content = String::from_utf8_lossy(&current_bytes);
+
+                    // Determine status
+                    let status = if file_rec.blob_hash.is_none() && !current_bytes.is_empty() {
+                        "created"
+                    } else if !pre_bytes.is_empty() && current_bytes.is_empty() {
+                        "deleted"
+                    } else if pre_content == current_content {
+                        "unchanged"
+                    } else {
+                        "modified"
+                    };
+
+                    // Generate unified diff
+                    let diff = TextDiff::from_lines(pre_content.as_ref(), current_content.as_ref());
+                    let unified = diff
+                        .unified_diff()
+                        .context_radius(3)
+                        .header(
+                            &format!("a/{}", file_rec.file_path),
+                            &format!("b/{}", file_rec.file_path),
+                        )
+                        .to_string();
+
+                    files.push(serde_json::json!({
+                        "path": file_rec.file_path,
+                        "status": status,
+                        "diff": if unified.is_empty() { String::new() } else { unified },
+                    }));
+                }
+            }
+
+            Ok(serde_json::json!({
+                "command_id": command_id,
+                "files": files,
             }))
         })
         .await
