@@ -253,6 +253,62 @@ impl GridRenderer {
         rects
     }
 
+    /// Build text decoration rectangles (underline, strikethrough) for cells with
+    /// the appropriate flags set.
+    ///
+    /// Underline: 1px line at the bottom of the cell (y + cell_height - 1.0).
+    /// Strikethrough: 1px line at the vertical midpoint (y + floor(cell_height / 2.0)).
+    /// Wide characters produce double-width decoration rects.
+    /// Spacer cells are skipped (the primary wide char cell handles the full width).
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
+    pub fn build_decoration_rects(&self, snapshot: &GridSnapshot) -> Vec<RectInstance> {
+        let mut rects = Vec::new();
+        let line_offset = snapshot.display_offset as i32;
+
+        for cell in &snapshot.cells {
+            // Skip spacer cells -- primary wide char cell handles the full width
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            let has_underline = cell.flags.contains(Flags::UNDERLINE);
+            let has_strikeout = cell.flags.contains(Flags::STRIKEOUT);
+
+            if !has_underline && !has_strikeout {
+                continue;
+            }
+
+            let is_wide = cell.flags.contains(Flags::WIDE_CHAR);
+            let rect_width = if is_wide {
+                self.cell_width * 2.0
+            } else {
+                self.cell_width
+            };
+            let x = cell.point.column.0 as f32 * self.cell_width;
+            let y = (cell.point.line.0 + line_offset) as f32 * self.cell_height;
+            let color = rgb_to_color(cell.fg, 1.0);
+
+            if has_underline {
+                rects.push(RectInstance {
+                    pos: [x, y + self.cell_height - 1.0, rect_width, 1.0],
+                    color,
+                });
+            }
+
+            if has_strikeout {
+                rects.push(RectInstance {
+                    pos: [x, y + (self.cell_height / 2.0).floor(), rect_width, 1.0],
+                    color,
+                });
+            }
+        }
+
+        rects
+    }
+
     /// Build rects with a pixel offset applied to all positions.
     ///
     /// Used for split pane rendering where each pane's content is offset
@@ -937,6 +993,150 @@ mod tests {
             "Underline cursor width ({}) should be 2*cell_width ({})",
             cursor_rect.pos[2],
             2.0 * cw
+        );
+    }
+
+    // ===== Text decoration tests (underline, strikethrough) =====
+
+    /// Test: Cell with UNDERLINE flag produces 1 RectInstance at bottom of cell
+    #[test]
+    fn decoration_underline_rect_position_and_size() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![make_cell('A', 0, 0, Flags::UNDERLINE)];
+        let snapshot = make_snapshot(cells, 1);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert_eq!(rects.len(), 1, "UNDERLINE cell should produce 1 rect");
+        let r = &rects[0];
+        assert!((r.pos[0] - 0.0).abs() < 0.001, "x should be 0");
+        assert!(
+            (r.pos[1] - (renderer.cell_height - 1.0)).abs() < 0.001,
+            "y should be cell_height - 1.0, got {} expected {}",
+            r.pos[1],
+            renderer.cell_height - 1.0
+        );
+        assert!(
+            (r.pos[2] - renderer.cell_width).abs() < 0.001,
+            "width should be cell_width"
+        );
+        assert!((r.pos[3] - 1.0).abs() < 0.001, "height should be 1.0");
+        // Color should match fg (white = 255,255,255)
+        assert!((r.color[0] - 1.0).abs() < 0.01, "r should be 1.0");
+        assert!((r.color[1] - 1.0).abs() < 0.01, "g should be 1.0");
+        assert!((r.color[2] - 1.0).abs() < 0.01, "b should be 1.0");
+    }
+
+    /// Test: Cell with STRIKEOUT flag produces 1 RectInstance at midpoint of cell
+    #[test]
+    fn decoration_strikeout_rect_position_and_size() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![make_cell('A', 0, 0, Flags::STRIKEOUT)];
+        let snapshot = make_snapshot(cells, 1);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert_eq!(rects.len(), 1, "STRIKEOUT cell should produce 1 rect");
+        let r = &rects[0];
+        let expected_y = (renderer.cell_height / 2.0).floor();
+        assert!(
+            (r.pos[1] - expected_y).abs() < 0.001,
+            "y should be (cell_height/2).floor(), got {} expected {}",
+            r.pos[1],
+            expected_y
+        );
+        assert!((r.pos[3] - 1.0).abs() < 0.001, "height should be 1.0");
+    }
+
+    /// Test: UNDERLINE + WIDE_CHAR produces rect with double width
+    #[test]
+    fn decoration_underline_wide_char() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![
+            make_cell('\u{4e16}', 0, 0, Flags::UNDERLINE | Flags::WIDE_CHAR),
+            make_cell(' ', 1, 0, Flags::WIDE_CHAR_SPACER),
+        ];
+        let snapshot = make_snapshot(cells, 2);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert_eq!(rects.len(), 1, "Wide underline should produce 1 rect");
+        assert!(
+            (rects[0].pos[2] - renderer.cell_width * 2.0).abs() < 0.001,
+            "width should be 2*cell_width"
+        );
+    }
+
+    /// Test: STRIKEOUT + WIDE_CHAR produces rect with double width
+    #[test]
+    fn decoration_strikeout_wide_char() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![
+            make_cell('\u{4e16}', 0, 0, Flags::STRIKEOUT | Flags::WIDE_CHAR),
+            make_cell(' ', 1, 0, Flags::WIDE_CHAR_SPACER),
+        ];
+        let snapshot = make_snapshot(cells, 2);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert_eq!(rects.len(), 1, "Wide strikeout should produce 1 rect");
+        assert!(
+            (rects[0].pos[2] - renderer.cell_width * 2.0).abs() < 0.001,
+            "width should be 2*cell_width"
+        );
+    }
+
+    /// Test: Space character with UNDERLINE flag still produces a decoration rect
+    #[test]
+    fn decoration_underline_on_space() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![make_cell(' ', 0, 0, Flags::UNDERLINE)];
+        let snapshot = make_snapshot(cells, 1);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert_eq!(
+            rects.len(),
+            1,
+            "Space with UNDERLINE should still produce a decoration rect"
+        );
+    }
+
+    /// Test: Cell with both UNDERLINE and STRIKEOUT produces exactly 2 rects
+    #[test]
+    fn decoration_both_underline_and_strikeout() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![make_cell('A', 0, 0, Flags::UNDERLINE | Flags::STRIKEOUT)];
+        let snapshot = make_snapshot(cells, 1);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert_eq!(
+            rects.len(),
+            2,
+            "Cell with both UNDERLINE and STRIKEOUT should produce 2 rects"
+        );
+    }
+
+    /// Test: WIDE_CHAR_SPACER with UNDERLINE produces no rects (primary cell handles it)
+    #[test]
+    fn decoration_no_decoration_on_spacer() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![make_cell(' ', 1, 0, Flags::WIDE_CHAR_SPACER | Flags::UNDERLINE)];
+        let snapshot = make_snapshot(cells, 2);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert!(
+            rects.is_empty(),
+            "WIDE_CHAR_SPACER should not produce decoration rects"
+        );
+    }
+
+    /// Test: Cell with no decoration flags produces no rects
+    #[test]
+    fn decoration_no_decoration_on_plain_cell() {
+        let mut font_system = FontSystem::new();
+        let renderer = GridRenderer::new(&mut font_system, "monospace", 14.0, 1.0);
+        let cells = vec![make_cell('A', 0, 0, Flags::empty())];
+        let snapshot = make_snapshot(cells, 1);
+        let rects = renderer.build_decoration_rects(&snapshot);
+        assert!(
+            rects.is_empty(),
+            "Plain cell should not produce decoration rects"
         );
     }
 
