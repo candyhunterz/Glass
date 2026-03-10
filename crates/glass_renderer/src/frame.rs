@@ -42,6 +42,8 @@ pub struct FrameRenderer {
     default_bg: Rgb,
     /// Reusable buffer storage to avoid per-frame allocation
     text_buffers: Vec<Buffer>,
+    /// Reusable position storage for per-cell grid rendering
+    cell_positions: Vec<(usize, i32)>,
     /// Reusable buffer storage for overlay text (block labels, status bar)
     overlay_buffers: Vec<Buffer>,
     /// Reusable buffer storage for pipeline overlay text (drawn after overlay rects)
@@ -112,6 +114,7 @@ impl FrameRenderer {
             tab_bar,
             default_bg,
             text_buffers: Vec::new(),
+            cell_positions: Vec::new(),
             overlay_buffers: Vec::new(),
             pipeline_buffers: Vec::new(),
         }
@@ -269,25 +272,23 @@ impl FrameRenderer {
         self.rect_renderer
             .prepare(device, queue, &rect_instances, width, height);
 
-        // 3. Build text buffers and text areas for grid content
+        // 3. Build per-cell text buffers and text areas for grid content
         self.text_buffers.clear();
-        self.grid_renderer.build_text_buffers(
+        self.cell_positions.clear();
+        self.grid_renderer.build_cell_buffers(
             &mut self.glyph_cache.font_system,
             snapshot,
             &mut self.text_buffers,
+            &mut self.cell_positions,
         );
-        let mut text_areas: Vec<TextArea<'_>> = if grid_y_offset > 0.0 {
-            self.grid_renderer.build_text_areas_offset(
-                &self.text_buffers,
-                width,
-                height,
-                0.0,
-                grid_y_offset,
-            )
-        } else {
-            self.grid_renderer
-                .build_text_areas(&self.text_buffers, width, height)
-        };
+        let mut text_areas: Vec<TextArea<'_>> = self.grid_renderer.build_cell_text_areas_offset(
+            &self.text_buffers,
+            &self.cell_positions,
+            width,
+            height,
+            0.0,
+            grid_y_offset,
+        );
 
         // 3b. Build overlay text buffers for block labels and status bar.
         // Two-phase approach: first build all buffers (mutable), then create
@@ -899,32 +900,35 @@ impl FrameRenderer {
         self.rect_renderer
             .prepare(device, queue, &rect_instances, width, height);
 
-        // 3. Build text buffers for all panes
+        // 3. Build per-cell text buffers for all panes
         // We need separate buffer storage per pane since they have different offsets
         self.text_buffers.clear();
+        self.cell_positions.clear();
         let mut text_areas: Vec<TextArea<'_>> = Vec::new();
-        let mut pane_buffer_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut pane_ranges: Vec<(usize, usize, usize, usize)> = Vec::new();
 
-        for (viewport, snapshot, _blocks, _is_focused) in panes {
-            let start = self.text_buffers.len();
-            self.grid_renderer.build_text_buffers(
+        for (_viewport, snapshot, _blocks, _is_focused) in panes {
+            let buf_start = self.text_buffers.len();
+            let pos_start = self.cell_positions.len();
+            self.grid_renderer.build_cell_buffers(
                 &mut self.glyph_cache.font_system,
                 snapshot,
                 &mut self.text_buffers,
+                &mut self.cell_positions,
             );
-            let end = self.text_buffers.len();
-            pane_buffer_ranges.push((start, end));
-
-            // We'll build text areas after all buffers are created
-            let _ = viewport; // used below
+            let buf_end = self.text_buffers.len();
+            let pos_end = self.cell_positions.len();
+            pane_ranges.push((buf_start, buf_end, pos_start, pos_end));
         }
 
         // Build text areas with offsets for each pane
         for (i, (viewport, _snapshot, _blocks, _is_focused)) in panes.iter().enumerate() {
-            let (start, end) = pane_buffer_ranges[i];
-            let pane_buffers = &self.text_buffers[start..end];
-            let areas = self.grid_renderer.build_text_areas_offset(
+            let (buf_start, buf_end, pos_start, pos_end) = pane_ranges[i];
+            let pane_buffers = &self.text_buffers[buf_start..buf_end];
+            let pane_positions = &self.cell_positions[pos_start..pos_end];
+            let areas = self.grid_renderer.build_cell_text_areas_offset(
                 pane_buffers,
+                pane_positions,
                 viewport.width,
                 viewport.height,
                 viewport.x as f32,

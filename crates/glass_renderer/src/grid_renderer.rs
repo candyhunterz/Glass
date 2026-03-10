@@ -228,117 +228,6 @@ impl GridRenderer {
         rects
     }
 
-    /// Build glyphon text Buffers for each terminal line.
-    ///
-    /// The caller must pass a `&mut Vec<Buffer>` that will own the Buffers.
-    /// Returns a vector of TextAreas that borrow from those Buffers.
-    /// The Buffers Vec must outlive the returned TextAreas.
-    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-    pub fn build_text_buffers(
-        &self,
-        font_system: &mut FontSystem,
-        snapshot: &GridSnapshot,
-        buffers: &mut Vec<Buffer>,
-    ) {
-        let physical_font_size = self.font_size * self.scale_factor;
-        let metrics = Metrics::new(physical_font_size, self.cell_height);
-        let viewport_width = snapshot.columns as f32 * self.cell_width;
-
-        buffers.reserve(buffers.len() + snapshot.screen_lines);
-        let line_offset = snapshot.display_offset as i32;
-
-        for line_idx in 0..snapshot.screen_lines {
-            // Collect cells for this line, skip WIDE_CHAR_SPACER
-            // display_iter yields line values starting at -(display_offset),
-            // so add line_offset to convert to viewport-relative index
-            let line_cells: Vec<_> = snapshot
-                .cells
-                .iter()
-                .filter(|cell| {
-                    (cell.point.line.0 + line_offset) as usize == line_idx
-                        && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                })
-                .collect();
-
-            let mut buffer = Buffer::new(font_system, metrics);
-            buffer.set_size(font_system, Some(viewport_width), Some(self.cell_height));
-
-            if line_cells.is_empty() {
-                // Empty line — set space as placeholder
-                buffer.set_text(
-                    font_system,
-                    " ",
-                    &Attrs::new().family(Family::Name(&self.font_family)),
-                    Shaping::Advanced,
-                    None,
-                );
-            } else {
-                // Build combined string and per-span attributes
-                let mut text = String::with_capacity(line_cells.len());
-                let mut span_ranges: Vec<(usize, usize, u8, u8, u8, bool, bool)> =
-                    Vec::with_capacity(line_cells.len());
-
-                for cell in &line_cells {
-                    let start = text.len();
-                    text.push(cell.c);
-                    for &zw in &cell.zerowidth {
-                        text.push(zw);
-                    }
-                    let end = text.len();
-                    span_ranges.push((
-                        start,
-                        end,
-                        cell.fg.r,
-                        cell.fg.g,
-                        cell.fg.b,
-                        cell.flags.contains(Flags::BOLD),
-                        cell.flags.contains(Flags::ITALIC),
-                    ));
-                }
-
-                // Build rich text spans from the collected data
-                let rich_spans: Vec<(&str, Attrs<'_>)> = span_ranges
-                    .iter()
-                    .map(|&(start, end, r, g, b, bold, italic)| {
-                        let mut attrs = Attrs::new()
-                            .family(Family::Name(&self.font_family))
-                            .color(GlyphonColor::rgba(r, g, b, 255));
-                        if bold {
-                            attrs = attrs.weight(Weight::BOLD);
-                        }
-                        if italic {
-                            attrs = attrs.style(Style::Italic);
-                        }
-                        (&text[start..end], attrs)
-                    })
-                    .collect();
-
-                buffer.set_rich_text(
-                    font_system,
-                    rich_spans,
-                    &Attrs::new().family(Family::Name(&self.font_family)),
-                    Shaping::Advanced,
-                    None,
-                );
-            }
-
-            buffer.shape_until_scroll(font_system, false);
-            buffers.push(buffer);
-        }
-    }
-
-    /// Create TextAreas from pre-built Buffers.
-    ///
-    /// Call this after `build_text_buffers` with the same Buffers vec.
-    pub fn build_text_areas<'a>(
-        &self,
-        buffers: &'a [Buffer],
-        viewport_width: u32,
-        viewport_height: u32,
-    ) -> Vec<TextArea<'a>> {
-        self.build_text_areas_offset(buffers, viewport_width, viewport_height, 0.0, 0.0)
-    }
-
     /// Build rects with a pixel offset applied to all positions.
     ///
     /// Used for split pane rendering where each pane's content is offset
@@ -356,43 +245,6 @@ impl GridRenderer {
             rect.pos[1] += y_offset;
         }
         rects
-    }
-
-    /// Create TextAreas from pre-built Buffers with a pixel offset.
-    ///
-    /// Used for split pane rendering where text must be positioned within
-    /// a viewport sub-region. TextBounds are set to the viewport rect.
-    ///
-    /// **Legacy method** -- preserved for frame.rs backward compatibility.
-    /// Positions buffers sequentially as one-per-line. Plan 02 will migrate
-    /// callers to `build_cell_text_areas_offset` for per-cell positioning.
-    pub fn build_text_areas_offset<'a>(
-        &self,
-        buffers: &'a [Buffer],
-        viewport_width: u32,
-        viewport_height: u32,
-        x_offset: f32,
-        y_offset: f32,
-    ) -> Vec<TextArea<'a>> {
-        let bounds = TextBounds {
-            left: x_offset as i32,
-            top: y_offset as i32,
-            right: (x_offset as u32 + viewport_width) as i32,
-            bottom: (y_offset as u32 + viewport_height) as i32,
-        };
-        buffers
-            .iter()
-            .enumerate()
-            .map(|(line_idx, buffer)| TextArea {
-                buffer,
-                left: x_offset,
-                top: y_offset + line_idx as f32 * self.cell_height,
-                scale: 1.0,
-                bounds,
-                default_color: GlyphonColor::rgba(204, 204, 204, 255),
-                custom_glyphs: &[],
-            })
-            .collect()
     }
 
     /// Build per-cell glyphon Buffers for grid-locked rendering.
@@ -556,10 +408,7 @@ mod tests {
 
         // cell_width should be positive and reasonable (not a fallback of 0.6*font_size exactly
         // unless no font is found -- on CI with system fonts it should be the actual M width)
-        assert!(
-            renderer.cell_width > 0.0,
-            "cell_width should be positive"
-        );
+        assert!(renderer.cell_width > 0.0, "cell_width should be positive");
         // Should be roughly in the range of 0.5x to 1.0x font_size for a monospace font
         let physical = 14.0_f32;
         assert!(
@@ -581,34 +430,62 @@ mod tests {
         // Create a minimal snapshot with 3 cells: 'A', ' ' (space), 'B'
         let cells = vec![
             glass_terminal::RenderedCell {
-                point: Point { line: Line(0), column: Column(0) },
+                point: Point {
+                    line: Line(0),
+                    column: Column(0),
+                },
                 c: 'A',
-                fg: Rgb { r: 255, g: 255, b: 255 },
+                fg: Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::empty(),
                 zerowidth: vec![],
             },
             glass_terminal::RenderedCell {
-                point: Point { line: Line(0), column: Column(1) },
+                point: Point {
+                    line: Line(0),
+                    column: Column(1),
+                },
                 c: ' ',
-                fg: Rgb { r: 255, g: 255, b: 255 },
+                fg: Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::empty(),
                 zerowidth: vec![],
             },
             glass_terminal::RenderedCell {
-                point: Point { line: Line(0), column: Column(2) },
+                point: Point {
+                    line: Line(0),
+                    column: Column(2),
+                },
                 c: 'B',
-                fg: Rgb { r: 255, g: 255, b: 255 },
+                fg: Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::empty(),
                 zerowidth: vec![],
             },
             // WIDE_CHAR_SPACER cell -- should be skipped
             glass_terminal::RenderedCell {
-                point: Point { line: Line(0), column: Column(3) },
+                point: Point {
+                    line: Line(0),
+                    column: Column(3),
+                },
                 c: ' ',
-                fg: Rgb { r: 255, g: 255, b: 255 },
+                fg: Rgb {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::WIDE_CHAR_SPACER,
                 zerowidth: vec![],
@@ -618,7 +495,10 @@ mod tests {
         let snapshot = GridSnapshot {
             cells,
             cursor: alacritty_terminal::term::RenderableCursor {
-                point: Point { line: Line(0), column: Column(0) },
+                point: Point {
+                    line: Line(0),
+                    column: Column(0),
+                },
                 shape: CursorShape::Block,
             },
             display_offset: 0,
@@ -634,8 +514,16 @@ mod tests {
         renderer.build_cell_buffers(&mut font_system, &snapshot, &mut buffers, &mut positions);
 
         // Should have 2 buffers: 'A' and 'B' (space skipped, spacer skipped)
-        assert_eq!(buffers.len(), 2, "Should create 2 buffers (skip space + spacer)");
-        assert_eq!(positions.len(), 2, "Should have 2 positions matching buffers");
+        assert_eq!(
+            buffers.len(),
+            2,
+            "Should create 2 buffers (skip space + spacer)"
+        );
+        assert_eq!(
+            positions.len(),
+            2,
+            "Should have 2 positions matching buffers"
+        );
 
         // Verify positions
         assert_eq!(positions[0], (0, 0), "First buffer at column 0, line 0");
@@ -656,15 +544,24 @@ mod tests {
         let mut buffers = Vec::new();
         for _ in &positions {
             let mut buf = Buffer::new(&mut font_system, metrics);
-            buf.set_size(&mut font_system, Some(renderer.cell_width), Some(renderer.cell_height));
-            buf.set_text(&mut font_system, "X", &Attrs::new(), Shaping::Advanced, None);
+            buf.set_size(
+                &mut font_system,
+                Some(renderer.cell_width),
+                Some(renderer.cell_height),
+            );
+            buf.set_text(
+                &mut font_system,
+                "X",
+                &Attrs::new(),
+                Shaping::Advanced,
+                None,
+            );
             buf.shape_until_scroll(&mut font_system, false);
             buffers.push(buf);
         }
 
-        let areas = renderer.build_cell_text_areas_offset(
-            &buffers, &positions, 800, 600, 10.0, 20.0,
-        );
+        let areas =
+            renderer.build_cell_text_areas_offset(&buffers, &positions, 800, 600, 10.0, 20.0);
 
         assert_eq!(areas.len(), 4);
 
@@ -690,7 +587,10 @@ mod tests {
 
         // All should have scale=1.0
         for area in &areas {
-            assert_eq!(area.scale, 1.0, "TextArea.scale must be 1.0 (never use for DPI)");
+            assert_eq!(
+                area.scale, 1.0,
+                "TextArea.scale must be 1.0 (never use for DPI)"
+            );
         }
     }
 }
