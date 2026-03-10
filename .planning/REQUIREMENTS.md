@@ -15,7 +15,7 @@ Requirements for rendering correctness milestone. Each maps to roadmap phases.
 ### Wide Characters
 
 - [x] **WIDE-01**: CJK and other double-width characters render spanning 2 cell widths
-- [ ] **WIDE-02**: Cell backgrounds, cursor, and selection correctly span 2 cells for wide characters
+- [x] **WIDE-02**: Cell backgrounds, cursor, and selection correctly span 2 cells for wide characters
 
 ### Text Decorations
 
@@ -67,7 +67,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GRID-01 | Phase 40 | Complete |
 | GRID-02 | Phase 40 | Complete |
 | WIDE-01 | Phase 41 | Complete |
-| WIDE-02 | Phase 41 | Pending |
+| WIDE-02 | Phase 41 | Complete |
 | DECO-01 | Phase 42 | Pending |
 | DECO-02 | Phase 42 | Pending |
 | FONT-01 | Phase 43 | Pending |

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.4
 milestone_name: Rendering Correctness
 status: in-progress
-stopped_at: Completed 41-01-PLAN.md
-last_updated: "2026-03-10T21:59:00.000Z"
-last_activity: 2026-03-10 -- Completed Plan 01 (wide char double-width Buffer rendering)
+stopped_at: Completed 41-02-PLAN.md
+last_updated: "2026-03-10T22:15:17.024Z"
+last_activity: 2026-03-10 -- Completed Phase 41 (wide character support - all plans done)
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-03-10)
 ## Current Position
 
 Phase: 41 of 44 (Wide Character Support)
-Plan: 1 of 2 in current phase
-Status: In Progress
-Last activity: 2026-03-10 -- Completed Plan 01 (wide char double-width Buffer rendering)
+Plan: 2 of 2 in current phase (phase complete)
+Status: Phase 41 Complete
+Last activity: 2026-03-10 -- Completed Phase 41 (wide character support - all plans done)
 
-Progress (v2.4): [████████░░] 75%
+Progress (v2.4): [██████████] 100%
 
 ## Performance Metrics
 
@@ -42,7 +42,7 @@ Progress (v2.4): [████████░░] 75%
 - v2.1: 11 plans in ~23 min (~3 min/plan)
 - v2.2: 8 plans in ~30 min (~4 min/plan)
 - v2.3: 9 plans in ~35 min (~4 min/plan)
-- Total: 88 plans across 39 phases in 7 days
+- Total: 90 plans across 41 phases in 7 days
 
 ## Accumulated Context
 
@@ -61,6 +61,7 @@ v2.4-specific decisions:
 - cell_positions Vec tracked alongside text_buffers in FrameRenderer for per-cell positioning
 - [Phase 40]: All legacy per-line rendering methods removed; per-cell Buffer is now the only rendering pipeline
 - [Phase 41]: Use intersects() for multi-flag spacer skip; buf_width per-cell based on WIDE_CHAR flag
+- [Phase 41]: Cursor wide-char detection scans cells for WIDE_CHAR flag at cursor point; Beam cursor excluded from double-width
 
 ### Pending Todos
 
@@ -76,6 +77,6 @@ v2.4-specific decisions:
 
 ## Session Continuity
 
-Last session: 2026-03-10T21:59:00.000Z
-Stopped at: Completed 41-01-PLAN.md
+Last session: 2026-03-10T22:15:17.022Z
+Stopped at: Completed 41-02-PLAN.md
 Resume file: None

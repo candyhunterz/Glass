@@ -106,7 +106,7 @@
 **Milestone Goal:** Fix grid-aligned rendering so TUI apps (vim, htop, tmux, Claude Code) render correctly, and add missing text rendering features (wide chars, decorations, font fallback, DPI).
 
 - [x] **Phase 40: Grid Alignment** - Per-cell glyph positioning and font-metric line height for correct TUI rendering (completed 2026-03-10)
-- [ ] **Phase 41: Wide Character Support** - CJK and double-width characters render at correct 2-cell width
+- [x] **Phase 41: Wide Character Support** - CJK and double-width characters render at correct 2-cell width (completed 2026-03-10)
 - [ ] **Phase 42: Text Decorations** - Underline and strikethrough GPU rendering via rect instances
 - [ ] **Phase 43: Font Fallback** - Missing glyphs resolved via cosmic-text system font fallback
 - [ ] **Phase 44: Dynamic DPI** - ScaleFactorChanged triggers full font and surface rebuild
@@ -134,7 +134,7 @@ Plans:
   1. CJK characters (Chinese, Japanese, Korean) render at double cell width without overlapping adjacent characters
   2. Cell backgrounds, cursor highlighting, and text selection correctly span 2 cells for wide characters
   3. Mixed ASCII and CJK text on the same line maintains correct column alignment
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 41-01-PLAN.md — Wide char Buffer creation with double-width and spacer skip (WIDE-01)
 - [ ] 41-02-PLAN.md — Double-width background rects, cursor, and visual verification (WIDE-02)
@@ -216,7 +216,7 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 38. Structured Error Extraction | v2.3 | 2/2 | Complete | 2026-03-10 |
 | 39. Live Command Awareness | v2.3 | 1/1 | Complete | 2026-03-10 |
 | 40. Grid Alignment | 2/2 | Complete    | 2026-03-10 | - |
-| 41. Wide Character Support | 1/2 | In Progress|  | - |
+| 41. Wide Character Support | 2/2 | Complete   | 2026-03-10 | - |
 | 42. Text Decorations | v2.4 | 0/0 | Not started | - |
 | 43. Font Fallback | v2.4 | 0/0 | Not started | - |
 | 44. Dynamic DPI | v2.4 | 0/0 | Not started | - |
