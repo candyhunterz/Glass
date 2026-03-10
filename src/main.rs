@@ -2563,6 +2563,155 @@ impl ApplicationHandler<AppEvent> for Processor {
                             )
                         }
                     }
+                    "tab_send" => {
+                        if let Some(ctx) = self.windows.values().next() {
+                            match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                Ok(tab_idx) => {
+                                    let command = request
+                                        .params
+                                        .get("command")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
+                                        let input =
+                                            format!("{}\r", command).into_bytes();
+                                        let _ = session
+                                            .pty_sender
+                                            .send(PtyMsg::Input(Cow::Owned(input)));
+                                        glass_core::ipc::McpResponse::ok(
+                                            request.id,
+                                            serde_json::json!({
+                                                "sent": true,
+                                                "session_id": focused_sid.val(),
+                                            }),
+                                        )
+                                    } else {
+                                        glass_core::ipc::McpResponse::err(
+                                            request.id,
+                                            format!(
+                                                "Session {} not found",
+                                                focused_sid.val()
+                                            ),
+                                        )
+                                    }
+                                }
+                                Err(e) => {
+                                    glass_core::ipc::McpResponse::err(request.id, e)
+                                }
+                            }
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
+                    "tab_output" => {
+                        if let Some(ctx) = self.windows.values().next() {
+                            match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                Ok(tab_idx) => {
+                                    let n = request
+                                        .params
+                                        .get("lines")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(50)
+                                        .min(10000) as usize;
+                                    let pattern = request
+                                        .params
+                                        .get("pattern")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
+                                        let mut lines =
+                                            extract_term_lines(&session.term, n);
+                                        if let Some(ref pat) = pattern {
+                                            match regex::Regex::new(pat) {
+                                                Ok(re) => {
+                                                    lines.retain(|l| re.is_match(l));
+                                                }
+                                                Err(e) => {
+                                                    let _ = reply.send(
+                                                        glass_core::ipc::McpResponse::err(
+                                                            request.id,
+                                                            format!(
+                                                                "Invalid regex: {}",
+                                                                e
+                                                            ),
+                                                        ),
+                                                    );
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        let count = lines.len();
+                                        glass_core::ipc::McpResponse::ok(
+                                            request.id,
+                                            serde_json::json!({
+                                                "lines": lines,
+                                                "line_count": count,
+                                                "session_id": focused_sid.val(),
+                                            }),
+                                        )
+                                    } else {
+                                        glass_core::ipc::McpResponse::err(
+                                            request.id,
+                                            format!(
+                                                "Session {} not found",
+                                                focused_sid.val()
+                                            ),
+                                        )
+                                    }
+                                }
+                                Err(e) => {
+                                    glass_core::ipc::McpResponse::err(request.id, e)
+                                }
+                            }
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
+                    "tab_close" => {
+                        if let Some(ctx) = self.windows.values_mut().next() {
+                            if ctx.session_mux.tab_count() <= 1 {
+                                glass_core::ipc::McpResponse::err(
+                                    request.id,
+                                    "Cannot close the last tab".into(),
+                                )
+                            } else {
+                                match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                    Ok(tab_idx) => {
+                                        if let Some(session) =
+                                            ctx.session_mux.close_tab(tab_idx)
+                                        {
+                                            cleanup_session(session);
+                                        }
+                                        let remaining = ctx.session_mux.tab_count();
+                                        ctx.window.request_redraw();
+                                        glass_core::ipc::McpResponse::ok(
+                                            request.id,
+                                            serde_json::json!({
+                                                "closed": true,
+                                                "remaining_tabs": remaining,
+                                            }),
+                                        )
+                                    }
+                                    Err(e) => {
+                                        glass_core::ipc::McpResponse::err(request.id, e)
+                                    }
+                                }
+                            }
+                        } else {
+                            glass_core::ipc::McpResponse::err(
+                                request.id,
+                                "No windows available".into(),
+                            )
+                        }
+                    }
                     _ => glass_core::ipc::McpResponse::err(
                         request.id,
                         format!("Unknown method: {}", request.method),
