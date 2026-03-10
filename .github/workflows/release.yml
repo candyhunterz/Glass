@@ -43,7 +43,15 @@ jobs:
 
       - name: Add WiX to PATH
         shell: bash
-        run: echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $GITHUB_PATH
+        run: |
+          # Find WiX install dir — path varies across runner images
+          WIX_DIR=$(find "/c/Program Files (x86)" "/c/tools" -maxdepth 1 -iname "WiX*" -type d 2>/dev/null | head -1)
+          if [ -z "$WIX_DIR" ]; then
+            echo "ERROR: WiX Toolset not found"
+            exit 1
+          fi
+          echo "Found WiX at: $WIX_DIR"
+          echo "$WIX_DIR/bin" >> $GITHUB_PATH
 
       - name: Build MSI installer
         run: cargo wix --no-build --nocapture
