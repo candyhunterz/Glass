@@ -36,8 +36,12 @@ pub struct GridRenderer {
 impl GridRenderer {
     /// Create a GridRenderer by measuring cell dimensions from font metrics.
     ///
-    /// Uses cosmic-text to shape a reference character ("M") and measure its advance
-    /// width, establishing the monospace cell grid dimensions.
+    /// Uses cosmic-text to shape a reference character ("M") and derive:
+    /// - `cell_width` from the glyph advance width
+    /// - `cell_height` from `LayoutRun.line_height` (font ascent+descent), NOT a hardcoded 1.2x multiplier
+    ///
+    /// The font-metric cell height ensures box-drawing characters connect seamlessly
+    /// between adjacent lines (no inter-line gaps).
     pub fn new(
         font_system: &mut FontSystem,
         font_family: &str,
@@ -45,13 +49,12 @@ impl GridRenderer {
         scale_factor: f32,
     ) -> Self {
         let physical_font_size = font_size * scale_factor;
-        // Line height = 1.2x font size (standard terminal line spacing)
-        let line_height = (physical_font_size * 1.2).ceil();
-        let metrics = Metrics::new(physical_font_size, line_height);
+        // Use font_size as initial line_height to measure natural font metrics
+        let metrics = Metrics::new(physical_font_size, physical_font_size);
 
-        // Measure cell width by shaping "M" and reading glyph advance
+        // Measure cell dimensions by shaping "M" and reading font metrics
         let mut measure_buf = Buffer::new(font_system, metrics);
-        measure_buf.set_size(font_system, Some(1000.0), Some(line_height));
+        measure_buf.set_size(font_system, Some(1000.0), Some(physical_font_size * 2.0));
         measure_buf.set_text(
             font_system,
             "M",
@@ -61,15 +64,24 @@ impl GridRenderer {
         );
         measure_buf.shape_until_scroll(font_system, false);
 
-        let cell_width = measure_buf
+        let (cell_width, cell_height) = measure_buf
             .layout_runs()
             .next()
-            .and_then(|run| run.glyphs.first().map(|g| g.w))
-            .unwrap_or(physical_font_size * 0.6);
+            .map(|run| {
+                let w = run
+                    .glyphs
+                    .first()
+                    .map(|g| g.w)
+                    .unwrap_or(physical_font_size * 0.6);
+                // Derive cell_height from font metrics with safety floor
+                let h = run.line_height.max(physical_font_size).ceil();
+                (w, h)
+            })
+            .unwrap_or((physical_font_size * 0.6, physical_font_size.ceil()));
 
         GridRenderer {
             cell_width,
-            cell_height: line_height,
+            cell_height,
             font_size,
             scale_factor,
             font_family: font_family.to_string(),
@@ -350,6 +362,10 @@ impl GridRenderer {
     ///
     /// Used for split pane rendering where text must be positioned within
     /// a viewport sub-region. TextBounds are set to the viewport rect.
+    ///
+    /// **Legacy method** -- preserved for frame.rs backward compatibility.
+    /// Positions buffers sequentially as one-per-line. Plan 02 will migrate
+    /// callers to `build_cell_text_areas_offset` for per-cell positioning.
     pub fn build_text_areas_offset<'a>(
         &self,
         buffers: &'a [Buffer],
@@ -371,6 +387,114 @@ impl GridRenderer {
                 buffer,
                 left: x_offset,
                 top: y_offset + line_idx as f32 * self.cell_height,
+                scale: 1.0,
+                bounds,
+                default_color: GlyphonColor::rgba(204, 204, 204, 255),
+                custom_glyphs: &[],
+            })
+            .collect()
+    }
+
+    /// Build per-cell glyphon Buffers for grid-locked rendering.
+    ///
+    /// Creates one Buffer per non-empty terminal cell, skipping spaces and
+    /// WIDE_CHAR_SPACER cells. Each Buffer uses `set_monospace_width` to ensure
+    /// all glyphs are exactly cell_width wide, preventing horizontal drift.
+    ///
+    /// Cell positions are tracked in a parallel `positions` vec to guarantee
+    /// correct TextArea placement (avoids buffer-TextArea index mismatch).
+    #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
+    pub fn build_cell_buffers(
+        &self,
+        font_system: &mut FontSystem,
+        snapshot: &GridSnapshot,
+        buffers: &mut Vec<Buffer>,
+        positions: &mut Vec<(usize, i32)>,
+    ) {
+        let physical_font_size = self.font_size * self.scale_factor;
+        let metrics = Metrics::new(physical_font_size, self.cell_height);
+        let line_offset = snapshot.display_offset as i32;
+        let mut char_buf = [0u8; 4]; // stack buffer for zero-alloc char encoding
+
+        for cell in &snapshot.cells {
+            // Skip WIDE_CHAR_SPACER cells (right half of wide chars)
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            // Skip empty/space-only cells (no Buffer needed)
+            if cell.c == ' ' && cell.zerowidth.is_empty() {
+                continue;
+            }
+
+            let mut buffer = Buffer::new(font_system, metrics);
+            buffer.set_size(font_system, Some(self.cell_width), Some(self.cell_height));
+            // Force all glyphs to cell_width for grid snapping
+            buffer.set_monospace_width(font_system, Some(self.cell_width));
+
+            // Build text attributes
+            let mut attrs = Attrs::new()
+                .family(Family::Name(&self.font_family))
+                .color(GlyphonColor::rgba(cell.fg.r, cell.fg.g, cell.fg.b, 255));
+            if cell.flags.contains(Flags::BOLD) {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            if cell.flags.contains(Flags::ITALIC) {
+                attrs = attrs.style(Style::Italic);
+            }
+
+            // Zero-alloc path for single chars, String only for zero-width combiners
+            if cell.zerowidth.is_empty() {
+                let s = cell.c.encode_utf8(&mut char_buf);
+                buffer.set_text(font_system, s, &attrs, Shaping::Advanced, None);
+            } else {
+                let mut text = String::with_capacity(4 + cell.zerowidth.len() * 4);
+                text.push(cell.c);
+                for &zw in &cell.zerowidth {
+                    text.push(zw);
+                }
+                buffer.set_text(font_system, &text, &attrs, Shaping::Advanced, None);
+            }
+
+            buffer.shape_until_scroll(font_system, false);
+            buffers.push(buffer);
+
+            // Track grid position for this buffer
+            let col = cell.point.column.0;
+            let line = cell.point.line.0 + line_offset;
+            positions.push((col, line));
+        }
+    }
+
+    /// Create TextAreas from per-cell Buffers positioned at exact grid coordinates.
+    ///
+    /// Each TextArea is placed at `(x_offset + col * cell_width, y_offset + line * cell_height)`
+    /// using the positions from `build_cell_buffers`. This eliminates horizontal drift
+    /// since each cell is independently grid-locked.
+    ///
+    /// Uses `scale: 1.0` (never TextArea.scale for DPI -- see glyphon issue #117).
+    pub fn build_cell_text_areas_offset<'a>(
+        &self,
+        buffers: &'a [Buffer],
+        positions: &[(usize, i32)],
+        viewport_width: u32,
+        viewport_height: u32,
+        x_offset: f32,
+        y_offset: f32,
+    ) -> Vec<TextArea<'a>> {
+        let bounds = TextBounds {
+            left: x_offset as i32,
+            top: y_offset as i32,
+            right: (x_offset as u32 + viewport_width) as i32,
+            bottom: (y_offset as u32 + viewport_height) as i32,
+        };
+
+        buffers
+            .iter()
+            .zip(positions.iter())
+            .map(|(buffer, &(col, line))| TextArea {
+                buffer,
+                left: x_offset + col as f32 * self.cell_width,
+                top: y_offset + line as f32 * self.cell_height,
                 scale: 1.0,
                 bounds,
                 default_color: GlyphonColor::rgba(204, 204, 204, 255),
