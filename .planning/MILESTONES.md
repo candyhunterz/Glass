@@ -1,5 +1,25 @@
 # Milestones
 
+## v2.3 Agent MCP Features (Shipped: 2026-03-10)
+
+**Phases completed:** 5 phases, 9 plans
+**Lines of code:** ~30,000 Rust (up from ~24,047)
+**Timeline:** 2026-03-09 to 2026-03-10 (1 day)
+**Git range:** feat(35-01) to feat(39-01)
+**Files changed:** 34 files, +5,811 / -25 lines
+
+**Delivered:** Token-efficient AI agent terminal integration with IPC command channel, multi-tab orchestration, structured error extraction, filtered/cached/compressed output tools, and live command awareness through 12 new MCP tools.
+
+**Key accomplishments:**
+- Platform-abstracted IPC channel (named pipe/Unix socket) between MCP server and GUI event loop with JSON-line protocol and oneshot reply channels
+- 5 tab orchestration MCP tools (create, list, send, output, close) with dual identifier support (tab_index + session_id)
+- Token-saving tools: head/tail filtered output, cache staleness detection via file mtime, unified diffs via similar crate, budget-aware compressed context with focus modes
+- glass_errors crate with auto-detecting parsers for Rust JSON, Rust human-readable, and generic file:line:col formats
+- glass_extract_errors MCP tool exposing structured error extraction (file, line, column, message, severity) to AI agents
+- Live command awareness: has_running_command with elapsed time reporting, cancel_command sending ETX byte to PTY
+
+---
+
 ## v2.2 Multi-Agent Coordination (Shipped: 2026-03-10)
 
 **Phases completed:** 4 phases, 8 plans, 16 tasks

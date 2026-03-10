@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Agent MCP Features
-status: completed
-stopped_at: Completed 39-01-PLAN.md
-last_updated: "2026-03-10T05:48:35.214Z"
-last_activity: 2026-03-10 -- Completed 39-01 live command awareness tools
+status: shipped
+stopped_at: Milestone v2.3 archived
+last_updated: "2026-03-10T08:00:00.000Z"
+last_activity: 2026-03-10 -- Milestone v2.3 shipped and archived
 progress:
   total_phases: 5
   completed_phases: 5
@@ -18,19 +18,15 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-09)
+See: .planning/PROJECT.md (updated 2026-03-10)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Phase 39 - Live Command Awareness (Complete)
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 39 of 39 (Live Command Awareness)
-Plan: 1 of 1
-Status: Complete
-Last activity: 2026-03-10 -- Completed 39-01 live command awareness tools
-
-Progress: [██████████] 100%
+Milestone v2.3 Agent MCP Features: SHIPPED 2026-03-10
+Next: `/gsd:new-milestone` to start next milestone
 
 ## Performance Metrics
 
@@ -43,22 +39,13 @@ Progress: [██████████] 100%
 - v2.1: 11 plans in ~23 min (~3 min/plan)
 - v2.2: 8 plans in ~30 min (~4 min/plan)
 - v2.3: 9 plans in ~35 min (~4 min/plan)
-- Total: 88 plans across 39 phases in 6 days
+- Total: 88 plans across 39 phases in 7 days
 
 ## Accumulated Context
 
 ### Decisions
 
 See PROJECT.md Key Decisions table for full history.
-- [Phase 35]: Dedicated tokio runtime per IPC listener thread; JSON-line protocol; 5s oneshot timeout; Removed Clone from AppEvent for oneshot::Sender compatibility
-- [Phase 35]: Duplicated socket/pipe paths in ipc_client.rs to avoid glass_core dependency; Arc-wrapped IpcClient for Clone compatibility; fresh connection per request
-- [Phase 36]: Config clone for shell override in tab_create; early return for regex errors in tab_output; tab_close checks count before resolve
-- [Phase 36]: Used Parameters<T> wrapper for rmcp tool params; inline tab_index/session_id in each struct avoiding serde flatten
-- [Phase 37]: Head/tail mode applied before regex filter; cache check uses parser-sourced files only; extraction capped at 10000 lines
-- [Phase 37]: similar crate for unified diffs; token budget at 1 token ~ 4 chars; focus modes split budget into thirds; binary detection via null byte in first 8KiB
-- [Phase 38]: Enum dispatch for parser selection; OnceLock regex compilation; state machine for rust human parser two-line patterns
-- [Phase 38]: Helper function build_extract_errors_json for testable JSON construction separate from async tool handler
-- [Phase 39]: No command text field on Block struct -- omitted from has_running_command response; cancel_command sends ETX unconditionally for idempotency
 
 ### Pending Todos
 
@@ -72,10 +59,9 @@ See PROJECT.md Key Decisions table for full history.
 - ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Package manager manifests have placeholder values needing replacement at publish time
 - Tab-to-agent PID mapping may be infeasible cross-platform (process tree walking)
-- rmcp custom transport support needs verification for hybrid IPC approach (Phase 35 research flag)
 
 ## Session Continuity
 
-Last session: 2026-03-10T05:44:58Z
-Stopped at: Completed 39-01-PLAN.md
+Last session: 2026-03-10T08:00:00Z
+Stopped at: Milestone v2.3 archived
 Resume file: None

@@ -2,6 +2,56 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v2.3 -- Agent MCP Features
+
+**Shipped:** 2026-03-10
+**Phases:** 5 | **Plans:** 9 | **Sessions:** ~1
+
+### What Was Built
+- Platform-abstracted IPC channel (named pipe/Unix socket) between MCP server and GUI event loop with JSON-line protocol and 5s oneshot timeout
+- 5 tab orchestration MCP tools (create, list, send, output, close) with dual identifier support (tab_index + session_id) and resolve_tab_index helper
+- Token-saving tools: head/tail filtered output, cache staleness detection via file mtime, unified diffs via similar crate, budget-aware compressed context with focus modes
+- glass_errors crate with auto-detecting parsers for Rust JSON, Rust human-readable, and generic file:line:col formats using OnceLock regex compilation
+- glass_extract_errors MCP tool for structured error extraction (file, line, column, message, severity) with build_extract_errors_json helper
+- Live command awareness: has_running_command with elapsed time, cancel_command sending ETX byte unconditionally for idempotency
+
+### What Worked
+- IPC architecture with dedicated tokio runtime per listener thread cleanly separated async IPC from sync GUI event loop
+- Duplicating socket/pipe paths in ipc_client.rs (avoiding glass_core dependency) kept crate boundaries clean at minimal cost
+- Parameters<T> wrapper for rmcp tool params solved serde flatten issues cleanly across all 12+ tools
+- OnceLock regex compilation in glass_errors gave zero per-call overhead for error parsing
+- build_extract_errors_json helper pattern separated testable JSON construction from async tool handler -- good unit test surface
+- Audit passed with 48/48 observable truths, 18/18 requirements, 0 gaps, 0 tech debt -- cleanest milestone to date
+- All 9 IPC-dependent tools check ipc_client.as_ref() for graceful degradation when GUI is absent
+
+### What Was Inefficient
+- Nyquist validation still partial across all 5 phases (8th consecutive milestone with this gap)
+- Some SUMMARY.md files lacked one_liner frontmatter field, requiring manual extraction during milestone completion
+- ROADMAP.md progress table had inconsistent milestone column entries for phases 35, 37, 38, 39
+
+### Patterns Established
+- Dedicated tokio runtime per IPC thread for async/sync boundary crossing
+- Fresh connection per IPC request (no persistent connection; simple and reliable)
+- Parameters<T> wrapper for rmcp tool parameter deserialization
+- OnceLock regex compilation for zero per-call parsing overhead
+- Testable JSON builder functions separate from async MCP tool handlers
+- ETX byte for unconditional/idempotent command cancellation
+- Head/tail mode applied before regex filter for efficient output reduction
+
+### Key Lessons
+1. Duplicating small constants (socket paths) across crates is acceptable when it avoids dependency edges -- pragmatism over DRY
+2. OnceLock is the right pattern for one-time regex compilation in library code -- thread-safe with zero per-call cost
+3. Separating JSON construction from async handlers enables straightforward unit testing of MCP tools
+4. Idempotent operations (ETX cancel regardless of state) simplify both implementation and agent usage
+5. Graceful degradation (ipc_client.as_ref() check) should be built in from the start, not bolted on later
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~1 session in 1 day
+- Notable: 9 plans in ~35 min, averaging ~4 min/plan (consistent with v2.0/v2.1/v2.2 velocity; well-established patterns)
+
+---
+
 ## Milestone: v2.2 -- Multi-Agent Coordination
 
 **Shipped:** 2026-03-10
@@ -354,6 +404,7 @@
 | v2.0 | ~3 | 5 | Multi-session architecture, binary tree TDD, asset existence verification |
 | v2.1 | ~2 | 5 | Feature-gated instrumentation, pattern reuse (watcher/overlay), honest baselines |
 | v2.2 | ~2 | 4 | Zero-dependency crate, open-per-call SQLite, atomic GUI polling, conflict-as-success MCP pattern |
+| v2.3 | ~1 | 5 | IPC channel architecture, OnceLock regex, testable JSON builders, idempotent cancel, graceful degradation |
 
 ### Cumulative Quality
 
@@ -366,6 +417,7 @@
 | v2.0 | 436 (full workspace) | Partial (Nyquist partial across phases 21-25) | 4 |
 | v2.1 | 436 (full workspace) | Partial (Nyquist partial across phases 26-30) | 6 |
 | v2.2 | 527+ (full workspace) | Partial (Nyquist partial across phases 31-34) | 1 |
+| v2.3 | 550+ (full workspace) | Partial (Nyquist partial across phases 35-39) | 0 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -374,8 +426,8 @@
 3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
 5. Gap closure plans are reliable -- confirmed in v1.1, v1.2, v1.3, v2.0; plan for them proactively
-6. Nyquist validation is persistently skipped -- 6 milestones with partial coverage; needs workflow integration, not just reminders
-7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0, v2.1 -- always run audit before marking milestone complete
+6. Nyquist validation is persistently skipped -- 8 milestones with partial coverage; needs workflow integration, not just reminders
+7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0, v2.1, v2.3 -- always run audit before marking milestone complete
 8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs in v1.3, config_dir/data_dir in v2.0)
 9. Verify asset existence alongside code paths -- code referencing non-existent files passes compilation but fails at runtime (glass.fish in v2.0)
 10. Reuse existing architectural patterns when adding new features -- consistency reduces bugs (v2.1: watcher/overlay/event patterns)

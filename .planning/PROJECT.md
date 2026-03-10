@@ -82,18 +82,18 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ Status bar agent/lock count display with 5-second background polling -- v2.2
 - ✓ Tab lock indicators and conflict warning overlay for multi-agent awareness -- v2.2
 
+- ✓ IPC command channel between MCP server and GUI event loop (named pipe/Unix socket, JSON-line protocol) -- v2.3
+- ✓ Non-blocking MCP request processing in GUI event loop with oneshot reply channels -- v2.3
+- ✓ 5 tab orchestration MCP tools (create, list, send, output, close) with dual identifier support -- v2.3
+- ✓ Filtered command output (head/tail/regex) and command_id history fallback via MCP -- v2.3
+- ✓ Cache staleness detection via file mtime comparison for previous command results -- v2.3
+- ✓ Unified file diffs for command-modified files via similar crate -- v2.3
+- ✓ Budget-aware compressed context with focus modes (errors, files, history) -- v2.3
+- ✓ glass_errors crate with auto-detecting parsers (Rust JSON, Rust human, generic file:line:col) -- v2.3
+- ✓ glass_extract_errors MCP tool for structured error extraction (file, line, column, message, severity) -- v2.3
+- ✓ Live command awareness: has_running_command with elapsed time, cancel_command with ETX byte -- v2.3
+
 ### Active
-
-## Current Milestone: v2.3 Agent MCP Features
-
-**Goal:** Make Glass the most token-efficient, capable terminal for AI agents by exposing multi-tab orchestration, structured error extraction, and token-saving tools through new MCP tools.
-
-**Target features:**
-- MCP Command Channel — async channel bridge between MCP server and main event loop
-- Multi-tab orchestration — glass_tab_create, glass_tab_list, glass_tab_run, glass_tab_output, glass_tab_close
-- Token-saving tools — glass_output (filtered), glass_changed_files (diffs), glass_cached_result, glass_context budget/focus
-- Structured error extraction — glass_errors crate + MCP tool (Rust, Python, Node, Go, GCC parsers)
-- Live command awareness — glass_command_status, glass_command_cancel
 
 ### Deferred (Future Milestones)
 
@@ -128,10 +128,11 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v2.2 with 24,047 LOC Rust across 13 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination + root binary).
-Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0.
+Shipped v2.3 with ~30,000 LOC Rust across 14 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors + root binary).
+Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0, similar 2.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
-Built across 7 milestones (34 phases, 79 plans) in 6 days. 91+ coordination tests, 436+ workspace tests.
+Built across 8 milestones (39 phases, 88 plans) in 7 days. 436+ workspace tests.
+MCP tool count: 25 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools).
 Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
 Known tech debt:
@@ -220,6 +221,14 @@ Known tech debt:
 | Broadcast fans out to per-recipient rows | Independent read tracking per agent; deregister preserves messages | ✓ Good -- clean message lifecycle |
 | Atomic polling with Arc<AtomicUsize> for GUI | No AppEvent variants needed; renderer reads atomics directly | ✓ Good -- minimal coupling between poller and renderer |
 | 5-second polling interval with startup delay | Balance freshness vs I/O; delay avoids startup spike | ✓ Good -- responsive without overhead |
+| Dedicated tokio runtime per IPC listener thread | Isolates IPC from main GUI thread; JSON-line protocol with 5s oneshot timeout | ✓ Good -- clean async/sync boundary |
+| Duplicated socket/pipe paths in ipc_client.rs | Avoids glass_core dependency in glass_mcp; fresh connection per request | ✓ Good -- decoupled crates |
+| Parameters<T> wrapper for rmcp tool params | Inline tab_index/session_id per struct avoiding serde flatten issues | ✓ Good -- clean deserialization |
+| Head/tail mode applied before regex filter | Reduces data before pattern matching; cache check uses parser-sourced files only | ✓ Good -- efficient filtering |
+| similar crate for unified diffs | Lightweight diff library; token budget at 1 token ~ 4 chars approximation | ✓ Good -- practical accuracy |
+| Enum dispatch for error parser selection | OnceLock regex compilation; state machine for Rust human parser two-line patterns | ✓ Good -- zero per-call regex overhead |
+| build_extract_errors_json helper | Testable JSON construction separate from async tool handler | ✓ Good -- unit testable |
+| Cancel command sends ETX unconditionally | Idempotent cancel; no command text field on Block struct (omitted from response) | ✓ Good -- simple semantics |
 
 ---
-*Last updated: 2026-03-09 after v2.3 milestone started*
+*Last updated: 2026-03-10 after v2.3 milestone completed*
