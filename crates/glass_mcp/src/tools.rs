@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with twenty-two tools:
+//! Defines `GlassServer` with twenty-three tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -280,13 +280,23 @@ pub struct TabOutputParams {
     #[schemars(description = "Regex pattern to filter output lines")]
     pub pattern: Option<String>,
     /// Output mode: 'head' for first N lines, 'tail' for last N lines (default 'tail').
-    #[schemars(description = "Output mode: 'head' for first N lines, 'tail' for last N lines (default 'tail')")]
+    #[schemars(
+        description = "Output mode: 'head' for first N lines, 'tail' for last N lines (default 'tail')"
+    )]
     pub mode: Option<String>,
     /// History command ID. If provided, returns filtered output from history DB instead of live terminal (no GUI required).
     #[schemars(
         description = "History command ID. If provided, returns filtered output from history DB instead of live terminal (no GUI required)"
     )]
     pub command_id: Option<i64>,
+}
+
+/// Parameters for glass_cache_check.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CacheCheckParams {
+    /// History command ID to check staleness for.
+    #[schemars(description = "History command ID to check staleness for")]
+    pub command_id: i64,
 }
 
 /// Parameters for glass_tab_close.
@@ -1081,43 +1091,50 @@ impl GlassServer {
             let mode = input.mode.clone().unwrap_or_else(|| "tail".to_string());
             let pattern = input.pattern.clone();
 
-            let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
-                let db = HistoryDb::open(&db_path).map_err(|e| format!("Failed to open history DB: {}", e))?;
-                let record = db
-                    .get_command(cmd_id)
-                    .map_err(|e| format!("DB error: {}", e))?
-                    .ok_or_else(|| format!("Command not found: {}", cmd_id))?;
+            let result =
+                tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+                    let db = HistoryDb::open(&db_path)
+                        .map_err(|e| format!("Failed to open history DB: {}", e))?;
+                    let record = db
+                        .get_command(cmd_id)
+                        .map_err(|e| format!("DB error: {}", e))?
+                        .ok_or_else(|| format!("Command not found: {}", cmd_id))?;
 
-                let output = record.output.unwrap_or_default();
-                let all_lines: Vec<&str> = output.lines().collect();
+                    let output = record.output.unwrap_or_default();
+                    let all_lines: Vec<&str> = output.lines().collect();
 
-                // Apply head/tail mode
-                let sliced: Vec<&str> = if mode == "head" {
-                    all_lines.into_iter().take(lines_count).collect()
-                } else {
-                    let len = all_lines.len();
-                    let start = len.saturating_sub(lines_count);
-                    all_lines[start..].to_vec()
-                };
+                    // Apply head/tail mode
+                    let sliced: Vec<&str> = if mode == "head" {
+                        all_lines.into_iter().take(lines_count).collect()
+                    } else {
+                        let len = all_lines.len();
+                        let start = len.saturating_sub(lines_count);
+                        all_lines[start..].to_vec()
+                    };
 
-                // Apply regex filter
-                let filtered: Vec<String> = if let Some(ref pat) = pattern {
-                    let re = regex::Regex::new(pat).map_err(|e| format!("Invalid regex: {}", e))?;
-                    sliced.into_iter().filter(|l| re.is_match(l)).map(|s| s.to_string()).collect()
-                } else {
-                    sliced.into_iter().map(|s| s.to_string()).collect()
-                };
+                    // Apply regex filter
+                    let filtered: Vec<String> = if let Some(ref pat) = pattern {
+                        let re =
+                            regex::Regex::new(pat).map_err(|e| format!("Invalid regex: {}", e))?;
+                        sliced
+                            .into_iter()
+                            .filter(|l| re.is_match(l))
+                            .map(|s| s.to_string())
+                            .collect()
+                    } else {
+                        sliced.into_iter().map(|s| s.to_string()).collect()
+                    };
 
-                let count = filtered.len();
-                Ok(serde_json::json!({
-                    "lines": filtered,
-                    "line_count": count,
-                    "command_id": cmd_id,
-                    "source": "history",
-                }))
-            })
-            .await
-            .map_err(|e| McpError::internal_error(format!("Task join error: {}", e), None))?;
+                    let count = filtered.len();
+                    Ok(serde_json::json!({
+                        "lines": filtered,
+                        "line_count": count,
+                        "command_id": cmd_id,
+                        "source": "history",
+                    }))
+                })
+                .await
+                .map_err(|e| McpError::internal_error(format!("Task join error: {}", e), None))?;
 
             return match result {
                 Ok(json) => Ok(CallToolResult::success(vec![Content::text(
@@ -1196,6 +1213,102 @@ impl GlassServer {
             ))])),
         }
     }
+
+    /// Check if a previous command's cached result is still valid.
+    #[tool(
+        description = "Check if a previous command's cached result is still valid. Compares file modification times against when the command finished. Returns stale=false if no files have changed, stale=true with a list of changed files if any have been modified or deleted since."
+    )]
+    async fn glass_cache_check(
+        &self,
+        Parameters(params): Parameters<CacheCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db_path = self.db_path.clone();
+        let glass_dir = self.glass_dir.clone();
+        let command_id = params.command_id;
+
+        let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+            // Look up the command in history DB
+            let db = HistoryDb::open(&db_path)
+                .map_err(|e| format!("Failed to open history DB: {}", e))?;
+            let command = db
+                .get_command(command_id)
+                .map_err(|e| format!("DB error: {}", e))?
+                .ok_or_else(|| format!("Command not found: {}", command_id))?;
+
+            // Open snapshot store
+            let store = glass_snapshot::SnapshotStore::open(&glass_dir)
+                .map_err(|e| format!("Failed to open snapshot store: {}", e))?;
+
+            // Get snapshots for this command
+            let snapshots = store
+                .db()
+                .get_snapshots_by_command(command_id)
+                .map_err(|e| format!("Failed to query snapshots: {}", e))?;
+
+            if snapshots.is_empty() {
+                return Ok(serde_json::json!({
+                    "command_id": command_id,
+                    "stale": false,
+                    "reason": "no_snapshots",
+                    "message": "No file snapshots recorded for this command",
+                }));
+            }
+
+            let mut stale = false;
+            let mut changed_files: Vec<String> = Vec::new();
+            let mut checked_count: usize = 0;
+
+            for snapshot in &snapshots {
+                let files = store
+                    .db()
+                    .get_snapshot_files(snapshot.id)
+                    .map_err(|e| format!("Failed to query snapshot files: {}", e))?;
+
+                for file_rec in &files {
+                    if file_rec.source != "parser" {
+                        continue;
+                    }
+                    checked_count += 1;
+
+                    match std::fs::metadata(&file_rec.file_path) {
+                        Err(_) => {
+                            // File deleted
+                            stale = true;
+                            changed_files.push(file_rec.file_path.clone());
+                        }
+                        Ok(meta) => {
+                            if let Ok(modified) = meta.modified() {
+                                let mtime = modified
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+                                if mtime > command.finished_at {
+                                    stale = true;
+                                    changed_files.push(file_rec.file_path.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(serde_json::json!({
+                "command_id": command_id,
+                "stale": stale,
+                "changed_files": changed_files,
+                "checked_files": checked_count,
+            }))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("Task join error: {}", e), None))?;
+
+        match result {
+            Ok(json) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
 }
 
 #[tool_handler]
@@ -1211,7 +1324,8 @@ impl ServerHandler for GlassServer {
                  For multi-agent coordination: glass_agent_register to join, glass_agent_lock/unlock for file locks, \
                  glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness. \
                  Live GUI tools: glass_ping to check if the GUI is running and responsive. \
-                 Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs.",
+                 Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs. \
+                 Token saving: glass_tab_output supports head/tail mode and command_id for history DB lookup. glass_cache_check to verify if a command's result is still valid.",
             )
     }
 }
@@ -1557,5 +1671,12 @@ mod tests {
         let params: TabOutputParams = serde_json::from_str(json).unwrap();
         assert!(params.mode.is_none());
         assert!(params.command_id.is_none());
+    }
+
+    #[test]
+    fn test_cache_check_params_deserialize() {
+        let json = r#"{"command_id": 42}"#;
+        let params: CacheCheckParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 42);
     }
 }
