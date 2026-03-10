@@ -5,8 +5,8 @@
 
 mod detect;
 mod generic;
-pub mod rust_human;
-pub mod rust_json;
+mod rust_human;
+mod rust_json;
 
 use serde::Serialize;
 
@@ -101,5 +101,26 @@ mod tests {
         assert_eq!(errors[0].line, 10);
         assert_eq!(errors[0].column, Some(5));
         assert_eq!(errors[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn end_to_end_rust_json_with_hint() {
+        let output = r#"{"reason":"compiler-message","package_id":"test","manifest_path":"Cargo.toml","message":{"message":"mismatched types","code":{"code":"E0308","explanation":null},"level":"error","spans":[{"file_name":"src/main.rs","byte_start":100,"byte_end":110,"line_start":10,"line_end":10,"column_start":5,"column_end":15,"is_primary":true,"text":[],"label":null}],"children":[],"rendered":"error[E0308]"}}"#;
+        let errors = extract_errors(output, Some("cargo build"));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].file, "src/main.rs");
+        assert_eq!(errors[0].line, 10);
+        assert_eq!(errors[0].severity, Severity::Error);
+        assert_eq!(errors[0].code, Some("E0308".to_string()));
+    }
+
+    #[test]
+    fn end_to_end_rust_human_content_sniff() {
+        let output = "error[E0308]: mismatched types\n --> src/main.rs:10:5\n  |\n10 |     let x: u32 = \"hello\";\n  |                   ^^^^^^^";
+        let errors = extract_errors(output, None);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].file, "src/main.rs");
+        assert_eq!(errors[0].severity, Severity::Error);
+        assert_eq!(errors[0].code, Some("E0308".to_string()));
     }
 }
