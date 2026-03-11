@@ -128,6 +128,11 @@
   - [ ] 46-01-PLAN.md -- TabHitResult enum, variable-width layout, close/new-tab button rendering + tests
   - [ ] 46-02-PLAN.md -- Wire hover state, click handlers, and frame parameter threading
 - [ ] Phase 47: Tab Drag Reorder
+  **Goal:** Click-and-drag tab reordering with visual insertion indicator and 5px drag threshold
+  **Plans:** 2 plans
+  Plans:
+  - [ ] 47-01-PLAN.md -- reorder_tab() logic + drag_drop_index() + indicator rendering with TDD tests
+  - [ ] 47-02-PLAN.md -- Wire TabDragState into event loop and thread drop_index through rendering
 
 ## Progress
 
@@ -179,4 +184,4 @@
 | 44. Dynamic DPI | v2.4 | 1/1 | Complete | 2026-03-11 |
 | 45. Scrollbar | v2.5 | Complete    | 2026-03-11 | 2026-03-11 |
 | 46. Tab Bar Controls | 2/2 | Complete    | 2026-03-11 | - |
-| 47. Tab Drag Reorder | v2.5 | 0/0 | Planned | - |
+| 47. Tab Drag Reorder | v2.5 | 0/2 | Planned | - |
