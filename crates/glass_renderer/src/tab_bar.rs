@@ -131,6 +131,7 @@ impl TabBarRenderer {
         tabs: &[TabDisplayInfo],
         viewport_width: f32,
         hovered_tab: Option<usize>,
+        drop_index: Option<usize>,
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
 
@@ -179,6 +180,21 @@ impl TabBarRenderer {
             pos: [plus_x, 0.0, NEW_TAB_BUTTON_WIDTH, self.cell_height],
             color: BAR_BG_COLOR,
         });
+
+        // Drag-and-drop insertion indicator
+        if let Some(idx) = drop_index {
+            let indicator_x = idx as f32 * (tab_width + TAB_GAP) - TAB_GAP / 2.0
+                - DRAG_INDICATOR_WIDTH / 2.0;
+            rects.push(RectInstance {
+                pos: [
+                    indicator_x.max(0.0),
+                    0.0,
+                    DRAG_INDICATOR_WIDTH,
+                    self.cell_height,
+                ],
+                color: DRAG_INDICATOR_COLOR,
+            });
+        }
 
         rects
     }
@@ -281,6 +297,20 @@ impl TabBarRenderer {
         self.cell_height
     }
 
+    /// Compute the drop slot index for a drag-and-drop operation.
+    ///
+    /// Given the mouse X position, returns the insertion slot (0..=tab_count)
+    /// where a dragged tab should be dropped. The slot is computed by finding
+    /// which tab boundary (midpoint) the cursor is closest to.
+    pub fn drag_drop_index(&self, x: f32, tab_count: usize, viewport_width: f32) -> usize {
+        if tab_count == 0 {
+            return 0;
+        }
+        let (tab_width, _) = self.compute_tab_width(tab_count, viewport_width);
+        let slot = ((x / (tab_width + TAB_GAP)) + 0.5) as usize;
+        slot.min(tab_count)
+    }
+
     /// Hit-test: given an x coordinate, return what was clicked.
     ///
     /// Checks in order: "+" new tab button, close button sub-rects, tab bodies.
@@ -380,7 +410,7 @@ mod tests {
     fn test_build_tab_rects_single_tab() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab 1", true)]);
-        let rects = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
         // Bar background + 1 active tab + "+" button = 3 rects
         assert_eq!(rects.len(), 3);
         // First rect is bar background
@@ -394,7 +424,7 @@ mod tests {
     fn test_build_tab_rects_three_tabs_active_distinct() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab 1", false), ("Tab 2", true), ("Tab 3", false)]);
-        let rects = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
         // Bar background + 3 tab rects + "+" button = 5
         assert_eq!(rects.len(), 5);
         // Active tab (index 1 -> rects[2]) has distinct color
@@ -407,7 +437,7 @@ mod tests {
     fn test_tab_rects_variable_width() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("A", true), ("B", false), ("C", false)]);
-        let rects = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
         // Tab width = (800 - 32 - 2) / 3 = 255.33...
         let expected_width = (800.0 - NEW_TAB_BUTTON_WIDTH - 2.0) / 3.0;
         for rect in &rects[1..4] {
@@ -419,7 +449,7 @@ mod tests {
     fn test_tab_rects_at_top() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab", true)]);
-        let rects = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
         // All rects at y=0 with height=cell_height (except close button)
         for rect in &rects {
             assert_eq!(rect.pos[3], 16.0);
@@ -455,7 +485,7 @@ mod tests {
     fn test_zero_tabs_only_background() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs: Vec<TabDisplayInfo> = vec![];
-        let rects = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
         assert_eq!(rects.len(), 1); // only bar background
         assert_eq!(rects[0].color, BAR_BG_COLOR);
     }
@@ -542,7 +572,7 @@ mod tests {
     fn test_new_tab_button_position() {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab 1", true), ("Tab 2", false)]);
-        let rects = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
         // Last rect should be the "+" button
         let plus_rect = rects.last().unwrap();
         assert_eq!(plus_rect.pos[2], NEW_TAB_BUTTON_WIDTH);
@@ -558,12 +588,12 @@ mod tests {
         let tabs = make_tabs(&[("Tab 1", true), ("Tab 2", false), ("Tab 3", false)]);
 
         // No hover -> no close button rect
-        let rects_none = renderer.build_tab_rects(&tabs, 800.0, None);
+        let rects_none = renderer.build_tab_rects(&tabs, 800.0, None, None);
         // bg + 3 tabs + "+" button = 5
         assert_eq!(rects_none.len(), 5);
 
         // Hover on tab 1 -> close button rect added
-        let rects_hover = renderer.build_tab_rects(&tabs, 800.0, Some(1));
+        let rects_hover = renderer.build_tab_rects(&tabs, 800.0, Some(1), None);
         // bg + 3 tabs + close button + "+" button = 6
         assert_eq!(rects_hover.len(), 6);
 

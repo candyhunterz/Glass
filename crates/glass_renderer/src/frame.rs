@@ -257,7 +257,7 @@ impl FrameRenderer {
 
         // 1c2. Append tab bar rects (at top of viewport)
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, None);
             rect_instances.extend(tab_rects);
         }
 
@@ -962,7 +962,7 @@ impl FrameRenderer {
 
         // Tab bar rects
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, None);
             rect_instances.extend(tab_rects);
         }
 
