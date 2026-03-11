@@ -122,6 +122,11 @@
   - [x] 45-01-PLAN.md -- ScrollbarRenderer module with unit tests + FrameRenderer integration
   - [x] 45-02-PLAN.md -- Mouse interactions (hover, click, drag) + grid width reduction
 - [ ] Phase 46: Tab Bar Controls
+  **Goal:** Clickable "+" new tab button, "x" close tab buttons (hover-only), and tab overflow compression
+  **Plans:** 2 plans
+  Plans:
+  - [ ] 46-01-PLAN.md -- TabHitResult enum, variable-width layout, close/new-tab button rendering + tests
+  - [ ] 46-02-PLAN.md -- Wire hover state, click handlers, and frame parameter threading
 - [ ] Phase 47: Tab Drag Reorder
 
 ## Progress
@@ -173,5 +178,5 @@
 | 43. Font Fallback | v2.4 | 1/1 | Complete | 2026-03-10 |
 | 44. Dynamic DPI | v2.4 | 1/1 | Complete | 2026-03-11 |
 | 45. Scrollbar | v2.5 | Complete    | 2026-03-11 | 2026-03-11 |
-| 46. Tab Bar Controls | v2.5 | 0/0 | Planned | - |
+| 46. Tab Bar Controls | v2.5 | 0/2 | Planned | - |
 | 47. Tab Drag Reorder | v2.5 | 0/0 | Planned | - |
