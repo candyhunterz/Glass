@@ -109,7 +109,7 @@
 - [x] **Phase 41: Wide Character Support** - CJK and double-width characters render at correct 2-cell width (completed 2026-03-10)
 - [x] **Phase 42: Text Decorations** - Underline and strikethrough GPU rendering via rect instances (completed 2026-03-10)
 - [x] **Phase 43: Font Fallback** - Missing glyphs resolved via cosmic-text system font fallback (completed 2026-03-10)
-- [ ] **Phase 44: Dynamic DPI** - ScaleFactorChanged triggers full font and surface rebuild
+- [x] **Phase 44: Dynamic DPI** - ScaleFactorChanged triggers full font and surface rebuild (completed 2026-03-11)
 
 ## Phase Details
 
@@ -170,7 +170,7 @@ Plans:
   1. Moving the Glass window from a 1x display to a 2x HiDPI display triggers automatic font and surface rebuild with no user action required
   2. After a DPI change, the terminal grid remains correctly aligned with no rendering artifacts, clipping, or blurry text
   3. The PTY is notified of the new terminal dimensions after a DPI change so running programs reflow correctly
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 44-01-PLAN.md — Implement ScaleFactorChanged handler with font rebuild, surface resize, and PTY notification (DPI-01, DPI-02)
 
@@ -225,4 +225,4 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 41. Wide Character Support | 2/2 | Complete    | 2026-03-10 | - |
 | 42. Text Decorations | 1/1 | Complete    | 2026-03-10 | - |
 | 43. Font Fallback | 1/1 | Complete    | 2026-03-10 | - |
-| 44. Dynamic DPI | v2.4 | 0/1 | Not started | - |
+| 44. Dynamic DPI | 1/1 | Complete   | 2026-03-11 | - |

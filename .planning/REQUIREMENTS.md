@@ -29,8 +29,8 @@ Requirements for rendering correctness milestone. Each maps to roadmap phases.
 
 ### DPI Handling
 
-- [ ] **DPI-01**: ScaleFactorChanged event triggers full font metric recalculation and surface rebuild
-- [ ] **DPI-02**: Terminal remains correctly rendered after moving window between displays with different DPI
+- [x] **DPI-01**: ScaleFactorChanged event triggers full font metric recalculation and surface rebuild
+- [x] **DPI-02**: Terminal remains correctly rendered after moving window between displays with different DPI
 
 ## Future Requirements
 
@@ -72,8 +72,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DECO-02 | Phase 42 | Complete |
 | FONT-01 | Phase 43 | Complete |
 | FONT-02 | Phase 43 | Complete |
-| DPI-01 | Phase 44 | Pending |
-| DPI-02 | Phase 44 | Pending |
+| DPI-01 | Phase 44 | Complete |
+| DPI-02 | Phase 44 | Complete |
 
 **Coverage:**
 - v2.4 requirements: 10 total
