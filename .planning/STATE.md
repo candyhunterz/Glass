@@ -1,11 +1,11 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.4
-milestone_name: Rendering Correctness
-status: shipped
-stopped_at: Milestone v2.4 archived
-last_updated: "2026-03-11T01:00:00.000Z"
-last_activity: 2026-03-11 -- Milestone v2.4 Rendering Correctness shipped
+milestone: v2.5
+milestone_name: UI Controls
+status: in_progress
+stopped_at: Completed 45-01-PLAN.md
+last_updated: "2026-03-11T02:05:00.000Z"
+last_activity: 2026-03-11 -- Phase 45 Plan 01 scrollbar renderer complete
 progress:
   total_phases: 5
   completed_phases: 5
@@ -20,12 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-11)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** v2.5 UI Controls — scrollbar, tab bar buttons, tab drag reorder
 
 ## Current Position
 
-Milestone: v2.4 Rendering Correctness -- SHIPPED 2026-03-11
-All 9 milestones complete (44 phases, 95 plans)
+Milestone: v2.5 UI Controls — IN PROGRESS
+Phase 45: Scrollbar — Plan 01 complete (renderer + integration), Plan 02 pending (mouse interaction)
+Phase 46: Tab Bar Controls — context gathered, ready for planning
+Phase 47: Tab Drag Reorder — context gathered, ready for planning
 
 ## Performance Metrics
 
@@ -60,5 +62,5 @@ See PROJECT.md Key Decisions table for full history.
 ## Session Continuity
 
 Last session: 2026-03-11
-Stopped at: Milestone v2.4 archived
-Resume file: None
+Stopped at: Completed 45-01-PLAN.md
+Resume file: .planning/phases/45-scrollbar/45-01-SUMMARY.md
