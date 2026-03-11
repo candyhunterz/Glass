@@ -11,6 +11,7 @@
 - [x] **v2.2 Multi-Agent Coordination** -- Phases 31-34 (shipped 2026-03-10)
 - [x] **v2.3 Agent MCP Features** -- Phases 35-39 (shipped 2026-03-10)
 - [x] **v2.4 Rendering Correctness** -- Phases 40-44 (shipped 2026-03-11)
+- [ ] **v2.5 UI Controls** -- Phases 45-47
 
 ## Phases
 
@@ -112,6 +113,17 @@
 
 </details>
 
+### v2.5 UI Controls (Phases 45-47)
+
+- [ ] Phase 45: Scrollbar (0/2 plans)
+  **Goal:** Always-visible interactive scrollbar on every terminal pane with drag, click, and hover support
+  **Plans:** 2 plans
+  Plans:
+  - [ ] 45-01-PLAN.md -- ScrollbarRenderer module with unit tests + FrameRenderer integration
+  - [ ] 45-02-PLAN.md -- Mouse interactions (hover, click, drag) + grid width reduction
+- [ ] Phase 46: Tab Bar Controls
+- [ ] Phase 47: Tab Drag Reorder
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -160,3 +172,6 @@
 | 42. Text Decorations | v2.4 | 1/1 | Complete | 2026-03-10 |
 | 43. Font Fallback | v2.4 | 1/1 | Complete | 2026-03-10 |
 | 44. Dynamic DPI | v2.4 | 1/1 | Complete | 2026-03-11 |
+| 45. Scrollbar | v2.5 | 0/2 | Planned | - |
+| 46. Tab Bar Controls | v2.5 | 0/0 | Planned | - |
+| 47. Tab Drag Reorder | v2.5 | 0/0 | Planned | - |
