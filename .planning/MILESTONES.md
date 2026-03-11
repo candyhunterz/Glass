@@ -1,5 +1,23 @@
 # Milestones
 
+## v2.5 UI Controls (Shipped: 2026-03-11)
+
+**Phases completed:** 3 phases, 6 plans, 11 tasks
+**Timeline:** 2026-03-10 to 2026-03-11 (1 day)
+**Git range:** feat(45-01) to feat(47-02)
+**Files changed:** 25 files, +4,259 / -133 lines
+
+**Delivered:** Interactive UI controls with always-visible scrollbar (drag, click, hover), tab bar close/new-tab buttons with hover-only visibility, and click-and-drag tab reordering with visual insertion indicator.
+
+**Key accomplishments:**
+- ScrollbarRenderer with GPU-rendered track/thumb quads, proportional thumb sizing, drag-to-scroll with grab-offset tracking, and 8px grid width reservation across all column calculations
+- TabHitResult enum enabling multi-target hit-testing (Tab, CloseButton, NewTabButton) with variable-width tab layout and MIN_TAB_WIDTH floor
+- Close button (hover-only "x") and "+" new tab button with hover-clear-on-close pattern across all 4 close paths
+- Tab drag-to-reorder with 5px threshold, visual blue insertion indicator, midpoint-rounding drop slot computation, and active_tab tracking adjustment
+- 42+ unit tests across scrollbar (18), tab bar (24), and session mux reorder (8) modules
+
+---
+
 ## v2.4 Rendering Correctness (Shipped: 2026-03-11)
 
 **Phases completed:** 5 phases, 7 plans, 13 tasks

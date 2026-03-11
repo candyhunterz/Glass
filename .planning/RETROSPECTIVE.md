@@ -2,6 +2,52 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v2.5 -- UI Controls
+
+**Shipped:** 2026-03-11
+**Phases:** 3 | **Plans:** 6 | **Sessions:** ~1
+
+### What Was Built
+- ScrollbarRenderer with GPU-rendered track/thumb quads, proportional thumb sizing, hit-testing, and per-pane independent interaction
+- Scrollbar mouse interaction: drag-to-scroll with grab-offset tracking, track click page jump, hover feedback, 8px grid width reservation
+- TabHitResult enum enabling multi-target hit-testing for tab bar (Tab, CloseButton, NewTabButton) with variable-width layout
+- Close button (hover-only "x") and "+" new tab button with hover-clear-on-close across all 4 close paths
+- Tab drag-to-reorder with 5px threshold, midpoint-rounding drop slot computation, visual blue insertion indicator, active_tab adjustment
+
+### What Worked
+- ScrollbarRenderer followed established TabBarRenderer rect-builder pattern -- zero architectural novelty needed
+- Priority hit-test pattern (scrollbar before text selection, close button before tab body) cleanly prevented interaction conflicts
+- Drag state machine pattern (press -> threshold -> active -> release) gave clean click-vs-drag disambiguation
+- compute_thumb_geometry public method reuse between rendering (Plan 01) and interaction (Plan 02) avoided duplication
+- Hover-clear-on-close pattern covered all 4 tab close paths systematically (left-click, middle-click, keyboard, PTY exit)
+- 42+ unit tests across 3 modules provided confidence for event wiring without GUI testing
+
+### What Was Inefficient
+- No milestone audit performed -- first milestone shipped without pre-completion audit (10th milestone)
+- Nyquist validation still partial (10th consecutive milestone with this gap)
+- ROADMAP.md progress table had inconsistent columns for phases 45-47 (milestone column misaligned)
+
+### Patterns Established
+- ScrollbarRenderer: pure-data renderer producing RectInstance quads with hit_test method
+- Drag state struct: capture initial geometry for smooth relative dragging (thumb_grab_offset)
+- TabHitResult enum: multi-target hit-testing pattern for UI elements with sub-regions
+- Hover-clear-on-close: always reset hover state after closing the hovered element
+- 5px drag threshold with separate press/move/release handlers for click-vs-drag disambiguation
+
+### Key Lessons
+1. Priority hit-testing (scrollbar > text selection, close > tab body) is the right pattern for layered UI interactions
+2. Pure-data renderers (no state mutation) with separate interaction handlers keep rendering and event code cleanly separated
+3. Drag threshold prevents accidental drags and enables clean click-vs-drag disambiguation
+4. Post-removal index semantics (reorder_tab `to` is final position) are more intuitive than insertion-before semantics
+5. Consistent patterns (TabBarRenderer -> ScrollbarRenderer, scrollbar hover -> tab hover) accelerate development -- v2.5 averaged 2 min/plan
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~1 session in 1 day
+- Notable: 6 plans in ~10 min, averaging ~2 min/plan (fastest velocity yet; all 3 phases followed established UI patterns)
+
+---
+
 ## Milestone: v2.4 -- Rendering Correctness
 
 **Shipped:** 2026-03-11
@@ -453,6 +499,7 @@
 | v2.2 | ~2 | 4 | Zero-dependency crate, open-per-call SQLite, atomic GUI polling, conflict-as-success MCP pattern |
 | v2.3 | ~1 | 5 | IPC channel architecture, OnceLock regex, testable JSON builders, idempotent cancel, graceful degradation |
 | v2.4 | ~1 | 5 | Per-cell Buffer rendering, font-metric cell height, zero new dependencies, full DPI handler pattern |
+| v2.5 | ~1 | 3 | Priority hit-testing, drag threshold state machine, hover-clear-on-close, pure-data renderer pattern |
 
 ### Cumulative Quality
 
@@ -467,6 +514,7 @@
 | v2.2 | 527+ (full workspace) | Partial (Nyquist partial across phases 31-34) | 1 |
 | v2.3 | 550+ (full workspace) | Partial (Nyquist partial across phases 35-39) | 0 |
 | v2.4 | 500+ (full workspace) | Partial (Nyquist partial across phases 40-44) | 0 |
+| v2.5 | 540+ (full workspace) | Partial (Nyquist partial across phases 45-47) | 0 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -475,7 +523,7 @@
 3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
 5. Gap closure plans are reliable -- confirmed in v1.1, v1.2, v1.3, v2.0; plan for them proactively
-6. Nyquist validation is persistently skipped -- 9 milestones with partial coverage; needs workflow integration, not just reminders
+6. Nyquist validation is persistently skipped -- 10 milestones with partial coverage; needs workflow integration, not just reminders
 7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0, v2.1, v2.3 -- always run audit before marking milestone complete
 8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs in v1.3, config_dir/data_dir in v2.0)
 9. Verify asset existence alongside code paths -- code referencing non-existent files passes compilation but fails at runtime (glass.fish in v2.0)

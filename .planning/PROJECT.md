@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for Bash, Zsh, Fish, and PowerShell emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output. Multiple terminal sessions run in tabs with a GPU-rendered tab bar, and tabs can be split horizontally or vertically into independent panes with a binary tree layout engine. Terminal text renders with per-cell glyph positioning for pixel-perfect TUI alignment, CJK wide character support, underline/strikethrough decorations, font fallback via cosmic-text, and dynamic DPI handling across monitors.
+Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for Bash, Zsh, Fish, and PowerShell emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output. Multiple terminal sessions run in tabs with a GPU-rendered tab bar featuring close buttons, a new-tab button, and drag-to-reorder, and tabs can be split horizontally or vertically into independent panes with a binary tree layout engine. An always-visible interactive scrollbar provides drag, click, and hover navigation. Terminal text renders with per-cell glyph positioning for pixel-perfect TUI alignment, CJK wide character support, underline/strikethrough decorations, font fallback via cosmic-text, and dynamic DPI handling across monitors.
 
 ## Core Value
 
@@ -100,6 +100,13 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ Font fallback cascade for missing glyphs via cosmic-text -- v2.4
 - ✓ Dynamic DPI/scale factor handling with font metric recalculation -- v2.4
 
+- ✓ Always-visible scrollbar with GPU-rendered track/thumb, proportional sizing, and 8px grid width reservation -- v2.5
+- ✓ Scrollbar mouse interaction: drag-to-scroll with grab-offset, track click page jump, hover feedback -- v2.5
+- ✓ Tab bar close buttons (hover-only "x") with hover-clear-on-close across all close paths -- v2.5
+- ✓ New tab "+" button with inherited CWD -- v2.5
+- ✓ Variable-width tab layout with MIN_TAB_WIDTH floor and TabHitResult multi-target hit-testing -- v2.5
+- ✓ Tab drag-to-reorder with 5px threshold, visual insertion indicator, and active_tab adjustment -- v2.5
+
 ### Active
 
 (None -- planning next milestone)
@@ -137,10 +144,10 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v2.4 with ~30,000 LOC Rust across 14 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors + root binary).
+Shipped v2.5 with ~34,000 LOC Rust across 14 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors + root binary).
 Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0, similar 2.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
-Built across 9 milestones (44 phases, 95 plans) in 8 days. 500+ workspace tests.
+Built across 10 milestones (47 phases, 101 plans) in 8 days. 500+ workspace tests.
 MCP tool count: 25 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools).
 Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
@@ -243,6 +250,14 @@ Known tech debt:
 | Full ScaleFactorChanged handler | Rebuild fonts + surface + PTY resize, not lean approach | ✓ Good -- cross-platform safety |
 | intersects() for spacer skip | Multi-flag WIDE_CHAR_SPACER detection in single check | ✓ Good -- cleaner than separate contains() |
 | Decoration rects use fg color | Standard terminal convention, 1px height | ✓ Good -- crisp rendering |
+| Scrollbar hit-test before text selection | Priority check prevents drag-selection conflicts | ✓ Good -- clean interaction layering |
+| thumb_grab_offset for drag tracking | Captures initial click position within thumb for jitter-free scrolling | ✓ Good -- smooth UX |
+| TabHitResult enum for tab bar | Multi-target hit-testing distinguishing Tab, CloseButton, NewTabButton | ✓ Good -- extensible interaction model |
+| Close button checked before tab body | Prevents click-through on overlapping UI regions | ✓ Good -- correct hit priority |
+| Hover-clear-on-close pattern | Reset hover state on all close paths (click, middle-click, keyboard, PTY exit) | ✓ Good -- no stale rendering |
+| 5px horizontal drag threshold | Prevents accidental drags on normal tab clicks | ✓ Good -- clean click-vs-drag disambiguation |
+| Post-removal reorder_tab semantics | `to` index is final position after source removed, not insertion-before | ✓ Good -- intuitive API |
+| Midpoint-rounding drop slot computation | ((x / stride) + 0.5) as usize for natural drop feel | ✓ Good -- predictable behavior |
 
 ---
-*Last updated: 2026-03-11 after v2.4 milestone completed*
+*Last updated: 2026-03-11 after v2.5 milestone completed*

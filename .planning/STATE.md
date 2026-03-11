@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.5
 milestone_name: UI Controls
-status: unknown
-stopped_at: Completed 47-02-PLAN.md
-last_updated: "2026-03-11T04:18:07.270Z"
+status: complete
+stopped_at: Milestone v2.5 archived
+last_updated: "2026-03-11T04:30:00.000Z"
 progress:
   total_phases: 3
   completed_phases: 3
@@ -19,14 +19,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-11)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** v2.5 UI Controls — scrollbar, tab bar buttons, tab drag reorder
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Milestone: v2.5 UI Controls — IN PROGRESS
-Phase 45: Scrollbar — COMPLETE (Plan 01 renderer + Plan 02 mouse interactions)
-Phase 46: Tab Bar Controls — COMPLETE (Plan 01 renderer + Plan 02 event wiring)
-Phase 47: Tab Drag Reorder — COMPLETE (Plan 01 core logic + Plan 02 event wiring)
+Milestone: v2.5 UI Controls — COMPLETE (shipped 2026-03-11)
 
 ## Performance Metrics
 
@@ -48,11 +45,6 @@ Phase 47: Tab Drag Reorder — COMPLETE (Plan 01 core logic + Plan 02 event wiri
 ### Decisions
 
 See PROJECT.md Key Decisions table for full history.
-- [Phase 46-tab-bar-controls]: TabHitResult enum for multi-target tab bar hit-testing (Tab, CloseButton, NewTabButton)
-- [Phase 46-tab-bar-controls]: Hover-clear-on-close pattern: always reset tab_bar_hovered_tab after closing tabs
-- [Phase 47]: to index is final position (post-removal) for reorder_tab semantics
-- [Phase 47]: 5px horizontal threshold before drag activates to prevent accidental drags
-- [Phase 47]: CursorMoved early return during drag prevents hover/selection interference
 
 ### Pending Todos
 
@@ -66,6 +58,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-11T04:13:51Z
-Stopped at: Completed 47-02-PLAN.md
+Last session: 2026-03-11
+Stopped at: Milestone v2.5 archived
 Resume file: None
