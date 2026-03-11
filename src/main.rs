@@ -144,6 +144,18 @@ struct ScrollbarDragInfo {
     history_size: usize,
 }
 
+/// Tab drag reorder tracking state.
+struct TabDragState {
+    /// Index of the tab being dragged.
+    source_index: usize,
+    /// X coordinate where the drag started (for threshold check).
+    start_x: f32,
+    /// Whether the drag threshold has been exceeded (drag is "active").
+    active: bool,
+    /// Current drop target slot (insertion point index, 0..=tab_count).
+    drop_index: Option<usize>,
+}
+
 /// Per-window state: OS window handle, GPU renderer, and session multiplexer.
 ///
 /// All terminal state (PTY, grid, block manager, history, etc.) lives inside
@@ -165,6 +177,8 @@ struct WindowContext {
     scrollbar_hovered_pane: Option<SessionId>,
     /// Which tab the mouse is currently hovering over (for close button visibility).
     tab_bar_hovered_tab: Option<usize>,
+    /// Tab drag reorder tracking state (active when a tab is being dragged).
+    tab_drag_state: Option<TabDragState>,
 }
 
 impl WindowContext {
@@ -667,6 +681,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 scrollbar_dragging: None,
                 scrollbar_hovered_pane: None,
                 tab_bar_hovered_tab: None,
+                tab_drag_state: None,
             },
         );
 
@@ -834,6 +849,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
+                    let drop_index = ctx.tab_drag_state.as_ref().and_then(|d| {
+                        if d.active { d.drop_index } else { None }
+                    });
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -846,6 +864,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         search_overlay_data.as_ref(),
                         Some(&tab_display),
                         ctx.tab_bar_hovered_tab,
+                        drop_index,
                         update_text.as_deref(),
                         coordination_text.as_deref(),
                         ctx.scrollbar_hovered_pane.is_some(),
@@ -966,6 +985,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         })
                         .collect();
 
+                    let drop_index_mp = ctx.tab_drag_state.as_ref().and_then(|d| {
+                        if d.active { d.drop_index } else { None }
+                    });
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -977,6 +999,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&status_clone),
                         Some(&tab_display),
                         ctx.tab_bar_hovered_tab,
+                        drop_index_mp,
                         update_text.as_deref(),
                         coordination_text.as_deref(),
                         &scrollbar_state,
@@ -1774,6 +1797,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
+                // Handle active tab drag: update drop index from mouse X
+                if let Some(ref mut drag) = ctx.tab_drag_state {
+                    if !drag.active && (mouse_x - drag.start_x).abs() > 5.0 {
+                        drag.active = true;
+                    }
+                    if drag.active {
+                        let viewport_w = ctx.window.inner_size().width as f32;
+                        let drop_idx = ctx.frame_renderer.tab_bar().drag_drop_index(
+                            mouse_x,
+                            ctx.session_mux.tab_count(),
+                            viewport_w,
+                        );
+                        drag.drop_index = Some(drop_idx);
+                        ctx.window.request_redraw();
+                    }
+                    return; // Consume event during drag
+                }
+
                 // Tab bar hover tracking
                 if ctx.session_mux.tab_count() > 0 {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
@@ -1849,8 +1890,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                             viewport_w,
                         ) {
                             Some(TabHitResult::Tab(tab_idx)) => {
-                                ctx.session_mux.activate_tab(tab_idx);
-                                ctx.window.request_redraw();
+                                ctx.tab_drag_state = Some(TabDragState {
+                                    source_index: tab_idx,
+                                    start_x: x as f32,
+                                    active: false,
+                                    drop_index: None,
+                                });
                             }
                             Some(TabHitResult::CloseButton(tab_idx)) => {
                                 if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
@@ -2135,6 +2180,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                // Handle tab drag release: complete reorder or activate tab
+                if let Some(drag) = ctx.tab_drag_state.take() {
+                    if drag.active {
+                        if let Some(drop_idx) = drag.drop_index {
+                            // Convert drop slot to final position index.
+                            // drop_idx is an insertion slot (0..=tab_count).
+                            // After remove(source), indices shift, so we need:
+                            let to = if drop_idx > drag.source_index {
+                                drop_idx - 1 // Account for removal shifting indices down
+                            } else {
+                                drop_idx
+                            };
+                            if to != drag.source_index {
+                                ctx.session_mux.reorder_tab(drag.source_index, to);
+                            }
+                        }
+                    } else {
+                        // Was a click, not a drag -- activate the tab
+                        ctx.session_mux.activate_tab(drag.source_index);
+                    }
+                    ctx.window.request_redraw();
+                    return;
+                }
                 // If scrollbar was being dragged, just release it (no clipboard copy)
                 if ctx.scrollbar_dragging.is_some() {
                     ctx.scrollbar_dragging = None;

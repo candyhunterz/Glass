@@ -179,6 +179,7 @@ impl FrameRenderer {
         search_overlay: Option<&SearchOverlayRenderData>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
         hovered_tab: Option<usize>,
+        drop_index: Option<usize>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
         scrollbar_hovered: bool,
@@ -257,7 +258,7 @@ impl FrameRenderer {
 
         // 1c2. Append tab bar rects (at top of viewport)
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, None);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, drop_index);
             rect_instances.extend(tab_rects);
         }
 
@@ -851,6 +852,7 @@ impl FrameRenderer {
         status: Option<&StatusState>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
         hovered_tab: Option<usize>,
+        drop_index: Option<usize>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
         scrollbar_state: &[(bool, bool)],
@@ -962,7 +964,7 @@ impl FrameRenderer {
 
         // Tab bar rects
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, None);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, drop_index);
             rect_instances.extend(tab_rects);
         }
 
