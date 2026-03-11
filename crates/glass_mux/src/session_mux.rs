@@ -570,6 +570,81 @@ mod tests {
         assert_eq!(mux.focused_session_id(), Some(sid2));
     }
 
+    // ---- Tab reorder tests ----
+
+    #[test]
+    fn reorder_tab_forward() {
+        // [A, B, C] -> reorder(0, 2) -> [B, C, A]
+        let mut mux = test_mux(3);
+        mux.reorder_tab(0, 2);
+        assert_eq!(mux.tabs()[0].title, "Tab 1");
+        assert_eq!(mux.tabs()[1].title, "Tab 2");
+        assert_eq!(mux.tabs()[2].title, "Tab 0");
+    }
+
+    #[test]
+    fn reorder_tab_backward() {
+        // [A, B, C] -> reorder(2, 0) -> [C, A, B]
+        let mut mux = test_mux(3);
+        mux.reorder_tab(2, 0);
+        assert_eq!(mux.tabs()[0].title, "Tab 2");
+        assert_eq!(mux.tabs()[1].title, "Tab 0");
+        assert_eq!(mux.tabs()[2].title, "Tab 1");
+    }
+
+    #[test]
+    fn reorder_tab_same_index_noop() {
+        let mut mux = test_mux(3);
+        mux.reorder_tab(1, 1);
+        assert_eq!(mux.tabs()[0].title, "Tab 0");
+        assert_eq!(mux.tabs()[1].title, "Tab 1");
+        assert_eq!(mux.tabs()[2].title, "Tab 2");
+    }
+
+    #[test]
+    fn reorder_tab_active_follows_moved_tab() {
+        let mut mux = test_mux(3);
+        mux.activate_tab(0); // active is tab 0
+        mux.reorder_tab(0, 2); // move tab 0 to position 2
+        assert_eq!(mux.active_tab_index(), 2); // active follows
+    }
+
+    #[test]
+    fn reorder_tab_active_shifts_when_between_forward() {
+        // active_tab=1, reorder(0, 2): tab removed before active, inserted after
+        // active should shift from 1 to 0
+        let mut mux = test_mux(3);
+        mux.activate_tab(1);
+        mux.reorder_tab(0, 2);
+        assert_eq!(mux.active_tab_index(), 0);
+    }
+
+    #[test]
+    fn reorder_tab_active_shifts_when_between_backward() {
+        // active_tab=1, reorder(2, 0): tab removed after active, inserted before
+        // active should shift from 1 to 2
+        let mut mux = test_mux(3);
+        mux.activate_tab(1);
+        mux.reorder_tab(2, 0);
+        assert_eq!(mux.active_tab_index(), 2);
+    }
+
+    #[test]
+    fn reorder_tab_out_of_bounds_noop() {
+        let mut mux = test_mux(3);
+        mux.reorder_tab(5, 0); // from out of bounds
+        assert_eq!(mux.tabs()[0].title, "Tab 0");
+        mux.reorder_tab(0, 5); // to out of bounds
+        assert_eq!(mux.tabs()[0].title, "Tab 0");
+    }
+
+    #[test]
+    fn reorder_tab_single_tab_noop() {
+        let mut mux = test_mux(1);
+        mux.reorder_tab(0, 0);
+        assert_eq!(mux.tabs()[0].title, "Tab 0");
+    }
+
     #[test]
     fn set_focused_pane_invalid_noop() {
         let sid1 = SessionId::new(10);
