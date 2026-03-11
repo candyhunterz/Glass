@@ -57,6 +57,12 @@ const MAX_TITLE_LEN: usize = 20;
 /// Left padding for text within a tab (in pixels).
 const TAB_TEXT_PADDING: f32 = 8.0;
 
+/// Width of the drag-and-drop insertion indicator line.
+const DRAG_INDICATOR_WIDTH: f32 = 2.0;
+
+/// Color for the drag-and-drop insertion indicator (blue accent).
+const DRAG_INDICATOR_COLOR: [f32; 4] = [0.4, 0.6, 1.0, 1.0];
+
 /// Gap between tab rects (in pixels).
 const TAB_GAP: f32 = 1.0;
 
@@ -695,5 +701,61 @@ mod tests {
         let (_, total_tabs_width) = renderer.compute_tab_width(3, 800.0);
         let result = renderer.hit_test_tab_index(total_tabs_width + 5.0, 3, 800.0);
         assert_eq!(result, None);
+    }
+
+    // ---- Drag-and-drop tests ----
+
+    #[test]
+    fn drag_drop_index_at_start() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        // x=0 should return slot 0
+        assert_eq!(renderer.drag_drop_index(0.0, 3, 800.0), 0);
+    }
+
+    #[test]
+    fn drag_drop_index_before_midpoint_tab0() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let (tab_width, _) = renderer.compute_tab_width(3, 800.0);
+        // Just before the midpoint of tab 0 -> slot 0
+        let x = (tab_width + TAB_GAP) * 0.5 - 1.0;
+        assert_eq!(renderer.drag_drop_index(x, 3, 800.0), 0);
+    }
+
+    #[test]
+    fn drag_drop_index_after_midpoint_tab0() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let (tab_width, _) = renderer.compute_tab_width(3, 800.0);
+        // Just past the midpoint of tab 0 -> slot 1
+        let x = (tab_width + TAB_GAP) * 0.5 + 1.0;
+        assert_eq!(renderer.drag_drop_index(x, 3, 800.0), 1);
+    }
+
+    #[test]
+    fn drag_drop_index_past_all_tabs() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        // x way past all tabs -> clamp to tab_count
+        assert_eq!(renderer.drag_drop_index(9999.0, 3, 800.0), 3);
+    }
+
+    #[test]
+    fn drag_indicator_present_when_drop_index_some() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let tabs = make_tabs(&[("A", true), ("B", false), ("C", false)]);
+        let rects = renderer.build_tab_rects(&tabs, 800.0, None, Some(1));
+        // Should have: bg + 3 tabs + "+" button + 1 indicator = 6
+        assert_eq!(rects.len(), 6);
+        // Last rect is the indicator (added after "+" button)
+        let indicator = rects.last().unwrap();
+        assert_eq!(indicator.color, DRAG_INDICATOR_COLOR);
+        assert!((indicator.pos[2] - DRAG_INDICATOR_WIDTH).abs() < 0.01);
+    }
+
+    #[test]
+    fn drag_indicator_absent_when_drop_index_none() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let tabs = make_tabs(&[("A", true), ("B", false), ("C", false)]);
+        let rects_none = renderer.build_tab_rects(&tabs, 800.0, None, None);
+        // bg + 3 tabs + "+" button = 5 (same as before)
+        assert_eq!(rects_none.len(), 5);
     }
 }
