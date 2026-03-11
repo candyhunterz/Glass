@@ -1322,6 +1322,44 @@ mod tests {
         );
     }
 
+    // ===== Dynamic DPI scale factor tests (DPI-01) =====
+
+    /// Test: GridRenderer at 2x scale produces cell dimensions approximately 2x those at 1x scale
+    #[test]
+    fn scale_factor_changes_cell_dimensions() {
+        let mut font_system = FontSystem::new();
+        let gr_1x = GridRenderer::new(&mut font_system, "Cascadia Mono", 14.0, 1.0);
+        let gr_2x = GridRenderer::new(&mut font_system, "Cascadia Mono", 14.0, 2.0);
+        // At 2x scale, cell dimensions should be approximately double
+        let ratio_w = gr_2x.cell_width / gr_1x.cell_width;
+        let ratio_h = gr_2x.cell_height / gr_1x.cell_height;
+        assert!(
+            (ratio_w - 2.0).abs() < 0.15,
+            "width ratio: {ratio_w}"
+        );
+        assert!(
+            (ratio_h - 2.0).abs() < 0.15,
+            "height ratio: {ratio_h}"
+        );
+    }
+
+    /// Test: GridRenderer at 1.5x scale preserves grid alignment invariants
+    #[test]
+    fn scale_factor_preserves_grid_alignment() {
+        let mut font_system = FontSystem::new();
+        let gr = GridRenderer::new(&mut font_system, "Cascadia Mono", 14.0, 1.5);
+        // cell_height must be at least physical_font_size
+        let physical = 14.0 * 1.5;
+        assert!(
+            gr.cell_height >= physical,
+            "cell_height {} < physical {}",
+            gr.cell_height,
+            physical
+        );
+        // cell_height must be ceil'd (integer pixel boundary)
+        assert_eq!(gr.cell_height, gr.cell_height.ceil());
+    }
+
     /// Test: HollowBlock cursor on WIDE_CHAR cell has double-width edges
     #[test]
     fn wide_char_cursor_hollow_block_double_width() {
