@@ -40,6 +40,12 @@ pub struct ScrollbarRenderer {
     width: f32,
 }
 
+impl Default for ScrollbarRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScrollbarRenderer {
     /// Create a new ScrollbarRenderer with default width.
     pub fn new() -> Self {

@@ -17,6 +17,7 @@ use crate::grid_renderer::GridRenderer;
 use crate::rect_renderer::RectRenderer;
 use crate::search_overlay_renderer::SearchOverlayRenderer;
 use crate::status_bar::StatusBarRenderer;
+use crate::scrollbar::ScrollbarRenderer;
 use crate::tab_bar::TabBarRenderer;
 
 /// Display data for the search overlay, extracted from SearchOverlay state.
@@ -37,6 +38,7 @@ pub struct FrameRenderer {
     rect_renderer: RectRenderer,
     block_renderer: BlockRenderer,
     search_overlay_renderer: SearchOverlayRenderer,
+    scrollbar: ScrollbarRenderer,
     status_bar: StatusBarRenderer,
     tab_bar: TabBarRenderer,
     default_bg: Rgb,
@@ -96,6 +98,7 @@ impl FrameRenderer {
         let (cell_width, cell_height) = grid_renderer.cell_size();
         let block_renderer = BlockRenderer::new(cell_width, cell_height);
         let search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
+        let scrollbar = ScrollbarRenderer::new();
         let status_bar = StatusBarRenderer::new(cell_height);
         let tab_bar = TabBarRenderer::new(cell_width, cell_height);
         let default_bg = Rgb {
@@ -109,6 +112,7 @@ impl FrameRenderer {
             grid_renderer,
             rect_renderer,
             block_renderer,
+            scrollbar,
             search_overlay_renderer,
             status_bar,
             tab_bar,
@@ -144,6 +148,11 @@ impl FrameRenderer {
         self.tab_bar = TabBarRenderer::new(cell_width, cell_height);
     }
 
+    /// Returns a reference to the scrollbar renderer (for hit testing).
+    pub fn scrollbar(&self) -> &ScrollbarRenderer {
+        &self.scrollbar
+    }
+
     /// Returns a reference to the tab bar renderer (for hit testing).
     pub fn tab_bar(&self) -> &TabBarRenderer {
         &self.tab_bar
@@ -171,6 +180,8 @@ impl FrameRenderer {
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
+        scrollbar_hovered: bool,
+        scrollbar_dragging: bool,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -247,6 +258,27 @@ impl FrameRenderer {
         if let Some(tabs) = tab_bar_info {
             let tab_rects = self.tab_bar.build_tab_rects(tabs, w);
             rect_instances.extend(tab_rects);
+        }
+
+        // 1c3. Append scrollbar rects (right edge of pane, between tab bar and status bar)
+        {
+            let (_, cell_height_sb) = self.grid_renderer.cell_size();
+            let status_bar_h_sb = if status.is_some() {
+                cell_height_sb
+            } else {
+                0.0
+            };
+            let scrollbar_rects = self.scrollbar.build_scrollbar_rects(
+                w,
+                grid_y_offset,
+                h - grid_y_offset - status_bar_h_sb,
+                snapshot.display_offset,
+                snapshot.history_size,
+                snapshot.screen_lines,
+                scrollbar_hovered,
+                scrollbar_dragging,
+            );
+            rect_instances.extend(scrollbar_rects);
         }
 
         // 1d. Append search overlay rects (backdrop, input box, result rows)
@@ -819,6 +851,7 @@ impl FrameRenderer {
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
+        scrollbar_state: &[(bool, bool)],
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -826,7 +859,7 @@ impl FrameRenderer {
         // 1. Build rect instances for all panes (with viewport offsets)
         let mut rect_instances: Vec<crate::rect_renderer::RectInstance> = Vec::new();
 
-        for (viewport, snapshot, _blocks, is_focused) in panes {
+        for (i, (viewport, snapshot, _blocks, is_focused)) in panes.iter().enumerate() {
             let pane_rects = self.grid_renderer.build_rects_offset(
                 snapshot,
                 self.default_bg,
@@ -887,6 +920,22 @@ impl FrameRenderer {
                     pos: [bx + bw - t, by, t, bh],
                     color: border_color,
                 });
+            }
+
+            // Scrollbar rects for this pane
+            {
+                let (sb_hovered, sb_dragging) = scrollbar_state.get(i).copied().unwrap_or((false, false));
+                let scrollbar_rects = self.scrollbar.build_scrollbar_rects(
+                    (viewport.x + viewport.width) as f32,
+                    viewport.y as f32,
+                    viewport.height as f32,
+                    snapshot.display_offset,
+                    snapshot.history_size,
+                    snapshot.screen_lines,
+                    sb_hovered,
+                    sb_dragging,
+                );
+                rect_instances.extend(scrollbar_rects);
             }
         }
 

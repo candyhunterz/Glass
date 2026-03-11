@@ -819,6 +819,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&tab_display),
                         update_text.as_deref(),
                         coordination_text.as_deref(),
+                        false,
+                        false,
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -933,6 +935,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&tab_display),
                         update_text.as_deref(),
                         coordination_text.as_deref(),
+                        &[],
                     );
                 }
 
