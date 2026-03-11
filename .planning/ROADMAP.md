@@ -178,5 +178,5 @@
 | 43. Font Fallback | v2.4 | 1/1 | Complete | 2026-03-10 |
 | 44. Dynamic DPI | v2.4 | 1/1 | Complete | 2026-03-11 |
 | 45. Scrollbar | v2.5 | Complete    | 2026-03-11 | 2026-03-11 |
-| 46. Tab Bar Controls | v2.5 | 0/2 | Planned | - |
+| 46. Tab Bar Controls | 1/2 | In Progress|  | - |
 | 47. Tab Drag Reorder | v2.5 | 0/0 | Planned | - |
