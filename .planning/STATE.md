@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v2.5
 milestone_name: UI Controls
 status: in_progress
-stopped_at: Completed 45-01-PLAN.md
-last_updated: "2026-03-11T02:05:00.000Z"
-last_activity: 2026-03-11 -- Phase 45 Plan 01 scrollbar renderer complete
+stopped_at: Completed 45-02-PLAN.md
+last_updated: "2026-03-11T02:20:00.000Z"
+last_activity: 2026-03-11 -- Phase 45 Plan 02 scrollbar mouse interactions complete
 progress:
   total_phases: 5
   completed_phases: 5
@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-03-11)
 ## Current Position
 
 Milestone: v2.5 UI Controls — IN PROGRESS
-Phase 45: Scrollbar — Plan 01 complete (renderer + integration), Plan 02 pending (mouse interaction)
+Phase 45: Scrollbar — COMPLETE (Plan 01 renderer + Plan 02 mouse interactions)
 Phase 46: Tab Bar Controls — context gathered, ready for planning
 Phase 47: Tab Drag Reorder — context gathered, ready for planning
 
@@ -62,5 +62,5 @@ See PROJECT.md Key Decisions table for full history.
 ## Session Continuity
 
 Last session: 2026-03-11
-Stopped at: Completed 45-01-PLAN.md
-Resume file: .planning/phases/45-scrollbar/45-01-SUMMARY.md
+Stopped at: Completed 45-02-PLAN.md
+Resume file: .planning/phases/45-scrollbar/45-02-SUMMARY.md

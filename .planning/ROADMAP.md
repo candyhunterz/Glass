@@ -115,12 +115,12 @@
 
 ### v2.5 UI Controls (Phases 45-47)
 
-- [ ] Phase 45: Scrollbar (0/2 plans)
+- [x] Phase 45: Scrollbar (2/2 plans) -- completed 2026-03-11
   **Goal:** Always-visible interactive scrollbar on every terminal pane with drag, click, and hover support
   **Plans:** 2 plans
   Plans:
-  - [ ] 45-01-PLAN.md -- ScrollbarRenderer module with unit tests + FrameRenderer integration
-  - [ ] 45-02-PLAN.md -- Mouse interactions (hover, click, drag) + grid width reduction
+  - [x] 45-01-PLAN.md -- ScrollbarRenderer module with unit tests + FrameRenderer integration
+  - [x] 45-02-PLAN.md -- Mouse interactions (hover, click, drag) + grid width reduction
 - [ ] Phase 46: Tab Bar Controls
 - [ ] Phase 47: Tab Drag Reorder
 
@@ -172,6 +172,6 @@
 | 42. Text Decorations | v2.4 | 1/1 | Complete | 2026-03-10 |
 | 43. Font Fallback | v2.4 | 1/1 | Complete | 2026-03-10 |
 | 44. Dynamic DPI | v2.4 | 1/1 | Complete | 2026-03-11 |
-| 45. Scrollbar | 1/2 | In Progress|  | - |
+| 45. Scrollbar | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 46. Tab Bar Controls | v2.5 | 0/0 | Planned | - |
 | 47. Tab Drag Reorder | v2.5 | 0/0 | Planned | - |
