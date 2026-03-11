@@ -2,6 +2,53 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v2.4 -- Rendering Correctness
+
+**Shipped:** 2026-03-11
+**Phases:** 5 | **Plans:** 7 | **Sessions:** ~1
+
+### What Was Built
+- Per-cell Buffer rendering with font-metric cell height (ascent+descent) replacing hardcoded 1.2x multiplier for pixel-perfect TUI grid alignment
+- CJK/wide character support: double-width Buffers with WIDE_CHAR flag detection, spacer skip, double-width background rects and cursor
+- GPU-rendered underline (SGR 4) and strikethrough (SGR 9) via 1px RectInstance rects with fg color
+- Font fallback validation proving cosmic-text handles CJK, Arabic, Cyrillic, and Thai glyphs with monospace grid constraint
+- Dynamic DPI handler: ScaleFactorChanged triggers full font rebuild, wgpu surface reconfigure, and PTY resize for all tabs
+
+### What Worked
+- Per-cell Buffer approach (one Buffer per non-empty cell) gave precise grid control without complex per-line layout math
+- Parallel positions Vec alongside buffers prevented index mismatch bugs in frame.rs multi-pane rendering
+- Reusing existing RectInstance pipeline for decorations (no new GPU infrastructure needed) kept scope minimal
+- cosmic-text font fallback "just worked" on Windows -- FONT-01/FONT-02 validated via test suite with zero code changes needed
+- Full ScaleFactorChanged handler (not lean approach) provided cross-platform safety without relying on follow-up Resized events
+- Zero new dependencies across all 5 phases -- every feature achieved through existing API changes
+- Audit passed with 10/10 requirements, 8/8 integration, 6/6 E2E flows
+
+### What Was Inefficient
+- Nyquist validation still partial across all 5 phases (9th consecutive milestone with this gap)
+- Per-cell Buffer performance impact (50 → 2000-4000 Buffers per frame) noted as concern but never benchmarked
+- ROADMAP.md progress table had inconsistent column entries for phases 40-44 (missing milestone column)
+
+### Patterns Established
+- Per-cell Buffer with set_monospace_width for grid-locked glyph positioning
+- Font-metric cell height from LayoutRun.line_height with safety floor
+- intersects() for multi-flag spacer detection (cleaner than multiple contains() calls)
+- Decoration rect pattern: skip spacers, check flags, compute position from cell coords
+- Full DPI handler pattern: update_font + surface resize + PTY resize (mirrors config hot-reload)
+
+### Key Lessons
+1. Per-cell Buffer rendering is the right granularity for terminal grids -- per-line Buffers caused horizontal drift
+2. Zero new dependencies is achievable for rendering features when the existing stack (cosmic-text/glyphon/wgpu) is well-designed
+3. Font fallback via cosmic-text works well cross-platform -- no manual font loading or fallback chain needed
+4. ScaleFactorChanged must do full rebuild (not lean approach) for cross-platform safety -- Resized delivery not guaranteed on all platforms
+5. Never use glyphon TextArea.scale for DPI -- scale Metrics instead (glyphon issue #117)
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~1 session in 2 days
+- Notable: 7 plans in ~25 min, averaging ~4 min/plan (consistent with v2.0-v2.3 velocity)
+
+---
+
 ## Milestone: v2.3 -- Agent MCP Features
 
 **Shipped:** 2026-03-10
@@ -405,6 +452,7 @@
 | v2.1 | ~2 | 5 | Feature-gated instrumentation, pattern reuse (watcher/overlay), honest baselines |
 | v2.2 | ~2 | 4 | Zero-dependency crate, open-per-call SQLite, atomic GUI polling, conflict-as-success MCP pattern |
 | v2.3 | ~1 | 5 | IPC channel architecture, OnceLock regex, testable JSON builders, idempotent cancel, graceful degradation |
+| v2.4 | ~1 | 5 | Per-cell Buffer rendering, font-metric cell height, zero new dependencies, full DPI handler pattern |
 
 ### Cumulative Quality
 
@@ -418,6 +466,7 @@
 | v2.1 | 436 (full workspace) | Partial (Nyquist partial across phases 26-30) | 6 |
 | v2.2 | 527+ (full workspace) | Partial (Nyquist partial across phases 31-34) | 1 |
 | v2.3 | 550+ (full workspace) | Partial (Nyquist partial across phases 35-39) | 0 |
+| v2.4 | 500+ (full workspace) | Partial (Nyquist partial across phases 40-44) | 0 |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -426,7 +475,7 @@
 3. Pin exact crate versions for unstable APIs -- confirmed across all milestones
 4. Measure hardware/system baselines before setting targets -- GPU floors (v1.0), throughput benchmarks (v1.1)
 5. Gap closure plans are reliable -- confirmed in v1.1, v1.2, v1.3, v2.0; plan for them proactively
-6. Nyquist validation is persistently skipped -- 8 milestones with partial coverage; needs workflow integration, not just reminders
+6. Nyquist validation is persistently skipped -- 9 milestones with partial coverage; needs workflow integration, not just reminders
 7. Audit-driven gap closure is a proven pattern across v1.1, v1.2, v1.3, v2.0, v2.1, v2.3 -- always run audit before marking milestone complete
 8. Speculative infrastructure gets removed -- build only what the runtime consumes (classify.rs in v1.3, config_dir/data_dir in v2.0)
 9. Verify asset existence alongside code paths -- code referencing non-existent files passes compilation but fails at runtime (glass.fish in v2.0)

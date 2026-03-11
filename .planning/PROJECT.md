@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for Bash, Zsh, Fish, and PowerShell emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output. Multiple terminal sessions run in tabs with a GPU-rendered tab bar, and tabs can be split horizontally or vertically into independent panes with a binary tree layout engine.
+Glass is a GPU-accelerated terminal emulator built in Rust that understands command structure. It renders each command's output as a visually distinct block with exit code, duration, and a status bar showing CWD and git branch. Shell integration scripts for Bash, Zsh, Fish, and PowerShell emit OSC 133/7 sequences that Glass parses into structured blocks. Every command is logged to a local SQLite database with FTS5 full-text search, and AI assistants can query terminal history and context through an MCP server over stdio. File-modifying commands are automatically snapshotted with one-keystroke undo (Ctrl+Shift+Z). Piped commands are transparently captured and displayed as multi-row pipeline blocks with inspectable intermediate stage output. Multiple terminal sessions run in tabs with a GPU-rendered tab bar, and tabs can be split horizontally or vertically into independent panes with a binary tree layout engine. Terminal text renders with per-cell glyph positioning for pixel-perfect TUI alignment, CJK wide character support, underline/strikethrough decorations, font fallback via cosmic-text, and dynamic DPI handling across monitors.
 
 ## Core Value
 
@@ -93,27 +93,16 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ glass_extract_errors MCP tool for structured error extraction (file, line, column, message, severity) -- v2.3
 - ✓ Live command awareness: has_running_command with elapsed time, cancel_command with ETX byte -- v2.3
 
+- ✓ Per-cell glyph positioning locked to column * cell_width grid -- v2.4
+- ✓ Line height derived from font metrics (ascent+descent) for seamless box-drawing -- v2.4
+- ✓ Wide character (CJK) support with double-width cell spanning -- v2.4
+- ✓ Underline and strikethrough GPU rendering -- v2.4
+- ✓ Font fallback cascade for missing glyphs via cosmic-text -- v2.4
+- ✓ Dynamic DPI/scale factor handling with font metric recalculation -- v2.4
+
 ### Active
 
-- [ ] Per-cell glyph positioning locked to column * cell_width grid
-- [ ] Line height derived from font metrics (ascent+descent) for seamless box-drawing
-- [ ] Wide character (CJK) support with double-width cell spanning
-- [ ] Underline and strikethrough GPU rendering
-- [ ] Font fallback cascade for missing glyphs
-- [ ] Dynamic DPI/scale factor handling with font metric recalculation
-- [ ] Rendering tech debt cleanup
-
-## Current Milestone: v2.4 Rendering Correctness
-
-**Goal:** Fix grid-aligned rendering so TUI apps (Claude Code, vim, htop, tmux) render correctly, and add missing text rendering features.
-
-**Target features:**
-- Per-cell glyph positioning (fix horizontal drift)
-- Correct line height (fix vertical gaps in box-drawing)
-- Wide character / CJK support
-- Underline / strikethrough rendering
-- Font fallback for missing glyphs
-- Dynamic DPI handling (ScaleFactorChanged)
+(None -- planning next milestone)
 
 ### Deferred (Future Milestones)
 
@@ -148,10 +137,10 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v2.3 with ~30,000 LOC Rust across 14 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors + root binary).
+Shipped v2.4 with ~30,000 LOC Rust across 14 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors + root binary).
 Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0, similar 2.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
-Built across 8 milestones (39 phases, 88 plans) in 7 days. 436+ workspace tests.
+Built across 9 milestones (44 phases, 95 plans) in 8 days. 500+ workspace tests.
 MCP tool count: 25 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools).
 Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
@@ -160,7 +149,6 @@ Known tech debt:
 - PipeStage.is_tty vestigial after classify.rs removal
 - default_shell_program() duplicated in pty.rs and platform.rs
 - config_dir() and data_dir() exported but never consumed
-- ScaleFactorChanged is log-only (no dynamic font metric recalculation)
 - Nyquist validation partial across most phases
 - Cold start 522ms (4.4% over 500ms target, within measurement variance)
 - README screenshot placeholder
@@ -185,7 +173,7 @@ Known tech debt:
 | Fork alacritty_terminal for VTE | Battle-tested since 2017, embeddable, Apache 2.0 | ✓ Good -- 0.25.1 worked with custom PTY read loop |
 | wgpu DX12 forced backend | 33% faster than Vulkan on Windows | ✓ Good -- 360ms cold start |
 | Instanced WGSL quad rendering | Simple, fast cell backgrounds without index buffer | ✓ Good -- clean GPU pipeline |
-| Per-line cosmic_text::Buffer | Per-character fg color and font weight/style | ✓ Good -- flexible text rendering |
+| Per-cell cosmic_text::Buffer | One Buffer per cell with set_monospace_width for grid-locked positioning | ✓ Good -- pixel-perfect TUI alignment |
 | Custom PTY read loop | Replaced alacritty PtyEventLoop for OscScanner pre-scanning | ✓ Good -- enables shell integration |
 | PSReadLine Enter handler for 133;C | More reliable than PreExecution hook across versions | ✓ Good -- works with pwsh 7+ |
 | Dedicated PTY reader thread | std::thread not Tokio -- blocking PTY I/O must not block async executor | ✓ Good -- clean separation |
@@ -249,6 +237,12 @@ Known tech debt:
 | Enum dispatch for error parser selection | OnceLock regex compilation; state machine for Rust human parser two-line patterns | ✓ Good -- zero per-call regex overhead |
 | build_extract_errors_json helper | Testable JSON construction separate from async tool handler | ✓ Good -- unit testable |
 | Cancel command sends ETX unconditionally | Idempotent cancel; no command text field on Block struct (omitted from response) | ✓ Good -- simple semantics |
+| Per-cell Buffer (not per-line) | One Buffer per cell with set_monospace_width eliminates horizontal drift | ✓ Good -- pixel-perfect grid |
+| Font-metric cell height | ascent+descent from LayoutRun instead of hardcoded 1.2x multiplier | ✓ Good -- seamless box-drawing |
+| Never scale TextArea.scale for DPI | glyphon issue #117; scale Metrics instead | ✓ Good -- correct DPI handling |
+| Full ScaleFactorChanged handler | Rebuild fonts + surface + PTY resize, not lean approach | ✓ Good -- cross-platform safety |
+| intersects() for spacer skip | Multi-flag WIDE_CHAR_SPACER detection in single check | ✓ Good -- cleaner than separate contains() |
+| Decoration rects use fg color | Standard terminal convention, 1px height | ✓ Good -- crisp rendering |
 
 ---
-*Last updated: 2026-03-10 after v2.3 milestone completed*
+*Last updated: 2026-03-11 after v2.4 milestone completed*

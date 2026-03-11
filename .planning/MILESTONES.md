@@ -1,5 +1,22 @@
 # Milestones
 
+## v2.4 Rendering Correctness (Shipped: 2026-03-11)
+
+**Phases completed:** 5 phases, 7 plans, 13 tasks
+**Timeline:** 2026-03-10 to 2026-03-11 (2 days)
+**Git range:** feat(40-01) to feat(44-01)
+
+**Delivered:** Pixel-perfect TUI rendering with per-cell glyph positioning, CJK wide character support, GPU-rendered text decorations, font fallback via cosmic-text, and dynamic DPI handling for multi-monitor setups.
+
+**Key accomplishments:**
+- Per-cell Buffer rendering with font-metric cell height (ascent+descent instead of hardcoded 1.2x multiplier) for pixel-perfect grid alignment in TUI apps
+- CJK/wide character support: double-width Buffers, spacer skip logic, double-width background rects and cursor (Block/Underline/HollowBlock)
+- GPU-rendered underline (SGR 4) and strikethrough (SGR 9) via 1px RectInstance rects with fg color, integrated in both single-pane and split-pane paths
+- Font fallback validation: cosmic-text handles CJK, Arabic, Cyrillic, and Thai glyphs with set_monospace_width grid constraint
+- Dynamic DPI handler: ScaleFactorChanged triggers full font rebuild, wgpu surface reconfigure, and PTY resize for all tabs
+
+---
+
 ## v2.3 Agent MCP Features (Shipped: 2026-03-10)
 
 **Phases completed:** 5 phases, 9 plans
