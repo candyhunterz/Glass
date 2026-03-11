@@ -24,7 +24,7 @@ use glass_history::{
 use glass_mux::{
     FocusDirection, SearchOverlay, Session, SessionMux, SplitDirection, ViewportLayout,
 };
-use glass_renderer::tab_bar::TabDisplayInfo;
+use glass_renderer::tab_bar::{TabDisplayInfo, TabHitResult};
 use glass_renderer::{
     DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport, ScrollbarHit,
     SCROLLBAR_WIDTH,
@@ -1818,13 +1818,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Click is in tab bar region
                         ctx.mouse_left_pressed = false;
                         let viewport_w = ctx.window.inner_size().width as f32;
-                        if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
+                        match ctx.frame_renderer.tab_bar().hit_test(
                             x as f32,
                             ctx.session_mux.tab_count(),
                             viewport_w,
                         ) {
-                            ctx.session_mux.activate_tab(tab_idx);
-                            ctx.window.request_redraw();
+                            Some(TabHitResult::Tab(tab_idx)) => {
+                                ctx.session_mux.activate_tab(tab_idx);
+                                ctx.window.request_redraw();
+                            }
+                            Some(TabHitResult::CloseButton(_))
+                            | Some(TabHitResult::NewTabButton)
+                            | None => {}
                         }
                         return; // Don't fall through to pipeline hit test
                     }
@@ -2093,20 +2098,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     if (y as f32) < cell_h {
                         let viewport_w = ctx.window.inner_size().width as f32;
-                        if let Some(tab_idx) = ctx.frame_renderer.tab_bar().hit_test(
+                        match ctx.frame_renderer.tab_bar().hit_test(
                             x as f32,
                             ctx.session_mux.tab_count(),
                             viewport_w,
                         ) {
-                            if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
-                                cleanup_session(session);
+                            Some(TabHitResult::Tab(tab_idx))
+                            | Some(TabHitResult::CloseButton(tab_idx)) => {
+                                if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
+                                    cleanup_session(session);
+                                }
+                                if ctx.session_mux.tab_count() == 0 {
+                                    self.windows.remove(&window_id);
+                                    event_loop.exit();
+                                    return;
+                                }
+                                ctx.window.request_redraw();
                             }
-                            if ctx.session_mux.tab_count() == 0 {
-                                self.windows.remove(&window_id);
-                                event_loop.exit();
-                                return;
-                            }
-                            ctx.window.request_redraw();
+                            Some(TabHitResult::NewTabButton) | None => {}
                         }
                     }
                 }

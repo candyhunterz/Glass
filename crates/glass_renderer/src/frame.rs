@@ -256,7 +256,7 @@ impl FrameRenderer {
 
         // 1c2. Append tab bar rects (at top of viewport)
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, None);
             rect_instances.extend(tab_rects);
         }
 
@@ -567,7 +567,7 @@ impl FrameRenderer {
 
         // Tab bar text buffers
         if let Some(tabs) = tab_bar_info {
-            let tab_labels = self.tab_bar.build_tab_text(tabs, w);
+            let tab_labels = self.tab_bar.build_tab_text(tabs, w, None);
             for label in &tab_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
@@ -960,7 +960,7 @@ impl FrameRenderer {
 
         // Tab bar rects
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, None);
             rect_instances.extend(tab_rects);
         }
 
@@ -1194,7 +1194,7 @@ impl FrameRenderer {
 
         // Tab bar text
         if let Some(tabs) = tab_bar_info {
-            let tab_labels = self.tab_bar.build_tab_text(tabs, w);
+            let tab_labels = self.tab_bar.build_tab_text(tabs, w, None);
             for label in &tab_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
