@@ -260,6 +260,33 @@ impl SessionMux {
         }
     }
 
+    /// Move the tab at `from` to the position `to`.
+    ///
+    /// `to` is the final position index (post-removal). This means
+    /// `remove(from)` then `insert(to, tab)` is the correct sequence.
+    /// Adjusts `active_tab` to follow the active tab's new position.
+    /// No-op if `from == to` or either index is out of bounds.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return;
+        }
+
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+
+        // Adjust active_tab to track correctly
+        if self.active_tab == from {
+            // The active tab was the one moved
+            self.active_tab = to;
+        } else if from < self.active_tab && to >= self.active_tab {
+            // Tab removed before active, inserted at/after -> active shifts down
+            self.active_tab -= 1;
+        } else if from > self.active_tab && to <= self.active_tab {
+            // Tab removed after active, inserted at/before -> active shifts up
+            self.active_tab += 1;
+        }
+    }
+
     /// Return the number of panes in the active tab.
     pub fn active_tab_pane_count(&self) -> usize {
         self.tabs
