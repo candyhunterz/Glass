@@ -26,7 +26,8 @@ use glass_mux::{
 };
 use glass_renderer::tab_bar::TabDisplayInfo;
 use glass_renderer::{
-    DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport, SCROLLBAR_WIDTH,
+    DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport, ScrollbarHit,
+    SCROLLBAR_WIDTH,
 };
 use glass_terminal::{
     encode_key, query_git_status, snapshot_term, Block, BlockManager, DefaultColors, EventProxy,
@@ -127,6 +128,22 @@ impl Dimensions for TermDimensions {
     }
 }
 
+/// Scrollbar drag tracking state.
+struct ScrollbarDragInfo {
+    /// Which pane's scrollbar is being dragged.
+    pane_id: SessionId,
+    /// Y offset within the thumb where drag started (for smooth dragging).
+    thumb_grab_offset: f32,
+    /// The scrollbar track top Y position.
+    track_y: f32,
+    /// The scrollbar track height.
+    track_height: f32,
+    /// The current thumb height (for drag math).
+    thumb_height: f32,
+    /// History size at drag start.
+    history_size: usize,
+}
+
 /// Per-window state: OS window handle, GPU renderer, and session multiplexer.
 ///
 /// All terminal state (PTY, grid, block manager, history, etc.) lives inside
@@ -142,6 +159,10 @@ struct WindowContext {
     first_frame_logged: bool,
     /// Whether the left mouse button is currently held (for drag selection).
     mouse_left_pressed: bool,
+    /// Scrollbar drag tracking state (active when thumb is being dragged).
+    scrollbar_dragging: Option<ScrollbarDragInfo>,
+    /// Which pane's scrollbar the mouse is currently hovering over.
+    scrollbar_hovered_pane: Option<SessionId>,
 }
 
 impl WindowContext {
@@ -641,6 +662,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 session_mux,
                 first_frame_logged: false,
                 mouse_left_pressed: false,
+                scrollbar_dragging: None,
+                scrollbar_hovered_pane: None,
             },
         );
 
@@ -821,8 +844,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&tab_display),
                         update_text.as_deref(),
                         coordination_text.as_deref(),
-                        false,
-                        false,
+                        ctx.scrollbar_hovered_pane.is_some(),
+                        ctx.scrollbar_dragging.is_some(),
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -925,6 +948,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
+                    // Build per-pane scrollbar hover/drag state
+                    let scrollbar_state: Vec<(bool, bool)> = pane_layouts
+                        .iter()
+                        .map(|(sid, _)| {
+                            let hovered = ctx.scrollbar_hovered_pane == Some(*sid);
+                            let dragging = ctx
+                                .scrollbar_dragging
+                                .as_ref()
+                                .map(|d| d.pane_id == *sid)
+                                .unwrap_or(false);
+                            (hovered, dragging)
+                        })
+                        .collect();
+
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -937,7 +974,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&tab_display),
                         update_text.as_deref(),
                         coordination_text.as_deref(),
-                        &[],
+                        &scrollbar_state,
                     );
                 }
 
@@ -1611,6 +1648,126 @@ impl ApplicationHandler<AppEvent> for Processor {
             WindowEvent::CursorMoved { position, .. } => {
                 ctx.session_mut().cursor_position = Some((position.x, position.y));
 
+                let mouse_x = position.x as f32;
+                let mouse_y = position.y as f32;
+
+                // Handle active scrollbar drag: update scroll position from mouse Y
+                if let Some(ref drag) = ctx.scrollbar_dragging {
+                    let effective_y = mouse_y - drag.thumb_grab_offset;
+                    let scrollable_track = drag.track_height - drag.thumb_height;
+                    if scrollable_track > 0.0 {
+                        let ratio =
+                            ((effective_y - drag.track_y) / scrollable_track).clamp(0.0, 1.0);
+                        // ratio 0.0 = top (oldest), 1.0 = bottom (newest)
+                        let target_offset =
+                            ((1.0 - ratio) * drag.history_size as f32).round() as i32;
+                        let pane_id = drag.pane_id;
+                        if let Some(session) = ctx.session_mux.session(pane_id) {
+                            let mut term = session.term.lock();
+                            let current = term.grid().display_offset() as i32;
+                            let delta = target_offset - current;
+                            if delta != 0 {
+                                term.scroll_display(Scroll::Delta(delta));
+                            }
+                            drop(term);
+                        }
+                        ctx.window.request_redraw();
+                    }
+                    return;
+                }
+
+                // Update scrollbar hover state
+                {
+                    let (_, cell_h) = ctx.frame_renderer.cell_size();
+                    let sc = ctx.renderer.surface_config();
+                    let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
+                        cell_h
+                    } else {
+                        0.0
+                    };
+                    let status_bar_h = cell_h;
+                    let pane_height = sc.height as f32 - grid_y_offset - status_bar_h;
+
+                    let new_hovered = if ctx.session_mux.active_tab_pane_count() > 1 {
+                        // Multi-pane: check each pane's scrollbar
+                        let container = ViewportLayout {
+                            x: 0,
+                            y: cell_h as u32,
+                            width: sc.width,
+                            height: sc.height.saturating_sub((cell_h as u32) * 2),
+                        };
+                        let pane_layouts: Vec<(SessionId, ViewportLayout)> = ctx
+                            .session_mux
+                            .active_tab_root()
+                            .map(|root| root.compute_layout(&container))
+                            .unwrap_or_default();
+
+                        let mut found = None;
+                        for (sid, vp) in &pane_layouts {
+                            let scrollbar_x = (vp.x + vp.width) as f32 - SCROLLBAR_WIDTH;
+                            let vp_y = vp.y as f32;
+                            let vp_h = vp.height as f32;
+                            if let Some(session) = ctx.session_mux.session(*sid) {
+                                let term = session.term.lock();
+                                let display_offset = term.grid().display_offset();
+                                let history_size = term.grid().history_size();
+                                let screen_lines = term.screen_lines();
+                                drop(term);
+                                if ctx.frame_renderer.scrollbar().hit_test(
+                                    mouse_x,
+                                    mouse_y,
+                                    scrollbar_x,
+                                    vp_y,
+                                    vp_h,
+                                    display_offset,
+                                    history_size,
+                                    screen_lines,
+                                ).is_some() {
+                                    found = Some(*sid);
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    } else {
+                        // Single-pane: check the one scrollbar
+                        let scrollbar_x = sc.width as f32 - SCROLLBAR_WIDTH;
+                        let focused_sid = ctx.session_mux.focused_session_id();
+                        if let Some(sid) = focused_sid {
+                            if let Some(session) = ctx.session_mux.session(sid) {
+                                let term = session.term.lock();
+                                let display_offset = term.grid().display_offset();
+                                let history_size = term.grid().history_size();
+                                let screen_lines = term.screen_lines();
+                                drop(term);
+                                if ctx.frame_renderer.scrollbar().hit_test(
+                                    mouse_x,
+                                    mouse_y,
+                                    scrollbar_x,
+                                    grid_y_offset,
+                                    pane_height,
+                                    display_offset,
+                                    history_size,
+                                    screen_lines,
+                                ).is_some() {
+                                    Some(sid)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    if new_hovered != ctx.scrollbar_hovered_pane {
+                        ctx.scrollbar_hovered_pane = new_hovered;
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 // Update selection during mouse drag
                 if ctx.mouse_left_pressed {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
@@ -1670,6 +1827,134 @@ impl ApplicationHandler<AppEvent> for Processor {
                             ctx.window.request_redraw();
                         }
                         return; // Don't fall through to pipeline hit test
+                    }
+                }
+
+                // Scrollbar click handling (before text selection)
+                if let Some((x, y)) = ctx.session().cursor_position {
+                    let (_, cell_h) = ctx.frame_renderer.cell_size();
+                    let sc = ctx.renderer.surface_config();
+                    let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
+                        cell_h
+                    } else {
+                        0.0
+                    };
+                    let status_bar_h = cell_h;
+
+                    let scrollbar_hit_result = if ctx.session_mux.active_tab_pane_count() > 1 {
+                        // Multi-pane: check each pane's scrollbar
+                        let container = ViewportLayout {
+                            x: 0,
+                            y: cell_h as u32,
+                            width: sc.width,
+                            height: sc.height.saturating_sub((cell_h as u32) * 2),
+                        };
+                        let pane_layouts: Vec<(SessionId, ViewportLayout)> = ctx
+                            .session_mux
+                            .active_tab_root()
+                            .map(|root| root.compute_layout(&container))
+                            .unwrap_or_default();
+
+                        let mut found = None;
+                        for (sid, vp) in &pane_layouts {
+                            let scrollbar_x = (vp.x + vp.width) as f32 - SCROLLBAR_WIDTH;
+                            let vp_y = vp.y as f32;
+                            let vp_h = vp.height as f32;
+                            if let Some(session) = ctx.session_mux.session(*sid) {
+                                let term = session.term.lock();
+                                let display_offset = term.grid().display_offset();
+                                let history_size = term.grid().history_size();
+                                let screen_lines = term.screen_lines();
+                                drop(term);
+                                if let Some(hit) = ctx.frame_renderer.scrollbar().hit_test(
+                                    x as f32,
+                                    y as f32,
+                                    scrollbar_x,
+                                    vp_y,
+                                    vp_h,
+                                    display_offset,
+                                    history_size,
+                                    screen_lines,
+                                ) {
+                                    found = Some((*sid, hit, vp_y, vp_h, display_offset, history_size, screen_lines));
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    } else {
+                        // Single-pane
+                        let scrollbar_x = sc.width as f32 - SCROLLBAR_WIDTH;
+                        let pane_height = sc.height as f32 - grid_y_offset - status_bar_h;
+                        if let Some(sid) = ctx.session_mux.focused_session_id() {
+                            if let Some(session) = ctx.session_mux.session(sid) {
+                                let term = session.term.lock();
+                                let display_offset = term.grid().display_offset();
+                                let history_size = term.grid().history_size();
+                                let screen_lines = term.screen_lines();
+                                drop(term);
+                                ctx.frame_renderer.scrollbar().hit_test(
+                                    x as f32,
+                                    y as f32,
+                                    scrollbar_x,
+                                    grid_y_offset,
+                                    pane_height,
+                                    display_offset,
+                                    history_size,
+                                    screen_lines,
+                                ).map(|hit| (sid, hit, grid_y_offset, pane_height, display_offset, history_size, screen_lines))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some((sid, hit, track_y, track_height, display_offset, history_size, screen_lines)) = scrollbar_hit_result {
+                        ctx.mouse_left_pressed = false; // Prevent text selection
+
+                        match hit {
+                            ScrollbarHit::Thumb => {
+                                // Start drag: compute thumb geometry for grab offset
+                                let (thumb_y_offset, thumb_height) = ctx
+                                    .frame_renderer
+                                    .scrollbar()
+                                    .compute_thumb_geometry(
+                                        track_height,
+                                        history_size,
+                                        screen_lines,
+                                        display_offset,
+                                    );
+                                let thumb_top = track_y + thumb_y_offset;
+                                ctx.scrollbar_dragging = Some(ScrollbarDragInfo {
+                                    pane_id: sid,
+                                    thumb_grab_offset: y as f32 - thumb_top,
+                                    track_y,
+                                    track_height,
+                                    thumb_height,
+                                    history_size,
+                                });
+                            }
+                            ScrollbarHit::TrackAbove => {
+                                if let Some(session) = ctx.session_mux.session(sid) {
+                                    session.term.lock().scroll_display(Scroll::PageUp);
+                                }
+                            }
+                            ScrollbarHit::TrackBelow => {
+                                if let Some(session) = ctx.session_mux.session(sid) {
+                                    session.term.lock().scroll_display(Scroll::PageDown);
+                                }
+                            }
+                        }
+
+                        // If clicked pane is not focused (multi-pane), focus it
+                        if ctx.session_mux.focused_session_id() != Some(sid) {
+                            ctx.session_mux.set_focused_pane(sid);
+                        }
+
+                        ctx.window.request_redraw();
+                        return;
                     }
                 }
 
@@ -1789,6 +2074,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                // If scrollbar was being dragged, just release it (no clipboard copy)
+                if ctx.scrollbar_dragging.is_some() {
+                    ctx.scrollbar_dragging = None;
+                    ctx.window.request_redraw();
+                    return;
+                }
                 ctx.mouse_left_pressed = false;
                 // Copy selection to clipboard on mouse release
                 clipboard_copy(&ctx.session().term);
