@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.5
 milestone_name: UI Controls
 status: unknown
-stopped_at: Completed 46-01-PLAN.md
-last_updated: "2026-03-11T03:38:41.475Z"
+stopped_at: Completed 46-02-PLAN.md
+last_updated: "2026-03-11T03:44:01.486Z"
 progress:
   total_phases: 3
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -48,6 +48,7 @@ Phase 47: Tab Drag Reorder — context gathered, ready for planning
 
 See PROJECT.md Key Decisions table for full history.
 - [Phase 46-tab-bar-controls]: TabHitResult enum for multi-target tab bar hit-testing (Tab, CloseButton, NewTabButton)
+- [Phase 46-tab-bar-controls]: Hover-clear-on-close pattern: always reset tab_bar_hovered_tab after closing tabs
 
 ### Pending Todos
 
@@ -61,6 +62,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-11T03:38:41.473Z
-Stopped at: Completed 46-01-PLAN.md
+Last session: 2026-03-11T03:44:01.485Z
+Stopped at: Completed 46-02-PLAN.md
 Resume file: None
