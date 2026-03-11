@@ -1156,7 +1156,11 @@ mod tests {
         let buf_width = renderer.cell_width * 2.0;
         let metrics = Metrics::new(14.0, renderer.cell_height);
         let mut buffer = Buffer::new(&mut font_system, metrics);
-        buffer.set_size(&mut font_system, Some(buf_width), Some(renderer.cell_height));
+        buffer.set_size(
+            &mut font_system,
+            Some(buf_width),
+            Some(renderer.cell_height),
+        );
         buffer.set_monospace_width(&mut font_system, Some(buf_width));
         buffer.set_text(
             &mut font_system,
@@ -1262,10 +1266,7 @@ mod tests {
             .layout_runs()
             .next()
             .expect("Should have a layout run");
-        assert!(
-            !run.glyphs.is_empty(),
-            "Should have at least one glyph"
-        );
+        assert!(!run.glyphs.is_empty(), "Should have at least one glyph");
         // The layout run's total width (line_w) should not exceed the buffer width,
         // proving set_monospace_width constrains the fallback glyph's advance
         assert!(
@@ -1333,14 +1334,8 @@ mod tests {
         // At 2x scale, cell dimensions should be approximately double
         let ratio_w = gr_2x.cell_width / gr_1x.cell_width;
         let ratio_h = gr_2x.cell_height / gr_1x.cell_height;
-        assert!(
-            (ratio_w - 2.0).abs() < 0.15,
-            "width ratio: {ratio_w}"
-        );
-        assert!(
-            (ratio_h - 2.0).abs() < 0.15,
-            "height ratio: {ratio_h}"
-        );
+        assert!((ratio_w - 2.0).abs() < 0.15, "width ratio: {ratio_w}");
+        assert!((ratio_h - 2.0).abs() < 0.15, "height ratio: {ratio_h}");
     }
 
     /// Test: GridRenderer at 1.5x scale preserves grid alignment invariants

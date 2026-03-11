@@ -1050,15 +1050,81 @@ impl ApplicationHandler<AppEvent> for Processor {
                 ctx.window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                tracing::info!("Scale factor changed to {}", scale_factor);
-                // FrameRenderer does not yet support dynamic scale factor updates.
-                // Full font metric recalculation on scale factor change requires
-                // rebuilding the glyph atlas, which is a future enhancement for
-                // multi-monitor HiDPI support. For now, log the event.
-                tracing::warn!(
-                    "Dynamic scale factor update not yet supported; \
-                     restart Glass to apply new DPI settings"
+                let scale = scale_factor as f32;
+                tracing::info!("DPI scale factor changed to {scale}");
+
+                // Rebuild font metrics with new scale factor
+                ctx.frame_renderer.update_font(
+                    &self.config.font_family,
+                    self.config.font_size,
+                    scale,
                 );
+
+                let size = ctx.window.inner_size();
+                if size.width > 0 && size.height > 0 {
+                    ctx.renderer.resize(size.width, size.height);
+
+                    let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+
+                    // Active tab: use per-pane resize for correct split dimensions
+                    if ctx.session_mux.active_tab_pane_count() > 1 {
+                        resize_all_panes(
+                            &mut ctx.session_mux,
+                            &ctx.frame_renderer,
+                            size.width,
+                            size.height,
+                        );
+                    } else {
+                        let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                        let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16)
+                            .saturating_sub(2);
+                        let full_size = WindowSize {
+                            num_lines,
+                            num_cols,
+                            cell_width: cell_w as u16,
+                            cell_height: cell_h as u16,
+                        };
+                        if let Some(session) = ctx.session_mux.focused_session_mut() {
+                            let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                            session.term.lock().resize(TermDimensions {
+                                columns: num_cols as usize,
+                                screen_lines: num_lines as usize,
+                            });
+                            session.block_manager.notify_resize(num_cols as usize);
+                        }
+                    }
+
+                    // Background tabs: resize with full window dimensions
+                    let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                    let num_lines =
+                        ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
+                    let full_size = WindowSize {
+                        num_lines,
+                        num_cols,
+                        cell_width: cell_w as u16,
+                        cell_height: cell_h as u16,
+                    };
+                    let active_idx = ctx.session_mux.active_tab_index();
+                    let bg_session_ids: Vec<_> = ctx
+                        .session_mux
+                        .tabs()
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != active_idx)
+                        .flat_map(|(_, t)| t.session_ids())
+                        .collect();
+                    for sid in bg_session_ids {
+                        if let Some(session) = ctx.session_mux.session_mut(sid) {
+                            let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                            session.term.lock().resize(TermDimensions {
+                                columns: num_cols as usize,
+                                screen_lines: num_lines as usize,
+                            });
+                            session.block_manager.notify_resize(num_cols as usize);
+                        }
+                    }
+                }
+
                 ctx.window.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
