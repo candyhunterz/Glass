@@ -25,7 +25,9 @@ use glass_mux::{
     FocusDirection, SearchOverlay, Session, SessionMux, SplitDirection, ViewportLayout,
 };
 use glass_renderer::tab_bar::TabDisplayInfo;
-use glass_renderer::{DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport};
+use glass_renderer::{
+    DividerRect, FontSystem, FrameRenderer, GlassRenderer, PaneViewport, SCROLLBAR_WIDTH,
+};
 use glass_terminal::{
     encode_key, query_git_status, snapshot_term, Block, BlockManager, DefaultColors, EventProxy,
     GridSnapshot, OscEvent, PipelineHit, PtyMsg, PtySender, StatusState,
@@ -307,7 +309,7 @@ fn resize_all_panes(
 
     // Resize each pane's PTY with per-pane dimensions
     for (sid, vp) in &pane_layouts {
-        let pane_cols = (vp.width as f32 / cell_w).floor().max(1.0) as u16;
+        let pane_cols = ((vp.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
         let pane_lines = (vp.height as f32 / cell_h).floor().max(1.0) as u16;
 
         let pane_size = WindowSize {
@@ -363,7 +365,7 @@ fn create_session(
     );
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
-    let num_cols = (window_width as f32 / cell_w).floor().max(1.0) as u16;
+    let num_cols = ((window_width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
     let num_lines =
         ((window_height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1 + tab_bar_lines);
 
@@ -565,7 +567,7 @@ impl ApplicationHandler<AppEvent> for Processor {
         // Subtract 2 lines for the status bar + tab bar so the PTY resize reflects actual content area.
         let (cell_w, cell_h) = frame_renderer.cell_size();
         let size = window.inner_size();
-        let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+        let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
         let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
 
         tracing::info!(
@@ -999,7 +1001,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                 } else {
                     // Single-pane active tab: full window dimensions minus chrome
-                    let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                    let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
                     let num_lines =
                         ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
                     let full_size = WindowSize {
@@ -1020,7 +1022,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Background tabs: resize with full window dimensions
                 // (they will recompute when activated)
-                let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
                 let num_lines =
                     ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
                 let full_size = WindowSize {
@@ -1078,7 +1080,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             size.height,
                         );
                     } else {
-                        let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                        let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
                         let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16)
                             .saturating_sub(2);
                         let full_size = WindowSize {
@@ -1098,7 +1100,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     // Background tabs: resize with full window dimensions
-                    let num_cols = (size.width as f32 / cell_w).floor().max(1.0) as u16;
+                    let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
                     let num_lines =
                         ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
                     let full_size = WindowSize {
