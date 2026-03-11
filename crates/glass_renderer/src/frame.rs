@@ -178,6 +178,7 @@ impl FrameRenderer {
         status: Option<&StatusState>,
         search_overlay: Option<&SearchOverlayRenderData>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
+        hovered_tab: Option<usize>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
         scrollbar_hovered: bool,
@@ -256,7 +257,7 @@ impl FrameRenderer {
 
         // 1c2. Append tab bar rects (at top of viewport)
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, None);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab);
             rect_instances.extend(tab_rects);
         }
 
@@ -567,7 +568,7 @@ impl FrameRenderer {
 
         // Tab bar text buffers
         if let Some(tabs) = tab_bar_info {
-            let tab_labels = self.tab_bar.build_tab_text(tabs, w, None);
+            let tab_labels = self.tab_bar.build_tab_text(tabs, w, hovered_tab);
             for label in &tab_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
@@ -849,6 +850,7 @@ impl FrameRenderer {
         dividers: &[DividerRect],
         status: Option<&StatusState>,
         tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
+        hovered_tab: Option<usize>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
         scrollbar_state: &[(bool, bool)],
@@ -960,7 +962,7 @@ impl FrameRenderer {
 
         // Tab bar rects
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, None);
+            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab);
             rect_instances.extend(tab_rects);
         }
 
@@ -1194,7 +1196,7 @@ impl FrameRenderer {
 
         // Tab bar text
         if let Some(tabs) = tab_bar_info {
-            let tab_labels = self.tab_bar.build_tab_text(tabs, w, None);
+            let tab_labels = self.tab_bar.build_tab_text(tabs, w, hovered_tab);
             for label in &tab_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
