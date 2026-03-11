@@ -163,6 +163,8 @@ struct WindowContext {
     scrollbar_dragging: Option<ScrollbarDragInfo>,
     /// Which pane's scrollbar the mouse is currently hovering over.
     scrollbar_hovered_pane: Option<SessionId>,
+    /// Which tab the mouse is currently hovering over (for close button visibility).
+    tab_bar_hovered_tab: Option<usize>,
 }
 
 impl WindowContext {
@@ -664,6 +666,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 mouse_left_pressed: false,
                 scrollbar_dragging: None,
                 scrollbar_hovered_pane: None,
+                tab_bar_hovered_tab: None,
             },
         );
 
@@ -842,6 +845,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(&status_clone),
                         search_overlay_data.as_ref(),
                         Some(&tab_display),
+                        ctx.tab_bar_hovered_tab,
                         update_text.as_deref(),
                         coordination_text.as_deref(),
                         ctx.scrollbar_hovered_pane.is_some(),
@@ -972,6 +976,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         &dividers,
                         Some(&status_clone),
                         Some(&tab_display),
+                        ctx.tab_bar_hovered_tab,
                         update_text.as_deref(),
                         coordination_text.as_deref(),
                         &scrollbar_state,
@@ -1319,6 +1324,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if let Some(session) = ctx.session_mux.close_tab(idx) {
                                         cleanup_session(session);
                                     }
+                                    ctx.tab_bar_hovered_tab = None;
                                     if ctx.session_mux.tab_count() == 0 {
                                         self.windows.remove(&window_id);
                                         event_loop.exit();
@@ -1768,6 +1774,25 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
+                // Tab bar hover tracking
+                if ctx.session_mux.tab_count() > 0 {
+                    let (_, cell_h) = ctx.frame_renderer.cell_size();
+                    let new_tab_hovered = if mouse_y < cell_h {
+                        let viewport_w = ctx.window.inner_size().width as f32;
+                        ctx.frame_renderer.tab_bar().hit_test_tab_index(
+                            mouse_x,
+                            ctx.session_mux.tab_count(),
+                            viewport_w,
+                        )
+                    } else {
+                        None
+                    };
+                    if new_tab_hovered != ctx.tab_bar_hovered_tab {
+                        ctx.tab_bar_hovered_tab = new_tab_hovered;
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 // Update selection during mouse drag
                 if ctx.mouse_left_pressed {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
@@ -1827,9 +1852,40 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.session_mux.activate_tab(tab_idx);
                                 ctx.window.request_redraw();
                             }
-                            Some(TabHitResult::CloseButton(_))
-                            | Some(TabHitResult::NewTabButton)
-                            | None => {}
+                            Some(TabHitResult::CloseButton(tab_idx)) => {
+                                if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
+                                    cleanup_session(session);
+                                }
+                                ctx.tab_bar_hovered_tab = None;
+                                if ctx.session_mux.tab_count() == 0 {
+                                    self.windows.remove(&window_id);
+                                    event_loop.exit();
+                                    return;
+                                }
+                                ctx.window.request_redraw();
+                            }
+                            Some(TabHitResult::NewTabButton) => {
+                                let cwd = ctx.session().status.cwd().to_string();
+                                let session_id = ctx.session_mux.next_session_id();
+                                let (cell_w, cell_h_inner) =
+                                    ctx.frame_renderer.cell_size();
+                                let size = ctx.window.inner_size();
+                                let session = create_session(
+                                    &self.proxy,
+                                    window_id,
+                                    session_id,
+                                    &self.config,
+                                    Some(std::path::Path::new(&cwd)),
+                                    cell_w,
+                                    cell_h_inner,
+                                    size.width,
+                                    size.height,
+                                    1,
+                                );
+                                ctx.session_mux.add_tab(session);
+                                ctx.window.request_redraw();
+                            }
+                            None => {}
                         }
                         return; // Don't fall through to pipeline hit test
                     }
@@ -2108,6 +2164,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
                                     cleanup_session(session);
                                 }
+                                ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
                                     self.windows.remove(&window_id);
                                     event_loop.exit();
@@ -2211,6 +2268,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(session) = ctx.session_mux.close_tab(idx) {
                                 cleanup_session(session);
                             }
+                            ctx.tab_bar_hovered_tab = None;
                         }
                     }
                     if ctx.session_mux.tab_count() == 0 {
