@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v2.5
 milestone_name: UI Controls
-status: unknown
-stopped_at: Completed 47-01-PLAN.md
-last_updated: "2026-03-11T04:09:59.184Z"
+status: complete
+stopped_at: Completed 47-02-PLAN.md
+last_updated: "2026-03-11T04:13:51Z"
 progress:
   total_phases: 3
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-03-11)
 
 Milestone: v2.5 UI Controls — IN PROGRESS
 Phase 45: Scrollbar — COMPLETE (Plan 01 renderer + Plan 02 mouse interactions)
-Phase 46: Tab Bar Controls — context gathered, ready for planning
-Phase 47: Tab Drag Reorder — context gathered, ready for planning
+Phase 46: Tab Bar Controls — COMPLETE (Plan 01 renderer + Plan 02 event wiring)
+Phase 47: Tab Drag Reorder — COMPLETE (Plan 01 core logic + Plan 02 event wiring)
 
 ## Performance Metrics
 
@@ -40,7 +40,8 @@ Phase 47: Tab Drag Reorder — context gathered, ready for planning
 - v2.2: 8 plans in ~30 min (~4 min/plan)
 - v2.3: 9 plans in ~35 min (~4 min/plan)
 - v2.4: 7 plans in ~25 min (~4 min/plan)
-- Total: 95 plans across 44 phases in 8 days
+- v2.5: 6 plans in ~10 min (~2 min/plan)
+- Total: 101 plans across 47 phases in 8 days
 
 ## Accumulated Context
 
@@ -50,6 +51,8 @@ See PROJECT.md Key Decisions table for full history.
 - [Phase 46-tab-bar-controls]: TabHitResult enum for multi-target tab bar hit-testing (Tab, CloseButton, NewTabButton)
 - [Phase 46-tab-bar-controls]: Hover-clear-on-close pattern: always reset tab_bar_hovered_tab after closing tabs
 - [Phase 47]: to index is final position (post-removal) for reorder_tab semantics
+- [Phase 47]: 5px horizontal threshold before drag activates to prevent accidental drags
+- [Phase 47]: CursorMoved early return during drag prevents hover/selection interference
 
 ### Pending Todos
 
@@ -63,6 +66,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-11T04:09:59.182Z
-Stopped at: Completed 47-01-PLAN.md
+Last session: 2026-03-11T04:13:51Z
+Stopped at: Completed 47-02-PLAN.md
 Resume file: None
