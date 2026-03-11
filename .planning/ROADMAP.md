@@ -225,4 +225,4 @@ Note: Phases 41, 42, 43 all depend only on Phase 40 and could theoretically run 
 | 41. Wide Character Support | 2/2 | Complete    | 2026-03-10 | - |
 | 42. Text Decorations | 1/1 | Complete    | 2026-03-10 | - |
 | 43. Font Fallback | 1/1 | Complete    | 2026-03-10 | - |
-| 44. Dynamic DPI | 1/1 | Complete   | 2026-03-11 | - |
+| 44. Dynamic DPI | 1/1 | Complete    | 2026-03-11 | - |
