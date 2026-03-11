@@ -184,4 +184,4 @@
 | 44. Dynamic DPI | v2.4 | 1/1 | Complete | 2026-03-11 |
 | 45. Scrollbar | v2.5 | Complete    | 2026-03-11 | 2026-03-11 |
 | 46. Tab Bar Controls | 2/2 | Complete    | 2026-03-11 | - |
-| 47. Tab Drag Reorder | 2/2 | Complete   | 2026-03-11 | - |
+| 47. Tab Drag Reorder | 2/2 | Complete    | 2026-03-11 | - |
