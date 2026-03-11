@@ -15,9 +15,9 @@ use crate::block_renderer::BlockRenderer;
 use crate::glyph_cache::GlyphCache;
 use crate::grid_renderer::GridRenderer;
 use crate::rect_renderer::RectRenderer;
+use crate::scrollbar::ScrollbarRenderer;
 use crate::search_overlay_renderer::SearchOverlayRenderer;
 use crate::status_bar::StatusBarRenderer;
-use crate::scrollbar::ScrollbarRenderer;
 use crate::tab_bar::TabBarRenderer;
 
 /// Display data for the search overlay, extracted from SearchOverlay state.
@@ -258,7 +258,9 @@ impl FrameRenderer {
 
         // 1c2. Append tab bar rects (at top of viewport)
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, drop_index);
+            let tab_rects = self
+                .tab_bar
+                .build_tab_rects(tabs, w, hovered_tab, drop_index);
             rect_instances.extend(tab_rects);
         }
 
@@ -928,7 +930,8 @@ impl FrameRenderer {
 
             // Scrollbar rects for this pane
             {
-                let (sb_hovered, sb_dragging) = scrollbar_state.get(i).copied().unwrap_or((false, false));
+                let (sb_hovered, sb_dragging) =
+                    scrollbar_state.get(i).copied().unwrap_or((false, false));
                 let scrollbar_rects = self.scrollbar.build_scrollbar_rects(
                     (viewport.x + viewport.width) as f32,
                     viewport.y as f32,
@@ -964,7 +967,9 @@ impl FrameRenderer {
 
         // Tab bar rects
         if let Some(tabs) = tab_bar_info {
-            let tab_rects = self.tab_bar.build_tab_rects(tabs, w, hovered_tab, drop_index);
+            let tab_rects = self
+                .tab_bar
+                .build_tab_rects(tabs, w, hovered_tab, drop_index);
             rect_instances.extend(tab_rects);
         }
 

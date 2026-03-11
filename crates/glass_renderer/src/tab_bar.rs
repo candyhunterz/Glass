@@ -183,8 +183,8 @@ impl TabBarRenderer {
 
         // Drag-and-drop insertion indicator
         if let Some(idx) = drop_index {
-            let indicator_x = idx as f32 * (tab_width + TAB_GAP) - TAB_GAP / 2.0
-                - DRAG_INDICATOR_WIDTH / 2.0;
+            let indicator_x =
+                idx as f32 * (tab_width + TAB_GAP) - TAB_GAP / 2.0 - DRAG_INDICATOR_WIDTH / 2.0;
             rects.push(RectInstance {
                 pos: [
                     indicator_x.max(0.0),
@@ -217,8 +217,8 @@ impl TabBarRenderer {
         let mut labels = Vec::new();
 
         // Compute how many characters the close button takes away
-        let close_chars = ((CLOSE_BUTTON_SIZE + CLOSE_BUTTON_PADDING) / self.cell_width).ceil()
-            as usize;
+        let close_chars =
+            ((CLOSE_BUTTON_SIZE + CLOSE_BUTTON_PADDING) / self.cell_width).ceil() as usize;
 
         for (i, tab) in tabs.iter().enumerate() {
             let is_hovered = hovered_tab == Some(i);
@@ -315,12 +315,7 @@ impl TabBarRenderer {
     ///
     /// Checks in order: "+" new tab button, close button sub-rects, tab bodies.
     /// Close button is checked before tab body (critical: close button is a sub-region of the tab).
-    pub fn hit_test(
-        &self,
-        x: f32,
-        tab_count: usize,
-        viewport_width: f32,
-    ) -> Option<TabHitResult> {
+    pub fn hit_test(&self, x: f32, tab_count: usize, viewport_width: f32) -> Option<TabHitResult> {
         if tab_count == 0 {
             return None;
         }
@@ -416,7 +411,7 @@ mod tests {
         // First rect is bar background
         assert_eq!(rects[0].color, BAR_BG_COLOR);
         assert_eq!(rects[0].pos[2], 800.0); // full width
-        // Second rect is active tab
+                                            // Second rect is active tab
         assert_eq!(rects[1].color, ACTIVE_TAB_COLOR);
     }
 

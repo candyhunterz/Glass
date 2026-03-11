@@ -55,7 +55,7 @@ windows-sys   = { version = "0.59", features = ["Win32_System_Console"] }
 
 [package]
 name = "glass"
-version = "2.2.0"
+version = "2.5.0"
 edition = "2021"
 authors = ["Glass Contributors"]
 license = "MIT"

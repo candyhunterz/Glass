@@ -346,7 +346,9 @@ fn resize_all_panes(
 
     // Resize each pane's PTY with per-pane dimensions
     for (sid, vp) in &pane_layouts {
-        let pane_cols = ((vp.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+        let pane_cols = ((vp.width as f32 - SCROLLBAR_WIDTH) / cell_w)
+            .floor()
+            .max(1.0) as u16;
         let pane_lines = (vp.height as f32 / cell_h).floor().max(1.0) as u16;
 
         let pane_size = WindowSize {
@@ -402,7 +404,9 @@ fn create_session(
     );
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
-    let num_cols = ((window_width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+    let num_cols = ((window_width as f32 - SCROLLBAR_WIDTH) / cell_w)
+        .floor()
+        .max(1.0) as u16;
     let num_lines =
         ((window_height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(1 + tab_bar_lines);
 
@@ -604,7 +608,9 @@ impl ApplicationHandler<AppEvent> for Processor {
         // Subtract 2 lines for the status bar + tab bar so the PTY resize reflects actual content area.
         let (cell_w, cell_h) = frame_renderer.cell_size();
         let size = window.inner_size();
-        let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+        let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w)
+            .floor()
+            .max(1.0) as u16;
         let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
 
         tracing::info!(
@@ -850,7 +856,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     };
 
                     let drop_index = ctx.tab_drag_state.as_ref().and_then(|d| {
-                        if d.active { d.drop_index } else { None }
+                        if d.active {
+                            d.drop_index
+                        } else {
+                            None
+                        }
                     });
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
@@ -986,7 +996,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .collect();
 
                     let drop_index_mp = ctx.tab_drag_state.as_ref().and_then(|d| {
-                        if d.active { d.drop_index } else { None }
+                        if d.active {
+                            d.drop_index
+                        } else {
+                            None
+                        }
                     });
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
@@ -1066,7 +1080,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                 } else {
                     // Single-pane active tab: full window dimensions minus chrome
-                    let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+                    let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w)
+                        .floor()
+                        .max(1.0) as u16;
                     let num_lines =
                         ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
                     let full_size = WindowSize {
@@ -1087,7 +1103,9 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Background tabs: resize with full window dimensions
                 // (they will recompute when activated)
-                let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+                let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w)
+                    .floor()
+                    .max(1.0) as u16;
                 let num_lines =
                     ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
                 let full_size = WindowSize {
@@ -1145,7 +1163,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             size.height,
                         );
                     } else {
-                        let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+                        let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w)
+                            .floor()
+                            .max(1.0) as u16;
                         let num_lines = ((size.height as f32 / cell_h).floor().max(2.0) as u16)
                             .saturating_sub(2);
                         let full_size = WindowSize {
@@ -1165,7 +1185,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     // Background tabs: resize with full window dimensions
-                    let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w).floor().max(1.0) as u16;
+                    let num_cols = ((size.width as f32 - SCROLLBAR_WIDTH) / cell_w)
+                        .floor()
+                        .max(1.0) as u16;
                     let num_lines =
                         ((size.height as f32 / cell_h).floor().max(2.0) as u16).saturating_sub(2);
                     let full_size = WindowSize {
@@ -1742,16 +1764,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let history_size = term.grid().history_size();
                                 let screen_lines = term.screen_lines();
                                 drop(term);
-                                if ctx.frame_renderer.scrollbar().hit_test(
-                                    mouse_x,
-                                    mouse_y,
-                                    scrollbar_x,
-                                    vp_y,
-                                    vp_h,
-                                    display_offset,
-                                    history_size,
-                                    screen_lines,
-                                ).is_some() {
+                                if ctx
+                                    .frame_renderer
+                                    .scrollbar()
+                                    .hit_test(
+                                        mouse_x,
+                                        mouse_y,
+                                        scrollbar_x,
+                                        vp_y,
+                                        vp_h,
+                                        display_offset,
+                                        history_size,
+                                        screen_lines,
+                                    )
+                                    .is_some()
+                                {
                                     found = Some(*sid);
                                     break;
                                 }
@@ -1769,16 +1796,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let history_size = term.grid().history_size();
                                 let screen_lines = term.screen_lines();
                                 drop(term);
-                                if ctx.frame_renderer.scrollbar().hit_test(
-                                    mouse_x,
-                                    mouse_y,
-                                    scrollbar_x,
-                                    grid_y_offset,
-                                    pane_height,
-                                    display_offset,
-                                    history_size,
-                                    screen_lines,
-                                ).is_some() {
+                                if ctx
+                                    .frame_renderer
+                                    .scrollbar()
+                                    .hit_test(
+                                        mouse_x,
+                                        mouse_y,
+                                        scrollbar_x,
+                                        grid_y_offset,
+                                        pane_height,
+                                        display_offset,
+                                        history_size,
+                                        screen_lines,
+                                    )
+                                    .is_some()
+                                {
                                     Some(sid)
                                 } else {
                                     None
@@ -1912,8 +1944,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Some(TabHitResult::NewTabButton) => {
                                 let cwd = ctx.session().status.cwd().to_string();
                                 let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h_inner) =
-                                    ctx.frame_renderer.cell_size();
+                                let (cell_w, cell_h_inner) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
                                 let session = create_session(
                                     &self.proxy,
@@ -1982,7 +2013,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     history_size,
                                     screen_lines,
                                 ) {
-                                    found = Some((*sid, hit, vp_y, vp_h, display_offset, history_size, screen_lines));
+                                    found = Some((
+                                        *sid,
+                                        hit,
+                                        vp_y,
+                                        vp_h,
+                                        display_offset,
+                                        history_size,
+                                        screen_lines,
+                                    ));
                                     break;
                                 }
                             }
@@ -1999,16 +2038,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let history_size = term.grid().history_size();
                                 let screen_lines = term.screen_lines();
                                 drop(term);
-                                ctx.frame_renderer.scrollbar().hit_test(
-                                    x as f32,
-                                    y as f32,
-                                    scrollbar_x,
-                                    grid_y_offset,
-                                    pane_height,
-                                    display_offset,
-                                    history_size,
-                                    screen_lines,
-                                ).map(|hit| (sid, hit, grid_y_offset, pane_height, display_offset, history_size, screen_lines))
+                                ctx.frame_renderer
+                                    .scrollbar()
+                                    .hit_test(
+                                        x as f32,
+                                        y as f32,
+                                        scrollbar_x,
+                                        grid_y_offset,
+                                        pane_height,
+                                        display_offset,
+                                        history_size,
+                                        screen_lines,
+                                    )
+                                    .map(|hit| {
+                                        (
+                                            sid,
+                                            hit,
+                                            grid_y_offset,
+                                            pane_height,
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        )
+                                    })
                             } else {
                                 None
                             }
@@ -2017,16 +2069,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     };
 
-                    if let Some((sid, hit, track_y, track_height, display_offset, history_size, screen_lines)) = scrollbar_hit_result {
+                    if let Some((
+                        sid,
+                        hit,
+                        track_y,
+                        track_height,
+                        display_offset,
+                        history_size,
+                        screen_lines,
+                    )) = scrollbar_hit_result
+                    {
                         ctx.mouse_left_pressed = false; // Prevent text selection
 
                         match hit {
                             ScrollbarHit::Thumb => {
                                 // Start drag: compute thumb geometry for grab offset
-                                let (thumb_y_offset, thumb_height) = ctx
-                                    .frame_renderer
-                                    .scrollbar()
-                                    .compute_thumb_geometry(
+                                let (thumb_y_offset, thumb_height) =
+                                    ctx.frame_renderer.scrollbar().compute_thumb_geometry(
                                         track_height,
                                         history_size,
                                         screen_lines,

@@ -76,7 +76,9 @@ impl ScrollbarRenderer {
         }
 
         let thumb_ratio = screen_lines as f32 / total_lines as f32;
-        let thumb_height = (track_height * thumb_ratio).max(MIN_THUMB_HEIGHT).min(track_height);
+        let thumb_height = (track_height * thumb_ratio)
+            .max(MIN_THUMB_HEIGHT)
+            .min(track_height);
         let scrollable_track = track_height - thumb_height;
 
         // display_offset=0 means at bottom (newest), display_offset=history_size means at top (oldest)
@@ -134,7 +136,12 @@ impl ScrollbarRenderer {
         };
 
         rects.push(RectInstance {
-            pos: [scrollbar_x, pane_y + thumb_y_offset, self.width, thumb_height],
+            pos: [
+                scrollbar_x,
+                pane_y + thumb_y_offset,
+                self.width,
+                thumb_height,
+            ],
             color: thumb_color,
         });
 
@@ -167,8 +174,12 @@ impl ScrollbarRenderer {
         }
 
         // Determine thumb position
-        let (thumb_y_offset, thumb_height) =
-            self.compute_thumb_geometry(viewport_height, history_size, screen_lines, display_offset);
+        let (thumb_y_offset, thumb_height) = self.compute_thumb_geometry(
+            viewport_height,
+            history_size,
+            screen_lines,
+            display_offset,
+        );
 
         let thumb_top = viewport_y + thumb_y_offset;
         let thumb_bottom = thumb_top + thumb_height;
@@ -219,7 +230,10 @@ mod tests {
         let (thumb_y, _thumb_h) = sb.compute_thumb_geometry(480.0, 100, 24, 0);
         // scroll_ratio = 1.0, so thumb_y = scrollable_track * 1.0
         assert!(approx_eq(thumb.pos[1], thumb_y));
-        assert!(approx_eq(thumb.pos[1] + thumb.pos[3], 480.0), "thumb should reach bottom of track");
+        assert!(
+            approx_eq(thumb.pos[1] + thumb.pos[3], 480.0),
+            "thumb should reach bottom of track"
+        );
     }
 
     #[test]
@@ -229,7 +243,10 @@ mod tests {
         let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 100, 100, 24, false, false);
         let thumb = &rects[1];
         // scroll_ratio = 0.0, thumb_y_offset = 0
-        assert!(approx_eq(thumb.pos[1], 0.0), "thumb should be at top of track");
+        assert!(
+            approx_eq(thumb.pos[1], 0.0),
+            "thumb should be at top of track"
+        );
     }
 
     #[test]
@@ -239,7 +256,10 @@ mod tests {
         let thumb = &rects[1];
         let (_thumb_y, thumb_h) = sb.compute_thumb_geometry(480.0, 100, 24, 50);
         let expected_middle = (480.0 - thumb_h) / 2.0;
-        assert!(approx_eq(thumb.pos[1], expected_middle), "thumb should be near middle");
+        assert!(
+            approx_eq(thumb.pos[1], expected_middle),
+            "thumb should be near middle"
+        );
     }
 
     #[test]
@@ -257,7 +277,10 @@ mod tests {
         let sb = ScrollbarRenderer::new();
         let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 0, 24, false, false);
         let thumb = &rects[1];
-        assert!(approx_eq(thumb.pos[3], 480.0), "thumb should fill entire track when no history");
+        assert!(
+            approx_eq(thumb.pos[3], 480.0),
+            "thumb should fill entire track when no history"
+        );
     }
 
     #[test]
@@ -267,7 +290,10 @@ mod tests {
         // Very large history: 10000 lines with 24 screen lines
         let (_, thumb_h) = sb.compute_thumb_geometry(pane_height, 10000, 24, 0);
         // 480 * 24/10024 = ~1.15 pixels, should clamp to MIN_THUMB_HEIGHT
-        assert!(approx_eq(thumb_h, MIN_THUMB_HEIGHT), "thumb should be clamped to minimum height");
+        assert!(
+            approx_eq(thumb_h, MIN_THUMB_HEIGHT),
+            "thumb should be clamped to minimum height"
+        );
     }
 
     #[test]

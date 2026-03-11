@@ -1829,19 +1829,28 @@ impl ServerHandler for GlassServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("glass-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Glass terminal server with history, undo, multi-agent coordination, and live GUI tools. \
-                 Use glass_history to search commands, glass_context for activity overview, \
-                 glass_undo to revert file changes, glass_file_diff to inspect pre-command file contents, \
-                 glass_pipe_inspect to inspect pipeline stage output. \
-                 For multi-agent coordination: glass_agent_register to join, glass_agent_lock/unlock for file locks, \
-                 glass_agent_broadcast/send/messages for communication, glass_agent_heartbeat for liveness. \
-                 Live GUI tools: glass_ping to check if the GUI is running and responsive. \
-                 Tab orchestration: glass_tab_list, glass_tab_create, glass_tab_send, glass_tab_output, glass_tab_close for managing terminal tabs. \
-                 Token saving: glass_tab_output supports head/tail mode and command_id for history DB lookup. glass_cache_check to verify if a command's result is still valid. \
-                 glass_command_diff for unified diffs of command file changes. glass_compressed_context for budget-aware context summaries with focus modes. \
-                 glass_extract_errors to extract structured errors from raw command output. \
-                 glass_has_running_command to check if a command is running with elapsed time. \
-                 glass_cancel_command to cancel a running command (Ctrl+C).",
+                "Glass is a terminal emulator with persistent command history and file snapshots. \
+                 These tools give you capabilities beyond your built-in tools.\n\n\
+                 ## After context reset or at session start\n\
+                 Call glass_context or glass_compressed_context to recover what the user was working on. \
+                 This is especially important after /clear — Glass remembers commands and output across sessions.\n\n\
+                 ## Use Glass tools when they add unique value\n\
+                 - glass_history: search past commands and output across sessions (your shell history can't do this)\n\
+                 - glass_undo: restore files to pre-command state (faster and safer than manual restoration)\n\
+                 - glass_file_diff / glass_command_diff: see what a command changed on disk\n\
+                 - glass_pipe_inspect: inspect intermediate pipeline stage output\n\
+                 - glass_context / glass_compressed_context: get activity summary with budget-aware focus modes\n\n\
+                 ## Do NOT use Glass tools when your built-in tools work fine\n\
+                 - Running commands: use your Bash tool, not glass_tab_send\n\
+                 - Reading files: use your Read tool, not glass_tab_output\n\
+                 - Glass tab tools (glass_tab_*) are for advanced orchestration only\n\n\
+                 ## Multi-agent coordination\n\
+                 When working alongside other AI agents on the same project:\n\
+                 1. glass_agent_register on session start (returns your agent_id)\n\
+                 2. glass_agent_lock before editing files (prevents conflicts)\n\
+                 3. glass_agent_unlock after editing\n\
+                 4. glass_agent_messages to check for messages from other agents\n\
+                 5. glass_agent_deregister on session end",
             )
     }
 }
