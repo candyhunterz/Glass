@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: executing
-stopped_at: Completed 50-02-PLAN.md
+stopped_at: Completed 51-01-PLAN.md
 last_updated: "2026-03-13T07:05:44.991Z"
 last_activity: 2026-03-13 -- completed 50-02 SOI pipeline wiring
 progress:
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-12)
 
 ## Current Position
 
-Phase: 50 of 60 (SOI Pipeline Integration)
-Plan: 2 of 2 in current phase
+Phase: 51 of 60 (SOI Compression Engine)
+Plan: 1 of 1 in current phase
 Status: In progress
-Last activity: 2026-03-13 -- completed 50-02 SOI pipeline wiring
+Last activity: 2026-03-13 -- completed 51-01 SOI compression engine
 
 Progress: [░░░░░░░░░░] 0% (v3.0: 0/13 phases)
 
@@ -77,6 +77,9 @@ Recent decisions relevant to v3.0:
 - [Phase 50]: AppEvent::SoiReady.severity is String not glass_soi::Severity to keep glass_core dep-free of glass_soi
 - [Phase 50-02]: soi_spawn_data declared before session borrow block (let mut = None), populated inside -- avoids borrow conflicts while keeping data for post-borrow spawn
 - [Phase 50-02]: bench_input_processing uses Some(Vec<u8>) not &[u8] to match actual process_output API signature
+- [Phase 51-01]: compress() uses serde_json::Value not glass_soi::OutputRecord to avoid tight coupling and future enum churn
+- [Phase 51-01]: Full budget populates record_ids (all IDs) for symmetry with greedy path even though truncated=false
+- [Phase 51-01]: OneLine budget uses empty record_ids (not useful for drill-down at single-line granularity)
 
 ### Pending Todos
 
@@ -92,6 +95,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T07:00:00.000Z
-Stopped at: Completed 50-02-PLAN.md
+Last session: 2026-03-13T07:30:59.000Z
+Stopped at: Completed 51-01-PLAN.md
 Resume file: None
