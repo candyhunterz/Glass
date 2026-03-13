@@ -23,3 +23,4 @@ glass_errors = { path = "../glass_errors" }
 
 [dev-dependencies]
 tempfile = "3"
+glass_soi = { path = "../glass_soi" }

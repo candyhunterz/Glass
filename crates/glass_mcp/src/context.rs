@@ -7,6 +7,21 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
 
+/// A single SOI (Structured Output Intelligence) summary entry.
+#[derive(Debug, Serialize)]
+pub struct SoiSummaryEntry {
+    /// The command's ID in the history database.
+    pub command_id: i64,
+    /// The command string.
+    pub command: String,
+    /// The output type detected by the SOI classifier.
+    pub output_type: String,
+    /// The overall severity of the output.
+    pub severity: String,
+    /// One-line human-readable summary of the output.
+    pub one_line: String,
+}
+
 /// High-level summary of terminal activity over a time window.
 #[derive(Debug, Serialize)]
 pub struct ContextSummary {
@@ -26,6 +41,8 @@ pub struct ContextSummary {
     pub avg_pipeline_stages: f64,
     /// Fraction of pipeline commands with non-zero exit code.
     pub pipeline_failure_rate: f64,
+    /// Up to 10 most recent SOI summaries from command_output_records.
+    pub soi_summaries: Vec<SoiSummaryEntry>,
 }
 
 /// Build an aggregate activity summary from the commands table.
@@ -122,6 +139,34 @@ pub fn build_context_summary(conn: &Connection, after: Option<i64>) -> Result<Co
         0.0
     };
 
+    // SOI summaries: JOIN command_output_records with commands
+    let soi_sql = if after.is_some() {
+        "SELECT c.id, c.command, cor.output_type, cor.severity, cor.one_line \
+         FROM commands c \
+         JOIN command_output_records cor ON cor.command_id = c.id \
+         WHERE c.started_at >= ?1 \
+         ORDER BY c.started_at DESC LIMIT 10"
+    } else {
+        "SELECT c.id, c.command, cor.output_type, cor.severity, cor.one_line \
+         FROM commands c \
+         JOIN command_output_records cor ON cor.command_id = c.id \
+         ORDER BY c.started_at DESC LIMIT 10"
+    };
+    let mut soi_stmt = conn.prepare(soi_sql)?;
+    let soi_rows = soi_stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+        Ok(SoiSummaryEntry {
+            command_id: row.get(0)?,
+            command: row.get(1)?,
+            output_type: row.get(2)?,
+            severity: row.get(3)?,
+            one_line: row.get(4)?,
+        })
+    })?;
+    let mut soi_summaries = Vec::new();
+    for entry in soi_rows {
+        soi_summaries.push(entry?);
+    }
+
     Ok(ContextSummary {
         command_count,
         failure_count,
@@ -131,6 +176,7 @@ pub fn build_context_summary(conn: &Connection, after: Option<i64>) -> Result<Co
         pipeline_count,
         avg_pipeline_stages,
         pipeline_failure_rate,
+        soi_summaries,
     })
 }
 
@@ -170,6 +216,7 @@ mod tests {
         assert_eq!(summary.earliest_timestamp, None);
         assert_eq!(summary.latest_timestamp, None);
         assert!(summary.recent_directories.is_empty());
+        assert!(summary.soi_summaries.is_empty());
     }
 
     #[test]
@@ -396,5 +443,133 @@ mod tests {
         // Ensure no NaN or Infinity
         assert!(summary.avg_pipeline_stages.is_finite());
         assert!(summary.pipeline_failure_rate.is_finite());
+    }
+
+    #[test]
+    fn test_context_soi_summaries_empty_db() {
+        let (db, _dir) = test_db();
+        // No commands, no SOI data
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert!(summary.soi_summaries.is_empty());
+    }
+
+    #[test]
+    fn test_context_soi_summaries_no_soi_data() {
+        let (db, _dir) = test_db();
+        // Commands present but no SOI records
+        insert(&db, "ls", "/tmp", Some(0), 1700000000);
+        insert(&db, "pwd", "/tmp", Some(0), 1700000010);
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert!(summary.soi_summaries.is_empty());
+    }
+
+    #[test]
+    fn test_context_soi_summaries_populated() {
+        use glass_soi::{OutputSummary, OutputType, ParsedOutput, Severity};
+
+        let (db, _dir) = test_db();
+        // Insert a command and SOI data for it
+        insert(&db, "cargo build", "/proj", Some(0), 1700000000);
+        let cmd_id = 1i64;
+
+        let parsed = ParsedOutput {
+            output_type: OutputType::RustCompiler,
+            summary: OutputSummary {
+                one_line: "Build succeeded".to_string(),
+                token_estimate: 10,
+                severity: Severity::Info,
+            },
+            records: vec![],
+            raw_line_count: 5,
+            raw_byte_count: 100,
+        };
+        db.insert_parsed_output(cmd_id, &parsed).unwrap();
+
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.soi_summaries.len(), 1);
+        let entry = &summary.soi_summaries[0];
+        assert_eq!(entry.command_id, cmd_id);
+        assert_eq!(entry.command, "cargo build");
+        assert_eq!(entry.output_type, "RustCompiler");
+        assert_eq!(entry.severity, "Info");
+        assert_eq!(entry.one_line, "Build succeeded");
+    }
+
+    #[test]
+    fn test_context_soi_summaries_includes_success_and_failure() {
+        use glass_soi::{OutputSummary, OutputType, ParsedOutput, Severity};
+
+        let (db, _dir) = test_db();
+        // Success command
+        insert(&db, "cargo build", "/proj", Some(0), 1700000000);
+        let cmd1_id = 1i64;
+        // Failure command
+        insert(&db, "cargo test", "/proj", Some(1), 1700000010);
+        let cmd2_id = 2i64;
+
+        let success_parsed = ParsedOutput {
+            output_type: OutputType::RustCompiler,
+            summary: OutputSummary {
+                one_line: "Build succeeded".to_string(),
+                token_estimate: 10,
+                severity: Severity::Info,
+            },
+            records: vec![],
+            raw_line_count: 3,
+            raw_byte_count: 50,
+        };
+        let failure_parsed = ParsedOutput {
+            output_type: OutputType::RustTest,
+            summary: OutputSummary {
+                one_line: "1 test failed".to_string(),
+                token_estimate: 20,
+                severity: Severity::Error,
+            },
+            records: vec![],
+            raw_line_count: 10,
+            raw_byte_count: 200,
+        };
+        db.insert_parsed_output(cmd1_id, &success_parsed).unwrap();
+        db.insert_parsed_output(cmd2_id, &failure_parsed).unwrap();
+
+        let summary = build_context_summary(db.conn(), None).unwrap();
+        assert_eq!(summary.soi_summaries.len(), 2);
+        // Most recent first (cmd2 has higher started_at)
+        assert_eq!(summary.soi_summaries[0].command_id, cmd2_id);
+        assert_eq!(summary.soi_summaries[0].severity, "Error");
+        assert_eq!(summary.soi_summaries[1].command_id, cmd1_id);
+        assert_eq!(summary.soi_summaries[1].severity, "Info");
+    }
+
+    #[test]
+    fn test_context_soi_summaries_after_filter() {
+        use glass_soi::{OutputSummary, OutputType, ParsedOutput, Severity};
+
+        let (db, _dir) = test_db();
+        // Old command with SOI data
+        insert(&db, "old cmd", "/tmp", Some(0), 1700000000);
+        let old_id = 1i64;
+        // New command with SOI data
+        insert(&db, "new cmd", "/tmp", Some(0), 1700000100);
+        let new_id = 2i64;
+
+        let parsed = ParsedOutput {
+            output_type: OutputType::FreeformText,
+            summary: OutputSummary {
+                one_line: "some output".to_string(),
+                token_estimate: 5,
+                severity: Severity::Info,
+            },
+            records: vec![],
+            raw_line_count: 2,
+            raw_byte_count: 30,
+        };
+        db.insert_parsed_output(old_id, &parsed).unwrap();
+        db.insert_parsed_output(new_id, &parsed).unwrap();
+
+        // Filter: only after epoch 1700000050 (excludes old command)
+        let summary = build_context_summary(db.conn(), Some(1700000050)).unwrap();
+        assert_eq!(summary.soi_summaries.len(), 1);
+        assert_eq!(summary.soi_summaries[0].command_id, new_id);
     }
 }
