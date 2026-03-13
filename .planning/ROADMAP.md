@@ -226,8 +226,8 @@ Plans:
   4. Calling glass_context or glass_compressed_context includes SOI summaries for recent commands alongside existing history data
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 53-01-PLAN.md -- glass_query, glass_query_trend, glass_query_drill MCP tools with get_last_n_run_ids DB helper
+- [ ] 53-02-PLAN.md -- SOI summaries in glass_context and glass_compressed_context
 
 ### Phase 54: SOI Extended Parsers
 **Goal**: Common devops and infrastructure tools (git, docker, kubectl, tsc, Go, JSON logs) produce structured SOI records alongside the existing dev tool parsers
@@ -391,7 +391,7 @@ Plans:
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
-| 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
+| 53. SOI MCP Tools | v3.0 | 0/2 | Planned | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
