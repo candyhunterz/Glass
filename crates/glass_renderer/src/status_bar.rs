@@ -227,17 +227,8 @@ mod tests {
     fn test_status_bar_cwd_truncation() {
         let r = renderer();
         let long_cwd = "/".repeat(80);
-        let label = r.build_status_text(
-            &long_cwd,
-            None,
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-            600.0,
-        );
+        let label =
+            r.build_status_text(&long_cwd, None, None, None, None, false, None, None, 600.0);
         assert!(
             label.left_text.len() <= 60,
             "Truncated CWD should be at most 60 chars"
@@ -290,8 +281,22 @@ mod tests {
             "proposal_count_text should be set"
         );
         // Verify colors
-        assert_eq!(label.agent_mode_color, Rgb { r: 100, g: 180, b: 200 });
-        assert_eq!(label.proposal_count_color, Rgb { r: 220, g: 200, b: 100 });
+        assert_eq!(
+            label.agent_mode_color,
+            Rgb {
+                r: 100,
+                g: 180,
+                b: 200
+            }
+        );
+        assert_eq!(
+            label.proposal_count_color,
+            Rgb {
+                r: 220,
+                g: 200,
+                b: 100
+            }
+        );
     }
 
     #[test]
@@ -308,7 +313,14 @@ mod tests {
             None,
             600.0,
         );
-        assert_eq!(label.agent_cost_color, Rgb { r: 255, g: 80, b: 80 });
+        assert_eq!(
+            label.agent_cost_color,
+            Rgb {
+                r: 255,
+                g: 80,
+                b: 80
+            }
+        );
     }
 
     #[test]
@@ -325,6 +337,13 @@ mod tests {
             None,
             600.0,
         );
-        assert_eq!(label.agent_cost_color, Rgb { r: 80, g: 220, b: 120 });
+        assert_eq!(
+            label.agent_cost_color,
+            Rgb {
+                r: 80,
+                g: 220,
+                b: 120
+            }
+        );
     }
 }

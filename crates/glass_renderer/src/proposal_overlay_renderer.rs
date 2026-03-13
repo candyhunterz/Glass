@@ -240,9 +240,18 @@ mod tests {
         let backdrop = &rects[0];
         assert_eq!(backdrop.pos[0], 0.0, "Backdrop x should be 0");
         assert_eq!(backdrop.pos[1], 0.0, "Backdrop y should be 0");
-        assert_eq!(backdrop.pos[2], 800.0, "Backdrop width should be full viewport");
-        assert_eq!(backdrop.pos[3], 600.0, "Backdrop height should be full viewport");
-        assert!((backdrop.color[3] - 0.88).abs() < 0.01, "Backdrop alpha should be 0.88");
+        assert_eq!(
+            backdrop.pos[2], 800.0,
+            "Backdrop width should be full viewport"
+        );
+        assert_eq!(
+            backdrop.pos[3], 600.0,
+            "Backdrop height should be full viewport"
+        );
+        assert!(
+            (backdrop.color[3] - 0.88).abs() < 0.01,
+            "Backdrop alpha should be 0.88"
+        );
     }
 
     #[test]
@@ -271,7 +280,10 @@ mod tests {
         // y = cell_height (below tab bar) = 20
         assert_eq!(panel.pos[1], 20.0, "Panel should start below tab bar");
         // height = 600 - 20*2 = 560
-        assert_eq!(panel.pos[3], 560.0, "Panel height should exclude tab+status bars");
+        assert_eq!(
+            panel.pos[3], 560.0,
+            "Panel height should exclude tab+status bars"
+        );
     }
 
     #[test]
@@ -284,8 +296,14 @@ mod tests {
         // Highlight matches panel x and width
         let panel = &rects[1];
         let highlight = &rects[2];
-        assert_eq!(highlight.pos[0], panel.pos[0], "Highlight x should match panel x");
-        assert_eq!(highlight.pos[2], panel.pos[2], "Highlight width should match panel width");
+        assert_eq!(
+            highlight.pos[0], panel.pos[0],
+            "Highlight x should match panel x"
+        );
+        assert_eq!(
+            highlight.pos[2], panel.pos[2],
+            "Highlight width should match panel width"
+        );
     }
 
     #[test]
@@ -327,10 +345,7 @@ mod tests {
             .iter()
             .filter(|l| l.text.starts_with("> ") || l.text.starts_with("  "))
             .collect();
-        assert!(
-            !proposal_labels.is_empty(),
-            "Should have proposal labels"
-        );
+        assert!(!proposal_labels.is_empty(), "Should have proposal labels");
         assert!(
             proposal_labels[0].text.starts_with("> "),
             "Selected proposal should be prefixed with >"
@@ -362,7 +377,10 @@ mod tests {
     fn test_build_overlay_text_diff_truncation_at_50_lines() {
         let r = renderer();
         // Create 100 diff lines
-        let diff: String = (0..100).map(|i| format!("+ line {}", i)).collect::<Vec<_>>().join("\n");
+        let diff: String = (0..100)
+            .map(|i| format!("+ line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let data = ProposalOverlayRenderData {
             proposals: vec![("Test proposal".to_string(), "write".to_string())],
             selected: 0,
@@ -370,8 +388,14 @@ mod tests {
         };
         let labels = r.build_overlay_text(800.0, 600.0, &data);
         // Count labels with "+" prefix (diff lines)
-        let diff_label_count = labels.iter().filter(|l| l.text.starts_with("+ line")).count();
-        assert_eq!(diff_label_count, 50, "Diff preview should be truncated to 50 lines");
+        let diff_label_count = labels
+            .iter()
+            .filter(|l| l.text.starts_with("+ line"))
+            .count();
+        assert_eq!(
+            diff_label_count, 50,
+            "Diff preview should be truncated to 50 lines"
+        );
     }
 
     #[test]

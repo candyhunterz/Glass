@@ -1379,56 +1379,55 @@ impl ApplicationHandler<AppEvent> for Processor {
                     };
 
                     // Toast render data (only while toast is active).
-                    let proposal_toast_data =
-                        self.active_toast.as_ref().map(|t| glass_renderer::ProposalToastRenderData {
+                    let proposal_toast_data = self.active_toast.as_ref().map(|t| {
+                        glass_renderer::ProposalToastRenderData {
                             description: t.description.clone(),
-                            remaining_secs: 30u64
-                                .saturating_sub(t.created_at.elapsed().as_secs()),
-                        });
+                            remaining_secs: 30u64.saturating_sub(t.created_at.elapsed().as_secs()),
+                        }
+                    });
 
                     // Overlay render data with cached diff.
-                    let proposal_overlay_data = if self.agent_review_open
-                        && !self.agent_proposal_worktrees.is_empty()
-                    {
-                        let selected = self
-                            .proposal_review_selected
-                            .min(self.agent_proposal_worktrees.len() - 1);
-                        // Regenerate diff when selection changes.
-                        if self
-                            .proposal_diff_cache
-                            .as_ref()
-                            .is_none_or(|(idx, _)| *idx != selected)
-                        {
-                            let diff = self
-                                .agent_proposal_worktrees
-                                .get(selected)
-                                .and_then(|(_, handle_opt)| handle_opt.as_ref())
-                                .and_then(|handle| {
-                                    self.worktree_manager
-                                        .as_ref()
-                                        .map(|wm| wm.generate_diff(handle))
-                                })
-                                .and_then(|r| r.ok())
+                    let proposal_overlay_data =
+                        if self.agent_review_open && !self.agent_proposal_worktrees.is_empty() {
+                            let selected = self
+                                .proposal_review_selected
+                                .min(self.agent_proposal_worktrees.len() - 1);
+                            // Regenerate diff when selection changes.
+                            if self
+                                .proposal_diff_cache
+                                .as_ref()
+                                .is_none_or(|(idx, _)| *idx != selected)
+                            {
+                                let diff = self
+                                    .agent_proposal_worktrees
+                                    .get(selected)
+                                    .and_then(|(_, handle_opt)| handle_opt.as_ref())
+                                    .and_then(|handle| {
+                                        self.worktree_manager
+                                            .as_ref()
+                                            .map(|wm| wm.generate_diff(handle))
+                                    })
+                                    .and_then(|r| r.ok())
+                                    .unwrap_or_default();
+                                self.proposal_diff_cache = Some((selected, diff));
+                            }
+                            let diff_preview = self
+                                .proposal_diff_cache
+                                .as_ref()
+                                .map(|(_, d)| d.clone())
                                 .unwrap_or_default();
-                            self.proposal_diff_cache = Some((selected, diff));
-                        }
-                        let diff_preview = self
-                            .proposal_diff_cache
-                            .as_ref()
-                            .map(|(_, d)| d.clone())
-                            .unwrap_or_default();
-                        Some(glass_renderer::ProposalOverlayRenderData {
-                            proposals: self
-                                .agent_proposal_worktrees
-                                .iter()
-                                .map(|(p, _)| (p.description.clone(), p.action.clone()))
-                                .collect(),
-                            selected,
-                            diff_preview,
-                        })
-                    } else {
-                        None
-                    };
+                            Some(glass_renderer::ProposalOverlayRenderData {
+                                proposals: self
+                                    .agent_proposal_worktrees
+                                    .iter()
+                                    .map(|(p, _)| (p.description.clone(), p.action.clone()))
+                                    .collect(),
+                                selected,
+                                diff_preview,
+                            })
+                        } else {
+                            None
+                        };
 
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
@@ -1620,56 +1619,55 @@ impl ApplicationHandler<AppEvent> for Processor {
                     };
 
                     // Toast render data for multi-pane path.
-                    let proposal_toast_data_mp =
-                        self.active_toast.as_ref().map(|t| glass_renderer::ProposalToastRenderData {
+                    let proposal_toast_data_mp = self.active_toast.as_ref().map(|t| {
+                        glass_renderer::ProposalToastRenderData {
                             description: t.description.clone(),
-                            remaining_secs: 30u64
-                                .saturating_sub(t.created_at.elapsed().as_secs()),
-                        });
+                            remaining_secs: 30u64.saturating_sub(t.created_at.elapsed().as_secs()),
+                        }
+                    });
 
                     // Overlay render data for multi-pane path (reuse cached diff from single-pane
                     // if available, otherwise generate fresh -- overlay is window-global).
-                    let proposal_overlay_data_mp = if self.agent_review_open
-                        && !self.agent_proposal_worktrees.is_empty()
-                    {
-                        let selected = self
-                            .proposal_review_selected
-                            .min(self.agent_proposal_worktrees.len() - 1);
-                        if self
-                            .proposal_diff_cache
-                            .as_ref()
-                            .is_none_or(|(idx, _)| *idx != selected)
-                        {
-                            let diff = self
-                                .agent_proposal_worktrees
-                                .get(selected)
-                                .and_then(|(_, handle_opt)| handle_opt.as_ref())
-                                .and_then(|handle| {
-                                    self.worktree_manager
-                                        .as_ref()
-                                        .map(|wm| wm.generate_diff(handle))
-                                })
-                                .and_then(|r| r.ok())
+                    let proposal_overlay_data_mp =
+                        if self.agent_review_open && !self.agent_proposal_worktrees.is_empty() {
+                            let selected = self
+                                .proposal_review_selected
+                                .min(self.agent_proposal_worktrees.len() - 1);
+                            if self
+                                .proposal_diff_cache
+                                .as_ref()
+                                .is_none_or(|(idx, _)| *idx != selected)
+                            {
+                                let diff = self
+                                    .agent_proposal_worktrees
+                                    .get(selected)
+                                    .and_then(|(_, handle_opt)| handle_opt.as_ref())
+                                    .and_then(|handle| {
+                                        self.worktree_manager
+                                            .as_ref()
+                                            .map(|wm| wm.generate_diff(handle))
+                                    })
+                                    .and_then(|r| r.ok())
+                                    .unwrap_or_default();
+                                self.proposal_diff_cache = Some((selected, diff));
+                            }
+                            let diff_preview = self
+                                .proposal_diff_cache
+                                .as_ref()
+                                .map(|(_, d)| d.clone())
                                 .unwrap_or_default();
-                            self.proposal_diff_cache = Some((selected, diff));
-                        }
-                        let diff_preview = self
-                            .proposal_diff_cache
-                            .as_ref()
-                            .map(|(_, d)| d.clone())
-                            .unwrap_or_default();
-                        Some(glass_renderer::ProposalOverlayRenderData {
-                            proposals: self
-                                .agent_proposal_worktrees
-                                .iter()
-                                .map(|(p, _)| (p.description.clone(), p.action.clone()))
-                                .collect(),
-                            selected,
-                            diff_preview,
-                        })
-                    } else {
-                        None
-                    };
+                            Some(glass_renderer::ProposalOverlayRenderData {
+                                proposals: self
+                                    .agent_proposal_worktrees
+                                    .iter()
+                                    .map(|(p, _)| (p.description.clone(), p.action.clone()))
+                                    .collect(),
+                                selected,
+                                diff_preview,
+                            })
+                        } else {
+                            None
+                        };
 
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
@@ -2442,10 +2440,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Named(NamedKey::ArrowDown) => {
-                                let max = self
-                                    .agent_proposal_worktrees
-                                    .len()
-                                    .saturating_sub(1);
+                                let max = self.agent_proposal_worktrees.len().saturating_sub(1);
                                 self.proposal_review_selected =
                                     (self.proposal_review_selected + 1).min(max);
                                 self.proposal_diff_cache = None;
@@ -3972,16 +3967,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                             &proposal.file_changes,
                         ) {
                             Ok(wt_handle) => {
-                                tracing::info!(
-                                    "Created worktree {} for proposal",
-                                    wt_handle.id
-                                );
+                                tracing::info!("Created worktree {} for proposal", wt_handle.id);
                                 Some(wt_handle)
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Failed to create worktree for proposal: {e}"
-                                );
+                                tracing::error!("Failed to create worktree for proposal: {e}");
                                 None
                             }
                         }
@@ -4111,10 +4101,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             created_at: 0, // DB default (unixepoch()) handles this
                         };
                         if let Err(e) = db.insert_session(&record) {
-                            tracing::warn!(
-                                "AgentRuntime: failed to persist handoff: {}",
-                                e
-                            );
+                            tracing::warn!("AgentRuntime: failed to persist handoff: {}", e);
                         }
                     }
                     Err(e) => {

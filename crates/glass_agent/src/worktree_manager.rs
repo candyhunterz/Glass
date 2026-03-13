@@ -57,9 +57,12 @@ impl WorktreeManager {
         let worktree_path = self.base_dir.join(&id);
 
         // STEP 1: Register BEFORE creating (crash-safety invariant).
-        self.db
-            .borrow_mut()
-            .insert_pending_worktree(&id, &worktree_path, project_root, proposal_id)?;
+        self.db.borrow_mut().insert_pending_worktree(
+            &id,
+            &worktree_path,
+            project_root,
+            proposal_id,
+        )?;
 
         // STEP 2: Create the worktree.
         let result = self.create_worktree_inner(project_root, &worktree_path, &id, file_changes);
@@ -102,7 +105,10 @@ impl WorktreeManager {
         let kind = match git2::Repository::discover(project_root) {
             Ok(repo) => {
                 // Git path: create a linked worktree.
-                tracing::debug!("WorktreeManager: creating git worktree at {:?}", worktree_path);
+                tracing::debug!(
+                    "WorktreeManager: creating git worktree at {:?}",
+                    worktree_path
+                );
                 repo.worktree(id, worktree_path, None)?;
                 WorktreeKind::Git {
                     repo_path: project_root.to_path_buf(),
@@ -338,8 +344,7 @@ mod tests {
 
         assert!(handle.worktree_path.exists(), "Fallback dir should exist");
         assert!(matches!(handle.kind, WorktreeKind::TempDir));
-        let written =
-            std::fs::read_to_string(handle.worktree_path.join("config.yaml")).unwrap();
+        let written = std::fs::read_to_string(handle.worktree_path.join("config.yaml")).unwrap();
         assert_eq!(written, "key: value");
     }
 
@@ -365,7 +370,10 @@ mod tests {
         let diff = mgr.generate_diff(&handle).unwrap();
         assert!(diff.contains("--- a/hello.txt"), "Diff should have header");
         assert!(diff.contains("+++ b/hello.txt"), "Diff should have header");
-        assert!(diff.contains("-hello world"), "Diff should show removed line");
+        assert!(
+            diff.contains("-hello world"),
+            "Diff should show removed line"
+        );
         assert!(diff.contains("+hello rust"), "Diff should show added line");
     }
 
@@ -423,7 +431,10 @@ mod tests {
         let applied = std::fs::read_to_string(project_dir.join("src/mod.rs")).unwrap();
         assert_eq!(applied, new_content);
         // Worktree directory should be gone.
-        assert!(!wt_path.exists(), "Worktree dir should be removed after apply");
+        assert!(
+            !wt_path.exists(),
+            "Worktree dir should be removed after apply"
+        );
     }
 
     #[test]
@@ -445,7 +456,10 @@ mod tests {
         mgr.dismiss(handle).unwrap();
 
         // Worktree dir should be gone.
-        assert!(!wt_path.exists(), "Worktree dir should be removed after dismiss");
+        assert!(
+            !wt_path.exists(),
+            "Worktree dir should be removed after dismiss"
+        );
         // Working tree file should NOT exist.
         assert!(
             !project_dir.join("dismissed.rs").exists(),
@@ -480,7 +494,10 @@ mod tests {
         mgr.prune_orphans().unwrap();
 
         // Orphan directory should be gone.
-        assert!(!orphan_path.exists(), "Orphan worktree dir should be pruned");
+        assert!(
+            !orphan_path.exists(),
+            "Orphan worktree dir should be pruned"
+        );
 
         // DB row should be gone.
         let db2 = WorktreeDb::open(&db_path).unwrap();
@@ -510,7 +527,11 @@ mod tests {
         // After successful create, the pending row should still exist (not deleted yet).
         let db_check = WorktreeDb::open(&db_path).unwrap();
         let rows = db_check.list_pending_worktrees().unwrap();
-        assert_eq!(rows.len(), 1, "Pending row should exist until apply/dismiss");
+        assert_eq!(
+            rows.len(),
+            1,
+            "Pending row should exist until apply/dismiss"
+        );
         assert_eq!(rows[0].id, handle.id);
 
         // Clean up.

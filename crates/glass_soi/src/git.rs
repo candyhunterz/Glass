@@ -22,9 +22,7 @@ fn re_git_stat_summary() -> &'static Regex {
 
 fn re_git_log_oneline() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^([0-9a-f]{7,12}) (.+)$").expect("git log oneline regex")
-    })
+    RE.get_or_init(|| Regex::new(r"^([0-9a-f]{7,12}) (.+)$").expect("git log oneline regex"))
 }
 
 fn re_git_status_file() -> &'static Regex {
@@ -261,7 +259,8 @@ mod tests {
     const GIT_DIFF_STAT: &str =
         "2 files changed, 42 insertions(+), 3 deletions(-)\n src/main.rs | 40 ++++++++++++++++++++++++++++++++++++--\n Cargo.toml  |  5 +++--\n";
 
-    const GIT_LOG_ONELINE: &str = "a1b2c3d feat: add feature\nb2c3d4e fix: resolve bug\nc3d4e5f chore: update deps\n";
+    const GIT_LOG_ONELINE: &str =
+        "a1b2c3d feat: add feature\nb2c3d4e fix: resolve bug\nc3d4e5f chore: update deps\n";
 
     const GIT_CONFLICT: &str = "Auto-merging src/main.rs\nCONFLICT (content): Merge conflict in src/main.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n";
 
@@ -375,9 +374,10 @@ mod tests {
     #[test]
     fn git_log_entry_detail_contains_hash_and_message() {
         let parsed = parse(GIT_LOG_ONELINE);
-        let first_log = parsed.records.iter().find(|r| {
-            matches!(r, OutputRecord::GitEvent { action, .. } if action == "log")
-        });
+        let first_log = parsed
+            .records
+            .iter()
+            .find(|r| matches!(r, OutputRecord::GitEvent { action, .. } if action == "log"));
         if let Some(OutputRecord::GitEvent { detail, .. }) = first_log {
             assert!(detail.contains("a1b2c3d"), "detail should contain hash");
             assert!(detail.contains("feat:"), "detail should contain message");
@@ -394,9 +394,7 @@ mod tests {
         let conflict_records: Vec<_> = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::GitEvent { action, .. } if action == "conflict")
-            })
+            .filter(|r| matches!(r, OutputRecord::GitEvent { action, .. } if action == "conflict"))
             .collect();
 
         assert!(!conflict_records.is_empty(), "should have conflict records");

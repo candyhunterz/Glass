@@ -639,9 +639,21 @@ impl FrameRenderer {
                     .as_ref()
                     .map(|t| t.len())
                     .unwrap_or(0);
-                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
-                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
-                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let right_gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let coord_gap = if coord_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    0.0
+                };
+                let cost_gap = if agent_cost_chars > 0 {
+                    cell_width
+                } else {
+                    0.0
+                };
                 let mode_text_width = mode_text.len() as f32 * cell_width;
                 let mode_x = w
                     - (right_text_chars as f32 * cell_width)
@@ -708,9 +720,21 @@ impl FrameRenderer {
                     .as_ref()
                     .map(|t| t.len())
                     .unwrap_or(0);
-                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
-                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
-                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let right_gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let coord_gap = if coord_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    0.0
+                };
+                let cost_gap = if agent_cost_chars > 0 {
+                    cell_width
+                } else {
+                    0.0
+                };
                 let mode_gap = if mode_chars > 0 { cell_width } else { 0.0 };
                 let proposal_text_width = proposal_text.len() as f32 * cell_width;
                 let proposal_x = w
@@ -1569,9 +1593,21 @@ impl FrameRenderer {
                     .as_ref()
                     .map(|t| t.len())
                     .unwrap_or(0);
-                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
-                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
-                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let right_gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let coord_gap = if coord_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    0.0
+                };
+                let cost_gap = if agent_cost_chars > 0 {
+                    cell_width
+                } else {
+                    0.0
+                };
                 let mode_text_width = mode_text.len() as f32 * cell_width;
                 let mode_x = w
                     - (right_text_chars as f32 * cell_width)
@@ -1638,9 +1674,21 @@ impl FrameRenderer {
                     .as_ref()
                     .map(|t| t.len())
                     .unwrap_or(0);
-                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
-                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
-                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let right_gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let coord_gap = if coord_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    0.0
+                };
+                let cost_gap = if agent_cost_chars > 0 {
+                    cell_width
+                } else {
+                    0.0
+                };
                 let mode_gap = if mode_chars > 0 { cell_width } else { 0.0 };
                 let proposal_text_width = proposal_text.len() as f32 * cell_width;
                 let proposal_x = w

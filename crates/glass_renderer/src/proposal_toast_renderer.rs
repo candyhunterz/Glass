@@ -53,11 +53,7 @@ impl ProposalToastRenderer {
     /// Returns a single rect: right-aligned, positioned just above the status bar.
     /// Toast width = 60% viewport, height = 2.5 * cell_height.
     /// Color: dark teal [0.05, 0.25, 0.35, 0.92].
-    pub fn build_toast_rects(
-        &self,
-        viewport_w: f32,
-        viewport_h: f32,
-    ) -> Vec<RectInstance> {
+    pub fn build_toast_rects(&self, viewport_w: f32, viewport_h: f32) -> Vec<RectInstance> {
         let toast_w = viewport_w * 0.6;
         let toast_h = self.cell_height * 2.5;
         let x = viewport_w - toast_w - self.cell_width;
@@ -162,8 +158,16 @@ mod tests {
         // x = 800 - 480 - 10 = 310
         let rects = r.build_toast_rects(800.0, 600.0);
         let pos = rects[0].pos;
-        assert!((pos[0] - 310.0).abs() < 0.01, "Toast x should be right-aligned, got {}", pos[0]);
-        assert!((pos[2] - 480.0).abs() < 0.01, "Toast width should be 60% of viewport, got {}", pos[2]);
+        assert!(
+            (pos[0] - 310.0).abs() < 0.01,
+            "Toast x should be right-aligned, got {}",
+            pos[0]
+        );
+        assert!(
+            (pos[2] - 480.0).abs() < 0.01,
+            "Toast width should be 60% of viewport, got {}",
+            pos[2]
+        );
     }
 
     #[test]
@@ -182,7 +186,11 @@ mod tests {
         let r = renderer();
         let data = sample_data();
         let labels = r.build_toast_text(&data, 800.0, 600.0);
-        assert_eq!(labels.len(), 2, "Toast should produce exactly 2 text labels");
+        assert_eq!(
+            labels.len(),
+            2,
+            "Toast should produce exactly 2 text labels"
+        );
     }
 
     #[test]
@@ -241,6 +249,9 @@ mod tests {
             remaining_secs: 5,
         };
         let labels = r.build_toast_text(&data, 800.0, 600.0);
-        assert_eq!(labels[0].text, desc, "Short descriptions should not be truncated");
+        assert_eq!(
+            labels[0].text, desc,
+            "Short descriptions should not be truncated"
+        );
     }
 }

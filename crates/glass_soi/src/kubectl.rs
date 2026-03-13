@@ -28,9 +28,7 @@ fn re_pod_table_header() -> &'static Regex {
 
 fn re_get_all_header() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^NAME\s+").expect("kubectl generic table header regex")
-    })
+    RE.get_or_init(|| Regex::new(r"^NAME\s+").expect("kubectl generic table header regex"))
 }
 
 /// Parse kubectl apply and get pods output into structured `GenericDiagnostic` records.
@@ -117,10 +115,15 @@ pub fn parse(output: &str) -> ParsedOutput {
     }
 
     // Determine highest severity
-    let severity = if records
-        .iter()
-        .any(|r| matches!(r, OutputRecord::GenericDiagnostic { severity: Severity::Error, .. }))
-    {
+    let severity = if records.iter().any(|r| {
+        matches!(
+            r,
+            OutputRecord::GenericDiagnostic {
+                severity: Severity::Error,
+                ..
+            }
+        )
+    }) {
         Severity::Error
     } else if records.iter().any(|r| {
         matches!(
@@ -317,7 +320,11 @@ mod tests {
         });
         assert!(pending.is_some(), "should find pending pod");
         if let Some(OutputRecord::GenericDiagnostic { severity, .. }) = pending {
-            assert_eq!(*severity, Severity::Warning, "Pending pod should be Warning");
+            assert_eq!(
+                *severity,
+                Severity::Warning,
+                "Pending pod should be Warning"
+            );
         }
     }
 

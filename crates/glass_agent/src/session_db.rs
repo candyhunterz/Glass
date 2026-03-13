@@ -371,11 +371,9 @@ mod tests {
         // pending_worktrees table should exist and be queryable
         let count: i64 = db
             .conn
-            .query_row(
-                "SELECT COUNT(*) FROM pending_worktrees",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM pending_worktrees", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(count, 0, "pending_worktrees should exist and be empty");
     }

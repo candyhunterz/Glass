@@ -13,9 +13,7 @@ use crate::types::{OutputRecord, OutputSummary, OutputType, ParsedOutput, Severi
 
 fn re_legacy_step() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^Step (\d+)/(\d+) : (.+)$").expect("docker legacy step regex")
-    })
+    RE.get_or_init(|| Regex::new(r"^Step (\d+)/(\d+) : (.+)$").expect("docker legacy step regex"))
 }
 
 fn re_buildkit_step() -> &'static Regex {
@@ -25,9 +23,7 @@ fn re_buildkit_step() -> &'static Regex {
 
 fn re_buildkit_error() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^#\d+ ERROR: (.+)$").expect("docker buildkit error regex")
-    })
+    RE.get_or_init(|| Regex::new(r"^#\d+ ERROR: (.+)$").expect("docker buildkit error regex"))
 }
 
 fn re_compose_container() -> &'static Regex {
@@ -258,9 +254,9 @@ mod tests {
         let step_records: Vec<_> = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::DockerEvent { action, .. } if action == "build-step")
-            })
+            .filter(
+                |r| matches!(r, OutputRecord::DockerEvent { action, .. } if action == "build-step"),
+            )
             .collect();
 
         assert!(!step_records.is_empty(), "should have build-step records");
@@ -269,9 +265,9 @@ mod tests {
     #[test]
     fn docker_legacy_build_first_step_detail() {
         let parsed = parse(DOCKER_LEGACY_BUILD);
-        let first_step = parsed.records.iter().find(|r| {
-            matches!(r, OutputRecord::DockerEvent { action, .. } if action == "build-step")
-        });
+        let first_step = parsed.records.iter().find(
+            |r| matches!(r, OutputRecord::DockerEvent { action, .. } if action == "build-step"),
+        );
         if let Some(OutputRecord::DockerEvent { detail, .. }) = first_step {
             assert!(
                 detail.contains("FROM ubuntu:22.04"),
@@ -325,11 +321,14 @@ mod tests {
         let step_records: Vec<_> = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::DockerEvent { action, .. } if action == "build-step")
-            })
+            .filter(
+                |r| matches!(r, OutputRecord::DockerEvent { action, .. } if action == "build-step"),
+            )
             .collect();
-        assert!(!step_records.is_empty(), "should capture BuildKit FROM step");
+        assert!(
+            !step_records.is_empty(),
+            "should capture BuildKit FROM step"
+        );
     }
 
     #[test]
@@ -340,9 +339,9 @@ mod tests {
         let compose_records: Vec<_> = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::DockerEvent { action, .. } if action == "compose-up")
-            })
+            .filter(
+                |r| matches!(r, OutputRecord::DockerEvent { action, .. } if action == "compose-up"),
+            )
             .collect();
 
         assert!(
