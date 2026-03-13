@@ -68,13 +68,13 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### Agent Runtime
 
-- [ ] **AGTR-01**: Background Claude CLI process spawns with custom system prompt and MCP tool access
-- [ ] **AGTR-02**: Agent receives activity stream via stdin (JSON lines protocol) and outputs proposals via stdout
-- [ ] **AGTR-03**: Three autonomy modes: Watch (critical issues only), Assist (suggestions), Autonomous (proposes fixes)
+- [x] **AGTR-01**: Background Claude CLI process spawns with custom system prompt and MCP tool access
+- [x] **AGTR-02**: Agent receives activity stream via stdin (JSON lines protocol) and outputs proposals via stdout
+- [x] **AGTR-03**: Three autonomy modes: Watch (critical issues only), Assist (suggestions), Autonomous (proposes fixes)
 - [ ] **AGTR-04**: Agent process lifecycle managed: start, restart on crash, graceful shutdown on app exit
 - [ ] **AGTR-05**: Platform subprocess management: Windows Job Objects, Unix prctl for cleanup on crash
-- [ ] **AGTR-06**: Cooldown timer prevents proposal spam (configurable, default 30s)
-- [ ] **AGTR-07**: max_budget_usd enforced with non-unlimited default (1.0 USD) and status bar cost display
+- [x] **AGTR-06**: Cooldown timer prevents proposal spam (configurable, default 30s)
+- [x] **AGTR-07**: max_budget_usd enforced with non-unlimited default (1.0 USD) and status bar cost display
 
 ### Agent Worktree
 
@@ -180,13 +180,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGTA-02 | Phase 55 | Complete |
 | AGTA-03 | Phase 55 | Complete |
 | AGTA-04 | Phase 55 | Complete |
-| AGTR-01 | Phase 56 | Pending |
-| AGTR-02 | Phase 56 | Pending |
-| AGTR-03 | Phase 56 | Pending |
+| AGTR-01 | Phase 56 | Complete |
+| AGTR-02 | Phase 56 | Complete |
+| AGTR-03 | Phase 56 | Complete |
 | AGTR-04 | Phase 56 | Pending |
 | AGTR-05 | Phase 56 | Pending |
-| AGTR-06 | Phase 56 | Pending |
-| AGTR-07 | Phase 56 | Pending |
+| AGTR-06 | Phase 56 | Complete |
+| AGTR-07 | Phase 56 | Complete |
 | AGTW-01 | Phase 57 | Pending |
 | AGTW-02 | Phase 57 | Pending |
 | AGTW-03 | Phase 57 | Pending |
