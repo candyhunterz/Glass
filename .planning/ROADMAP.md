@@ -390,7 +390,7 @@ Plans:
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
-| 52. SOI Display | 2/2 | Complete   | 2026-03-13 | - |
+| 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
