@@ -108,6 +108,7 @@ glass_agent = { path = "crates/glass_agent" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-chrome = { version = "0.7", optional = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 regex = "1"
 
 [target.'cfg(windows)'.dependencies]

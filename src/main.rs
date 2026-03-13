@@ -657,6 +657,7 @@ fn try_spawn_agent(
     proxy: winit::event_loop::EventLoopProxy<glass_core::event::AppEvent>,
     restart_count: u32,
     last_crash: Option<std::time::Instant>,
+    project_root: String,
 ) -> Option<AgentRuntime> {
     use std::io::{BufRead, BufReader, BufWriter, Write};
     use std::process::{Command, Stdio};
@@ -697,6 +698,12 @@ Guidelines:
 - For file modifications, prefer showing the diff rather than executing directly
 - Available tools: glass_query (search command history), glass_context (get terminal context)
 - Budget-aware: you are operating under a cost budget, so be concise in responses
+
+Session Continuity:
+- After completing each major task milestone, emit a checkpoint:
+  GLASS_HANDOFF: {"work_completed":"what you did","work_remaining":"what is left","key_decisions":"important decisions made"}
+- When you receive [CONTEXT_LIMIT_WARNING], emit GLASS_HANDOFF immediately before stopping
+- The next agent session will receive your handoff as context
 "#;
 
     if let Err(e) = std::fs::write(&prompt_path, system_prompt) {
@@ -746,14 +753,58 @@ Guidelines:
     let stdout = child.stdout.take().expect("stdout was piped");
     let stdin = child.stdin.take().expect("stdin was piped");
 
+    // Load prior handoff for this project and inject as first user message
+    let prior_handoff_msg = {
+        match glass_agent::AgentSessionDb::open_default() {
+            Ok(db) => {
+                let canonical = std::fs::canonicalize(&project_root)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&project_root));
+                let canonical_str = canonical.to_string_lossy().to_string();
+                match db.load_prior_handoff(&canonical_str) {
+                    Ok(Some(record)) => {
+                        let handoff_data = glass_core::agent_runtime::AgentHandoffData {
+                            work_completed: record.handoff.work_completed,
+                            work_remaining: record.handoff.work_remaining,
+                            key_decisions: record.handoff.key_decisions,
+                            previous_session_id: record.previous_session_id.clone(),
+                        };
+                        let msg = glass_core::agent_runtime::format_handoff_as_user_message(
+                            &record.session_id,
+                            &handoff_data,
+                        );
+                        tracing::info!(
+                            "AgentRuntime: injecting prior session handoff (session_id={})",
+                            record.session_id
+                        );
+                        Some(msg)
+                    }
+                    Ok(None) => {
+                        tracing::debug!("AgentRuntime: no prior handoff found for project");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("AgentRuntime: failed to load prior handoff: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("AgentRuntime: failed to open session db: {}", e);
+                None
+            }
+        }
+    };
+
     let proxy_reader = proxy.clone();
     let mode = config.mode;
+    let project_root_reader = project_root.clone();
 
     // Reader thread: parses claude stdout JSON lines and routes AppEvents
     std::thread::Builder::new()
         .name("glass-agent-reader".into())
         .spawn(move || {
             let reader = BufReader::new(stdout);
+            let mut current_session_id = String::new();
             for line in reader.lines() {
                 let line = match line {
                     Ok(l) => l,
@@ -766,6 +817,14 @@ Guidelines:
                     continue;
                 };
                 match val.get("type").and_then(|t| t.as_str()) {
+                    Some("system") => {
+                        if val.get("subtype").and_then(|s| s.as_str()) == Some("init") {
+                            if let Some(id) = val.get("session_id").and_then(|v| v.as_str()) {
+                                current_session_id = id.to_string();
+                                tracing::info!("AgentRuntime: captured session_id={}", id);
+                            }
+                        }
+                    }
                     Some("result") => {
                         let cost_usd =
                             glass_core::agent_runtime::parse_cost_from_result(&line).unwrap_or(0.0);
@@ -794,6 +853,18 @@ Guidelines:
                             let _ = proxy_reader
                                 .send_event(glass_core::event::AppEvent::AgentProposal(proposal));
                         }
+                        if let Some((handoff, raw_json)) =
+                            glass_core::agent_runtime::extract_handoff(&full_text)
+                        {
+                            let _ = proxy_reader.send_event(
+                                glass_core::event::AppEvent::AgentHandoff {
+                                    session_id: current_session_id.clone(),
+                                    handoff,
+                                    project_root: project_root_reader.clone(),
+                                    raw_json,
+                                },
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -811,6 +882,12 @@ Guidelines:
             let mut writer = BufWriter::new(stdin);
             let mut last_sent: Option<std::time::Instant> = None;
             let cooldown = std::time::Duration::from_secs(cooldown_secs);
+
+            // Inject prior session handoff as first message before processing new events
+            if let Some(ref msg) = prior_handoff_msg {
+                let _ = writeln!(writer, "{msg}");
+                let _ = writer.flush();
+            }
 
             for event in activity_rx.iter() {
                 // Mode gate: skip events that don't pass the severity filter
@@ -1084,7 +1161,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                 .unwrap_or_default();
 
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
-                self.agent_runtime = try_spawn_agent(agent_config, rx, self.proxy.clone(), 0, None);
+                self.agent_runtime = try_spawn_agent(
+                    agent_config,
+                    rx,
+                    self.proxy.clone(),
+                    0,
+                    None,
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                );
             } else {
                 // Store rx so it isn't dropped -- activity events are silently discarded
                 // when agent is Off (channel fills up and try_send returns Err, which is ignored)
@@ -3978,6 +4065,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.proxy.clone(),
                         restart_count,
                         Some(std::time::Instant::now()),
+                        std::env::current_dir()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
                     );
                 } else {
                     tracing::error!(
@@ -3992,15 +4083,47 @@ impl ApplicationHandler<AppEvent> for Processor {
                 project_root,
                 raw_json,
             } => {
-                // Plan 59-02 will wire this into AgentSessionDb persistence.
-                // For now, log the handoff so it is visible and the variant is handled.
                 tracing::info!(
-                    "AgentRuntime: handoff received session_id={} project_root={} work_completed={}",
-                    session_id,
-                    project_root,
-                    handoff.work_completed
+                    "AgentRuntime: received handoff from session_id={}",
+                    session_id
                 );
-                let _ = raw_json; // suppressed until Plan 59-02 persistence wiring
+                match glass_agent::AgentSessionDb::open_default() {
+                    Ok(mut db) => {
+                        let canonical = std::fs::canonicalize(&project_root)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(&project_root));
+                        let canonical_str = canonical.to_string_lossy().to_string();
+                        let record = glass_agent::AgentSessionRecord {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            project_root: canonical_str,
+                            session_id: if session_id.is_empty() {
+                                uuid::Uuid::new_v4().to_string()
+                            } else {
+                                session_id
+                            },
+                            previous_session_id: handoff.previous_session_id.clone(),
+                            handoff: glass_agent::HandoffData {
+                                work_completed: handoff.work_completed,
+                                work_remaining: handoff.work_remaining,
+                                key_decisions: handoff.key_decisions,
+                                previous_session_id: handoff.previous_session_id,
+                            },
+                            raw_handoff: raw_json,
+                            created_at: 0, // DB default (unixepoch()) handles this
+                        };
+                        if let Err(e) = db.insert_session(&record) {
+                            tracing::warn!(
+                                "AgentRuntime: failed to persist handoff: {}",
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "AgentRuntime: failed to open session db for handoff: {}",
+                            e
+                        );
+                    }
+                }
             }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
