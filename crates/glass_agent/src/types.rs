@@ -45,3 +45,42 @@ pub struct PendingWorktree {
     /// Unix timestamp when the row was created.
     pub created_at: i64,
 }
+
+/// Structured handoff data emitted by an agent at the end of a session.
+///
+/// The agent outputs a `GLASS_HANDOFF: {...}` marker in its final assistant
+/// message. This struct is the parsed form of that JSON payload.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct HandoffData {
+    /// Summary of work the agent completed in this session.
+    pub work_completed: String,
+    /// Summary of work that remains to be done.
+    pub work_remaining: String,
+    /// Key decisions or context for the next session.
+    pub key_decisions: String,
+    /// The `session_id` from the prior session, if this session was a continuation.
+    #[serde(default)]
+    pub previous_session_id: Option<String>,
+}
+
+/// A row in the `agent_sessions` SQLite table.
+///
+/// Rows are inserted when the agent subprocess emits a `GLASS_HANDOFF` marker.
+/// The `previous_session_id` field forms a linked list across sessions.
+#[derive(Debug, Clone)]
+pub struct AgentSessionRecord {
+    /// UUID for this record row.
+    pub id: String,
+    /// Canonicalized project root path (string form for SQLite storage).
+    pub project_root: String,
+    /// Claude session UUID from the system/init message.
+    pub session_id: String,
+    /// The `session_id` of the session that preceded this one (if any).
+    pub previous_session_id: Option<String>,
+    /// Parsed handoff data.
+    pub handoff: HandoffData,
+    /// Raw JSON string of the handoff marker payload.
+    pub raw_handoff: String,
+    /// Unix timestamp when the row was created.
+    pub created_at: i64,
+}

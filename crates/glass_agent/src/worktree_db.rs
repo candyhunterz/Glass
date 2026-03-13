@@ -112,10 +112,13 @@ impl WorktreeDb {
     }
 }
 
-/// Run migrations. Creates `pending_worktrees` at schema version 2.
+/// Run migrations. Creates `pending_worktrees` at schema version 2,
+/// and `agent_sessions` at schema version 3.
 ///
 /// Version 1 is owned by `CoordinationDb` (agents, file_locks, messages tables).
 /// Version 2 adds `pending_worktrees`.
+/// Version 3 adds `agent_sessions` (same DDL as session_db.rs -- IF NOT EXISTS guards
+/// prevent conflicts when both migrate() functions run on the same physical file).
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
 
@@ -137,6 +140,25 @@ fn migrate(conn: &Connection) -> Result<()> {
             );",
         )?;
         conn.pragma_update(None, "user_version", 2i64)?;
+    }
+
+    if version < 3 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_sessions (
+                id                  TEXT PRIMARY KEY,
+                project_root        TEXT NOT NULL,
+                session_id          TEXT NOT NULL,
+                previous_session_id TEXT,
+                work_completed      TEXT NOT NULL,
+                work_remaining      TEXT NOT NULL,
+                key_decisions       TEXT NOT NULL,
+                raw_handoff         TEXT NOT NULL,
+                created_at          INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_sessions_project
+                ON agent_sessions(project_root, created_at DESC);",
+        )?;
+        conn.pragma_update(None, "user_version", 3i64)?;
     }
 
     Ok(())
@@ -229,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_migration_version_2() {
+    fn test_migration_runs_to_version_3() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("agents.db");
         let db = WorktreeDb::open(&db_path).unwrap();
@@ -237,6 +259,6 @@ mod tests {
             .conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2, "Migration should set user_version to 2");
+        assert_eq!(version, 3, "Migration should set user_version to 3");
     }
 }
