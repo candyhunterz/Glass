@@ -134,7 +134,7 @@
 - [x] **Phase 52: SOI Display** - Render SOI summaries as block decorations and inject shell hint lines into PTY output (completed 2026-03-13)
 - [x] **Phase 53: SOI MCP Tools** - Add glass_query, glass_query_trend, glass_query_drill tools and update glass_context (completed 2026-03-13)
 - [x] **Phase 54: SOI Extended Parsers** - Add git, docker, kubectl, tsc, Go, and generic JSON parsers to the parser registry (completed 2026-03-13)
-- [ ] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering
+- [x] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering (completed 2026-03-13)
 - [ ] **Phase 56: Agent Runtime** - Spawn background Claude CLI process with lifecycle management, autonomy modes, and cost cap
 - [ ] **Phase 57: Agent Worktree** - Implement git worktree isolation with SQLite-backed crash recovery and diff/apply/cleanup
 - [ ] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals
@@ -254,7 +254,7 @@ Plans:
   2. Running 20 consecutive successful `cargo check` commands results in the activity channel receiving collapsed/deduplicated events rather than 20 identical entries
   3. The activity channel does not grow unbounded: the rolling budget window drops oldest events when the configurable token limit (default 4096) is exceeded
   4. A burst of 10 commands in under 1 second is rate-limited so the agent receives no more than the configured rate of activity events
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 55-01-PLAN.md -- ActivityEvent, ActivityFilter (noise/rate/budget), channel factory in glass_core
 - [ ] 55-02-PLAN.md -- Wire activity stream into Processor and SoiReady handler
@@ -393,7 +393,7 @@ Plans:
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
-| 55. Agent Activity Stream | 1/2 | In Progress|  | - |
+| 55. Agent Activity Stream | 2/2 | Complete   | 2026-03-13 | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
