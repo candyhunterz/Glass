@@ -42,6 +42,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use similar::TextDiff;
@@ -320,9 +321,9 @@ pub struct CompressedContextParams {
     /// Maximum number of tokens in the response (approximate, 1 token ~ 4 chars).
     #[schemars(description = "Maximum tokens in response (approximate, 1 token ~ 4 chars)")]
     pub token_budget: usize,
-    /// Focus mode: 'errors' (failed commands), 'files' (file changes), 'history' (recent commands), or null for balanced.
+    /// Focus mode: 'errors' (failed commands), 'files' (file changes), 'history' (recent commands), 'soi' (structured output intelligence), or null for balanced.
     #[schemars(
-        description = "Focus: 'errors', 'files', 'history', or null for balanced across all"
+        description = "Focus: 'errors', 'files', 'history', 'soi', or null for balanced across all"
     )]
     pub focus: Option<String>,
     /// Time filter: only include activity after this time. Supports '1h', '2d', ISO dates.
@@ -363,6 +364,47 @@ pub struct CancelCommandParams {
     /// Stable session ID.
     #[schemars(description = "Stable session ID (provide this OR tab_index)")]
     pub session_id: Option<u64>,
+}
+
+/// Parameters for glass_query.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueryParams {
+    /// Command ID to query structured output for (from glass_history results).
+    #[schemars(description = "Command ID to query structured output for")]
+    pub command_id: i64,
+    /// Token budget level: one_line, summary, detailed, full. Default: summary.
+    #[schemars(description = "Token budget: one_line, summary, detailed, full. Default: summary")]
+    pub budget: Option<String>,
+    /// Filter by severity (Error, Warning, Info, Success).
+    #[schemars(description = "Filter by severity (Error, Warning, Info, Success)")]
+    pub severity: Option<String>,
+    /// Filter by file path substring.
+    #[schemars(description = "Filter by file path substring")]
+    pub file: Option<String>,
+    /// Filter by record type (CompilerError, TestResult, PackageEvent, FreeformChunk).
+    #[schemars(description = "Filter by record type")]
+    pub record_type: Option<String>,
+}
+
+/// Parameters for glass_query_trend.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueryTrendParams {
+    /// Command pattern to match (supports LIKE % wildcards, e.g. 'cargo test%').
+    #[schemars(
+        description = "Command pattern to match (supports LIKE % wildcards, e.g. 'cargo test%')"
+    )]
+    pub command: String,
+    /// Number of recent runs to compare (default 5).
+    #[schemars(description = "Number of recent runs to compare (default 5)")]
+    pub n: Option<i64>,
+}
+
+/// Parameters for glass_query_drill.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueryDrillParams {
+    /// Record ID from glass_query's record_ids field.
+    #[schemars(description = "Record ID from glass_query's record_ids field")]
+    pub record_id: i64,
 }
 
 /// Parameters for glass_tab_close.
@@ -440,6 +482,17 @@ fn truncate_to_budget(text: &str, char_budget: usize) -> String {
     }
     let truncated: String = text.chars().take(char_budget.saturating_sub(3)).collect();
     format!("{}...", truncated)
+}
+
+/// Parse a budget string to a `TokenBudget` level.
+fn parse_budget(s: Option<&str>) -> glass_history::compress::TokenBudget {
+    use glass_history::compress::TokenBudget;
+    match s.unwrap_or("summary") {
+        "one_line" => TokenBudget::OneLine,
+        "detailed" => TokenBudget::Detailed,
+        "full" => TokenBudget::Full,
+        _ => TokenBudget::Summary,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1493,9 +1546,9 @@ impl GlassServer {
     }
 
     /// Get a compressed context summary within a token budget.
-    /// Focus on errors, files, history, or get a balanced overview.
+    /// Focus on errors, files, history, soi, or get a balanced overview.
     #[tool(
-        description = "Get a compressed context summary of terminal activity within a token budget. Focus on specific aspects (errors, files, history) or get a balanced overview. Uses approximate token counting (1 token ~ 4 chars)."
+        description = "Get a compressed context summary of terminal activity within a token budget. Focus on specific aspects (errors, files, history, soi) or get a balanced overview. Uses approximate token counting (1 token ~ 4 chars)."
     )]
     async fn glass_compressed_context(
         &self,
@@ -1538,18 +1591,25 @@ impl GlassServer {
                     build_files_section(&glass_dir, &db, Some(after_epoch), remaining)?
                 }
                 Some("history") => build_history_section(&db, Some(after_epoch), remaining)?,
+                Some("soi") => build_soi_section(&db, Some(after_epoch), remaining)?,
                 _ => {
-                    // Balanced: errors first, then history, then files
-                    let third = remaining / 3;
+                    // Balanced: errors, soi, history, files -- each gets a quarter
+                    let quarter = remaining / 4;
                     let mut parts = String::new();
 
-                    let errors = build_errors_section(&db, Some(after_epoch), third)?;
+                    let errors = build_errors_section(&db, Some(after_epoch), quarter)?;
                     if !errors.is_empty() {
                         parts.push_str(&errors);
                         parts.push('\n');
                     }
 
-                    let history = build_history_section(&db, Some(after_epoch), third)?;
+                    let soi = build_soi_section(&db, Some(after_epoch), quarter)?;
+                    if !soi.is_empty() {
+                        parts.push_str(&soi);
+                        parts.push('\n');
+                    }
+
+                    let history = build_history_section(&db, Some(after_epoch), quarter)?;
                     if !history.is_empty() {
                         parts.push_str(&history);
                         parts.push('\n');
@@ -1623,6 +1683,197 @@ impl GlassServer {
                 e
             ))])),
         }
+    }
+
+    /// Query structured output records for a command at a token budget level.
+    /// Returns compressed summary with record_ids for drill-down.
+    /// Budget: one_line, summary, detailed, full.
+    #[tool(
+        description = "Query structured output records for a command at a token budget level. Returns compressed summary with record_ids for drill-down. Budget: one_line, summary, detailed, full."
+    )]
+    async fn glass_query(
+        &self,
+        Parameters(params): Parameters<QueryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db_path = self.db_path.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<CallToolResult, McpError> {
+            let db = HistoryDb::open(&db_path).map_err(internal_err)?;
+            let budget = parse_budget(params.budget.as_deref());
+            match db.compress_output(params.command_id, budget).map_err(internal_err)? {
+                None => {
+                    let content = Content::text(format!(
+                        "No SOI data for command {}. Command may predate SOI integration or had no structured output.",
+                        params.command_id
+                    ));
+                    Ok(CallToolResult::success(vec![content]))
+                }
+                Some(compressed) => {
+                    let content = Content::json(&compressed).map_err(internal_err)?;
+                    Ok(CallToolResult::success(vec![content]))
+                }
+            }
+        })
+        .await
+        .map_err(internal_err)??;
+
+        Ok(result)
+    }
+
+    /// Compare last N runs of a command pattern to detect regressions.
+    /// Use % wildcards for pattern matching.
+    /// Returns per-run summaries and diffs showing new/resolved issues.
+    #[tool(
+        description = "Compare last N runs of a command pattern to detect regressions. Use % wildcards for pattern matching. Returns per-run summaries and diffs showing new/resolved issues."
+    )]
+    async fn glass_query_trend(
+        &self,
+        Parameters(params): Parameters<QueryTrendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db_path = self.db_path.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<CallToolResult, McpError> {
+            let db = HistoryDb::open(&db_path).map_err(internal_err)?;
+            let n = params.n.unwrap_or(5).max(1) as usize;
+            let run_ids = db
+                .get_last_n_run_ids(&params.command, n)
+                .map_err(internal_err)?;
+
+            if run_ids.len() < 2 {
+                let content = Content::text(format!(
+                    "Need at least 2 runs to compare. Found {} run(s) for '{}'.",
+                    run_ids.len(),
+                    params.command
+                ));
+                return Ok(CallToolResult::success(vec![content]));
+            }
+
+            // Build per-run summaries
+            let mut runs = Vec::new();
+            for &id in &run_ids {
+                let summary = db
+                    .compress_output(id, glass_history::compress::TokenBudget::Summary)
+                    .map_err(internal_err)?;
+                runs.push(serde_json::json!({
+                    "command_id": id,
+                    "summary": summary,
+                }));
+            }
+
+            // Build diffs between consecutive pairs
+            let mut diffs = Vec::new();
+            let mut regression_detected = false;
+
+            for window in run_ids.windows(2) {
+                let (from_id, to_id) = (window[0], window[1]);
+                let prev_records = db
+                    .get_output_records(from_id, None, None, None, 10000)
+                    .map_err(internal_err)?;
+                let curr_records = db
+                    .get_output_records(to_id, None, None, None, 10000)
+                    .map_err(internal_err)?;
+
+                let diff =
+                    glass_history::compress::diff_compress(&curr_records, Some(&prev_records));
+
+                // Regression: any new TestResult records with severity Error
+                let has_regression = diff.new_count > 0
+                    && diff.new_records.iter().any(|r| {
+                        r.record_type == "TestResult" && r.severity.as_deref() == Some("Error")
+                    });
+                if has_regression {
+                    regression_detected = true;
+                }
+
+                diffs.push(serde_json::json!({
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "new_count": diff.new_count,
+                    "resolved_count": diff.resolved_count,
+                    "change_line": diff.change_line,
+                    "new_records": diff.new_records,
+                    "resolved_records": diff.resolved_records,
+                }));
+            }
+
+            let response = serde_json::json!({
+                "runs": runs,
+                "diffs": diffs,
+                "regression_detected": regression_detected,
+            });
+
+            let content = Content::json(&response).map_err(internal_err)?;
+            Ok(CallToolResult::success(vec![content]))
+        })
+        .await
+        .map_err(internal_err)??;
+
+        Ok(result)
+    }
+
+    /// Expand a specific output record to full detail.
+    /// Pass a record_id from glass_query's record_ids field.
+    /// Returns complete record data including context lines and failure details.
+    #[tool(
+        description = "Expand a specific output record to full detail. Pass a record_id from glass_query's record_ids field. Returns complete record data including context lines and failure details."
+    )]
+    async fn glass_query_drill(
+        &self,
+        Parameters(params): Parameters<QueryDrillParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db_path = self.db_path.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> Result<CallToolResult, McpError> {
+            type DrillRow = (i64, i64, String, Option<String>, Option<String>, String);
+            let db = HistoryDb::open(&db_path).map_err(internal_err)?;
+            let row: Option<DrillRow> = db
+                .conn()
+                .query_row(
+                    "SELECT id, command_id, record_type, severity, file_path, data \
+                     FROM output_records WHERE id = ?1",
+                    rusqlite::params![params.record_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, String>(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(internal_err)?;
+
+            match row {
+                None => {
+                    let content = Content::text(format!(
+                        "No record found with id {}. Use record_ids from glass_query response.",
+                        params.record_id
+                    ));
+                    Ok(CallToolResult::success(vec![content]))
+                }
+                Some((id, command_id, record_type, severity, file_path, data)) => {
+                    let data_json: serde_json::Value =
+                        serde_json::from_str(&data).unwrap_or(serde_json::Value::String(data));
+                    let response = serde_json::json!({
+                        "id": id,
+                        "command_id": command_id,
+                        "record_type": record_type,
+                        "severity": severity,
+                        "file_path": file_path,
+                        "data": data_json,
+                    });
+                    let content = Content::json(&response).map_err(internal_err)?;
+                    Ok(CallToolResult::success(vec![content]))
+                }
+            }
+        })
+        .await
+        .map_err(internal_err)??;
+
+        Ok(result)
     }
 
     /// Cancel the currently running command in a tab by sending Ctrl+C (SIGINT).
@@ -1804,6 +2055,70 @@ fn build_files_section(
                 section.push_str(&line);
             }
         }
+    }
+
+    if !found_any {
+        return Ok(String::new());
+    }
+    Ok(truncate_to_budget(&section, budget))
+}
+
+/// Build the SOI section for compressed context.
+///
+/// Returns formatted SOI summaries from `command_output_records`, ordered most-recent first.
+/// Returns an empty string if no SOI records exist (no section header emitted).
+fn build_soi_section(db: &HistoryDb, after: Option<i64>, budget: usize) -> Result<String, String> {
+    let conn = db.conn();
+
+    let (soi_sql, params): (&str, Vec<rusqlite::types::Value>) = if let Some(epoch) = after {
+        (
+            "SELECT c.id, c.command, cor.output_type, cor.severity, cor.one_line \
+             FROM commands c \
+             JOIN command_output_records cor ON cor.command_id = c.id \
+             WHERE c.started_at >= ?1 \
+             ORDER BY c.started_at DESC LIMIT 20",
+            vec![rusqlite::types::Value::Integer(epoch)],
+        )
+    } else {
+        (
+            "SELECT c.id, c.command, cor.output_type, cor.severity, cor.one_line \
+             FROM commands c \
+             JOIN command_output_records cor ON cor.command_id = c.id \
+             ORDER BY c.started_at DESC LIMIT 20",
+            vec![],
+        )
+    };
+
+    let mut stmt = conn
+        .prepare(soi_sql)
+        .map_err(|e| format!("SOI query error: {}", e))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|e| format!("SOI query error: {}", e))?;
+
+    let mut section = String::from("### SOI Summaries\n");
+    let mut found_any = false;
+
+    for row in rows {
+        let (cmd_id, command, output_type, severity, one_line) =
+            row.map_err(|e| format!("SOI row error: {}", e))?;
+        found_any = true;
+        let line = format!(
+            "- [{}] {}: {} (cmd {}: {})\n",
+            severity, output_type, one_line, cmd_id, command
+        );
+        if section.len() + line.len() > budget {
+            break;
+        }
+        section.push_str(&line);
     }
 
     if !found_any {
@@ -2367,5 +2682,164 @@ mod tests {
         assert_eq!(errors[0]["line"], 10);
         assert_eq!(errors[0]["severity"], "error");
         assert_eq!(errors[0]["code"], "E0308");
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_soi_section tests
+    // ---------------------------------------------------------------------------
+
+    fn make_soi_test_db() -> (HistoryDb, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("soi_test.db");
+        let db = HistoryDb::open(&db_path).unwrap();
+        (db, dir)
+    }
+
+    fn insert_cmd_for_soi(
+        db: &HistoryDb,
+        cmd: &str,
+        cwd: &str,
+        exit_code: Option<i32>,
+        started_at: i64,
+    ) -> i64 {
+        use glass_history::db::CommandRecord;
+        let record = CommandRecord {
+            id: None,
+            command: cmd.to_string(),
+            cwd: cwd.to_string(),
+            exit_code,
+            started_at,
+            finished_at: started_at + 5,
+            duration_ms: 5000,
+            output: None,
+        };
+        db.insert_command(&record).unwrap();
+        db.conn()
+            .query_row("SELECT last_insert_rowid()", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn make_soi_parsed(one_line: &str, severity: glass_soi::Severity) -> glass_soi::ParsedOutput {
+        glass_soi::ParsedOutput {
+            output_type: glass_soi::OutputType::FreeformText,
+            summary: glass_soi::OutputSummary {
+                one_line: one_line.to_string(),
+                token_estimate: 5,
+                severity,
+            },
+            records: vec![],
+            raw_line_count: 2,
+            raw_byte_count: 30,
+        }
+    }
+
+    #[test]
+    fn test_build_soi_section_empty_db() {
+        let (db, _dir) = make_soi_test_db();
+        let result = build_soi_section(&db, None, 4096).unwrap();
+        assert!(
+            result.is_empty(),
+            "Expected empty string for DB with no SOI data"
+        );
+    }
+
+    #[test]
+    fn test_build_soi_section_no_soi_records() {
+        let (db, _dir) = make_soi_test_db();
+        insert_cmd_for_soi(&db, "ls", "/tmp", Some(0), 1700000000);
+        // No insert_parsed_output call -- commands present but no SOI records
+        let result = build_soi_section(&db, None, 4096).unwrap();
+        assert!(
+            result.is_empty(),
+            "Expected empty string when commands have no SOI data"
+        );
+    }
+
+    #[test]
+    fn test_build_soi_section_with_soi_data() {
+        let (db, _dir) = make_soi_test_db();
+        let cmd_id = insert_cmd_for_soi(&db, "cargo build", "/proj", Some(0), 1700000000);
+        let parsed = make_soi_parsed("Build succeeded", glass_soi::Severity::Info);
+        db.insert_parsed_output(cmd_id, &parsed).unwrap();
+
+        let result = build_soi_section(&db, None, 4096).unwrap();
+        assert!(!result.is_empty(), "Expected non-empty SOI section");
+        assert!(
+            result.contains("### SOI Summaries"),
+            "Expected section header"
+        );
+        assert!(
+            result.contains("Build succeeded"),
+            "Expected one_line in output"
+        );
+        assert!(result.contains("cargo build"), "Expected command in output");
+        assert!(result.contains("Info"), "Expected severity in output");
+    }
+
+    #[test]
+    fn test_build_soi_section_respects_budget() {
+        let (db, _dir) = make_soi_test_db();
+        // Insert enough entries to exceed a small budget
+        for i in 0i64..5 {
+            let cmd_id = insert_cmd_for_soi(
+                &db,
+                &format!("cmd{}", i),
+                "/tmp",
+                Some(0),
+                1700000000 + i * 10,
+            );
+            let parsed = make_soi_parsed(
+                "long one line summary that takes up space in budget",
+                glass_soi::Severity::Info,
+            );
+            db.insert_parsed_output(cmd_id, &parsed).unwrap();
+        }
+        // Very small budget should truncate
+        let result = build_soi_section(&db, None, 80).unwrap();
+        assert!(result.len() <= 80, "Result should be within budget");
+    }
+
+    #[test]
+    fn test_build_soi_section_after_filter() {
+        let (db, _dir) = make_soi_test_db();
+        let old_id = insert_cmd_for_soi(&db, "old cmd", "/tmp", Some(0), 1700000000);
+        let new_id = insert_cmd_for_soi(&db, "new cmd", "/tmp", Some(0), 1700000100);
+
+        let parsed = make_soi_parsed("some output", glass_soi::Severity::Info);
+        db.insert_parsed_output(old_id, &parsed).unwrap();
+        db.insert_parsed_output(new_id, &parsed).unwrap();
+
+        // Filter: only after epoch 1700000050 (excludes old command)
+        let result = build_soi_section(&db, Some(1700000050), 4096).unwrap();
+        assert!(
+            result.contains("new cmd"),
+            "Expected new cmd in SOI section"
+        );
+        assert!(!result.contains("old cmd"), "Expected old cmd filtered out");
+    }
+
+    #[test]
+    fn test_build_soi_section_format() {
+        let (db, _dir) = make_soi_test_db();
+        let cmd_id = insert_cmd_for_soi(&db, "npm test", "/app", Some(1), 1700000000);
+        let parsed = glass_soi::ParsedOutput {
+            output_type: glass_soi::OutputType::Npm,
+            summary: glass_soi::OutputSummary {
+                one_line: "3 tests failed".to_string(),
+                token_estimate: 8,
+                severity: glass_soi::Severity::Error,
+            },
+            records: vec![],
+            raw_line_count: 20,
+            raw_byte_count: 300,
+        };
+        db.insert_parsed_output(cmd_id, &parsed).unwrap();
+
+        let result = build_soi_section(&db, None, 4096).unwrap();
+        // Format: "- [severity] output_type: one_line (cmd id: command)\n"
+        assert!(result.contains("[Error]"), "Expected severity bracket");
+        assert!(result.contains("Npm"), "Expected output_type");
+        assert!(result.contains("3 tests failed"), "Expected one_line");
+        assert!(result.contains("npm test"), "Expected command");
     }
 }
