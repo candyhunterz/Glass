@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 59-01-PLAN.md
-last_updated: "2026-03-13T17:58:19.138Z"
-last_activity: 2026-03-13 -- completed Phase 58 Agent Approval UI (plan 02)
+stopped_at: Completed 59-02-PLAN.md
+last_updated: "2026-03-13T18:03:30.000Z"
+last_activity: 2026-03-13 -- completed Phase 59 Agent Session Continuity (plan 02)
 progress:
   total_phases: 13
   completed_phases: 11
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 
 ## Current Position
 
-Phase: 58 of 60 (Agent Approval UI) -- Complete
+Phase: 59 of 60 (Agent Session Continuity) -- Complete
 Plan: 2 of 2 -- Complete
 Status: Phase complete
-Last activity: 2026-03-13 -- completed Phase 58 Agent Approval UI (plan 02)
+Last activity: 2026-03-13 -- completed Phase 59 Agent Session Continuity (plan 02)
 
-Progress: [████████████████████] 24/24 plans (100%) (v3.0: 12/13 phases)
+Progress: [████████████████████] 26/26 plans (100%) (v3.0: 13/13 phases)
 
 ## Performance Metrics
 
@@ -115,6 +115,10 @@ Recent decisions relevant to v3.0:
 - [Phase 59-01]: AgentHandoffData defined in glass_core to avoid circular dep with glass_agent (mirrors AgentProposalData pattern)
 - [Phase 59-01]: session_db migrate() replicates v1+v2 DDL with CREATE TABLE IF NOT EXISTS for idempotency when both modules open same physical file
 - [Phase 59-01]: AgentHandoff main.rs arm is log-only stub until Plan 59-02 wires AgentSessionDb persistence
+- [Phase 59-02]: uuid workspace dep added to glass binary Cargo.toml (was in workspace.dependencies but not [dependencies])
+- [Phase 59-02]: project_root param added to try_spawn_agent; both call sites pass current_dir().to_string_lossy()
+- [Phase 59-02]: Empty session_id in AgentHandoff generates UUID fallback (race condition mitigation)
+- [Phase 59-02]: Prior handoff canonicalized before AgentSessionDb lookup (Pitfall 4 mitigation)
 
 ### Pending Todos
 
@@ -130,6 +134,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T17:58:19.135Z
-Stopped at: Completed 59-01-PLAN.md
+Last session: 2026-03-13T18:03:30.000Z
+Stopped at: Completed 59-02-PLAN.md
 Resume file: None
