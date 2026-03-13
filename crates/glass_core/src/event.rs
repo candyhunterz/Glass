@@ -102,6 +102,18 @@ pub enum AppEvent {
     CoordinationUpdate(crate::coordination_poller::CoordinationState),
     /// MCP request received over the IPC channel; reply via the oneshot sender.
     McpRequest(crate::ipc::McpEventRequest),
+    /// SOI parse completed for a finished command.
+    /// Fired from the SOI worker thread via EventLoopProxy.
+    SoiReady {
+        window_id: winit::window::WindowId,
+        session_id: SessionId,
+        /// History DB row id for the completed command.
+        command_id: i64,
+        /// One-line human/agent readable summary.
+        summary: String,
+        /// Highest severity: "Error" | "Warning" | "Info" | "Success"
+        severity: String,
+    },
 }
 
 #[cfg(test)]
@@ -149,6 +161,31 @@ mod tests {
                 assert_eq!(temp_path, "/tmp/glass/stage_1");
             }
             _ => panic!("Expected PipelineStage"),
+        }
+    }
+
+    #[test]
+    fn app_event_soi_ready_variant() {
+        use winit::window::WindowId;
+        let event = AppEvent::SoiReady {
+            window_id: WindowId::dummy(),
+            session_id: SessionId::new(1),
+            command_id: 42,
+            summary: "3 errors in src/main.rs".to_string(),
+            severity: "Error".to_string(),
+        };
+        match event {
+            AppEvent::SoiReady {
+                command_id,
+                summary,
+                severity,
+                ..
+            } => {
+                assert_eq!(command_id, 42);
+                assert_eq!(summary, "3 errors in src/main.rs");
+                assert_eq!(severity, "Error");
+            }
+            _ => panic!("Expected SoiReady"),
         }
     }
 }

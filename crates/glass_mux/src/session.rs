@@ -13,6 +13,15 @@ use glass_terminal::{BlockManager, DefaultColors, EventProxy, PtySender, StatusS
 use crate::search_overlay::SearchOverlay;
 use crate::types::SessionId;
 
+/// Most recent SOI parse result for this session.
+/// Updated by AppEvent::SoiReady handler in main.rs.
+#[derive(Debug, Clone)]
+pub struct SoiSummary {
+    pub command_id: i64,
+    pub one_line: String,
+    pub severity: String,
+}
+
 /// A single terminal session with all associated state.
 ///
 /// Each `Session` owns a PTY connection, terminal grid, block manager,
@@ -35,6 +44,8 @@ pub struct Session {
     pub history_db: Option<HistoryDb>,
     /// Row ID of the last inserted command, for attaching output later.
     pub last_command_id: Option<i64>,
+    /// Most recent SOI parse result for this session.
+    pub last_soi_summary: Option<SoiSummary>,
     /// Wall-clock time when the current command started executing.
     pub command_started_wall: Option<std::time::SystemTime>,
     /// Search overlay state. None when overlay is closed.

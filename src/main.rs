@@ -487,6 +487,7 @@ fn create_session(
         status: StatusState::default(),
         history_db,
         last_command_id: None,
+        last_soi_summary: None,
         command_started_wall: None,
         search_overlay: None,
         snapshot_store,
@@ -3005,6 +3006,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
+            // SoiReady handler added in Plan 02.
+            AppEvent::SoiReady { .. } => {}
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
