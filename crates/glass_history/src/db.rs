@@ -384,6 +384,24 @@ impl HistoryDb {
             limit,
         )
     }
+
+    /// Compress output records for a command at the given token budget level.
+    ///
+    /// Fetches the summary and records from the DB, then runs the compression
+    /// engine. Returns None if the command has no SOI data.
+    pub fn compress_output(
+        &self,
+        command_id: i64,
+        budget: crate::compress::TokenBudget,
+    ) -> Result<Option<crate::compress::CompressedOutput>> {
+        let summary = match crate::soi::get_output_summary(&self.conn, command_id)? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let records =
+            crate::soi::get_output_records(&self.conn, command_id, None, None, None, 10000)?;
+        Ok(Some(crate::compress::compress(&records, &summary, budget)))
+    }
 }
 
 #[cfg(test)]
@@ -1274,7 +1292,10 @@ mod tests {
 
         // No update_output called -- simulates alt-screen app
         let output = db.get_output_for_command(cmd_id).unwrap();
-        assert!(output.is_none(), "Alt-screen commands should have None output");
+        assert!(
+            output.is_none(),
+            "Alt-screen commands should have None output"
+        );
 
         // Verify command text is still retrievable
         let cmd_text = db.get_command_text(cmd_id).unwrap();
