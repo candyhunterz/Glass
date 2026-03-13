@@ -307,7 +307,10 @@ impl Drop for AgentRuntime {
                     tracing::warn!("AgentRuntime: failed to release coordination locks: {}", e);
                 }
                 if let Err(e) = db.deregister(agent_id) {
-                    tracing::warn!("AgentRuntime: failed to deregister from coordination: {}", e);
+                    tracing::warn!(
+                        "AgentRuntime: failed to deregister from coordination: {}",
+                        e
+                    );
                 }
             }
         }
@@ -971,10 +974,7 @@ Session Continuity:
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "AgentRuntime: failed to open coordination DB (soft): {}",
-                    e
-                );
+                tracing::warn!("AgentRuntime: failed to open coordination DB (soft): {}", e);
                 (None, None)
             }
         }
@@ -3887,12 +3887,71 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
+                    // AGTC-01: Detect agent section changes before swapping config.
+                    let old_agent = self.config.agent.clone();
                     // Swap config (applies non-visual changes like history thresholds)
                     self.config = new_config;
                     tracing::info!(
                         "Config reloaded successfully (font_changed={})",
                         font_changed
                     );
+
+                    // AGTC-01: Restart agent runtime when [agent] section changes.
+                    let agent_config_changed = old_agent != self.config.agent;
+                    if agent_config_changed {
+                        // Drop old runtime (triggers Drop -> kill child + deregister).
+                        self.agent_runtime = None;
+
+                        // Build new runtime config from updated agent section.
+                        let new_agent_config = self
+                            .config
+                            .agent
+                            .clone()
+                            .map(|a| glass_core::agent_runtime::AgentRuntimeConfig {
+                                mode: a.mode,
+                                max_budget_usd: a.max_budget_usd,
+                                cooldown_secs: a.cooldown_secs,
+                                allowed_tools: a.allowed_tools,
+                            })
+                            .unwrap_or_default();
+
+                        // Create fresh channel -- old rx was consumed by previous writer thread.
+                        let activity_config =
+                            glass_core::activity_stream::ActivityStreamConfig::default();
+                        let (new_tx, new_rx) =
+                            glass_core::activity_stream::create_channel(&activity_config);
+                        self.activity_stream_tx = Some(new_tx);
+                        self.activity_filter =
+                            glass_core::activity_stream::ActivityFilter::new(activity_config);
+
+                        if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
+                            self.agent_runtime = try_spawn_agent(
+                                new_agent_config.clone(),
+                                new_rx,
+                                self.proxy.clone(),
+                                0,
+                                None,
+                                std::env::current_dir()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            );
+                            // AGTC-04: Show hint if mode != Off but spawn failed.
+                            if self.agent_runtime.is_none() {
+                                self.config_error = Some(glass_core::config::ConfigError {
+                                    message: "'claude' CLI not found on PATH. Install from https://claude.ai/download, or set agent.mode = \"off\" in ~/.glass/config.toml".to_string(),
+                                    line: None,
+                                    column: None,
+                                    snippet: None,
+                                });
+                            }
+                        } else {
+                            // Store rx so channel doesn't drop (events silently discarded).
+                            self.activity_stream_rx = Some(new_rx);
+                        }
+
+                        tracing::info!("Agent config reloaded: mode={:?}", new_agent_config.mode);
+                    }
 
                     // Request redraw to clear error overlay even if font didn't change
                     if !font_changed {
@@ -3998,16 +4057,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
 
+                // AGTC-03: Check quiet rules before feeding activity stream.
+                // Quiet rules suppress the agent activity stream only -- SOI display is unaffected.
+                let quiet = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.quiet_rules.as_ref())
+                    .map(|q| glass_core::agent_runtime::should_quiet(q, &summary, &severity))
+                    .unwrap_or(false);
+
                 // AGTA-01: Feed activity stream (after all UI updates, using owned values)
-                if let Some(event) = self
-                    .activity_filter
-                    .process(command_id, session_id, summary, severity)
-                {
-                    if let Some(tx) = &self.activity_stream_tx {
-                        if tx.try_send(event).is_err() {
-                            tracing::debug!(
-                                "Activity stream channel full or disconnected, dropping event"
-                            );
+                if !quiet {
+                    if let Some(event) = self
+                        .activity_filter
+                        .process(command_id, session_id, summary, severity)
+                    {
+                        if let Some(tx) = &self.activity_stream_tx {
+                            if tx.try_send(event).is_err() {
+                                tracing::debug!(
+                                    "Activity stream channel full or disconnected, dropping event"
+                                );
+                            }
                         }
                     }
                 }
@@ -4019,52 +4090,104 @@ impl ApplicationHandler<AppEvent> for Processor {
                     proposal.action,
                     proposal.file_changes.len()
                 );
-                let handle = if !proposal.file_changes.is_empty() {
-                    if let Some(ref wm) = self.worktree_manager {
-                        // Use the active session CWD as project root; fall back to process CWD.
-                        let project_root = self
-                            .windows
-                            .values()
-                            .next()
-                            .and_then(|ctx| {
-                                ctx.session_mux
-                                    .focused_session()
-                                    .map(|s| std::path::PathBuf::from(s.status.cwd()))
-                            })
-                            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                        let proposal_id =
-                            format!("proposal-{}", self.agent_proposal_worktrees.len());
-                        match wm.create_worktree(
-                            &project_root,
-                            &proposal_id,
-                            &proposal.file_changes,
-                        ) {
-                            Ok(wt_handle) => {
-                                tracing::info!("Created worktree {} for proposal", wt_handle.id);
-                                Some(wt_handle)
+
+                // AGTC-02: Permission matrix -- classify proposal and check permission level.
+                let kind = glass_core::agent_runtime::classify_proposal(&proposal);
+                let permission_level = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.permissions.as_ref())
+                    .map(|p| match kind {
+                        glass_core::config::PermissionKind::EditFiles => p.edit_files,
+                        glass_core::config::PermissionKind::RunCommands => p.run_commands,
+                        glass_core::config::PermissionKind::GitOperations => p.git_operations,
+                    })
+                    .unwrap_or(glass_core::config::PermissionLevel::Approve);
+
+                if permission_level == glass_core::config::PermissionLevel::Never {
+                    tracing::info!(
+                        "Agent proposal dropped by permission matrix (kind={:?})",
+                        kind
+                    );
+                    // Never: drop without toast or worktree.
+                } else {
+                    let handle = if !proposal.file_changes.is_empty() {
+                        if let Some(ref wm) = self.worktree_manager {
+                            // Use the active session CWD as project root; fall back to process CWD.
+                            let project_root = self
+                                .windows
+                                .values()
+                                .next()
+                                .and_then(|ctx| {
+                                    ctx.session_mux
+                                        .focused_session()
+                                        .map(|s| std::path::PathBuf::from(s.status.cwd()))
+                                })
+                                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                            let proposal_id =
+                                format!("proposal-{}", self.agent_proposal_worktrees.len());
+                            match wm.create_worktree(
+                                &project_root,
+                                &proposal_id,
+                                &proposal.file_changes,
+                            ) {
+                                Ok(wt_handle) => {
+                                    tracing::info!(
+                                        "Created worktree {} for proposal",
+                                        wt_handle.id
+                                    );
+                                    Some(wt_handle)
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to create worktree for proposal: {e}");
+                                    None
+                                }
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to create worktree for proposal: {e}");
-                                None
-                            }
+                        } else {
+                            None
                         }
                     } else {
                         None
+                    };
+
+                    if permission_level == glass_core::config::PermissionLevel::Auto {
+                        // Auto: apply immediately without user interaction.
+                        let auto_description = proposal.description.clone();
+                        if let (Some(wm), Some(wt_handle)) =
+                            (self.worktree_manager.as_ref(), handle)
+                        {
+                            if let Err(e) = wm.apply(wt_handle) {
+                                tracing::error!(
+                                    "Auto-apply failed for proposal \"{}\": {e}",
+                                    auto_description
+                                );
+                            } else {
+                                tracing::info!("Auto-applied proposal: {}", auto_description);
+                            }
+                        }
+                        // Show brief auto-applied toast (no worktree in list).
+                        self.active_toast = Some(ProposalToast {
+                            description: format!("Auto-applied: {}", proposal.description),
+                            proposal_idx: self.agent_proposal_worktrees.len(),
+                            created_at: std::time::Instant::now(),
+                        });
+                    } else {
+                        // Approve: existing behavior -- show overlay, let user decide.
+                        // Clone description before push (push takes ownership of proposal).
+                        let toast_description = proposal.description.clone();
+                        self.agent_proposal_worktrees.push((proposal, handle));
+                        let proposal_idx = self.agent_proposal_worktrees.len() - 1;
+                        self.active_toast = Some(ProposalToast {
+                            description: toast_description,
+                            proposal_idx,
+                            created_at: std::time::Instant::now(),
+                        });
                     }
-                } else {
-                    None
-                };
-                // Clone description before push (push takes ownership of proposal).
-                let toast_description = proposal.description.clone();
-                self.agent_proposal_worktrees.push((proposal, handle));
-                let proposal_idx = self.agent_proposal_worktrees.len() - 1;
-                self.active_toast = Some(ProposalToast {
-                    description: toast_description,
-                    proposal_idx,
-                    created_at: std::time::Instant::now(),
-                });
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+
+                    for ctx in self.windows.values() {
+                        ctx.window.request_redraw();
+                    }
                 }
             }
             AppEvent::AgentQueryResult { cost_usd } => {
