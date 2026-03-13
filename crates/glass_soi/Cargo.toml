@@ -1,0 +1,12 @@
+[package]
+name = "glass_soi"
+version = "0.1.0"
+edition = "2021"
+description = "Structured Output Intelligence: classifier and parsers for command output"
+
+[dependencies]
+regex = "1"
+serde = { workspace = true }
+serde_json = "1.0"
+anyhow = { workspace = true }
+glass_errors = { path = "../glass_errors" }
