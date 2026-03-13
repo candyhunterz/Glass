@@ -192,9 +192,11 @@ impl FrameRenderer {
         proposal_count_text: Option<&str>,
         proposal_toast: Option<&ProposalToastRenderData>,
         proposal_overlay: Option<&ProposalOverlayRenderData>,
+        agent_activity_line: Option<&str>,
     ) {
         let w = width as f32;
         let h = height as f32;
+        let two_line_status = agent_activity_line.is_some();
 
         // Compute grid y-offset: shift content below tab bar when present
         let grid_y_offset = if tab_bar_info.is_some() {
@@ -260,7 +262,11 @@ impl FrameRenderer {
 
         // 1c. Append status bar background rect
         if status.is_some() {
-            let status_rects = self.status_bar.build_status_rects(w, h);
+            let status_rects = if two_line_status {
+                self.status_bar.build_status_rects_two_line(w, h)
+            } else {
+                self.status_bar.build_status_rects(w, h)
+            };
             rect_instances.extend(status_rects);
         }
 
@@ -274,9 +280,8 @@ impl FrameRenderer {
 
         // 1c3. Append scrollbar rects (right edge of pane, between tab bar and status bar)
         {
-            let (_, cell_height_sb) = self.grid_renderer.cell_size();
             let status_bar_h_sb = if status.is_some() {
-                cell_height_sb
+                self.status_bar.height(two_line_status)
             } else {
                 0.0
             };
@@ -324,9 +329,8 @@ impl FrameRenderer {
         let bg_rect_count = rect_instances.len() as u32;
 
         // 1e. Pipeline panel rects (bottom of viewport, above status bar)
-        let (_, cell_height_early) = self.grid_renderer.cell_size();
         let status_bar_h = if status.is_some() {
-            cell_height_early
+            self.status_bar.height(two_line_status)
         } else {
             0.0
         };
@@ -819,6 +823,61 @@ impl FrameRenderer {
                     ),
                 });
             }
+
+            // Agent activity line (top row of two-line status bar)
+            if let Some(activity_text) = agent_activity_line {
+                let activity_y = status_label.y - cell_height;
+                let activity_color = GlyphonColor::rgba(180, 140, 255, 255); // soft purple
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    activity_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(activity_color),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: cell_width * 0.5,
+                    top: activity_y,
+                    color: activity_color,
+                });
+
+                // Expand hint at far right of agent line
+                let hint = "Ctrl+Shift+G";
+                let hint_width = hint.len() as f32 * cell_width;
+                let hint_color = GlyphonColor::rgba(85, 85, 85, 255);
+                let mut hint_buf = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                hint_buf.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                hint_buf.set_text(
+                    &mut self.glyph_cache.font_system,
+                    hint,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(hint_color),
+                    Shaping::Advanced,
+                    None,
+                );
+                hint_buf.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(hint_buf);
+                overlay_metas.push(OverlayMeta {
+                    left: w - hint_width - cell_width * 0.5,
+                    top: activity_y,
+                    color: hint_color,
+                });
+            }
         }
 
         // Tab bar text buffers
@@ -1188,9 +1247,11 @@ impl FrameRenderer {
         proposal_count_text: Option<&str>,
         proposal_toast: Option<&ProposalToastRenderData>,
         proposal_overlay: Option<&ProposalOverlayRenderData>,
+        agent_activity_line: Option<&str>,
     ) {
         let w = width as f32;
         let h = height as f32;
+        let two_line_status = agent_activity_line.is_some();
 
         // 1. Build rect instances for all panes (with viewport offsets)
         let mut rect_instances: Vec<crate::rect_renderer::RectInstance> = Vec::new();
@@ -1291,7 +1352,11 @@ impl FrameRenderer {
 
         // Status bar background rect
         if status.is_some() {
-            let status_rects = self.status_bar.build_status_rects(w, h);
+            let status_rects = if two_line_status {
+                self.status_bar.build_status_rects_two_line(w, h)
+            } else {
+                self.status_bar.build_status_rects(w, h)
+            };
             rect_instances.extend(status_rects);
         }
 
@@ -1771,6 +1836,61 @@ impl FrameRenderer {
                         status_label.center_color.b,
                         255,
                     ),
+                });
+            }
+
+            // Agent activity line (top row of two-line status bar)
+            if let Some(activity_text) = agent_activity_line {
+                let activity_y = status_label.y - cell_height;
+                let activity_color = GlyphonColor::rgba(180, 140, 255, 255);
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    activity_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(activity_color),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: cell_width * 0.5,
+                    top: activity_y,
+                    color: activity_color,
+                });
+
+                // Expand hint
+                let hint = "Ctrl+Shift+G";
+                let hint_width = hint.len() as f32 * cell_width;
+                let hint_color = GlyphonColor::rgba(85, 85, 85, 255);
+                let mut hint_buf = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                hint_buf.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                hint_buf.set_text(
+                    &mut self.glyph_cache.font_system,
+                    hint,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(hint_color),
+                    Shaping::Advanced,
+                    None,
+                );
+                hint_buf.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(hint_buf);
+                overlay_metas.push(OverlayMeta {
+                    left: w - hint_width - cell_width * 0.5,
+                    top: activity_y,
+                    color: hint_color,
                 });
             }
         }

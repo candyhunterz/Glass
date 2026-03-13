@@ -80,7 +80,22 @@ impl CoordinationDb {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent);
-            CREATE INDEX IF NOT EXISTS idx_messages_read ON messages(read);",
+            CREATE INDEX IF NOT EXISTS idx_messages_read ON messages(read);
+
+            CREATE TABLE IF NOT EXISTS coordination_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp  INTEGER NOT NULL,
+                project    TEXT NOT NULL,
+                category   TEXT NOT NULL,
+                agent_id   TEXT,
+                agent_name TEXT,
+                event_type TEXT NOT NULL,
+                summary    TEXT NOT NULL,
+                detail     TEXT,
+                pinned     INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_coord_events_project_ts
+                ON coordination_events(project, timestamp);",
         )?;
         Ok(())
     }
@@ -124,6 +139,17 @@ impl CoordinationDb {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', unixepoch(), unixepoch())",
             params![&id, name, agent_type, &canonical_project, cwd, pid.map(|p| p as i64)],
         )?;
+        crate::event_log::insert_event(
+            &tx,
+            &canonical_project,
+            "agent",
+            Some(&id),
+            Some(name),
+            "registered",
+            &format!("{} registered project: {}", name, project),
+            None,
+            false,
+        )?;
         tx.commit()?;
 
         Ok(id)
@@ -136,7 +162,32 @@ impl CoordinationDb {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Fetch agent info before deletion for event summary
+        let info: Option<(String, String)> = tx
+            .query_row(
+                "SELECT name, project FROM agents WHERE id = ?1",
+                params![agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
         let rows = tx.execute("DELETE FROM agents WHERE id = ?1", params![agent_id])?;
+
+        if let Some((name, project)) = &info {
+            crate::event_log::insert_event(
+                &tx,
+                project,
+                "agent",
+                Some(agent_id),
+                Some(name),
+                "deregistered",
+                &format!("{} deregistered", name),
+                None,
+                false,
+            )?;
+        }
+
         tx.commit()?;
         Ok(rows > 0)
     }
@@ -169,10 +220,52 @@ impl CoordinationDb {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Fetch current values to detect changes
+        let prev: Option<(String, String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT name, project, status, task FROM agents WHERE id = ?1",
+                params![agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .ok();
+
         let rows = tx.execute(
             "UPDATE agents SET status = ?1, task = ?2, last_heartbeat = unixepoch() WHERE id = ?3",
             params![status, task, agent_id],
         )?;
+
+        if let Some((name, project, old_status, old_task)) = &prev {
+            if old_status != status {
+                crate::event_log::insert_event(
+                    &tx,
+                    project,
+                    "agent",
+                    Some(agent_id),
+                    Some(name),
+                    "status_changed",
+                    &format!("{} status {} -> {}", name, old_status, status),
+                    None,
+                    false,
+                )?;
+            }
+            if old_task.as_deref() != task {
+                if let Some(new_task) = task {
+                    crate::event_log::insert_event(
+                        &tx,
+                        project,
+                        "agent",
+                        Some(agent_id),
+                        Some(name),
+                        "task_changed",
+                        &format!("{} task: {}", name, new_task),
+                        None,
+                        false,
+                    )?;
+                }
+            }
+        }
+
         tx.commit()?;
         Ok(rows > 0)
     }
@@ -262,8 +355,42 @@ impl CoordinationDb {
         }
 
         if !conflicts.is_empty() {
-            // All-or-nothing: return conflict without inserting anything
-            // Transaction will rollback on drop
+            // Emit conflict events (pinned) — must commit so events persist
+            let agent_name: String = tx
+                .query_row(
+                    "SELECT name FROM agents WHERE id = ?1",
+                    params![agent_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| "unknown".to_string());
+            let project: String = tx
+                .query_row(
+                    "SELECT project FROM agents WHERE id = ?1",
+                    params![agent_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+
+            for conflict in &conflicts {
+                crate::event_log::insert_event(
+                    &tx,
+                    &project,
+                    "lock",
+                    Some(agent_id),
+                    Some(&agent_name),
+                    "conflict",
+                    &format!(
+                        "{} conflict {} (held by {})",
+                        agent_name, conflict.path, conflict.held_by_agent_name
+                    ),
+                    None,
+                    true, // pinned
+                )?;
+            }
+
+            // Commit the transaction so conflict events are persisted
+            // (no locks are inserted in the conflict branch)
+            tx.commit()?;
             return Ok(LockResult::Conflict(conflicts));
         }
 
@@ -284,6 +411,50 @@ impl CoordinationDb {
             params![agent_id],
         )?;
 
+        // Fetch agent name for event
+        let agent_name: String = tx
+            .query_row(
+                "SELECT name FROM agents WHERE id = ?1",
+                params![agent_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string());
+        let project: String = tx
+            .query_row(
+                "SELECT project FROM agents WHERE id = ?1",
+                params![agent_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        // Emit lock acquired events (collapse multiple files into one event)
+        if canonical_paths.len() == 1 {
+            crate::event_log::insert_event(
+                &tx,
+                &project,
+                "lock",
+                Some(agent_id),
+                Some(&agent_name),
+                "acquired",
+                &format!("{} locked {}", agent_name, &canonical_paths[0]),
+                None,
+                false,
+            )?;
+        } else {
+            let files_list = canonical_paths.join(", ");
+            crate::event_log::insert_event(
+                &tx,
+                &project,
+                "lock",
+                Some(agent_id),
+                Some(&agent_name),
+                "acquired",
+                &format!("{} locked {} files", agent_name, canonical_paths.len()),
+                Some(&files_list),
+                false,
+            )?;
+        }
+
         tx.commit()?;
         Ok(LockResult::Acquired(canonical_paths))
     }
@@ -301,6 +472,28 @@ impl CoordinationDb {
             "DELETE FROM file_locks WHERE path = ?1 AND agent_id = ?2",
             params![&canonical, agent_id],
         )?;
+        if rows > 0 {
+            let info: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT name, project FROM agents WHERE id = ?1",
+                    params![agent_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            if let Some((name, project)) = info {
+                crate::event_log::insert_event(
+                    &tx,
+                    &project,
+                    "lock",
+                    Some(agent_id),
+                    Some(&name),
+                    "released",
+                    &format!("{} unlocked {}", name, canonical),
+                    None,
+                    false,
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(rows > 0)
     }
@@ -316,6 +509,28 @@ impl CoordinationDb {
             "DELETE FROM file_locks WHERE agent_id = ?1",
             params![agent_id],
         )?;
+        if rows > 0 {
+            let info: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT name, project FROM agents WHERE id = ?1",
+                    params![agent_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            if let Some((name, project)) = info {
+                crate::event_log::insert_event(
+                    &tx,
+                    &project,
+                    "lock",
+                    Some(agent_id),
+                    Some(&name),
+                    "released",
+                    &format!("{} unlocked {} files", name, rows),
+                    None,
+                    false,
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(rows as u64)
     }
@@ -417,6 +632,29 @@ impl CoordinationDb {
             params![from_agent_id],
         )?;
 
+        let sender_name: String = tx
+            .query_row(
+                "SELECT name FROM agents WHERE id = ?1",
+                params![from_agent_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "unknown".to_string());
+        crate::event_log::insert_event(
+            &tx,
+            &canonical_project,
+            "message",
+            Some(from_agent_id),
+            Some(&sender_name),
+            "broadcast",
+            &format!(
+                "{} broadcast: {}",
+                sender_name,
+                &content[..content.len().min(80)]
+            ),
+            Some(content),
+            false,
+        )?;
+
         tx.commit()?;
         Ok(count)
     }
@@ -448,6 +686,33 @@ impl CoordinationDb {
             "UPDATE agents SET last_heartbeat = unixepoch() WHERE id = ?1",
             params![from_agent_id],
         )?;
+
+        // Fetch sender info for event
+        let sender_info: Option<(String, String)> = tx
+            .query_row(
+                "SELECT name, project FROM agents WHERE id = ?1",
+                params![from_agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        if let Some((name, project)) = sender_info {
+            let evt_type = if msg_type == "request_unlock" {
+                "request_unlock"
+            } else {
+                "sent"
+            };
+            crate::event_log::insert_event(
+                &tx,
+                &project,
+                "message",
+                Some(from_agent_id),
+                Some(&name),
+                evt_type,
+                &format!("{} {} -> {}", name, msg_type, to_agent_id),
+                Some(content),
+                false,
+            )?;
+        }
 
         tx.commit()?;
         Ok(msg_id)
@@ -1514,5 +1779,56 @@ mod tests {
         // list_locks with None should show all locks regardless of project
         let all_locks = db.list_locks(None).unwrap();
         assert_eq!(all_locks.len(), 2);
+    }
+
+    #[test]
+    fn test_register_emits_event() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut db = CoordinationDb::open(&db_path).unwrap();
+        let id = db
+            .register("test-agent", "claude-code", "/project", "/cwd", None)
+            .unwrap();
+
+        let events = crate::event_log::recent_events(db.conn(), "/project", 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].category, "agent");
+        assert_eq!(events[0].event_type, "registered");
+        assert_eq!(events[0].agent_id.as_deref(), Some(id.as_str()));
+        assert!(events[0].summary.contains("test-agent"));
+    }
+
+    #[test]
+    fn test_deregister_emits_event() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut db = CoordinationDb::open(&db_path).unwrap();
+        let id = db
+            .register("test-agent", "claude-code", "/project", "/cwd", None)
+            .unwrap();
+        db.deregister(&id).unwrap();
+
+        let events = crate::event_log::recent_events(db.conn(), "/project", 10).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "deregistered");
+        assert_eq!(events[1].event_type, "registered");
+    }
+
+    #[test]
+    fn test_update_status_emits_events() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut db = CoordinationDb::open(&db_path).unwrap();
+        let id = db
+            .register("test-agent", "claude-code", "/project", "/cwd", None)
+            .unwrap();
+        db.update_status(&id, "editing", Some("refactoring"))
+            .unwrap();
+
+        let events = crate::event_log::recent_events(db.conn(), "/project", 10).unwrap();
+        // registered + status_changed + task_changed = 3
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().any(|e| e.event_type == "status_changed"));
+        assert!(events.iter().any(|e| e.event_type == "task_changed"));
     }
 }

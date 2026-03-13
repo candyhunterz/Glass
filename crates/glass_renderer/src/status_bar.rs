@@ -44,6 +44,45 @@ pub struct StatusLabel {
     pub proposal_count_color: Rgb,
 }
 
+/// Build the agent activity line text for the two-line status bar.
+///
+/// Format: "name status task  |  name status  |  N locks      Ctrl+Shift+G"
+/// If more than 2 agents, shows first 2 + "+N more".
+pub fn build_agent_activity_line(
+    agents: &[(String, String, Option<String>)],
+    lock_count: usize,
+    _max_chars: usize,
+) -> String {
+    let mut parts = Vec::new();
+    let show_count = agents.len().min(2);
+
+    for (name, status, task) in agents.iter().take(show_count) {
+        let entry = if let Some(t) = task {
+            let truncated = if t.len() > 20 {
+                format!("{}...", &t[..17])
+            } else {
+                t.clone()
+            };
+            format!("{} {} {}", name, status, truncated)
+        } else {
+            format!("{} {}", name, status)
+        };
+        parts.push(entry);
+    }
+
+    if agents.len() > 2 {
+        parts.push(format!("+{} more", agents.len() - 2));
+    }
+
+    let mut line = parts.join("  |  ");
+
+    if lock_count > 0 {
+        line.push_str(&format!("  |  {} locks", lock_count));
+    }
+
+    line
+}
+
 /// Renders the bottom-pinned status bar.
 ///
 /// Produces a background rectangle and text labels showing the current
@@ -73,6 +112,31 @@ impl StatusBarRenderer {
             // Slightly lighter than terminal bg (26,26,26) -> (38,38,38)
             color: [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0],
         }]
+    }
+
+    /// Build status bar background rectangles for two-line mode.
+    ///
+    /// Returns a rect that is 2 * cell_height tall when agents are active.
+    pub fn build_status_rects_two_line(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Vec<RectInstance> {
+        let height = self.cell_height * 2.0;
+        let y = viewport_height - height;
+        vec![RectInstance {
+            pos: [0.0, y, viewport_width, height],
+            color: [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0],
+        }]
+    }
+
+    /// Get the status bar height in pixels (1 or 2 lines).
+    pub fn height(&self, two_line: bool) -> f32 {
+        if two_line {
+            self.cell_height * 2.0
+        } else {
+            self.cell_height
+        }
     }
 
     /// Build text content for the status bar.
@@ -321,6 +385,32 @@ mod tests {
                 b: 80
             }
         );
+    }
+
+    #[test]
+    fn test_agent_activity_line_two_agents() {
+        let agents = vec![
+            (
+                "claude-code".to_string(),
+                "editing".to_string(),
+                Some("main.rs".to_string()),
+            ),
+            ("cursor".to_string(), "idle".to_string(), None),
+        ];
+        let line = build_agent_activity_line(&agents, 2, 100);
+        assert!(line.contains("claude-code"));
+        assert!(line.contains("editing"));
+        assert!(line.contains("cursor"));
+        assert!(line.contains("idle"));
+    }
+
+    #[test]
+    fn test_agent_activity_line_overflow() {
+        let agents: Vec<_> = (0..5)
+            .map(|i| (format!("agent-{}", i), "active".to_string(), None))
+            .collect();
+        let line = build_agent_activity_line(&agents, 0, 80);
+        assert!(line.contains("+3 more"));
     }
 
     #[test]

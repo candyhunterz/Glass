@@ -23,6 +23,13 @@ pub struct CoordinationState {
     pub locks: Vec<LockEntry>,
     /// Detected conflicts (reserved for Plan 02 overlay).
     pub conflicts: Vec<ConflictInfo>,
+    /// Per-agent display info for the compact status bar.
+    pub agents: Vec<AgentDisplayInfo>,
+    /// Recent coordination events for the overlay timeline.
+    pub recent_events: Vec<glass_coordination::CoordinationEvent>,
+    /// Most recent notable event for the compact bar ticker.
+    /// Cleared after one display cycle by the main event loop.
+    pub ticker_event: Option<glass_coordination::CoordinationEvent>,
 }
 
 /// A single file lock entry for display purposes.
@@ -39,6 +46,21 @@ pub struct ConflictInfo {
     pub path: String,
     /// Vec of (agent_id, agent_name) pairs involved.
     pub agents: Vec<(String, String)>,
+}
+
+/// Display-oriented agent info for the compact status bar and overlay.
+///
+/// Constructed by joining the `agents` and `file_locks` tables in the poller.
+/// Adds lock information that `AgentInfo` does not carry.
+#[derive(Debug, Clone)]
+pub struct AgentDisplayInfo {
+    pub id: String,
+    pub name: String,
+    pub agent_type: String,
+    pub status: String,
+    pub task: Option<String>,
+    pub lock_count: usize,
+    pub locked_files: Vec<String>,
 }
 
 /// Spawn a background thread that polls the coordination DB every 5 seconds.
@@ -86,11 +108,46 @@ fn poll_once(project_root: &str) -> CoordinationState {
             })
             .collect();
 
+        // Build AgentDisplayInfo by joining agents with their locks
+        let agent_infos: Vec<AgentDisplayInfo> = agents
+            .iter()
+            .map(|a| {
+                let agent_locks: Vec<String> = locks
+                    .iter()
+                    .filter(|l| l.agent_id == a.id)
+                    .map(|l| l.path.clone())
+                    .collect();
+                AgentDisplayInfo {
+                    id: a.id.clone(),
+                    name: a.name.clone(),
+                    agent_type: a.agent_type.clone(),
+                    status: a.status.clone(),
+                    task: a.task.clone(),
+                    lock_count: agent_locks.len(),
+                    locked_files: agent_locks,
+                }
+            })
+            .collect();
+
+        // Fetch recent events (last 200 for the overlay)
+        let recent_events =
+            glass_coordination::event_log::recent_events(db.conn(), project_root, 200)
+                .unwrap_or_default();
+
+        // Prune old events
+        let _ = glass_coordination::event_log::prune_events(db.conn(), project_root, 1000);
+
+        // Ticker: most recent event (first in the list since ordered newest-first)
+        let ticker_event = recent_events.first().cloned();
+
         Ok(CoordinationState {
             agent_count: agents.len(),
             lock_count: locks.len(),
             locks: lock_entries,
-            conflicts: Vec::new(), // Plan 02 will populate this
+            conflicts: Vec::new(),
+            agents: agent_infos,
+            recent_events,
+            ticker_event,
         })
     })();
 
@@ -114,6 +171,24 @@ mod tests {
         assert_eq!(state.lock_count, 0);
         assert!(state.locks.is_empty());
         assert!(state.conflicts.is_empty());
+        assert!(state.agents.is_empty());
+        assert!(state.recent_events.is_empty());
+        assert!(state.ticker_event.is_none());
+    }
+
+    #[test]
+    fn test_agent_display_info_from_query() {
+        let info = AgentDisplayInfo {
+            id: "uuid-1".to_string(),
+            name: "claude-code".to_string(),
+            agent_type: "claude-code".to_string(),
+            status: "editing".to_string(),
+            task: Some("refactoring pty.rs".to_string()),
+            lock_count: 2,
+            locked_files: vec!["pty.rs".to_string(), "block_manager.rs".to_string()],
+        };
+        assert_eq!(info.lock_count, 2);
+        assert_eq!(info.locked_files.len(), 2);
     }
 
     #[test]

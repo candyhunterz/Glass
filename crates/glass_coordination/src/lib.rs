@@ -5,10 +5,12 @@
 //! Uses a global SQLite database at `~/.glass/agents.db`.
 
 pub mod db;
+pub mod event_log;
 pub mod pid;
 pub mod types;
 
 pub use db::CoordinationDb;
+pub use event_log::CoordinationEvent;
 pub use pid::is_pid_alive;
 pub use types::{AgentInfo, FileLock, LockConflict, LockResult, Message};
 

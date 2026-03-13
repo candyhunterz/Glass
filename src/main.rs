@@ -259,6 +259,10 @@ struct Processor {
     update_info: Option<glass_core::updater::UpdateInfo>,
     /// Current coordination state from background poller.
     coordination_state: glass_core::coordination_poller::CoordinationState,
+    /// The last ticker event ID that was displayed, used to detect new events.
+    last_ticker_event_id: Option<i64>,
+    /// Counter for ticker display cycles. When > 0, show ticker text.
+    ticker_display_cycles: u32,
     /// Sender half of the agent activity stream channel.
     /// Use try_send() only -- never blocking send() on winit main thread.
     activity_stream_tx:
@@ -1411,11 +1415,40 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .as_ref()
                         .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
 
-                    let coordination_text = if self.coordination_state.agent_count > 0 {
+                    let has_agents = !self.coordination_state.agents.is_empty();
+                    let coordination_text = if self.coordination_state.agent_count > 0
+                        && !has_agents
+                    {
+                        // Fallback: old format when agents vec not populated
                         Some(format!(
                             "agents: {} locks: {}",
                             self.coordination_state.agent_count, self.coordination_state.lock_count
                         ))
+                    } else {
+                        None
+                    };
+
+                    // Build agent activity line for two-line status bar
+                    let agent_activity_line = if has_agents {
+                        if self.ticker_display_cycles > 0 {
+                            // Show ticker event text briefly
+                            self.coordination_state
+                                .ticker_event
+                                .as_ref()
+                                .map(|e| e.summary.clone())
+                        } else {
+                            let agents: Vec<_> = self
+                                .coordination_state
+                                .agents
+                                .iter()
+                                .map(|a| (a.name.clone(), a.status.clone(), a.task.clone()))
+                                .collect();
+                            Some(glass_renderer::status_bar::build_agent_activity_line(
+                                &agents,
+                                self.coordination_state.lock_count,
+                                100,
+                            ))
+                        }
                     } else {
                         None
                     };
@@ -1544,17 +1577,25 @@ impl ApplicationHandler<AppEvent> for Processor {
                         proposal_count_text.as_deref(),
                         proposal_toast_data.as_ref(),
                         proposal_overlay_data.as_ref(),
+                        agent_activity_line.as_deref(),
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
                     let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
 
                     // Container viewport: subtract tab bar (top) and status bar (bottom)
+                    let status_lines: u32 = if !self.coordination_state.agents.is_empty() {
+                        2
+                    } else {
+                        1
+                    };
                     let container = ViewportLayout {
                         x: 0,
                         y: cell_h as u32,
                         width: sc.width,
-                        height: sc.height.saturating_sub((cell_h as u32) * 2),
+                        height: sc
+                            .height
+                            .saturating_sub((cell_h as u32) * (1 + status_lines)),
                     };
 
                     // Compute pane layouts from the active tab's split tree
@@ -1637,11 +1678,37 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .as_ref()
                         .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
 
-                    let coordination_text = if self.coordination_state.agent_count > 0 {
+                    let has_agents_mp = !self.coordination_state.agents.is_empty();
+                    let coordination_text = if self.coordination_state.agent_count > 0
+                        && !has_agents_mp
+                    {
                         Some(format!(
                             "agents: {} locks: {}",
                             self.coordination_state.agent_count, self.coordination_state.lock_count
                         ))
+                    } else {
+                        None
+                    };
+
+                    let agent_activity_line_mp = if has_agents_mp {
+                        if self.ticker_display_cycles > 0 {
+                            self.coordination_state
+                                .ticker_event
+                                .as_ref()
+                                .map(|e| e.summary.clone())
+                        } else {
+                            let agents: Vec<_> = self
+                                .coordination_state
+                                .agents
+                                .iter()
+                                .map(|a| (a.name.clone(), a.status.clone(), a.task.clone()))
+                                .collect();
+                            Some(glass_renderer::status_bar::build_agent_activity_line(
+                                &agents,
+                                self.coordination_state.lock_count,
+                                100,
+                            ))
+                        }
                     } else {
                         None
                     };
@@ -1782,6 +1849,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         proposal_count_text_mp.as_deref(),
                         proposal_toast_data_mp.as_ref(),
                         proposal_overlay_data_mp.as_ref(),
+                        agent_activity_line_mp.as_deref(),
                     );
                 }
 
@@ -4019,6 +4087,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
             }
             AppEvent::CoordinationUpdate(state) => {
+                // Decrement ticker BEFORE checking for new events
+                if self.ticker_display_cycles > 0 {
+                    self.ticker_display_cycles -= 1;
+                }
+
+                // Detect new ticker event
+                if let Some(ref evt) = state.ticker_event {
+                    let is_new = self.last_ticker_event_id != Some(evt.id);
+                    if is_new {
+                        self.last_ticker_event_id = Some(evt.id);
+                        self.ticker_display_cycles = 1; // Show for 1 poll cycle (5s)
+                    }
+                }
+
                 self.coordination_state = state;
                 // Request redraw on all windows to show updated coordination info
                 for ctx in self.windows.values() {
@@ -4988,6 +5070,8 @@ fn main() {
                 watcher_spawned: false,
                 update_info: None,
                 coordination_state: Default::default(),
+                last_ticker_event_id: None,
+                ticker_display_cycles: 0,
                 activity_stream_tx: None,
                 activity_stream_rx: None,
                 activity_filter: glass_core::activity_stream::ActivityFilter::new(
