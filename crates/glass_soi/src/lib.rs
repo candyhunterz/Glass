@@ -39,8 +39,9 @@ pub use types::{OutputRecord, OutputSummary, OutputType, ParsedOutput, Severity,
 
 /// Dispatch parsed output to the appropriate parser based on `output_type`.
 ///
-/// For Phase 48, all parsers are stubs that return a freeform fallback.
-/// Plans 48-02 and 48-03 will implement the full parsers.
+/// Fully implemented parsers: `RustCompiler`, `RustTest`, `Npm`, `Pytest`, `Jest`,
+/// `Git`, `Docker`, `Kubectl`, `TypeScript`, `GoBuild`, `GoTest`, `JsonLines`.
+/// Unrecognized variants fall back to [`freeform_parse`].
 pub fn parse(output: &str, output_type: OutputType, command_hint: Option<&str>) -> ParsedOutput {
     match output_type {
         OutputType::RustCompiler => cargo_build::parse(output, command_hint),
