@@ -199,8 +199,8 @@ Plans:
   5. Drill-down mode returns specific record IDs that can be expanded to full detail in a follow-up query
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 51-01-PLAN.md -- Core compression engine: TokenBudget, CompressedOutput, compress() with 4 budget levels and smart truncation
+- [ ] 51-02-PLAN.md -- Diff-aware compression: DiffSummary, RecordFingerprint, diff_compress(), get_previous_run_records()
 
 ### Phase 52: SOI Display
 **Goal**: Users see a one-line SOI summary on every classified command block, and agents using the Bash tool can discover SOI data via a shell hint line
@@ -389,7 +389,7 @@ Plans:
 | 48. SOI Classifier and Parser Crate | 3/3 | Complete    | 2026-03-13 | - |
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
-| 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |
+| 51. SOI Compression Engine | v3.0 | 0/2 | Not started | - |
 | 52. SOI Display | v3.0 | 0/TBD | Not started | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
