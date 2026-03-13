@@ -1,4 +1,5 @@
 pub mod activity_stream;
+pub mod agent_runtime;
 pub mod config;
 pub mod config_watcher;
 pub mod coordination_poller;

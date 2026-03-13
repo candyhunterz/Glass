@@ -116,6 +116,12 @@ pub enum AppEvent {
         /// Raw line count of the command output (for min_lines threshold).
         raw_line_count: i64,
     },
+    /// The agent subprocess returned a structured proposal for user review.
+    AgentProposal(crate::agent_runtime::AgentProposalData),
+    /// The agent subprocess completed a query and reported its cost.
+    AgentQueryResult { cost_usd: f64 },
+    /// The agent subprocess terminated unexpectedly.
+    AgentCrashed,
 }
 
 #[cfg(test)]
