@@ -93,6 +93,11 @@ impl WorktreeManager {
         id: &str,
         file_changes: &[(String, String)],
     ) -> Result<WorktreeKind> {
+        // Ensure the base directory exists before attempting git worktree add.
+        if let Some(parent) = worktree_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
         // Detect git vs non-git project.
         let kind = match git2::Repository::discover(project_root) {
             Ok(repo) => {
