@@ -11,6 +11,17 @@ use glass_terminal::{Block, BlockState};
 use crate::rect_renderer::RectInstance;
 use crate::scrollbar::SCROLLBAR_WIDTH;
 
+/// Map an SOI severity string to a display color.
+fn soi_color_for_severity(severity: Option<&str>) -> Rgb {
+    match severity {
+        Some("Error") => Rgb { r: 200, g: 80, b: 80 },
+        Some("Warning") => Rgb { r: 200, g: 160, b: 60 },
+        Some("Info") => Rgb { r: 100, g: 160, b: 200 },
+        Some("Success") => Rgb { r: 80, g: 160, b: 80 },
+        _ => Rgb { r: 140, g: 140, b: 140 },
+    }
+}
+
 /// Count lines in a FinalizedBuffer.
 fn line_count(data: &FinalizedBuffer) -> usize {
     match data {
@@ -221,6 +232,18 @@ impl BlockRenderer {
                         b: 220,
                     },
                 });
+            }
+
+            // SOI summary label — left-anchored, severity-colored
+            if block.state == BlockState::Complete {
+                if let Some(ref soi_text) = block.soi_summary {
+                    labels.push(BlockLabel {
+                        x: self.cell_width * 1.0,
+                        y,
+                        text: soi_text.clone(),
+                        color: soi_color_for_severity(block.soi_severity.as_deref()),
+                    });
+                }
             }
         }
 
@@ -553,6 +576,68 @@ impl BlockRenderer {
 mod tests {
     use super::*;
     use glass_pipes::CapturedStage;
+
+    /// Helper: create a minimal complete Block with optional SOI fields.
+    fn make_soi_block(soi_summary: Option<&str>, soi_severity: Option<&str>) -> Block {
+        Block {
+            prompt_start_line: 0,
+            command_start_line: 1,
+            output_start_line: Some(2),
+            output_end_line: Some(5),
+            exit_code: Some(0),
+            started_at: None,
+            finished_at: None,
+            started_epoch: None,
+            state: BlockState::Complete,
+            has_snapshot: false,
+            pipeline_stages: vec![],
+            pipeline_stage_count: None,
+            pipeline_expanded: false,
+            pipeline_stage_commands: vec![],
+            expanded_stage_index: None,
+            soi_summary: soi_summary.map(|s| s.to_string()),
+            soi_severity: soi_severity.map(|s| s.to_string()),
+        }
+    }
+
+    // -- SOI label tests --
+
+    #[test]
+    fn test_soi_label_emitted_for_complete_block() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let block = make_soi_block(Some("3 errors"), Some("Error"));
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
+        let soi = labels.iter().find(|l| l.text == "3 errors");
+        assert!(soi.is_some(), "SOI label should be present for Complete block with soi_summary");
+    }
+
+    #[test]
+    fn test_soi_label_absent_when_no_summary() {
+        let renderer = BlockRenderer::new(8.0, 16.0);
+        let block = make_soi_block(None, None);
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
+        // Only exit code badge "OK" should be present, no SOI-specific text
+        let soi_labels: Vec<_> = labels.iter().filter(|l| l.text != "OK").collect();
+        assert!(soi_labels.is_empty(), "No SOI label when soi_summary is None");
+    }
+
+    #[test]
+    fn test_soi_label_color_error() {
+        let color = soi_color_for_severity(Some("Error"));
+        assert_eq!(color, Rgb { r: 200, g: 80, b: 80 });
+    }
+
+    #[test]
+    fn test_soi_label_left_anchored() {
+        let renderer = BlockRenderer::new(10.0, 16.0);
+        let block = make_soi_block(Some("2 warnings"), Some("Warning"));
+        let blocks: Vec<&Block> = vec![&block];
+        let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
+        let soi = labels.iter().find(|l| l.text == "2 warnings").expect("SOI label should exist");
+        assert_eq!(soi.x, 10.0, "SOI label x should be cell_width * 1.0 = 10.0");
+    }
 
     /// Helper: create a minimal Block for pipeline rendering tests.
     fn make_pipeline_block(
