@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 57-02-PLAN.md
-last_updated: "2026-03-13T16:49:52.419Z"
+stopped_at: Completed 58-01-PLAN.md
+last_updated: "2026-03-13T17:21:42.167Z"
 last_activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
 progress:
   total_phases: 13
   completed_phases: 10
-  total_plans: 21
-  completed_plans: 21
+  total_plans: 23
+  completed_plans: 22
   percent: 100
 ---
 
@@ -105,6 +105,9 @@ Recent decisions relevant to v3.0:
 - [Phase 57-01]: create_worktree_inner creates base_dir before git worktree add (git2 requires parent to exist on Windows)
 - [Phase 57-02]: agent_pending_proposals replaced by agent_proposal_worktrees pairing proposals with Option<WorktreeHandle> for Phase 58 approval UI
 - [Phase 57-02]: file_changes defaults to empty Vec when files key absent -- backward compatible with Phase 56 proposals
+- [Phase 58-01]: ProposalToastRenderer/ProposalOverlayRenderer are stateless pure-computation helpers following ConflictOverlay pattern -- no GPU state, unit-testable without wgpu
+- [Phase 58-01]: draw_multi_pane_frame renders proposal toast/overlay window-global after all panes -- per-plan spec
+- [Phase 58-01]: build_status_text gains agent_mode_text/proposal_count_text optional params -- fully backward compatible, None defaults
 
 ### Pending Todos
 
@@ -120,6 +123,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T16:46:51.198Z
-Stopped at: Completed 57-02-PLAN.md
+Last session: 2026-03-13T17:21:35.865Z
+Stopped at: Completed 58-01-PLAN.md
 Resume file: None
