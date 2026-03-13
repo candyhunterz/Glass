@@ -224,7 +224,7 @@ Plans:
   2. Calling glass_query_trend for "cargo test" detects a regression when a previously passing test now fails across the last N runs
   3. Calling glass_query_drill with a record_id returns full detail including context lines and stack trace for that specific record
   4. Calling glass_context or glass_compressed_context includes SOI summaries for recent commands alongside existing history data
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 53-01-PLAN.md -- glass_query, glass_query_trend, glass_query_drill MCP tools with get_last_n_run_ids DB helper
 - [ ] 53-02-PLAN.md -- SOI summaries in glass_context and glass_compressed_context
@@ -391,7 +391,7 @@ Plans:
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
-| 53. SOI MCP Tools | v3.0 | 0/2 | Planned | - |
+| 53. SOI MCP Tools | 1/2 | In Progress|  | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |

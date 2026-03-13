@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 52-02-PLAN.md
-last_updated: "2026-03-13T08:15:15.108Z"
-last_activity: 2026-03-13 -- completed 51-02 diff-aware compression engine
+stopped_at: Completed 53-02-PLAN.md
+last_updated: "2026-03-13T00:18:00.000Z"
+last_activity: 2026-03-13 -- completed 53-02 SOI MCP context integration
 progress:
   total_phases: 13
   completed_phases: 5
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-12)
 
 ## Current Position
 
-Phase: 51 of 60 (SOI Compression Engine) -- COMPLETE
-Plan: 2 of 2 in current phase
-Status: Phase complete, moving to Phase 52
-Last activity: 2026-03-13 -- completed 51-02 diff-aware compression engine
+Phase: 53 of 60 (SOI MCP Tools) -- IN PROGRESS
+Plan: 2 of 3 in current phase
+Status: Plan 02 complete, continuing phase 53
+Last activity: 2026-03-13 -- completed 53-02 SOI MCP context integration
 
 Progress: [██████████] 100% (v3.0: 4/13 phases)
 
@@ -85,6 +85,8 @@ Recent decisions relevant to v3.0:
 - [Phase 52-soi-display]: SOI label placed at x=cell_width*1.0 left-anchored to avoid right-side badge/duration/undo collisions
 - [Phase 52-soi-display]: build_soi_hint_line is a pure module-level function (not method) so it is unit-testable without BlockManager state
 - [Phase 52-soi-display]: rev().find(Complete) used instead of current_block_mut() to handle SoiReady-arrives-after-PromptStart race condition
+- [Phase 53-02]: Severity stored as capitalized strings in DB (Error/Info/Warning/Success) -- assert capitalized form in MCP tests, not lowercase
+- [Phase 53-02]: balanced mode in glass_compressed_context now splits budget into quarters (was thirds) to give SOI equal share alongside errors/history/files
 
 ### Pending Todos
 

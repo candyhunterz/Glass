@@ -48,7 +48,7 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 - [ ] **SOIM-01**: glass_query tool returns structured output by command_id/scope/file/budget with token-budgeted response
 - [ ] **SOIM-02**: glass_query_trend tool compares last N runs of same command pattern, detecting regressions
 - [ ] **SOIM-03**: glass_query_drill tool expands specific record_id to full detail (context lines, stack trace)
-- [ ] **SOIM-04**: glass_context and glass_compressed_context updated to include SOI summaries
+- [x] **SOIM-04**: glass_context and glass_compressed_context updated to include SOI summaries
 
 ### SOI Extended Parsers
 
@@ -169,7 +169,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIM-01 | Phase 53 | Pending |
 | SOIM-02 | Phase 53 | Pending |
 | SOIM-03 | Phase 53 | Pending |
-| SOIM-04 | Phase 53 | Pending |
+| SOIM-04 | Phase 53 | Complete |
 | SOIX-01 | Phase 54 | Pending |
 | SOIX-02 | Phase 54 | Pending |
 | SOIX-03 | Phase 54 | Pending |
