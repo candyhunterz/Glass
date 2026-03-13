@@ -2450,6 +2450,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         return;
                     }
 
+                    // Holds (db_path, command_id) for SOI worker, extracted inside borrow.
+                    let mut soi_spawn_data: Option<(std::path::PathBuf, i64)> = None;
+
                     {
                         let session = ctx.session_mux.session_mut(session_id).unwrap();
 
@@ -2816,6 +2819,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
+                        // Capture SOI worker inputs for CommandFinished events.
+                        // db.path() is valid while session is borrowed; copy it out as PathBuf.
+                        if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
+                            soi_spawn_data = session.history_db.as_ref().and_then(|db| {
+                                session
+                                    .last_command_id
+                                    .map(|cmd_id| (db.path().to_path_buf(), cmd_id))
+                            });
+                        }
+
                         // On CurrentDirectory events, update status and query git info
                         // Track whether we need to spawn a git query (can't spawn inside session borrow)
                         let spawn_git_query =
@@ -2874,6 +2887,81 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 })
                                 .ok();
                         }
+                    }
+
+                    // Spawn SOI parse worker after CommandFinished (needs self.proxy, runs off-thread)
+                    if let Some((db_path, cmd_id)) = soi_spawn_data {
+                        let proxy = self.proxy.clone();
+                        let wid = window_id;
+                        let sid = session_id;
+                        std::thread::Builder::new()
+                            .name("Glass SOI parse".into())
+                            .spawn(move || {
+                                let db = match glass_history::db::HistoryDb::open(&db_path) {
+                                    Ok(db) => db,
+                                    Err(e) => {
+                                        tracing::warn!("SOI worker: failed to open DB: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                let output_text = match db.get_output_for_command(cmd_id) {
+                                    Ok(text) => text,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "SOI worker: failed to fetch output for cmd {}: {}",
+                                            cmd_id,
+                                            e
+                                        );
+                                        None
+                                    }
+                                };
+
+                                let command_text = db
+                                    .get_command_text(cmd_id)
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or_default();
+
+                                let (summary, severity) = match output_text {
+                                    None => ("no output captured".to_string(), "Info".to_string()),
+                                    Some(ref text) if text.is_empty() => {
+                                        ("no output captured".to_string(), "Info".to_string())
+                                    }
+                                    Some(text) => {
+                                        let output_type =
+                                            glass_soi::classify(&text, Some(&command_text));
+                                        let parsed = glass_soi::parse(
+                                            &text,
+                                            output_type,
+                                            Some(&command_text),
+                                        );
+                                        if let Err(e) = db.insert_parsed_output(cmd_id, &parsed) {
+                                            tracing::warn!(
+                                                "SOI: insert_parsed_output failed cmd={}: {}",
+                                                cmd_id,
+                                                e
+                                            );
+                                        }
+                                        let sev_str = match parsed.summary.severity {
+                                            glass_soi::Severity::Error => "Error",
+                                            glass_soi::Severity::Warning => "Warning",
+                                            glass_soi::Severity::Info => "Info",
+                                            glass_soi::Severity::Success => "Success",
+                                        };
+                                        (parsed.summary.one_line, sev_str.to_string())
+                                    }
+                                };
+
+                                let _ = proxy.send_event(AppEvent::SoiReady {
+                                    window_id: wid,
+                                    session_id: sid,
+                                    command_id: cmd_id,
+                                    summary,
+                                    severity,
+                                });
+                            })
+                            .ok();
                     }
 
                     // Request redraw to reflect block state changes
@@ -3006,8 +3094,31 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
-            // SoiReady handler added in Plan 02.
-            AppEvent::SoiReady { .. } => {}
+            AppEvent::SoiReady {
+                window_id,
+                session_id,
+                command_id,
+                summary,
+                severity,
+            } => {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
+                    if let Some(session) = ctx.session_mux.session_mut(session_id) {
+                        if session.last_command_id == Some(command_id) {
+                            session.last_soi_summary = Some(glass_mux::session::SoiSummary {
+                                command_id,
+                                one_line: summary,
+                                severity,
+                            });
+                            tracing::debug!(
+                                "SOI ready for cmd {}: {}",
+                                command_id,
+                                session.last_soi_summary.as_ref().unwrap().one_line
+                            );
+                        }
+                    }
+                    ctx.window.request_redraw();
+                }
+            }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
