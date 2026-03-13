@@ -388,7 +388,7 @@ Plans:
 | 47. Tab Drag Reorder | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 48. SOI Classifier and Parser Crate | 3/3 | Complete    | 2026-03-13 | - |
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
-| 50. SOI Pipeline Integration | 2/2 | Complete   | 2026-03-13 | - |
+| 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |
 | 52. SOI Display | v3.0 | 0/TBD | Not started | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
