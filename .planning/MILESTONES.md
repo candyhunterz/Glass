@@ -1,5 +1,27 @@
 # Milestones
 
+## v3.0 SOI & Agent Mode (Shipped: 2026-03-13)
+
+**Phases completed:** 15 phases, 29 plans
+**Timeline:** 2026-03-12 to 2026-03-13 (2 days)
+**Git range:** feat(48-01) to docs(62-01)
+**Files changed:** 157 files, +34,647 / -280 lines
+
+**Delivered:** Structured Output Intelligence (SOI) system that classifies, parses, and compresses command output into machine-readable records, plus Agent Mode — a background Claude CLI runtime that watches terminal activity and proposes code fixes in isolated git worktrees with non-blocking approval UI.
+
+**Key accomplishments:**
+- glass_soi crate with output classifier and 12 format-specific parsers (cargo build/test, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines) extracting structured records with severity, file, line, message
+- SOI storage (SQLite schema v3) with auto-parse on CommandFinished via spawn_blocking, 4-level token-budgeted compression engine (OneLine/Summary/Detailed/Full), and diff-aware change detection
+- SOI display as block decorations and shell hint lines; 3 new MCP tools (glass_query, glass_query_trend, glass_query_drill) plus SOI integration in glass_context
+- glass_agent crate with bounded activity stream, noise filtering/deduplication, rolling budget window, and rate limiting
+- Background Claude CLI agent runtime with Watch/Assist/Autonomous modes, platform-safe process lifecycle (Windows Job Objects, Unix prctl), cooldown timer, and $1.00 default budget cap
+- Git worktree isolation for agent code changes with SQLite crash recovery, unified diff review, apply/dismiss lifecycle, and non-git fallback
+- Non-blocking approval UI: toast notifications with auto-dismiss, review overlay (Ctrl+Shift+A) with diff preview, status bar agent mode indicator — terminal stays fully interactive
+- Agent session continuity with structured handoff summaries, chained session resumption, and context compaction across resets
+- Full [agent] config section with permission matrix, quiet rules, hot-reload, graceful degradation, and coordination lock integration
+
+---
+
 ## v2.5 UI Controls (Shipped: 2026-03-11)
 
 **Phases completed:** 3 phases, 6 plans, 11 tasks

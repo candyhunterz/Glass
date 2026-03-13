@@ -107,31 +107,22 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - ✓ Variable-width tab layout with MIN_TAB_WIDTH floor and TabHitResult multi-target hit-testing -- v2.5
 - ✓ Tab drag-to-reorder with 5px threshold, visual insertion indicator, and active_tab adjustment -- v2.5
 
+- ✓ SOI output classifier with 12 format-specific parsers (cargo, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines) — v3.0
+- ✓ SOI structured record storage in SQLite (schema v3) with auto-parse on CommandFinished — v3.0
+- ✓ SOI 4-level token-budgeted compression engine with diff-aware change detection — v3.0
+- ✓ SOI block decorations and shell hint line injection for agent discovery — v3.0
+- ✓ SOI MCP tools (glass_query, glass_query_trend, glass_query_drill) with glass_context integration — v3.0
+- ✓ Agent Mode activity stream with bounded channel, noise filtering, rate limiting — v3.0
+- ✓ Agent Mode runtime (background Claude CLI with Watch/Assist/Autonomous modes, $1.00 budget cap) — v3.0
+- ✓ Agent Mode git worktree isolation with SQLite crash recovery and diff/apply/dismiss — v3.0
+- ✓ Agent Mode approval UI (toast notifications, review overlay, status bar indicators) — v3.0
+- ✓ Agent Mode session continuity with chained handoff summaries — v3.0
+- ✓ Agent Mode configuration (permission matrix, quiet rules, hot-reload, graceful degradation) — v3.0
+
 ### Active
 
-<!-- Current scope: v3.0 SOI & Agent Mode -->
+<!-- Next milestone scope TBD -->
 
-- [ ] SOI output classification and format-specific parsing pipeline
-- [ ] SOI structured record storage in SQLite alongside command history
-- [ ] SOI pipeline integration into command lifecycle (auto-parse on CommandFinished)
-- [ ] SOI compression engine with token-budgeted multi-level summaries
-- [ ] SOI shell summary injection into terminal output stream
-- ✓ SOI MCP tools (glass_query, glass_query_trend, glass_query_drill) — Phase 53
-- [ ] SOI additional parsers for common dev tools (git, docker, tsc, go, kubectl, JSON)
-- [ ] Agent Mode activity stream feeding compressed SOI data to agent runtime
-- [ ] Agent Mode agent runtime (background Claude CLI session with proposal output)
-- [ ] Agent Mode worktree isolation for safe code changes
-- [ ] Agent Mode approval UI (status bar, toast notifications, review overlay)
-- [ ] Agent Mode session continuity across context resets
-- [ ] Agent Mode configuration, permissions, and polish
-
-## Current Milestone: v3.0 SOI & Agent Mode
-
-**Goal:** Make Glass the first terminal designed for two audiences — humans see rendered output, AI agents get structured, compressed, queryable intelligence — then build Agent Mode as a proactive development partner on top of SOI.
-
-**Target features:**
-- Structured Output Intelligence (SOI): output classification, parsing, compression, shell injection, MCP tools
-- Agent Mode: activity stream, background agent runtime, worktree isolation, approval UI, session continuity
 
 ### Deferred (Future Milestones)
 
@@ -166,11 +157,11 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ## Context
 
-Shipped v2.5 with ~34,000 LOC Rust across 14 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors + root binary).
-Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0, similar 2.
+Shipped v3.0 with ~44,200 LOC Rust across 16 crates (glass_core, glass_terminal, glass_renderer, glass_protocol, glass_config, glass_snapshot, glass_history, glass_pipes, glass_mcp, glass_mux, glass_coordination, glass_errors, glass_soi, glass_agent + root binary).
+Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0, similar 2, uuid 1.22, git2 0.20.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
-Built across 10 milestones (47 phases, 101 plans) in 8 days. 500+ workspace tests.
-MCP tool count: 28 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools, 3 SOI query tools).
+Built across 11 milestones (62 phases, 130 plans) in 10 days. 500+ workspace tests.
+MCP tool count: 31 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools, 3 SOI query tools).
 Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
 Known tech debt:
@@ -280,6 +271,18 @@ Known tech debt:
 | 5px horizontal drag threshold | Prevents accidental drags on normal tab clicks | ✓ Good -- clean click-vs-drag disambiguation |
 | Post-removal reorder_tab semantics | `to` index is final position after source removed, not insertion-before | ✓ Good -- intuitive API |
 | Midpoint-rounding drop slot computation | ((x / stride) + 0.5) as usize for natural drop feel | ✓ Good -- predictable behavior |
+| SOI Severity separate from glass_errors Severity | Outcome-oriented scale (Error/Warning/Info/Success) for AI consumption | ✓ Good -- clean separation of concerns |
+| OutputRecord as enum not trait object | Zero-cost dispatch, easy serde serialization | ✓ Good -- simple and fast |
+| SOI parsing in spawn_blocking | Off main thread, no input latency regression | ✓ Good -- clean async boundary |
+| SOI summaries as block decorations (not PTY injection) | Avoids OSC 133 race condition with shell integration | ✓ Good -- no output corruption |
+| compress() uses serde_json::Value not OutputRecord | Avoids tight coupling with future enum churn | ✓ Good -- flexible compression |
+| Agent runtime as struct in Processor | Matches coordination poller pattern, single-threaded access | ✓ Good -- simple lifecycle |
+| Non-modal approval UI (toast + hotkeys) | Never captures keyboard focus from terminal | ✓ Good -- AGTU-05 satisfied |
+| max_budget_usd = $1.00 non-negotiable default | Cost control for background AI process | ✓ Good -- safe default |
+| git worktree registered in SQLite BEFORE creation | Crash recovery pattern from opencode PR #14649 | ✓ Good -- no orphaned worktrees |
+| AgentHandoffData in glass_core (not glass_agent) | Avoids circular dep, mirrors AgentProposalData pattern | ✓ Good -- clean crate boundary |
+| Permission matrix with approve/auto/never levels | Granular control per action type | ✓ Good -- flexible security |
+| MCP config written as temp JSON for agent subprocess | Agent can discover and invoke Glass MCP tools | ✓ Good -- E2E flow works |
 
 ---
-*Last updated: 2026-03-13 after Phase 53*
+*Last updated: 2026-03-13 after v3.0 milestone*
