@@ -22,6 +22,10 @@ pub struct StatusLabel {
     pub coordination_text: Option<String>,
     /// Agent cost text (e.g. "$0.0012" or "PAUSED")
     pub agent_cost_text: Option<String>,
+    /// Agent mode text (e.g. "[agent: watch]")
+    pub agent_mode_text: Option<String>,
+    /// Proposal count text (e.g. "2 proposals")
+    pub proposal_count_text: Option<String>,
     /// Y position in pixels
     pub y: f32,
     /// Color for left text (CWD)
@@ -34,6 +38,10 @@ pub struct StatusLabel {
     pub coordination_color: Rgb,
     /// Color for agent cost text (green active, red paused)
     pub agent_cost_color: Rgb,
+    /// Color for agent mode text (soft cyan)
+    pub agent_mode_color: Rgb,
+    /// Color for proposal count text (soft yellow)
+    pub proposal_count_color: Rgb,
 }
 
 /// Renders the bottom-pinned status bar.
@@ -73,6 +81,8 @@ impl StatusBarRenderer {
     /// Center: update notification (if available).
     /// Right side: git branch name + dirty count if available.
     /// Agent cost text: shown when agent is active (green) or paused (red).
+    /// Agent mode text: shows current agent mode (soft cyan).
+    /// Proposal count text: shows pending proposals (soft yellow).
     #[allow(clippy::too_many_arguments)]
     pub fn build_status_text(
         &self,
@@ -82,6 +92,8 @@ impl StatusBarRenderer {
         coordination_text: Option<&str>,
         agent_cost_text: Option<&str>,
         agent_paused: bool,
+        agent_mode_text: Option<&str>,
+        proposal_count_text: Option<&str>,
         viewport_height: f32,
     ) -> StatusLabel {
         let y = viewport_height - self.cell_height;
@@ -104,6 +116,8 @@ impl StatusBarRenderer {
         let center_text = update_text.map(|t| t.to_string());
         let coordination_text = coordination_text.map(|t| t.to_string());
         let agent_cost_text = agent_cost_text.map(|t| t.to_string());
+        let agent_mode_text = agent_mode_text.map(|t| t.to_string());
+        let proposal_count_text = proposal_count_text.map(|t| t.to_string());
 
         // Git branch color: cyan if clean, with yellow dirty count appended
         // For simplicity, use cyan as the base right_color
@@ -142,12 +156,28 @@ impl StatusBarRenderer {
             }
         };
 
+        // Soft cyan for agent mode indicator
+        let agent_mode_color = Rgb {
+            r: 100,
+            g: 180,
+            b: 200,
+        };
+
+        // Soft yellow for proposal count
+        let proposal_count_color = Rgb {
+            r: 220,
+            g: 200,
+            b: 100,
+        };
+
         StatusLabel {
             left_text,
             right_text,
             center_text,
             coordination_text,
             agent_cost_text,
+            agent_mode_text,
+            proposal_count_text,
             y,
             left_color: Rgb {
                 r: 204,
@@ -158,6 +188,143 @@ impl StatusBarRenderer {
             center_color,
             coordination_color,
             agent_cost_color,
+            agent_mode_color,
+            proposal_count_color,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn renderer() -> StatusBarRenderer {
+        StatusBarRenderer::new(20.0)
+    }
+
+    fn make_label(renderer: &StatusBarRenderer) -> StatusLabel {
+        renderer.build_status_text(
+            "/home/user/project",
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            600.0,
+        )
+    }
+
+    #[test]
+    fn test_status_bar_cwd_left_text() {
+        let r = renderer();
+        let label = make_label(&r);
+        assert_eq!(label.left_text, "/home/user/project");
+    }
+
+    #[test]
+    fn test_status_bar_cwd_truncation() {
+        let r = renderer();
+        let long_cwd = "/".repeat(80);
+        let label = r.build_status_text(
+            &long_cwd,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            600.0,
+        );
+        assert!(
+            label.left_text.len() <= 60,
+            "Truncated CWD should be at most 60 chars"
+        );
+        assert!(label.left_text.starts_with("..."));
+    }
+
+    #[test]
+    fn test_status_bar_y_position() {
+        let r = renderer();
+        let label = make_label(&r);
+        // y = viewport_height - cell_height = 600 - 20 = 580
+        assert_eq!(label.y, 580.0);
+    }
+
+    #[test]
+    fn test_status_bar_none_fields_when_no_optional_data() {
+        let r = renderer();
+        let label = make_label(&r);
+        assert!(label.right_text.is_none());
+        assert!(label.center_text.is_none());
+        assert!(label.coordination_text.is_none());
+        assert!(label.agent_cost_text.is_none());
+        assert!(label.agent_mode_text.is_none());
+        assert!(label.proposal_count_text.is_none());
+    }
+
+    #[test]
+    fn test_status_bar_agent_mode_and_proposals() {
+        let r = renderer();
+        let label = r.build_status_text(
+            "/home/user",
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some("[agent: watch]"),
+            Some("2 proposals"),
+            600.0,
+        );
+        assert_eq!(
+            label.agent_mode_text.as_deref(),
+            Some("[agent: watch]"),
+            "agent_mode_text should be set"
+        );
+        assert_eq!(
+            label.proposal_count_text.as_deref(),
+            Some("2 proposals"),
+            "proposal_count_text should be set"
+        );
+        // Verify colors
+        assert_eq!(label.agent_mode_color, Rgb { r: 100, g: 180, b: 200 });
+        assert_eq!(label.proposal_count_color, Rgb { r: 220, g: 200, b: 100 });
+    }
+
+    #[test]
+    fn test_status_bar_agent_paused_color() {
+        let r = renderer();
+        let label = r.build_status_text(
+            "/home/user",
+            None,
+            None,
+            None,
+            Some("PAUSED $1.00"),
+            true,
+            None,
+            None,
+            600.0,
+        );
+        assert_eq!(label.agent_cost_color, Rgb { r: 255, g: 80, b: 80 });
+    }
+
+    #[test]
+    fn test_status_bar_agent_active_color() {
+        let r = renderer();
+        let label = r.build_status_text(
+            "/home/user",
+            None,
+            None,
+            None,
+            Some("agent: $0.0012"),
+            false,
+            None,
+            None,
+            600.0,
+        );
+        assert_eq!(label.agent_cost_color, Rgb { r: 80, g: 220, b: 120 });
     }
 }

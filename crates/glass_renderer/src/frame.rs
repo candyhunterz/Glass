@@ -14,6 +14,8 @@ use glass_terminal::{Block, GridSnapshot, StatusState};
 use crate::block_renderer::BlockRenderer;
 use crate::glyph_cache::GlyphCache;
 use crate::grid_renderer::GridRenderer;
+use crate::proposal_overlay_renderer::{ProposalOverlayRenderData, ProposalOverlayRenderer};
+use crate::proposal_toast_renderer::{ProposalToastRenderData, ProposalToastRenderer};
 use crate::rect_renderer::RectRenderer;
 use crate::scrollbar::ScrollbarRenderer;
 use crate::search_overlay_renderer::SearchOverlayRenderer;
@@ -186,6 +188,8 @@ impl FrameRenderer {
         agent_paused: bool,
         scrollbar_hovered: bool,
         scrollbar_dragging: bool,
+        proposal_toast: Option<&ProposalToastRenderData>,
+        proposal_overlay: Option<&ProposalOverlayRenderData>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -296,6 +300,22 @@ impl FrameRenderer {
                 h,
             );
             rect_instances.extend(overlay_rects);
+        }
+
+        // 1d2. Proposal overlay rects (full-screen backdrop + panel) -- drawn before pipeline
+        if let Some(overlay_data) = proposal_overlay {
+            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let overlay_rects = overlay_renderer.build_overlay_rects(w, h, overlay_data);
+            rect_instances.extend(overlay_rects);
+        }
+
+        // 1d3. Proposal toast rect (above status bar, right-aligned)
+        if let Some(_toast_data) = proposal_toast {
+            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let toast_rects = toast_renderer.build_toast_rects(w, h);
+            rect_instances.extend(toast_rects);
         }
 
         // Record where background rects end (pipeline overlay rects come after)
@@ -409,6 +429,8 @@ impl FrameRenderer {
                 coordination_text,
                 agent_cost_text,
                 agent_paused,
+                None,
+                None,
                 h,
             );
 
@@ -598,6 +620,142 @@ impl FrameRenderer {
                 });
             }
 
+            // Agent mode text -- positioned left of agent_cost_text
+            if let Some(ref mode_text) = status_label.agent_mode_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_chars = status_label
+                    .coordination_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let agent_cost_chars = status_label
+                    .agent_cost_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
+                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
+                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let mode_text_width = mode_text.len() as f32 * cell_width;
+                let mode_x = w
+                    - (right_text_chars as f32 * cell_width)
+                    - right_gap
+                    - (coord_text_chars as f32 * cell_width)
+                    - coord_gap
+                    - (agent_cost_chars as f32 * cell_width)
+                    - cost_gap
+                    - cell_width // gap between mode and cost
+                    - mode_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    mode_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.agent_mode_color.r,
+                            status_label.agent_mode_color.g,
+                            status_label.agent_mode_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: mode_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.agent_mode_color.r,
+                        status_label.agent_mode_color.g,
+                        status_label.agent_mode_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Proposal count text -- positioned left of agent_mode_text
+            if let Some(ref proposal_text) = status_label.proposal_count_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_chars = status_label
+                    .coordination_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let agent_cost_chars = status_label
+                    .agent_cost_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let mode_chars = status_label
+                    .agent_mode_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
+                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
+                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let mode_gap = if mode_chars > 0 { cell_width } else { 0.0 };
+                let proposal_text_width = proposal_text.len() as f32 * cell_width;
+                let proposal_x = w
+                    - (right_text_chars as f32 * cell_width)
+                    - right_gap
+                    - (coord_text_chars as f32 * cell_width)
+                    - coord_gap
+                    - (agent_cost_chars as f32 * cell_width)
+                    - cost_gap
+                    - (mode_chars as f32 * cell_width)
+                    - mode_gap
+                    - cell_width // gap between proposal and mode
+                    - proposal_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    proposal_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.proposal_count_color.r,
+                            status_label.proposal_count_color.g,
+                            status_label.proposal_count_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: proposal_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.proposal_count_color.r,
+                        status_label.proposal_count_color.g,
+                        status_label.proposal_count_color.b,
+                        255,
+                    ),
+                });
+            }
+
             // Center text (update notification)
             if let Some(ref center_text) = status_label.center_text {
                 let center_text_width = center_text.len() as f32 * cell_width;
@@ -681,6 +839,78 @@ impl FrameRenderer {
                 h,
             );
             for label in &overlay_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Proposal overlay text buffers
+        if let Some(overlay_data) = proposal_overlay {
+            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let overlay_labels = overlay_renderer.build_overlay_text(w, h, overlay_data);
+            for label in &overlay_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Proposal toast text buffers
+        if let Some(toast_data) = proposal_toast {
+            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
+            for label in &toast_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,
@@ -928,6 +1158,8 @@ impl FrameRenderer {
         agent_cost_text: Option<&str>,
         agent_paused: bool,
         scrollbar_state: &[(bool, bool)],
+        proposal_toast: Option<&ProposalToastRenderData>,
+        proposal_overlay: Option<&ProposalOverlayRenderData>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -1043,6 +1275,22 @@ impl FrameRenderer {
             rect_instances.extend(tab_rects);
         }
 
+        // Proposal overlay rects (window-global, rendered once after all panes)
+        if let Some(overlay_data) = proposal_overlay {
+            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let overlay_rects = overlay_renderer.build_overlay_rects(w, h, overlay_data);
+            rect_instances.extend(overlay_rects);
+        }
+
+        // Proposal toast rect (window-global, above status bar)
+        if let Some(_toast_data) = proposal_toast {
+            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let toast_rects = toast_renderer.build_toast_rects(w, h);
+            rect_instances.extend(toast_rects);
+        }
+
         let total_rect_count = rect_instances.len() as u32;
 
         // 2. Prepare rect renderer
@@ -1110,6 +1358,8 @@ impl FrameRenderer {
                 coordination_text,
                 agent_cost_text,
                 agent_paused,
+                None,
+                None,
                 h,
             );
 
@@ -1298,6 +1548,142 @@ impl FrameRenderer {
                 });
             }
 
+            // Agent mode text -- positioned left of agent_cost_text (multi-pane)
+            if let Some(ref mode_text) = status_label.agent_mode_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_chars = status_label
+                    .coordination_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let agent_cost_chars = status_label
+                    .agent_cost_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
+                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
+                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let mode_text_width = mode_text.len() as f32 * cell_width;
+                let mode_x = w
+                    - (right_text_chars as f32 * cell_width)
+                    - right_gap
+                    - (coord_text_chars as f32 * cell_width)
+                    - coord_gap
+                    - (agent_cost_chars as f32 * cell_width)
+                    - cost_gap
+                    - cell_width
+                    - mode_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    mode_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.agent_mode_color.r,
+                            status_label.agent_mode_color.g,
+                            status_label.agent_mode_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: mode_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.agent_mode_color.r,
+                        status_label.agent_mode_color.g,
+                        status_label.agent_mode_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Proposal count text -- positioned left of agent_mode_text (multi-pane)
+            if let Some(ref proposal_text) = status_label.proposal_count_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_chars = status_label
+                    .coordination_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let agent_cost_chars = status_label
+                    .agent_cost_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let mode_chars = status_label
+                    .agent_mode_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let right_gap = if right_text_chars > 0 { cell_width * 2.0 } else { cell_width * 0.5 };
+                let coord_gap = if coord_text_chars > 0 { cell_width * 2.0 } else { 0.0 };
+                let cost_gap = if agent_cost_chars > 0 { cell_width } else { 0.0 };
+                let mode_gap = if mode_chars > 0 { cell_width } else { 0.0 };
+                let proposal_text_width = proposal_text.len() as f32 * cell_width;
+                let proposal_x = w
+                    - (right_text_chars as f32 * cell_width)
+                    - right_gap
+                    - (coord_text_chars as f32 * cell_width)
+                    - coord_gap
+                    - (agent_cost_chars as f32 * cell_width)
+                    - cost_gap
+                    - (mode_chars as f32 * cell_width)
+                    - mode_gap
+                    - cell_width
+                    - proposal_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    proposal_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.proposal_count_color.r,
+                            status_label.proposal_count_color.g,
+                            status_label.proposal_count_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: proposal_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.proposal_count_color.r,
+                        status_label.proposal_count_color.g,
+                        status_label.proposal_count_color.b,
+                        255,
+                    ),
+                });
+            }
+
             // Center text (update notification)
             if let Some(ref center_text) = status_label.center_text {
                 let center_text_width = center_text.len() as f32 * cell_width;
@@ -1341,6 +1727,78 @@ impl FrameRenderer {
         if let Some(tabs) = tab_bar_info {
             let tab_labels = self.tab_bar.build_tab_text(tabs, w, hovered_tab);
             for label in &tab_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Proposal overlay text buffers (window-global, after tab bar)
+        if let Some(overlay_data) = proposal_overlay {
+            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let overlay_labels = overlay_renderer.build_overlay_text(w, h, overlay_data);
+            for label in &overlay_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Proposal toast text buffers (window-global, after tab bar)
+        if let Some(toast_data) = proposal_toast {
+            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
+            for label in &toast_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,

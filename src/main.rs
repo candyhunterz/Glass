@@ -1251,6 +1251,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.agent_proposals_paused,
                         ctx.scrollbar_hovered_pane.is_some(),
                         ctx.scrollbar_dragging.is_some(),
+                        None,
+                        None,
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -1412,6 +1414,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         agent_cost_display_mp.as_deref(),
                         self.agent_proposals_paused,
                         &scrollbar_state,
+                        None,
+                        None,
                     );
                 }
 
