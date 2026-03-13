@@ -80,10 +80,27 @@ fn bench_cold_start(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_input_processing(c: &mut Criterion) {
+    // Generate a realistic 50 KB output buffer (simulates large cargo build output)
+    let line = "error[E0308]: mismatched types --> src/main.rs:42:5\n";
+    let payload: String = line.repeat(50 * 1024 / line.len());
+    assert!(payload.len() >= 50_000, "Payload should be ~50KB");
+
+    c.bench_function("process_output_50kb", |b| {
+        b.iter(|| {
+            glass_history::output::process_output(
+                black_box(Some(payload.as_bytes().to_vec())),
+                black_box(50u32),
+            )
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_resolve_color,
     bench_osc_scanner,
-    bench_cold_start
+    bench_cold_start,
+    bench_input_processing
 );
 criterion_main!(benches);
