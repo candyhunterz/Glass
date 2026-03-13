@@ -78,12 +78,12 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### Agent Worktree
 
-- [ ] **AGTW-01**: WorktreeManager creates isolated git worktrees for agent code changes
-- [ ] **AGTW-02**: Unified diff generated between worktree and main working tree for review
-- [ ] **AGTW-03**: Apply copies changed files from worktree to working tree on user approval
-- [ ] **AGTW-04**: Cleanup removes worktree after apply or dismiss
-- [ ] **AGTW-05**: Crash recovery via SQLite-registered pending worktrees pruned on startup
-- [ ] **AGTW-06**: Non-git projects fall back to temp directory with file copies
+- [x] **AGTW-01**: WorktreeManager creates isolated git worktrees for agent code changes
+- [x] **AGTW-02**: Unified diff generated between worktree and main working tree for review
+- [x] **AGTW-03**: Apply copies changed files from worktree to working tree on user approval
+- [x] **AGTW-04**: Cleanup removes worktree after apply or dismiss
+- [x] **AGTW-05**: Crash recovery via SQLite-registered pending worktrees pruned on startup
+- [x] **AGTW-06**: Non-git projects fall back to temp directory with file copies
 
 ### Agent Approval UI
 
@@ -187,12 +187,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGTR-05 | Phase 56 | Complete |
 | AGTR-06 | Phase 56 | Complete |
 | AGTR-07 | Phase 56 | Complete |
-| AGTW-01 | Phase 57 | Pending |
-| AGTW-02 | Phase 57 | Pending |
-| AGTW-03 | Phase 57 | Pending |
-| AGTW-04 | Phase 57 | Pending |
-| AGTW-05 | Phase 57 | Pending |
-| AGTW-06 | Phase 57 | Pending |
+| AGTW-01 | Phase 57 | Complete |
+| AGTW-02 | Phase 57 | Complete |
+| AGTW-03 | Phase 57 | Complete |
+| AGTW-04 | Phase 57 | Complete |
+| AGTW-05 | Phase 57 | Complete |
+| AGTW-06 | Phase 57 | Complete |
 | AGTU-01 | Phase 58 | Pending |
 | AGTU-02 | Phase 58 | Pending |
 | AGTU-03 | Phase 58 | Pending |

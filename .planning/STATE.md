@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 56-02-PLAN.md
-last_updated: "2026-03-13T11:12:03.120Z"
+stopped_at: Completed 57-01-PLAN.md
+last_updated: "2026-03-13T16:41:04.660Z"
 last_activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
 progress:
   total_phases: 13
   completed_phases: 9
-  total_plans: 19
-  completed_plans: 19
+  total_plans: 21
+  completed_plans: 20
   percent: 100
 ---
 
@@ -101,6 +101,8 @@ Recent decisions relevant to v3.0:
 - [Phase 56-agent-runtime]: AgentSection added to GlassConfig (mode/budget/cooldown/tools defaults to Off)
 - [Phase 56-agent-runtime]: try_spawn_agent checks claude binary gracefully -- returns None if not found (AGTR-04)
 - [Phase 56-agent-runtime]: Writer thread inline cooldown avoids Arc<Mutex> across thread boundary
+- [Phase 57-01]: WorktreeDb uses &mut self for write methods; WorktreeManager wraps in RefCell for interior mutability from &self callers
+- [Phase 57-01]: create_worktree_inner creates base_dir before git worktree add (git2 requires parent to exist on Windows)
 
 ### Pending Todos
 
@@ -116,6 +118,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T11:07:34.766Z
-Stopped at: Completed 56-02-PLAN.md
+Last session: 2026-03-13T16:41:04.658Z
+Stopped at: Completed 57-01-PLAN.md
 Resume file: None

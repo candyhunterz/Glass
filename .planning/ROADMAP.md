@@ -286,7 +286,7 @@ Plans:
   4. Dismissing a proposal removes the worktree without modifying any working tree files
   5. Starting Glass after a crash with a leftover pending_worktree entry prunes the orphaned worktree automatically on startup
   6. On a non-git directory, the agent falls back to a temp directory copy rather than failing with a git error
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 57-01-PLAN.md -- glass_agent crate with WorktreeManager, types, WorktreeDb, and full lifecycle tests
 - [ ] 57-02-PLAN.md -- Extend AgentProposalData with file_changes, wire WorktreeManager into Processor
@@ -395,7 +395,7 @@ Plans:
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
-| 57. Agent Worktree | v3.0 | 0/2 | Not started | - |
+| 57. Agent Worktree | 1/2 | In Progress|  | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |
