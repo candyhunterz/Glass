@@ -182,7 +182,10 @@ Plans:
   2. Running the existing criterion input_latency benchmark shows no regression after SOI integration (parsing runs off main thread)
   3. Commands with no output, binary output, or alt-screen apps (vim, htop) complete without SOI parse errors or crashes
   4. Commands producing output larger than 50KB are handled (truncated or skipped) without memory spikes or hangs
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 51: SOI Compression Engine
 **Goal**: SOI summaries at four token-budget levels are available for any parsed command, with diff-aware change summaries and drill-down record IDs
@@ -194,7 +197,10 @@ Plans:
   3. Requesting Full budget returns the complete record set (no truncation)
   4. Running the same command twice and requesting diff-aware compression returns a "compared to last run" change summary highlighting new/resolved errors
   5. Drill-down mode returns specific record IDs that can be expanded to full detail in a follow-up query
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 52: SOI Display
 **Goal**: Users see a one-line SOI summary on every classified command block, and agents using the Bash tool can discover SOI data via a shell hint line
@@ -204,7 +210,10 @@ Plans:
   1. After a cargo build with errors, the command block in the terminal displays a muted decoration line summarizing the error count without altering PTY output content
   2. With shell_summary enabled in config, a hint line appears in the terminal output stream visible to the Claude Code Bash tool after each classified command
   3. Setting soi.enabled = false in config.toml suppresses all SOI decorations and shell hints without requiring a restart
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 53: SOI MCP Tools
 **Goal**: AI agents can query, trend, and drill into structured command output via three new MCP tools, and glass_context includes SOI summaries
@@ -215,7 +224,10 @@ Plans:
   2. Calling glass_query_trend for "cargo test" detects a regression when a previously passing test now fails across the last N runs
   3. Calling glass_query_drill with a record_id returns full detail including context lines and stack trace for that specific record
   4. Calling glass_context or glass_compressed_context includes SOI summaries for recent commands alongside existing history data
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 54: SOI Extended Parsers
 **Goal**: Common devops and infrastructure tools (git, docker, kubectl, tsc, Go, JSON logs) produce structured SOI records alongside the existing dev tool parsers
@@ -228,7 +240,10 @@ Plans:
   4. Running `tsc` with type errors produces records with file, line, column, error code, and message matching the TypeScript compiler output
   5. Running `go build` or `go test` produces records matching the Go compiler or test runner output format
   6. Commands emitting NDJSON (structured log lines) are parsed into individual JSON record entries rather than FreeformChunk
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 55: Agent Activity Stream
 **Goal**: Compressed SOI events flow through a bounded, noise-filtered channel ready for the agent runtime to consume
@@ -239,7 +254,10 @@ Plans:
   2. Running 20 consecutive successful `cargo check` commands results in the activity channel receiving collapsed/deduplicated events rather than 20 identical entries
   3. The activity channel does not grow unbounded: the rolling budget window drops oldest events when the configurable token limit (default 4096) is exceeded
   4. A burst of 10 commands in under 1 second is rate-limited so the agent receives no more than the configured rate of activity events
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 56: Agent Runtime
 **Goal**: A background Claude CLI process watches the activity stream and emits proposals in three autonomy modes, with platform-safe process lifecycle and API cost cap
@@ -252,7 +270,10 @@ Plans:
   4. Killing Glass forcibly (crash simulation) does not leave an orphaned Claude CLI process running in the background
   5. The status bar shows real-time API cost and stops accepting new proposals once max_budget_usd (default $1.00) is reached
   6. No new proposals are emitted within the cooldown window (default 30s) after the previous proposal
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 57: Agent Worktree
 **Goal**: Agent code changes are isolated in git worktrees so the working tree is never touched until the user explicitly approves
@@ -265,7 +286,10 @@ Plans:
   4. Dismissing a proposal removes the worktree without modifying any working tree files
   5. Starting Glass after a crash with a leftover pending_worktree entry prunes the orphaned worktree automatically on startup
   6. On a non-git directory, the agent falls back to a temp directory copy rather than failing with a git error
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 58: Agent Approval UI
 **Goal**: Pending proposals are visible and actionable via keyboard shortcuts without interrupting terminal interaction
@@ -277,7 +301,10 @@ Plans:
   3. Pressing Ctrl+Shift+A opens a review overlay showing the proposal list with diff preview that does not capture keyboard focus from the terminal
   4. Pressing the accept key applies the worktree changes; pressing the reject key dismisses the proposal and removes the worktree
   5. The terminal remains fully interactive (typing, running commands) while a proposal toast is visible or the review overlay is open
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 59: Agent Session Continuity
 **Goal**: Agent sessions survive context resets by producing handoff summaries that restore context for the next session
@@ -288,7 +315,10 @@ Plans:
   2. The handoff JSON is stored in the agent_sessions table and survives Glass restarts
   3. Starting a new agent session automatically loads the most recent handoff as initial context without manual user intervention
   4. After three sequential sessions working on the same task, each session's handoff references the previous one, forming a chain with compacted context
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ### Phase 60: Agent Configuration and Polish
 **Goal**: All SOI and agent behavior is configurable via config.toml with hot-reload, a permission matrix, quiet rules, and graceful degradation when Claude CLI is absent
@@ -300,7 +330,10 @@ Plans:
   3. Adding a command pattern to quiet_rules suppresses activity events for matching commands without disabling agent mode globally
   4. Starting Glass with agent.enabled = true but without the claude binary installed shows a clear config hint and disables agent mode gracefully (no crash, no silent failure)
   5. On agent session start, Glass calls glass_agent_lock via glass_coordination on the files the agent intends to modify, releasing locks on session end
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
+- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
 
 ## Progress
 
@@ -355,7 +388,7 @@ Plans:
 | 47. Tab Drag Reorder | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 48. SOI Classifier and Parser Crate | 3/3 | Complete    | 2026-03-13 | - |
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
-| 50. SOI Pipeline Integration | v3.0 | 0/TBD | Not started | - |
+| 50. SOI Pipeline Integration | v3.0 | 0/2 | Not started | - |
 | 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |
 | 52. SOI Display | v3.0 | 0/TBD | Not started | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
