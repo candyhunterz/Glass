@@ -2318,6 +2318,136 @@ impl FrameRenderer {
         queue.submit([encoder.finish()]);
     }
 
+    /// Draw the activity stream overlay (fullscreen, on top of everything).
+    ///
+    /// Uses LoadOp::Load to preserve the existing frame content underneath.
+    /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_activity_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        data: &crate::activity_overlay::ActivityOverlayRenderData,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        let overlay =
+            crate::activity_overlay::ActivityOverlayRenderer::new(cell_width, cell_height);
+
+        // 1. Backdrop rect
+        let backdrop = overlay.build_backdrop_rect(width as f32, height as f32);
+        self.rect_renderer
+            .prepare(device, queue, &[backdrop], width, height);
+
+        // 2. Text labels
+        let labels = overlay.build_overlay_text(data, width as f32, height as f32);
+
+        // 3. Build per-label text buffers
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut activity_buffers: Vec<Buffer> = Vec::with_capacity(labels.len());
+        for label in &labels {
+            let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+            buffer.set_size(
+                &mut self.glyph_cache.font_system,
+                Some(width as f32 - label.x),
+                Some(cell_height),
+            );
+            buffer.set_text(
+                &mut self.glyph_cache.font_system,
+                &label.text,
+                &Attrs::new()
+                    .family(Family::Name(font_family))
+                    .color(GlyphonColor::rgba(
+                        label.color.r,
+                        label.color.g,
+                        label.color.b,
+                        255,
+                    )),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+            activity_buffers.push(buffer);
+        }
+
+        // 4. Build text areas referencing the buffers
+        let text_areas: Vec<TextArea<'_>> = labels
+            .iter()
+            .zip(activity_buffers.iter())
+            .map(|(label, buffer)| TextArea {
+                buffer,
+                left: label.x,
+                top: label.y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: GlyphonColor::rgba(
+                    label.color.r,
+                    label.color.g,
+                    label.color.b,
+                    255,
+                ),
+                custom_glyphs: &[],
+            })
+            .collect();
+
+        // 5. Prepare text renderer
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Activity overlay text prepare error: {:?}", e);
+        }
+
+        // 6. Render pass: rects then text
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("activity_overlay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer.render(&mut pass, 1);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Activity overlay text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Free unused glyph atlas space between frames.
     pub fn trim(&mut self) {
         self.glyph_cache.trim();
