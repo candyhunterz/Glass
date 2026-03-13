@@ -272,8 +272,12 @@ Plans:
   6. No new proposals are emitted within the cooldown window (default 30s) after the previous proposal
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 56-01-PLAN.md -- Agent runtime types, helpers, AppEvent variants, and unit tests
+- [ ] 56-02-PLAN.md -- Subprocess spawn, reader/writer threads, platform orphan prevention, status bar cost
+
+
+
+
 
 ### Phase 57: Agent Worktree
 **Goal**: Agent code changes are isolated in git worktrees so the working tree is never touched until the user explicitly approves
@@ -394,7 +398,7 @@ Plans:
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
-| 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
+| 56. Agent Runtime | v3.0 | 0/2 | Planning | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
