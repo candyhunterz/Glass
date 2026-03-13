@@ -153,7 +153,11 @@
   3. Running `npm install` produces ParsedOutput with package events (added, removed, audited, vulnerabilities counts)
   4. Running `pytest` or `jest` produces ParsedOutput with per-test status, duration, and failure details
   5. Commands with unrecognized output produce OutputType::Freeform with no false positive records
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 48-01-PLAN.md -- Crate scaffold, types, ANSI stripper, and output classifier
+- [ ] 48-02-PLAN.md -- Cargo build/clippy and cargo test parsers
+- [ ] 48-03-PLAN.md -- npm, pytest, and jest parsers
 
 ### Phase 49: SOI Storage Schema
 **Goal**: Parsed output records persist in SQLite alongside existing command history and are queryable by command, severity, file, and type
@@ -346,7 +350,7 @@
 | 45. Scrollbar | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 46. Tab Bar Controls | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 47. Tab Drag Reorder | v2.5 | 2/2 | Complete | 2026-03-11 |
-| 48. SOI Classifier and Parser Crate | v3.0 | 0/TBD | Not started | - |
+| 48. SOI Classifier and Parser Crate | v3.0 | 0/3 | Not started | - |
 | 49. SOI Storage Schema | v3.0 | 0/TBD | Not started | - |
 | 50. SOI Pipeline Integration | v3.0 | 0/TBD | Not started | - |
 | 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |
