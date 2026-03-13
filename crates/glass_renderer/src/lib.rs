@@ -6,6 +6,8 @@ pub mod conflict_overlay;
 pub mod frame;
 pub mod glyph_cache;
 pub mod grid_renderer;
+pub mod proposal_overlay_renderer;
+pub mod proposal_toast_renderer;
 pub mod rect_renderer;
 pub mod scrollbar;
 pub mod search_overlay_renderer;
@@ -19,6 +21,12 @@ pub use conflict_overlay::{ConflictOverlay, ConflictTextLabel};
 pub use frame::{DividerRect, FrameRenderer, PaneViewport};
 pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;
+pub use proposal_overlay_renderer::{
+    ProposalOverlayRenderData, ProposalOverlayRenderer, ProposalOverlayTextLabel,
+};
+pub use proposal_toast_renderer::{
+    ProposalToastRenderData, ProposalToastRenderer, ProposalToastTextLabel,
+};
 pub use rect_renderer::{RectInstance, RectRenderer};
 pub use scrollbar::{ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
 pub use search_overlay_renderer::{SearchOverlayRenderer, SearchOverlayTextLabel};
