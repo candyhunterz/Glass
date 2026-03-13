@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 53-02-PLAN.md
-last_updated: "2026-03-13T00:18:00.000Z"
+stopped_at: Completed 53-01-PLAN.md
+last_updated: "2026-03-13T09:32:34.245Z"
 last_activity: 2026-03-13 -- completed 53-02 SOI MCP context integration
 progress:
   total_phases: 13
-  completed_phases: 5
-  total_plans: 11
-  completed_plans: 11
+  completed_phases: 6
+  total_plans: 13
+  completed_plans: 13
   percent: 100
 ---
 
@@ -87,6 +87,8 @@ Recent decisions relevant to v3.0:
 - [Phase 52-soi-display]: rev().find(Complete) used instead of current_block_mut() to handle SoiReady-arrives-after-PromptStart race condition
 - [Phase 53-02]: Severity stored as capitalized strings in DB (Error/Info/Warning/Success) -- assert capitalized form in MCP tests, not lowercase
 - [Phase 53-02]: balanced mode in glass_compressed_context now splits budget into quarters (was thirds) to give SOI equal share alongside errors/history/files
+- [Phase 53-soi-mcp-tools]: TestResult regression detection inspects JSON data column for status=Failed (severity is always None for TestResult records in DB)
+- [Phase 53-soi-mcp-tools]: glass_query_drill uses inline SQL with .optional() not a HistoryDb method -- one-off lookup not worth a public API method
 
 ### Pending Todos
 
@@ -102,6 +104,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T08:11:23.922Z
-Stopped at: Completed 52-02-PLAN.md
+Last session: 2026-03-13T09:32:34.243Z
+Stopped at: Completed 53-01-PLAN.md
 Resume file: None
