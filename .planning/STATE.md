@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 51-02-PLAN.md
-last_updated: "2026-03-13T07:42:43.284Z"
+stopped_at: Completed 52-01-PLAN.md
+last_updated: "2026-03-13T08:06:46.301Z"
 last_activity: 2026-03-13 -- completed 51-02 diff-aware compression engine
 progress:
   total_phases: 13
   completed_phases: 4
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 11
+  completed_plans: 10
   percent: 100
 ---
 
@@ -81,6 +81,8 @@ Recent decisions relevant to v3.0:
 - [Phase 51-01]: Full budget populates record_ids (all IDs) for symmetry with greedy path even though truncated=false
 - [Phase 51-01]: OneLine budget uses empty record_ids (not useful for drill-down at single-line granularity)
 - [Phase 51]: FreeformChunk excluded from fingerprinting -- no stable identity; diff_compress uses None vs Some-empty for distinct messages
+- [Phase 52-soi-display]: SoiSection uses Option<SoiSection> in GlassConfig (None when absent) matching PipesSection pattern
+- [Phase 52-soi-display]: SOI label placed at x=cell_width*1.0 left-anchored to avoid right-side badge/duration/undo collisions
 
 ### Pending Todos
 
@@ -96,6 +98,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T07:39:21.689Z
-Stopped at: Completed 51-02-PLAN.md
+Last session: 2026-03-13T08:06:46.298Z
+Stopped at: Completed 52-01-PLAN.md
 Resume file: None

@@ -39,9 +39,9 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### SOI Display
 
-- [ ] **SOID-01**: SOI one-line summary renders as block decoration on completed command blocks
+- [x] **SOID-01**: SOI one-line summary renders as block decoration on completed command blocks
 - [ ] **SOID-02**: Shell summary hint line injected into PTY output stream for agent Bash tool discovery (configurable, respects min-lines threshold)
-- [ ] **SOID-03**: SOI display configurable via [soi] config section (enabled, shell_summary, format)
+- [x] **SOID-03**: SOI display configurable via [soi] config section (enabled, shell_summary, format)
 
 ### SOI MCP Tools
 
@@ -163,9 +163,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIC-02 | Phase 51 | Complete |
 | SOIC-03 | Phase 51 | Complete |
 | SOIC-04 | Phase 51 | Complete |
-| SOID-01 | Phase 52 | Pending |
+| SOID-01 | Phase 52 | Complete |
 | SOID-02 | Phase 52 | Pending |
-| SOID-03 | Phase 52 | Pending |
+| SOID-03 | Phase 52 | Complete |
 | SOIM-01 | Phase 53 | Pending |
 | SOIM-02 | Phase 53 | Pending |
 | SOIM-03 | Phase 53 | Pending |

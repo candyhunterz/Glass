@@ -210,7 +210,7 @@ Plans:
   1. After a cargo build with errors, the command block in the terminal displays a muted decoration line summarizing the error count without altering PTY output content
   2. With shell_summary enabled in config, a hint line appears in the terminal output stream visible to the Claude Code Bash tool after each classified command
   3. Setting soi.enabled = false in config.toml suppresses all SOI decorations and shell hints without requiring a restart
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 52-01-PLAN.md -- SoiSection config, Block SOI fields, SoiReady raw_line_count, SOI label rendering in build_block_text
 - [ ] 52-02-PLAN.md -- SoiReady handler: block field population and shell hint line injection
@@ -390,7 +390,7 @@ Plans:
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
-| 52. SOI Display | v3.0 | 0/2 | Planned | - |
+| 52. SOI Display | 1/2 | In Progress|  | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
