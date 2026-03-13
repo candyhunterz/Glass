@@ -52,9 +52,9 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### SOI Extended Parsers
 
-- [ ] **SOIX-01**: Git parser extracts action, files changed, insertions/deletions from git status/diff/log/merge/pull output
-- [ ] **SOIX-02**: Docker parser extracts build progress, errors, compose events from docker build/compose output
-- [ ] **SOIX-03**: kubectl parser extracts pod status, apply results, describe output from kubectl commands
+- [x] **SOIX-01**: Git parser extracts action, files changed, insertions/deletions from git status/diff/log/merge/pull output
+- [x] **SOIX-02**: Docker parser extracts build progress, errors, compose events from docker build/compose output
+- [x] **SOIX-03**: kubectl parser extracts pod status, apply results, describe output from kubectl commands
 - [ ] **SOIX-04**: TypeScript/tsc parser extracts file, line, column, error code, message from tsc output
 - [ ] **SOIX-05**: Go compiler and test parser extracts build errors and test results from go build/test output
 - [ ] **SOIX-06**: Generic JSON lines parser handles NDJSON/structured logging output
@@ -170,9 +170,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIM-02 | Phase 53 | Complete |
 | SOIM-03 | Phase 53 | Complete |
 | SOIM-04 | Phase 53 | Complete |
-| SOIX-01 | Phase 54 | Pending |
-| SOIX-02 | Phase 54 | Pending |
-| SOIX-03 | Phase 54 | Pending |
+| SOIX-01 | Phase 54 | Complete |
+| SOIX-02 | Phase 54 | Complete |
+| SOIX-03 | Phase 54 | Complete |
 | SOIX-04 | Phase 54 | Pending |
 | SOIX-05 | Phase 54 | Pending |
 | SOIX-06 | Phase 54 | Pending |

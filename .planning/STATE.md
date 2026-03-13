@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Phase 54 context gathered
-last_updated: "2026-03-13T09:39:10.262Z"
+stopped_at: Completed 54-01-PLAN.md
+last_updated: "2026-03-13T09:59:07.506Z"
 last_activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
 progress:
   total_phases: 13
   completed_phases: 6
-  total_plans: 13
-  completed_plans: 13
+  total_plans: 15
+  completed_plans: 14
   percent: 100
 ---
 
@@ -89,6 +89,8 @@ Recent decisions relevant to v3.0:
 - [Phase 53-02]: balanced mode in glass_compressed_context now splits budget into quarters (was thirds) to give SOI equal share alongside errors/history/files
 - [Phase 53-soi-mcp-tools]: TestResult regression detection inspects JSON data column for status=Failed (severity is always None for TestResult records in DB)
 - [Phase 53-soi-mcp-tools]: glass_query_drill uses inline SQL with .optional() not a HistoryDb method -- one-off lookup not worth a public API method
+- [Phase 54-01]: BuildKit step lines filtered by Dockerfile instruction keywords to avoid capturing DONE/CACHED timing lines
+- [Phase 54-01]: Docker/kubectl receive NO content sniffers -- hint-only classification sufficient for devops tools
 
 ### Pending Todos
 
@@ -104,6 +106,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T09:39:10.260Z
-Stopped at: Phase 54 context gathered
-Resume file: .planning/phases/54-soi-extended-parsers/54-CONTEXT.md
+Last session: 2026-03-13T09:59:07.504Z
+Stopped at: Completed 54-01-PLAN.md
+Resume file: None
