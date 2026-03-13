@@ -37,7 +37,9 @@ impl Default for AgentRuntimeConfig {
             mode: AgentMode::Off,
             max_budget_usd: 1.0,
             cooldown_secs: 30,
-            allowed_tools: "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read".to_string(),
+            allowed_tools:
+                "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
+                    .to_string(),
         }
     }
 }
@@ -452,7 +454,10 @@ mod tests {
         assert_eq!(cfg.max_budget_usd, 1.0);
         assert_eq!(cfg.cooldown_secs, 30);
         assert_eq!(cfg.mode, AgentMode::Off);
-        assert_eq!(cfg.allowed_tools, "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read");
+        assert_eq!(
+            cfg.allowed_tools,
+            "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
+        );
     }
 
     // --- format_activity_as_user_message ---

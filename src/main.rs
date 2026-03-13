@@ -767,8 +767,9 @@ Session Continuity:
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    // Unix: set PR_SET_PDEATHSIG so child is killed when parent dies
-    #[cfg(unix)]
+    // Linux: set PR_SET_PDEATHSIG so child is killed when parent dies
+    // (prctl is Linux-specific; macOS does not have it)
+    #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
         unsafe {
