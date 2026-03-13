@@ -255,8 +255,13 @@ struct Processor {
     agent_cost_usd: f64,
     /// True when budget has been exceeded -- gates further event forwarding.
     agent_proposals_paused: bool,
-    /// Pending agent proposals awaiting user review (populated by reader thread).
-    agent_pending_proposals: Vec<glass_core::agent_runtime::AgentProposalData>,
+    /// Manages agent worktree lifecycle (create, apply, dismiss, prune).
+    worktree_manager: Option<glass_agent::WorktreeManager>,
+    /// Pending agent proposals paired with their worktree handles for Phase 58 approval UI.
+    agent_proposal_worktrees: Vec<(
+        glass_core::agent_runtime::AgentProposalData,
+        Option<glass_agent::WorktreeHandle>,
+    )>,
     /// Windows Job Object handle for orphan prevention (Windows only).
     /// Must remain alive for the app lifetime -- dropping closes the handle,
     /// which triggers kill-on-close for all processes in the job.
@@ -3560,11 +3565,52 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::AgentProposal(proposal) => {
                 tracing::info!(
-                    "Agent proposal: {} (action={})",
+                    "Agent proposal: {} (action={}, files={})",
                     proposal.description,
-                    proposal.action
+                    proposal.action,
+                    proposal.file_changes.len()
                 );
-                self.agent_pending_proposals.push(proposal);
+                let handle = if !proposal.file_changes.is_empty() {
+                    if let Some(ref wm) = self.worktree_manager {
+                        // Use the active session CWD as project root; fall back to process CWD.
+                        let project_root = self
+                            .windows
+                            .values()
+                            .next()
+                            .and_then(|ctx| {
+                                ctx.session_mux
+                                    .focused_session()
+                                    .map(|s| std::path::PathBuf::from(s.status.cwd()))
+                            })
+                            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                        let proposal_id =
+                            format!("proposal-{}", self.agent_proposal_worktrees.len());
+                        match wm.create_worktree(
+                            &project_root,
+                            &proposal_id,
+                            &proposal.file_changes,
+                        ) {
+                            Ok(wt_handle) => {
+                                tracing::info!(
+                                    "Created worktree {} for proposal",
+                                    wt_handle.id
+                                );
+                                Some(wt_handle)
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to create worktree for proposal: {e}"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.agent_proposal_worktrees.push((proposal, handle));
                 // TODO Phase 58: surface proposal in UI
                 for ctx in self.windows.values() {
                     ctx.window.request_redraw();
@@ -4296,7 +4342,21 @@ fn main() {
                 agent_runtime: None,
                 agent_cost_usd: 0.0,
                 agent_proposals_paused: false,
-                agent_pending_proposals: Vec::new(),
+                worktree_manager: {
+                    match glass_agent::WorktreeManager::new_default() {
+                        Ok(wm) => {
+                            if let Err(e) = wm.prune_orphans() {
+                                tracing::warn!("Failed to prune orphan worktrees: {e}");
+                            }
+                            Some(wm)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to initialize WorktreeManager: {e}");
+                            None
+                        }
+                    }
+                },
+                agent_proposal_worktrees: Vec::new(),
                 #[cfg(target_os = "windows")]
                 job_object_handle,
             };
