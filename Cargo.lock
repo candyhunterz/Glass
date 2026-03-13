@@ -1291,8 +1291,10 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "glass_soi",
  "rusqlite",
  "serde",
+ "serde_json",
  "strip-ansi-escapes",
  "tempfile",
  "toml 1.0.6+spec-1.1.0",
@@ -1372,6 +1374,17 @@ dependencies = [
  "shlex",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "glass_soi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glass_errors",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

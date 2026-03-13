@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 
 /// Current schema version. Bump when adding migrations.
 #[cfg(test)]
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// A command execution record with all metadata.
 #[derive(Debug, Clone)]
@@ -122,6 +122,36 @@ impl HistoryDb {
             conn.pragma_update(None, "user_version", 2)?;
         }
 
+        if version < 3 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS command_output_records (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_id      INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+                    output_type     TEXT NOT NULL,
+                    severity        TEXT NOT NULL,
+                    one_line        TEXT NOT NULL,
+                    token_estimate  INTEGER NOT NULL,
+                    raw_line_count  INTEGER NOT NULL,
+                    raw_byte_count  INTEGER NOT NULL,
+                    created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+                );
+                CREATE INDEX IF NOT EXISTS idx_cor_command ON command_output_records(command_id);
+                CREATE TABLE IF NOT EXISTS output_records (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_id      INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+                    record_type     TEXT NOT NULL,
+                    severity        TEXT,
+                    file_path       TEXT,
+                    data            TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_or_command   ON output_records(command_id);
+                CREATE INDEX IF NOT EXISTS idx_or_severity  ON output_records(severity);
+                CREATE INDEX IF NOT EXISTS idx_or_file      ON output_records(file_path);
+                CREATE INDEX IF NOT EXISTS idx_or_type      ON output_records(record_type);",
+            )?;
+            conn.pragma_update(None, "user_version", 3)?;
+        }
+
         Ok(())
     }
 
@@ -220,11 +250,17 @@ impl HistoryDb {
             .map_err(Into::into)
     }
 
-    /// Delete a command record by id (from pipe_stages, FTS, and commands tables).
+    /// Delete a command record by id (from SOI tables, pipe_stages, FTS, and commands tables).
     /// Returns true if a record was deleted.
     pub fn delete_command(&self, id: i64) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
-        // Delete pipe_stages first (belt and suspenders with CASCADE)
+        // Delete SOI records first (belt and suspenders with CASCADE)
+        tx.execute("DELETE FROM output_records WHERE command_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM command_output_records WHERE command_id = ?1",
+            params![id],
+        )?;
+        // Delete pipe_stages (belt and suspenders with CASCADE)
         tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
         // Delete from FTS (standard FTS5 -- just DELETE by rowid)
         tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
@@ -268,6 +304,35 @@ impl HistoryDb {
     /// Prune old records by age and size limits.
     pub fn prune(&self, max_age_days: u32, max_size_bytes: u64) -> Result<u64> {
         crate::retention::prune(&self.conn, max_age_days, max_size_bytes)
+    }
+
+    /// Insert a `ParsedOutput` for a command into the SOI tables atomically.
+    pub fn insert_parsed_output(
+        &self,
+        command_id: i64,
+        parsed: &glass_soi::ParsedOutput,
+    ) -> Result<()> {
+        crate::soi::insert_parsed_output(&self.conn, command_id, parsed)
+    }
+
+    /// Retrieve the output summary row for a command, if any.
+    pub fn get_output_summary(
+        &self,
+        command_id: i64,
+    ) -> Result<Option<crate::soi::CommandOutputSummaryRow>> {
+        crate::soi::get_output_summary(&self.conn, command_id)
+    }
+
+    /// Retrieve output records for a command with optional filters.
+    pub fn get_output_records(
+        &self,
+        command_id: i64,
+        severity: Option<&str>,
+        file_path: Option<&str>,
+        record_type: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::soi::OutputRecordRow>> {
+        crate::soi::get_output_records(&self.conn, command_id, severity, file_path, record_type, limit)
     }
 }
 
@@ -647,12 +712,103 @@ mod tests {
             "pipe_stages table should exist after migration"
         );
 
-        // Verify user_version is now 2
+        // Verify user_version is now at the current schema version
+        // (v1->v2 migration also triggers v2->v3 in the same open call)
         let version: i64 = db
             .conn()
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_migration_v2_to_v3() {
+        // Create a v2 database manually (has commands, pipe_stages, user_version=2)
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("v2.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE commands (
+                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                     command     TEXT NOT NULL,
+                     cwd         TEXT NOT NULL,
+                     exit_code   INTEGER,
+                     started_at  INTEGER NOT NULL,
+                     finished_at INTEGER NOT NULL,
+                     duration_ms INTEGER NOT NULL,
+                     output      TEXT,
+                     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE INDEX idx_commands_started_at ON commands(started_at);
+                 CREATE INDEX idx_commands_cwd ON commands(cwd);
+                 CREATE VIRTUAL TABLE commands_fts USING fts5(
+                     command, tokenize='unicode61'
+                 );
+                 CREATE TABLE pipe_stages (
+                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                     command_id  INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+                     stage_index INTEGER NOT NULL,
+                     command     TEXT NOT NULL,
+                     output      TEXT,
+                     total_bytes INTEGER NOT NULL,
+                     is_binary   INTEGER NOT NULL DEFAULT 0,
+                     is_sampled  INTEGER NOT NULL DEFAULT 0
+                 );
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+            // Insert existing v2 data
+            conn.execute(
+                "INSERT INTO commands (command, cwd, exit_code, started_at, finished_at, duration_ms)
+                 VALUES ('git status', '/home', 0, 1700000000, 1700000001, 1000)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pipe_stages (command_id, stage_index, command, output, total_bytes, is_binary, is_sampled)
+                 VALUES (1, 0, 'git status', 'On branch main', 15, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open via HistoryDb::open -- should trigger v2->v3 migration
+        let db = HistoryDb::open(&db_path).unwrap();
+
+        // Verify both new SOI tables exist
+        let cor_exists: bool = db
+            .conn()
+            .prepare("SELECT 1 FROM command_output_records LIMIT 0")
+            .is_ok();
+        assert!(
+            cor_exists,
+            "command_output_records table should exist after migration"
+        );
+        let or_exists: bool = db
+            .conn()
+            .prepare("SELECT 1 FROM output_records LIMIT 0")
+            .is_ok();
+        assert!(
+            or_exists,
+            "output_records table should exist after migration"
+        );
+
+        // Verify user_version is now 3
+        let version: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        // Verify old data is intact
+        let record = db.get_command(1).unwrap().unwrap();
+        assert_eq!(record.command, "git status");
+
+        let stages = db.get_pipe_stages(1).unwrap();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].command, "git status");
     }
 
     #[test]

@@ -10,9 +10,11 @@ pub mod output;
 pub mod query;
 pub mod retention;
 pub mod search;
+pub mod soi;
 
 pub use config::HistoryConfig;
 pub use db::{CommandRecord, HistoryDb, PipeStageRow};
+pub use soi::{CommandOutputSummaryRow, OutputRecordRow};
 pub use query::QueryFilter;
 pub use search::SearchResult;
 
