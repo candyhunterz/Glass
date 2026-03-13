@@ -1908,14 +1908,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .coordination_state
                         .recent_events
                         .iter()
-                        .map(|e| glass_renderer::activity_overlay::ActivityTimelineEvent {
-                            timestamp: e.timestamp,
-                            agent_name: e.agent_name.clone(),
-                            category: e.category.clone(),
-                            event_type: e.event_type.clone(),
-                            summary: e.summary.clone(),
-                            pinned: e.pinned,
-                        })
+                        .map(
+                            |e| glass_renderer::activity_overlay::ActivityTimelineEvent {
+                                timestamp: e.timestamp,
+                                agent_name: e.agent_name.clone(),
+                                category: e.category.clone(),
+                                event_type: e.event_type.clone(),
+                                summary: e.summary.clone(),
+                                pinned: e.pinned,
+                            },
+                        )
                         .collect();
 
                     let pinned: Vec<glass_renderer::activity_overlay::ActivityPinnedAlert> = self
@@ -3505,6 +3507,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Holds (db_path, command_id) for SOI worker, extracted inside borrow.
                     let mut soi_spawn_data: Option<(std::path::PathBuf, i64)> = None;
+                    // Holds command event data for emit_command_event (extracted inside borrow).
+                    let mut command_event_data: Option<(String, String)> = None;
 
                     {
                         let session = ctx.session_mux.session_mut(session_id).unwrap();
@@ -3696,6 +3700,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             }
 
+                            // Capture command text for command.started event
+                            command_event_data = Some((
+                                "started".to_string(),
+                                format!("command started: {}", command_text),
+                            ));
+
                             session.pending_command_text = Some(command_text);
 
                             // Start filesystem watcher for this command's CWD
@@ -3741,6 +3751,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 // Use command text extracted earlier at CommandExecuted time.
                                 let command_text =
                                     session.pending_command_text.take().unwrap_or_default();
+
+                                // Capture command.finished event data
+                                let duration_secs = duration_ms as f64 / 1000.0;
+                                let exit_str = exit_code.map_or("?".to_string(), |c| c.to_string());
+                                command_event_data = Some((
+                                    "finished".to_string(),
+                                    format!(
+                                        "command finished {} (exit: {}, {:.1}s)",
+                                        &command_text, exit_str, duration_secs
+                                    ),
+                                ));
 
                                 let record = CommandRecord {
                                     id: None,
@@ -3898,6 +3919,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                             };
                         let _ = spawn_git_query; // used below after session borrow ends
                     } // drop session borrow
+
+                    // Emit command context event (outside session borrow)
+                    if let Some((event_type, summary)) = command_event_data {
+                        emit_command_event(&self.agent_runtime, &event_type, &summary);
+                    }
 
                     // Update tab title from CWD change
                     if let ShellEvent::CurrentDirectory(ref path) = shell_event {
@@ -4287,6 +4313,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
 
+                // Emit observation events for the activity stream overlay.
+                if self.agent_runtime.is_some() {
+                    emit_observe_event(
+                        &self.agent_runtime,
+                        "output_parsed",
+                        &format!("agent-mode analyzed output — {}", severity),
+                    );
+                    if severity == "Error" || severity == "Warning" {
+                        emit_observe_event(
+                            &self.agent_runtime,
+                            "error_noticed",
+                            &format!("agent-mode noticed: {}", summary),
+                        );
+                    } else {
+                        emit_observe_event(
+                            &self.agent_runtime,
+                            "dismissed",
+                            &format!("agent-mode dismissed ({})", severity),
+                        );
+                    }
+                }
+
                 // AGTC-03: Check quiet rules before feeding activity stream.
                 // Quiet rules suppress the agent activity stream only -- SOI display is unaffected.
                 let quiet = self
@@ -4319,6 +4367,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     proposal.description,
                     proposal.action,
                     proposal.file_changes.len()
+                );
+
+                emit_observe_event(
+                    &self.agent_runtime,
+                    "proposing",
+                    &format!("agent-mode proposing: {}", proposal.description),
                 );
 
                 // AGTC-02: Permission matrix -- classify proposal and check permission level.
@@ -5104,6 +5158,50 @@ fn url_encode(s: &str) -> String {
         }
     }
     result
+}
+
+/// Emit an observation event to the coordination event log.
+/// No-op if agent runtime has no project root or if DB access fails.
+fn emit_observe_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, summary: &str) {
+    let project = match agent_runtime.as_ref().and_then(|r| r.project_root.as_ref()) {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
+        let _ = glass_coordination::event_log::insert_event(
+            db.conn(),
+            &project,
+            "observe",
+            None,
+            Some("agent-mode"),
+            event_type,
+            summary,
+            None,
+            false,
+        );
+    }
+}
+
+/// Emit a command context event to the coordination event log.
+/// No-op if agent runtime has no project root or if DB access fails.
+fn emit_command_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, summary: &str) {
+    let project = match agent_runtime.as_ref().and_then(|r| r.project_root.as_ref()) {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
+        let _ = glass_coordination::event_log::insert_event(
+            db.conn(),
+            &project,
+            "command",
+            None,
+            None,
+            event_type,
+            summary,
+            None,
+            false,
+        );
+    }
 }
 
 fn main() {

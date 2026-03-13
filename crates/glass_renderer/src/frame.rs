@@ -2390,12 +2390,7 @@ impl FrameRenderer {
                     right: width as i32,
                     bottom: height as i32,
                 },
-                default_color: GlyphonColor::rgba(
-                    label.color.r,
-                    label.color.g,
-                    label.color.b,
-                    255,
-                ),
+                default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
                 custom_glyphs: &[],
             })
             .collect();

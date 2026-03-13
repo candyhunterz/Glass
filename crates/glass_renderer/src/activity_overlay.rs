@@ -433,9 +433,9 @@ impl ActivityOverlayRenderer {
             // Agent name badge
             let badge_x = timeline_x + self.cell_width * 5.0;
             if let Some(ref name) = event.agent_name {
-                let color_index =
-                    name.bytes()
-                        .fold(0usize, |acc, b| acc.wrapping_add(b as usize));
+                let color_index = name
+                    .bytes()
+                    .fold(0usize, |acc, b| acc.wrapping_add(b as usize));
                 labels.push(ActivityOverlayTextLabel {
                     text: name.clone(),
                     x: badge_x,
