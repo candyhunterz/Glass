@@ -188,6 +188,8 @@ impl FrameRenderer {
         agent_paused: bool,
         scrollbar_hovered: bool,
         scrollbar_dragging: bool,
+        agent_mode_text: Option<&str>,
+        proposal_count_text: Option<&str>,
         proposal_toast: Option<&ProposalToastRenderData>,
         proposal_overlay: Option<&ProposalOverlayRenderData>,
     ) {
@@ -429,8 +431,8 @@ impl FrameRenderer {
                 coordination_text,
                 agent_cost_text,
                 agent_paused,
-                None,
-                None,
+                agent_mode_text,
+                proposal_count_text,
                 h,
             );
 
@@ -1158,6 +1160,8 @@ impl FrameRenderer {
         agent_cost_text: Option<&str>,
         agent_paused: bool,
         scrollbar_state: &[(bool, bool)],
+        agent_mode_text: Option<&str>,
+        proposal_count_text: Option<&str>,
         proposal_toast: Option<&ProposalToastRenderData>,
         proposal_overlay: Option<&ProposalOverlayRenderData>,
     ) {
@@ -1358,8 +1362,8 @@ impl FrameRenderer {
                 coordination_text,
                 agent_cost_text,
                 agent_paused,
-                None,
-                None,
+                agent_mode_text,
+                proposal_count_text,
                 h,
             );
 

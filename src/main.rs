@@ -197,6 +197,20 @@ impl WindowContext {
     }
 }
 
+/// Transient state for the proposal toast notification.
+///
+/// Created when a new AgentProposal arrives; cleared after 30 seconds or
+/// when agent mode goes inactive. The toast renders as a bottom-right banner.
+struct ProposalToast {
+    /// Description text shown in the toast.
+    description: String,
+    /// Index into agent_proposal_worktrees for the proposal that triggered this toast.
+    #[allow(dead_code)]
+    proposal_idx: usize,
+    /// When the toast was created -- used to compute remaining seconds.
+    created_at: std::time::Instant,
+}
+
 /// Encapsulates the agent subprocess lifecycle.
 ///
 /// Lives as `Option<AgentRuntime>` on Processor -- None when agent.mode == Off
@@ -262,6 +276,15 @@ struct Processor {
         glass_core::agent_runtime::AgentProposalData,
         Option<glass_agent::WorktreeHandle>,
     )>,
+    /// Active toast notification for the most recent proposal. Auto-dismisses after 30s.
+    active_toast: Option<ProposalToast>,
+    /// Whether the proposal review overlay is open (Ctrl+Shift+A to toggle).
+    agent_review_open: bool,
+    /// Selected proposal index in the review overlay. Clamped to list bounds.
+    proposal_review_selected: usize,
+    /// Cached diff for the currently selected proposal: (index, diff_text).
+    /// Cleared when selection changes to trigger regeneration on next redraw.
+    proposal_diff_cache: Option<(usize, String)>,
     /// Windows Job Object handle for orphan prevention (Windows only).
     /// Must remain alive for the app lifetime -- dropping closes the handle,
     /// which triggers kill-on-close for all processes in the job.
@@ -1087,6 +1110,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                // Clear toast if agent is no longer active (agent_runtime was dropped).
+                if self.agent_runtime.is_none() {
+                    self.active_toast = None;
+                }
+                // Auto-dismiss toast after 30 seconds; keep redrawing so countdown updates.
+                if let Some(ref toast) = self.active_toast {
+                    if toast.created_at.elapsed() >= std::time::Duration::from_secs(30) {
+                        self.active_toast = None;
+                    } else {
+                        // Keep render loop spinning so toast countdown eventually expires.
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 // Execute debounced search query
                 {
                     let session = ctx.session_mux.focused_session_mut().unwrap();
@@ -1232,6 +1269,80 @@ impl ApplicationHandler<AppEvent> for Processor {
                             None
                         }
                     });
+
+                    // Agent mode and proposal count for status bar display.
+                    let agent_mode_text = self.agent_runtime.as_ref().map(|_r| {
+                        let mode = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .map(|a| format!("{:?}", a.mode).to_lowercase())
+                            .unwrap_or_else(|| "off".to_string());
+                        format!("[agent: {mode}]")
+                    });
+                    let proposal_count_text = if !self.agent_proposal_worktrees.is_empty() {
+                        let n = self.agent_proposal_worktrees.len();
+                        Some(if n == 1 {
+                            "1 proposal".to_string()
+                        } else {
+                            format!("{n} proposals")
+                        })
+                    } else {
+                        None
+                    };
+
+                    // Toast render data (only while toast is active).
+                    let proposal_toast_data =
+                        self.active_toast.as_ref().map(|t| glass_renderer::ProposalToastRenderData {
+                            description: t.description.clone(),
+                            remaining_secs: 30u64
+                                .saturating_sub(t.created_at.elapsed().as_secs()),
+                        });
+
+                    // Overlay render data with cached diff.
+                    let proposal_overlay_data = if self.agent_review_open
+                        && !self.agent_proposal_worktrees.is_empty()
+                    {
+                        let selected = self
+                            .proposal_review_selected
+                            .min(self.agent_proposal_worktrees.len() - 1);
+                        // Regenerate diff when selection changes.
+                        if self
+                            .proposal_diff_cache
+                            .as_ref()
+                            .is_none_or(|(idx, _)| *idx != selected)
+                        {
+                            let diff = self
+                                .agent_proposal_worktrees
+                                .get(selected)
+                                .and_then(|(_, handle_opt)| handle_opt.as_ref())
+                                .and_then(|handle| {
+                                    self.worktree_manager
+                                        .as_ref()
+                                        .map(|wm| wm.generate_diff(handle))
+                                })
+                                .and_then(|r| r.ok())
+                                .unwrap_or_default();
+                            self.proposal_diff_cache = Some((selected, diff));
+                        }
+                        let diff_preview = self
+                            .proposal_diff_cache
+                            .as_ref()
+                            .map(|(_, d)| d.clone())
+                            .unwrap_or_default();
+                        Some(glass_renderer::ProposalOverlayRenderData {
+                            proposals: self
+                                .agent_proposal_worktrees
+                                .iter()
+                                .map(|(p, _)| (p.description.clone(), p.action.clone()))
+                                .collect(),
+                            selected,
+                            diff_preview,
+                        })
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -1251,8 +1362,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.agent_proposals_paused,
                         ctx.scrollbar_hovered_pane.is_some(),
                         ctx.scrollbar_dragging.is_some(),
-                        None,
-                        None,
+                        agent_mode_text.as_deref(),
+                        proposal_count_text.as_deref(),
+                        proposal_toast_data.as_ref(),
+                        proposal_overlay_data.as_ref(),
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -1397,6 +1510,80 @@ impl ApplicationHandler<AppEvent> for Processor {
                             None
                         }
                     });
+
+                    // Agent mode and proposal count for multi-pane status bar.
+                    let agent_mode_text_mp = self.agent_runtime.as_ref().map(|_r| {
+                        let mode = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .map(|a| format!("{:?}", a.mode).to_lowercase())
+                            .unwrap_or_else(|| "off".to_string());
+                        format!("[agent: {mode}]")
+                    });
+                    let proposal_count_text_mp = if !self.agent_proposal_worktrees.is_empty() {
+                        let n = self.agent_proposal_worktrees.len();
+                        Some(if n == 1 {
+                            "1 proposal".to_string()
+                        } else {
+                            format!("{n} proposals")
+                        })
+                    } else {
+                        None
+                    };
+
+                    // Toast render data for multi-pane path.
+                    let proposal_toast_data_mp =
+                        self.active_toast.as_ref().map(|t| glass_renderer::ProposalToastRenderData {
+                            description: t.description.clone(),
+                            remaining_secs: 30u64
+                                .saturating_sub(t.created_at.elapsed().as_secs()),
+                        });
+
+                    // Overlay render data for multi-pane path (reuse cached diff from single-pane
+                    // if available, otherwise generate fresh -- overlay is window-global).
+                    let proposal_overlay_data_mp = if self.agent_review_open
+                        && !self.agent_proposal_worktrees.is_empty()
+                    {
+                        let selected = self
+                            .proposal_review_selected
+                            .min(self.agent_proposal_worktrees.len() - 1);
+                        if self
+                            .proposal_diff_cache
+                            .as_ref()
+                            .is_none_or(|(idx, _)| *idx != selected)
+                        {
+                            let diff = self
+                                .agent_proposal_worktrees
+                                .get(selected)
+                                .and_then(|(_, handle_opt)| handle_opt.as_ref())
+                                .and_then(|handle| {
+                                    self.worktree_manager
+                                        .as_ref()
+                                        .map(|wm| wm.generate_diff(handle))
+                                })
+                                .and_then(|r| r.ok())
+                                .unwrap_or_default();
+                            self.proposal_diff_cache = Some((selected, diff));
+                        }
+                        let diff_preview = self
+                            .proposal_diff_cache
+                            .as_ref()
+                            .map(|(_, d)| d.clone())
+                            .unwrap_or_default();
+                        Some(glass_renderer::ProposalOverlayRenderData {
+                            proposals: self
+                                .agent_proposal_worktrees
+                                .iter()
+                                .map(|(p, _)| (p.description.clone(), p.action.clone()))
+                                .collect(),
+                            selected,
+                            diff_preview,
+                        })
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -1414,8 +1601,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         agent_cost_display_mp.as_deref(),
                         self.agent_proposals_paused,
                         &scrollbar_state,
-                        None,
-                        None,
+                        agent_mode_text_mp.as_deref(),
+                        proposal_count_text_mp.as_deref(),
+                        proposal_toast_data_mp.as_ref(),
+                        proposal_overlay_data_mp.as_ref(),
                     );
                 }
 
@@ -1845,6 +2034,76 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Check for Glass-handled keys first
                     if modifiers.control_key() && modifiers.shift_key() {
                         match &event.logical_key {
+                            // Ctrl+Shift+A: Toggle agent proposal review overlay.
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("a") => {
+                                if self.agent_runtime.is_some() {
+                                    self.agent_review_open = !self.agent_review_open;
+                                    if self.agent_review_open {
+                                        self.proposal_review_selected = 0;
+                                        self.proposal_diff_cache = None;
+                                    }
+                                    ctx.window.request_redraw();
+                                    return;
+                                }
+                            }
+                            // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("y")
+                                    && self.agent_review_open =>
+                            {
+                                if !self.agent_proposal_worktrees.is_empty() {
+                                    let idx = self
+                                        .proposal_review_selected
+                                        .min(self.agent_proposal_worktrees.len() - 1);
+                                    let (_proposal, handle_opt) =
+                                        self.agent_proposal_worktrees.remove(idx);
+                                    if let (Some(wm), Some(handle)) =
+                                        (self.worktree_manager.as_ref(), handle_opt)
+                                    {
+                                        if let Err(e) = wm.apply(handle) {
+                                            tracing::error!("Failed to apply proposal: {e}");
+                                        }
+                                    }
+                                    self.proposal_review_selected = self
+                                        .proposal_review_selected
+                                        .min(self.agent_proposal_worktrees.len().saturating_sub(1));
+                                    self.proposal_diff_cache = None;
+                                    if self.agent_proposal_worktrees.is_empty() {
+                                        self.agent_review_open = false;
+                                    }
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            // Ctrl+Shift+N: Reject selected proposal (only when overlay open).
+                            Key::Character(c)
+                                if c.as_str().eq_ignore_ascii_case("n")
+                                    && self.agent_review_open =>
+                            {
+                                if !self.agent_proposal_worktrees.is_empty() {
+                                    let idx = self
+                                        .proposal_review_selected
+                                        .min(self.agent_proposal_worktrees.len() - 1);
+                                    let (_proposal, handle_opt) =
+                                        self.agent_proposal_worktrees.remove(idx);
+                                    if let (Some(wm), Some(handle)) =
+                                        (self.worktree_manager.as_ref(), handle_opt)
+                                    {
+                                        if let Err(e) = wm.dismiss(handle) {
+                                            tracing::error!("Failed to dismiss proposal: {e}");
+                                        }
+                                    }
+                                    self.proposal_review_selected = self
+                                        .proposal_review_selected
+                                        .min(self.agent_proposal_worktrees.len().saturating_sub(1));
+                                    self.proposal_diff_cache = None;
+                                    if self.agent_proposal_worktrees.is_empty() {
+                                        self.agent_review_open = false;
+                                    }
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
                                 clipboard_copy(&ctx.session().term);
                                 return;
@@ -2081,6 +2340,37 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // When the proposal review overlay is open, intercept arrow keys and Escape
+                    // for navigation. All other keys fall through to PTY (AGTU-05).
+                    if self.agent_review_open && event.state == ElementState::Pressed {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::ArrowUp) => {
+                                self.proposal_review_selected =
+                                    self.proposal_review_selected.saturating_sub(1);
+                                self.proposal_diff_cache = None;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                let max = self
+                                    .agent_proposal_worktrees
+                                    .len()
+                                    .saturating_sub(1);
+                                self.proposal_review_selected =
+                                    (self.proposal_review_selected + 1).min(max);
+                                self.proposal_diff_cache = None;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Escape) => {
+                                self.agent_review_open = false;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
                         }
                     }
 
@@ -3614,8 +3904,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                 } else {
                     None
                 };
+                // Clone description before push (push takes ownership of proposal).
+                let toast_description = proposal.description.clone();
                 self.agent_proposal_worktrees.push((proposal, handle));
-                // TODO Phase 58: surface proposal in UI
+                let proposal_idx = self.agent_proposal_worktrees.len() - 1;
+                self.active_toast = Some(ProposalToast {
+                    description: toast_description,
+                    proposal_idx,
+                    created_at: std::time::Instant::now(),
+                });
                 for ctx in self.windows.values() {
                     ctx.window.request_redraw();
                 }
@@ -4361,6 +4658,10 @@ fn main() {
                     }
                 },
                 agent_proposal_worktrees: Vec::new(),
+                active_toast: None,
+                agent_review_open: false,
+                proposal_review_selected: 0,
+                proposal_diff_cache: None,
                 #[cfg(target_os = "windows")]
                 job_object_handle,
             };
