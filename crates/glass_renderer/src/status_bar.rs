@@ -20,6 +20,8 @@ pub struct StatusLabel {
     pub center_text: Option<String>,
     /// Coordination status text (agent/lock counts)
     pub coordination_text: Option<String>,
+    /// Agent cost text (e.g. "$0.0012" or "PAUSED")
+    pub agent_cost_text: Option<String>,
     /// Y position in pixels
     pub y: f32,
     /// Color for left text (CWD)
@@ -30,6 +32,8 @@ pub struct StatusLabel {
     pub center_color: Rgb,
     /// Color for coordination text (soft purple)
     pub coordination_color: Rgb,
+    /// Color for agent cost text (green active, red paused)
+    pub agent_cost_color: Rgb,
 }
 
 /// Renders the bottom-pinned status bar.
@@ -68,12 +72,16 @@ impl StatusBarRenderer {
     /// Left side: CWD path (truncated if needed).
     /// Center: update notification (if available).
     /// Right side: git branch name + dirty count if available.
+    /// Agent cost text: shown when agent is active (green) or paused (red).
+    #[allow(clippy::too_many_arguments)]
     pub fn build_status_text(
         &self,
         cwd: &str,
         git_info: Option<&GitInfo>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
+        agent_cost_text: Option<&str>,
+        agent_paused: bool,
         viewport_height: f32,
     ) -> StatusLabel {
         let y = viewport_height - self.cell_height;
@@ -95,6 +103,7 @@ impl StatusBarRenderer {
 
         let center_text = update_text.map(|t| t.to_string());
         let coordination_text = coordination_text.map(|t| t.to_string());
+        let agent_cost_text = agent_cost_text.map(|t| t.to_string());
 
         // Git branch color: cyan if clean, with yellow dirty count appended
         // For simplicity, use cyan as the base right_color
@@ -118,11 +127,27 @@ impl StatusBarRenderer {
             b: 255,
         };
 
+        // Green when active, red when paused (AGTR-07)
+        let agent_cost_color = if agent_paused {
+            Rgb {
+                r: 255,
+                g: 80,
+                b: 80,
+            }
+        } else {
+            Rgb {
+                r: 80,
+                g: 220,
+                b: 120,
+            }
+        };
+
         StatusLabel {
             left_text,
             right_text,
             center_text,
             coordination_text,
+            agent_cost_text,
             y,
             left_color: Rgb {
                 r: 204,
@@ -132,6 +157,7 @@ impl StatusBarRenderer {
             right_color,
             center_color,
             coordination_color,
+            agent_cost_color,
         }
     }
 }

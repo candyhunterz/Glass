@@ -182,6 +182,8 @@ impl FrameRenderer {
         drop_index: Option<usize>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
+        agent_cost_text: Option<&str>,
+        agent_paused: bool,
         scrollbar_hovered: bool,
         scrollbar_dragging: bool,
     ) {
@@ -405,6 +407,8 @@ impl FrameRenderer {
                 status_state.git_info(),
                 update_text,
                 coordination_text,
+                agent_cost_text,
+                agent_paused,
                 h,
             );
 
@@ -525,6 +529,70 @@ impl FrameRenderer {
                         status_label.coordination_color.r,
                         status_label.coordination_color.g,
                         status_label.coordination_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Agent cost text -- positioned left of coordination_text
+            if let Some(ref agent_text) = status_label.agent_cost_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_chars = status_label
+                    .coordination_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_gap = if coord_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    0.0
+                };
+                let right_gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let agent_text_width = agent_text.len() as f32 * cell_width;
+                let agent_x = w
+                    - (right_text_chars as f32 * cell_width)
+                    - right_gap
+                    - (coord_text_chars as f32 * cell_width)
+                    - coord_gap
+                    - cell_width  // gap between agent and coordination
+                    - agent_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    agent_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.agent_cost_color.r,
+                            status_label.agent_cost_color.g,
+                            status_label.agent_cost_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: agent_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.agent_cost_color.r,
+                        status_label.agent_cost_color.g,
+                        status_label.agent_cost_color.b,
                         255,
                     ),
                 });
@@ -857,6 +925,8 @@ impl FrameRenderer {
         drop_index: Option<usize>,
         update_text: Option<&str>,
         coordination_text: Option<&str>,
+        agent_cost_text: Option<&str>,
+        agent_paused: bool,
         scrollbar_state: &[(bool, bool)],
     ) {
         let w = width as f32;
@@ -1038,6 +1108,8 @@ impl FrameRenderer {
                 status_state.git_info(),
                 update_text,
                 coordination_text,
+                agent_cost_text,
+                agent_paused,
                 h,
             );
 
@@ -1157,6 +1229,70 @@ impl FrameRenderer {
                         status_label.coordination_color.r,
                         status_label.coordination_color.g,
                         status_label.coordination_color.b,
+                        255,
+                    ),
+                });
+            }
+
+            // Agent cost text -- positioned left of coordination_text (multi-pane)
+            if let Some(ref agent_text) = status_label.agent_cost_text {
+                let right_text_chars = status_label
+                    .right_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_text_chars = status_label
+                    .coordination_text
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0);
+                let coord_gap = if coord_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    0.0
+                };
+                let right_gap = if right_text_chars > 0 {
+                    cell_width * 2.0
+                } else {
+                    cell_width * 0.5
+                };
+                let agent_text_width = agent_text.len() as f32 * cell_width;
+                let agent_x = w
+                    - (right_text_chars as f32 * cell_width)
+                    - right_gap
+                    - (coord_text_chars as f32 * cell_width)
+                    - coord_gap
+                    - cell_width
+                    - agent_text_width;
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    agent_text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            status_label.agent_cost_color.r,
+                            status_label.agent_cost_color.g,
+                            status_label.agent_cost_color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: agent_x,
+                    top: status_label.y,
+                    color: GlyphonColor::rgba(
+                        status_label.agent_cost_color.r,
+                        status_label.agent_cost_color.g,
+                        status_label.agent_cost_color.b,
                         255,
                     ),
                 });

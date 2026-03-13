@@ -576,9 +576,9 @@ fn cleanup_session(session: Session) {
 fn setup_windows_job_object() -> Option<isize> {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW,
-        JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -739,8 +739,8 @@ Guidelines:
                 };
                 match val.get("type").and_then(|t| t.as_str()) {
                     Some("result") => {
-                        let cost_usd = glass_core::agent_runtime::parse_cost_from_result(&line)
-                            .unwrap_or(0.0);
+                        let cost_usd =
+                            glass_core::agent_runtime::parse_cost_from_result(&line).unwrap_or(0.0);
                         let _ = proxy_reader
                             .send_event(glass_core::event::AppEvent::AgentQueryResult { cost_usd });
                     }
@@ -763,9 +763,8 @@ Guidelines:
                         if let Some(proposal) =
                             glass_core::agent_runtime::extract_proposal(&full_text)
                         {
-                            let _ = proxy_reader.send_event(
-                                glass_core::event::AppEvent::AgentProposal(proposal),
-                            );
+                            let _ = proxy_reader
+                                .send_event(glass_core::event::AppEvent::AgentProposal(proposal));
                         }
                     }
                     _ => {}
@@ -1057,13 +1056,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 .unwrap_or_default();
 
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
-                self.agent_runtime = try_spawn_agent(
-                    agent_config,
-                    rx,
-                    self.proxy.clone(),
-                    0,
-                    None,
-                );
+                self.agent_runtime = try_spawn_agent(agent_config, rx, self.proxy.clone(), 0, None);
             } else {
                 // Store rx so it isn't dropped -- activity events are silently discarded
                 // when agent is Off (channel fills up and try_send returns Err, which is ignored)
@@ -1206,6 +1199,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
+                    let agent_cost_display =
+                        if self.agent_runtime.is_some() && self.agent_cost_usd > 0.0 {
+                            if self.agent_proposals_paused {
+                                Some(
+                                    self.agent_runtime
+                                        .as_ref()
+                                        .map(|r| r.budget.paused_text())
+                                        .unwrap_or_else(|| "PAUSED".to_string()),
+                                )
+                            } else {
+                                Some(
+                                    self.agent_runtime
+                                        .as_ref()
+                                        .map(|r| r.budget.cost_text())
+                                        .unwrap_or_default(),
+                                )
+                            }
+                        } else {
+                            None
+                        };
+
                     let drop_index = ctx.tab_drag_state.as_ref().and_then(|d| {
                         if d.active {
                             d.drop_index
@@ -1228,6 +1242,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         drop_index,
                         update_text.as_deref(),
                         coordination_text.as_deref(),
+                        agent_cost_display.as_deref(),
+                        self.agent_proposals_paused,
                         ctx.scrollbar_hovered_pane.is_some(),
                         ctx.scrollbar_dragging.is_some(),
                     );
@@ -1332,6 +1348,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
+                    let agent_cost_display_mp =
+                        if self.agent_runtime.is_some() && self.agent_cost_usd > 0.0 {
+                            if self.agent_proposals_paused {
+                                Some(
+                                    self.agent_runtime
+                                        .as_ref()
+                                        .map(|r| r.budget.paused_text())
+                                        .unwrap_or_else(|| "PAUSED".to_string()),
+                                )
+                            } else {
+                                Some(
+                                    self.agent_runtime
+                                        .as_ref()
+                                        .map(|r| r.budget.cost_text())
+                                        .unwrap_or_default(),
+                                )
+                            }
+                        } else {
+                            None
+                        };
+
                     // Build per-pane scrollbar hover/drag state
                     let scrollbar_state: Vec<(bool, bool)> = pane_layouts
                         .iter()
@@ -1367,6 +1404,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         drop_index_mp,
                         update_text.as_deref(),
                         coordination_text.as_deref(),
+                        agent_cost_display_mp.as_deref(),
+                        self.agent_proposals_paused,
                         &scrollbar_state,
                     );
                 }
@@ -3566,13 +3605,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                 };
 
                 if should_restart {
-                    let (restart_count, config) =
-                        if let Some(ref mut runtime) = self.agent_runtime {
-                            runtime.last_crash = Some(std::time::Instant::now());
-                            (runtime.restart_count + 1, runtime.config.clone())
-                        } else {
-                            return;
-                        };
+                    let (restart_count, config) = if let Some(ref mut runtime) = self.agent_runtime
+                    {
+                        runtime.last_crash = Some(std::time::Instant::now());
+                        (runtime.restart_count + 1, runtime.config.clone())
+                    } else {
+                        return;
+                    };
 
                     tracing::info!(
                         "AgentRuntime: attempting restart #{} with backoff",
@@ -3582,7 +3621,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Create a new activity channel for the restarted agent
                     let activity_config =
                         glass_core::activity_stream::ActivityStreamConfig::default();
-                    let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
+                    let (new_tx, new_rx) =
+                        glass_core::activity_stream::create_channel(&activity_config);
                     self.activity_stream_tx = Some(new_tx);
 
                     self.agent_runtime = try_spawn_agent(
