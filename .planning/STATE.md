@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: executing
-stopped_at: Completed 49-02-PLAN.md
-last_updated: "2026-03-13T06:11:11.959Z"
+stopped_at: Completed 50-01-PLAN.md
+last_updated: "2026-03-13T06:48:59.241Z"
 last_activity: 2026-03-13 -- completed 49-01 SOI storage schema v3
 progress:
   total_phases: 13
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 7
+  completed_plans: 6
   percent: 0
 ---
 
@@ -73,6 +73,8 @@ Recent decisions relevant to v3.0:
 - [Phase 49]: OutputType strings use Debug format (stable single-word identifiers like "RustCompiler")
 - [Phase 49]: Dynamic WHERE clause in get_output_records uses numbered positional params with Box<dyn ToSql> vec
 - [Phase 49-02]: Explicit DELETE loops added BEFORE commands_fts/commands deletion to match pipe_stages pattern -- guards against orphans if CASCADE is disabled
+- [Phase 50]: get_output_for_command uses Option<Option<String>> + flatten() to handle NULL output column in rusqlite
+- [Phase 50]: AppEvent::SoiReady.severity is String not glass_soi::Severity to keep glass_core dep-free of glass_soi
 
 ### Pending Todos
 
@@ -88,6 +90,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T06:08:02.112Z
-Stopped at: Completed 49-02-PLAN.md
+Last session: 2026-03-13T06:48:59.239Z
+Stopped at: Completed 50-01-PLAN.md
 Resume file: None

@@ -27,8 +27,8 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 - [ ] **SOIL-01**: SOI parsing runs automatically on every CommandFinished event without user intervention
 - [ ] **SOIL-02**: SOI parsing runs off the main thread (spawn_blocking) with no impact on terminal input latency
-- [ ] **SOIL-03**: SoiReady event emits after parsing completes, carrying command_id, summary, and severity
-- [ ] **SOIL-04**: Edge cases handled: no output, alt-screen apps, very large output (>50KB), binary output
+- [x] **SOIL-03**: SoiReady event emits after parsing completes, carrying command_id, summary, and severity
+- [x] **SOIL-04**: Edge cases handled: no output, alt-screen apps, very large output (>50KB), binary output
 
 ### SOI Compression
 
@@ -157,8 +157,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIS-04 | Phase 49 | Complete |
 | SOIL-01 | Phase 50 | Pending |
 | SOIL-02 | Phase 50 | Pending |
-| SOIL-03 | Phase 50 | Pending |
-| SOIL-04 | Phase 50 | Pending |
+| SOIL-03 | Phase 50 | Complete |
+| SOIL-04 | Phase 50 | Complete |
 | SOIC-01 | Phase 51 | Pending |
 | SOIC-02 | Phase 51 | Pending |
 | SOIC-03 | Phase 51 | Pending |
