@@ -1,29 +1,32 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.5
-milestone_name: UI Controls
-status: complete
-stopped_at: Milestone v2.5 archived
-last_updated: "2026-03-11T04:30:00.000Z"
+milestone: v3.0
+milestone_name: SOI & Agent Mode
+status: defining_requirements
+stopped_at: null
+last_updated: "2026-03-12T00:00:00.000Z"
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-11)
+See: .planning/PROJECT.md (updated 2026-03-12)
 
 **Core value:** A terminal that looks and feels normal but passively watches, indexes, and snapshots everything -- surfacing intelligence only when you need it.
-**Current focus:** Planning next milestone
+**Current focus:** Defining requirements for v3.0 SOI & Agent Mode
 
 ## Current Position
 
-Milestone: v2.5 UI Controls — COMPLETE (shipped 2026-03-11)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-12 — Milestone v3.0 started
 
 ## Performance Metrics
 
@@ -58,6 +61,6 @@ See PROJECT.md Key Decisions table for full history.
 
 ## Session Continuity
 
-Last session: 2026-03-11
-Stopped at: Milestone v2.5 archived
+Last session: 2026-03-12
+Stopped at: Milestone v3.0 started — defining requirements
 Resume file: None

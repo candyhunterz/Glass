@@ -109,7 +109,29 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 
 ### Active
 
-(None -- planning next milestone)
+<!-- Current scope: v3.0 SOI & Agent Mode -->
+
+- [ ] SOI output classification and format-specific parsing pipeline
+- [ ] SOI structured record storage in SQLite alongside command history
+- [ ] SOI pipeline integration into command lifecycle (auto-parse on CommandFinished)
+- [ ] SOI compression engine with token-budgeted multi-level summaries
+- [ ] SOI shell summary injection into terminal output stream
+- [ ] SOI MCP tools (glass_query, glass_query_trend, glass_query_drill)
+- [ ] SOI additional parsers for common dev tools (git, docker, tsc, go, kubectl, JSON)
+- [ ] Agent Mode activity stream feeding compressed SOI data to agent runtime
+- [ ] Agent Mode agent runtime (background Claude CLI session with proposal output)
+- [ ] Agent Mode worktree isolation for safe code changes
+- [ ] Agent Mode approval UI (status bar, toast notifications, review overlay)
+- [ ] Agent Mode session continuity across context resets
+- [ ] Agent Mode configuration, permissions, and polish
+
+## Current Milestone: v3.0 SOI & Agent Mode
+
+**Goal:** Make Glass the first terminal designed for two audiences — humans see rendered output, AI agents get structured, compressed, queryable intelligence — then build Agent Mode as a proactive development partner on top of SOI.
+
+**Target features:**
+- Structured Output Intelligence (SOI): output classification, parsing, compression, shell injection, MCP tools
+- Agent Mode: activity stream, background agent runtime, worktree isolation, approval UI, session continuity
 
 ### Deferred (Future Milestones)
 
@@ -260,4 +282,4 @@ Known tech debt:
 | Midpoint-rounding drop slot computation | ((x / stride) + 0.5) as usize for natural drop feel | ✓ Good -- predictable behavior |
 
 ---
-*Last updated: 2026-03-11 after v2.5 milestone completed*
+*Last updated: 2026-03-12 after v3.0 milestone started*
