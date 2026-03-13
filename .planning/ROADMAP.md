@@ -168,7 +168,7 @@ Plans:
   2. After a cargo build with errors, querying the DB by command_id returns OutputRecord rows with the parsed error details
   3. Records can be filtered by severity (error, warning, info) and file path across multiple commands
   4. Pruning history also removes associated SOI records (no orphaned rows after retention cleanup)
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 49-01-PLAN.md -- Schema v3 migration, soi.rs module with insert/query helpers
 - [ ] 49-02-PLAN.md -- Retention cascade for SOI records
@@ -354,7 +354,7 @@ Plans:
 | 46. Tab Bar Controls | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 47. Tab Drag Reorder | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 48. SOI Classifier and Parser Crate | 3/3 | Complete    | 2026-03-13 | - |
-| 49. SOI Storage Schema | v3.0 | 0/2 | Not started | - |
+| 49. SOI Storage Schema | 1/2 | In Progress|  | - |
 | 50. SOI Pipeline Integration | v3.0 | 0/TBD | Not started | - |
 | 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |
 | 52. SOI Display | v3.0 | 0/TBD | Not started | - |

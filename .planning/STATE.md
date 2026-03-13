@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 48-03-PLAN.md
-last_updated: "2026-03-13T05:36:18.186Z"
+stopped_at: Completed 49-01-PLAN.md
+last_updated: "2026-03-13T05:59:42Z"
 last_activity: 2026-03-12 -- v3.0 roadmap created (phases 48-60)
 progress:
   total_phases: 13
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-12)
 
 ## Current Position
 
-Phase: 48 of 60 (SOI Classifier and Parser Crate)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-03-12 -- v3.0 roadmap created (phases 48-60)
+Phase: 49 of 60 (SOI Storage Schema)
+Plan: 1 of 1 in current phase
+Status: In progress
+Last activity: 2026-03-13 -- completed 49-01 SOI storage schema v3
 
 Progress: [░░░░░░░░░░] 0% (v3.0: 0/13 phases)
 
@@ -69,6 +69,9 @@ Recent decisions relevant to v3.0:
 - [Phase 48]: Duration in cargo test is on summary line not separate line -- extracted from same regex match
 - [Phase 48]: npm multi-match-per-line: do NOT use continue after first match since single lines can contain both added and audited counts
 - [Phase 48]: jest test fixtures use concat!() macro not Rust line-continuation to preserve leading whitespace required by indented test line regex
+- [Phase 49]: Severity strings use explicit match arms not Debug format in soi.rs for future rename safety
+- [Phase 49]: OutputType strings use Debug format (stable single-word identifiers like "RustCompiler")
+- [Phase 49]: Dynamic WHERE clause in get_output_records uses numbered positional params with Box<dyn ToSql> vec
 
 ### Pending Todos
 
@@ -84,6 +87,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T05:32:59.151Z
-Stopped at: Completed 48-03-PLAN.md
+Last session: 2026-03-13T05:59:42Z
+Stopped at: Completed 49-01-PLAN.md
 Resume file: None
