@@ -275,10 +275,6 @@ Plans:
 - [ ] 56-01-PLAN.md -- Agent runtime types, helpers, AppEvent variants, and unit tests
 - [ ] 56-02-PLAN.md -- Subprocess spawn, reader/writer threads, platform orphan prevention, status bar cost
 
-
-
-
-
 ### Phase 57: Agent Worktree
 **Goal**: Agent code changes are isolated in git worktrees so the working tree is never touched until the user explicitly approves
 **Depends on**: Phase 56
@@ -292,8 +288,8 @@ Plans:
   6. On a non-git directory, the agent falls back to a temp directory copy rather than failing with a git error
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 57-01-PLAN.md -- glass_agent crate with WorktreeManager, types, WorktreeDb, and full lifecycle tests
+- [ ] 57-02-PLAN.md -- Extend AgentProposalData with file_changes, wire WorktreeManager into Processor
 
 ### Phase 58: Agent Approval UI
 **Goal**: Pending proposals are visible and actionable via keyboard shortcuts without interrupting terminal interaction
@@ -399,7 +395,7 @@ Plans:
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
-| 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
+| 57. Agent Worktree | v3.0 | 0/2 | Not started | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |
