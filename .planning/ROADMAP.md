@@ -12,7 +12,7 @@
 - [x] **v2.3 Agent MCP Features** -- Phases 35-39 (shipped 2026-03-10)
 - [x] **v2.4 Rendering Correctness** -- Phases 40-44 (shipped 2026-03-11)
 - [x] **v2.5 UI Controls** -- Phases 45-47 (shipped 2026-03-11)
-- 🚧 **v3.0 SOI & Agent Mode** -- Phases 48-60 (in progress)
+- 🚧 **v3.0 SOI & Agent Mode** -- Phases 48-62 (in progress)
 
 ## Phases
 
@@ -140,6 +140,8 @@
 - [x] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals (completed 2026-03-13)
 - [x] **Phase 59: Agent Session Continuity** - Persist handoff summaries across context resets with chained session resumption (completed 2026-03-13)
 - [x] **Phase 60: Agent Configuration** - Complete [agent] and [soi] config sections with permission matrix and graceful degradation (completed 2026-03-13)
+- [ ] **Phase 61: Wire MCP Config to Agent Subprocess** - Fix --mcp-config wiring so agent can invoke MCP tools, call flush_collapsed on shutdown
+- [ ] **Phase 62: v3.0 Tech Debt Cleanup** - Fix stale doc comments and backfill SUMMARY.md frontmatter gaps
 
 ## Phase Details
 
@@ -335,6 +337,26 @@ Plans:
 - [ ] 60-01-PLAN.md -- Config types: PermissionMatrix, QuietRules, PermissionLevel, classify_proposal, should_quiet helpers
 - [ ] 60-02-PLAN.md -- Wire config into main.rs: hot-reload restart, quiet filter, permission enforcement, coordination, degradation hint
 
+### Phase 61: Wire MCP Config to Agent Subprocess
+**Goal:** Agent subprocess can discover and invoke Glass MCP tools at runtime, completing the MCP SOI Query E2E flow
+**Depends on:** Phase 56, Phase 60
+**Requirements:** AGTR-03, SOIM-01, SOIM-02, SOIM-03 (already satisfied — this fixes runtime wiring)
+**Gap Closure:** Closes integration gap (--mcp-config dangling flag) and E2E Flow 2 from v3.0 audit
+**Success Criteria** (what must be TRUE):
+  1. Agent subprocess receives a valid --mcp-config path pointing to a JSON file that lists the Glass MCP server
+  2. build_agent_command_args never emits a dangling --mcp-config flag with no path value
+  3. flush_collapsed() is called during agent shutdown so the last collapsed activity event is not silently dropped
+  4. E2E Flow 2 (MCP SOI Query from agent) completes: agent subprocess can call glass_query and receive structured output
+
+### Phase 62: v3.0 Tech Debt Cleanup
+**Goal:** Eliminate accumulated documentation and metadata debt from the v3.0 milestone
+**Depends on:** Phase 61
+**Requirements:** None (metadata-only fixes)
+**Gap Closure:** Closes tech debt items from v3.0 audit
+**Success Criteria** (what must be TRUE):
+  1. glass_soi/src/lib.rs doc comment no longer references "Phase 48 stubs"
+  2. SUMMARY.md frontmatter requirements_completed includes all 13 previously missing REQ-IDs across phases 48, 51, 56, 57, 59
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -399,3 +421,5 @@ Plans:
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
+| 61. Wire MCP Config to Agent Subprocess | v3.0 | 0/0 | Planned | - |
+| 62. v3.0 Tech Debt Cleanup | v3.0 | 0/0 | Planned | - |
