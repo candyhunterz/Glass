@@ -221,10 +221,12 @@ struct Processor {
     coordination_state: glass_core::coordination_poller::CoordinationState,
     /// Sender half of the agent activity stream channel.
     /// Use try_send() only -- never blocking send() on winit main thread.
-    activity_stream_tx: Option<std::sync::mpsc::SyncSender<glass_core::activity_stream::ActivityEvent>>,
+    activity_stream_tx:
+        Option<std::sync::mpsc::SyncSender<glass_core::activity_stream::ActivityEvent>>,
     /// Receiver half stored for Phase 56 agent runtime to .take().
     #[allow(dead_code)] // Phase 56: agent runtime will consume
-    activity_stream_rx: Option<std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>>,
+    activity_stream_rx:
+        Option<std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>>,
     /// Activity filter: dedup, rate limit, budget window.
     activity_filter: glass_core::activity_stream::ActivityFilter,
 }
@@ -3170,12 +3172,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // AGTA-01: Feed activity stream (after all UI updates, using owned values)
-                if let Some(event) = self.activity_filter.process(
-                    command_id,
-                    session_id,
-                    summary,
-                    severity,
-                ) {
+                if let Some(event) = self
+                    .activity_filter
+                    .process(command_id, session_id, summary, severity)
+                {
                     if let Some(tx) = &self.activity_stream_tx {
                         if tx.try_send(event).is_err() {
                             tracing::debug!(
