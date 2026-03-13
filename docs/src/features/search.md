@@ -19,6 +19,10 @@ Search indexes:
 - **Output** -- The stdout/stderr produced by each command
 - **Metadata** -- Working directories, timestamps
 
+## Scope
+
+Search works across all tabs and all past sessions. Results are not limited to the current tab or the current session -- any command recorded in the history database is included.
+
 ## FTS5-powered
 
 Glass stores all command history in a SQLite database with FTS5 full-text indexing. This means:

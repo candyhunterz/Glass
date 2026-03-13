@@ -17,6 +17,8 @@
 # Features
 
 - [Command Blocks](./features/blocks.md)
+- [Structured Output Intelligence](./features/soi.md)
+- [Agent Mode](./features/agent-mode.md)
 - [Search](./features/search.md)
 - [Undo](./features/undo.md)
 - [Pipe Inspection](./features/pipes.md)
@@ -29,4 +31,5 @@
 
 - [Configuration](./configuration.md)
 - [MCP Server](./mcp-server.md)
+- [Multi-Agent Coordination](./agent-coordination.md)
 - [Troubleshooting](./troubleshooting.md)

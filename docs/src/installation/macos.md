@@ -2,7 +2,7 @@
 
 ## DMG Installer (recommended)
 
-1. Download the latest `.dmg` file from the [GitHub Releases](https://github.com/anthropics/glass/releases) page.
+1. Download the latest `.dmg` file from the [GitHub Releases](https://github.com/candyhunterz/Glass/releases) page.
 2. Open the DMG and drag **Glass.app** into your Applications folder.
 3. Launch Glass from Applications or Spotlight.
 
@@ -27,7 +27,7 @@ This only needs to be done once per version.
 Once the tap is published:
 
 ```bash
-brew install <GITHUB_USER>/glass/glass
+brew install candyhunterz/glass/glass
 ```
 
 ## System requirements

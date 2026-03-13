@@ -2,7 +2,7 @@
 
 ## MSI Installer (recommended)
 
-1. Download the latest `.msi` file from the [GitHub Releases](https://github.com/anthropics/glass/releases) page.
+1. Download the latest `.msi` file from the [GitHub Releases](https://github.com/candyhunterz/Glass/releases) page.
 2. Double-click the MSI to launch the installer.
 3. Glass installs to `C:\Program Files\Glass Terminal\` and adds `glass` to your system PATH.
 4. Launch Glass from the Start menu or by running `glass` in any terminal.

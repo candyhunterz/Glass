@@ -31,8 +31,20 @@ Each block displays a small badge indicating the command's exit status:
 
 The color coding makes it trivial to spot failures when scrolling through a long session.
 
+## SOI classification labels
+
+After a command completes, if the Smart Output Interpreter (SOI) classifies the output, a muted one-line label appears at the bottom of the block summarizing the result. For example:
+
+- `2 errors in src/main.rs`
+- `build succeeded in 3.4s`
+- `3 tests failed`
+
+These labels are display-only and do not modify the block's output. They give you a quick summary without requiring you to read through the full output.
+
+## Undo label
+
+Commands that modify files on disk display an `[undo]` label on the block. Clicking the label, or pressing **Ctrl+Shift+Z**, restores the affected files to their pre-command state. See [Undo](./undo.md) for details.
+
 ## Shell integration
 
-Glass automatically integrates with your shell to detect command boundaries. This works with common shells (bash, zsh, fish, PowerShell) without any manual configuration or prompt modifications.
-
-The integration is transparent -- Glass does not modify your shell prompt or inject visible markers. Everything happens behind the scenes.
+Glass automatically integrates with your shell to detect command boundaries. This works transparently with bash, zsh, fish, and PowerShell via OSC 133 sequences injected by the shell integration scripts. No manual configuration or prompt modifications are required -- the integration is invisible to you and does not modify your shell prompt.

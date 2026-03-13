@@ -14,10 +14,11 @@ When you trigger undo:
 
 ## How snapshots work
 
-Glass monitors file system changes during command execution. Before a file is modified, its contents are captured and stored in a local SQLite database. This means:
+Glass monitors file system changes during command execution. Before a file is modified, its contents are captured and stored in a content-addressed blob store using blake3 hashing. Identical file contents are stored only once regardless of how many times they appear across snapshots, keeping storage usage low. Snapshot metadata is tracked in a local SQLite database. This means:
 
 - Snapshots are taken **automatically** -- no manual action required
 - Only files that are actually modified are snapped
+- Duplicate content is deduplicated via blake3 content addressing
 - Snapshots persist across sessions
 
 ## Configuration

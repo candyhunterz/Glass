@@ -2,7 +2,7 @@
 
 ## Debian package (recommended)
 
-1. Download the latest `.deb` file from the [GitHub Releases](https://github.com/anthropics/glass/releases) page.
+1. Download the latest `.deb` file from the [GitHub Releases](https://github.com/candyhunterz/Glass/releases) page.
 2. Install with dpkg:
 
 ```bash
