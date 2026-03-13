@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Current schema version. Bump when adding migrations.
 #[cfg(test)]
@@ -43,6 +43,7 @@ pub struct PipeStageRow {
 /// SQLite-backed command history database.
 pub struct HistoryDb {
     conn: Connection,
+    path: PathBuf,
 }
 
 impl HistoryDb {
@@ -61,7 +62,15 @@ impl HistoryDb {
         )?;
         Self::create_schema(&conn)?;
         Self::migrate(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Return the filesystem path of this database file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     fn create_schema(conn: &Connection) -> Result<()> {
@@ -287,6 +296,37 @@ impl HistoryDb {
             params![output, id],
         )?;
         Ok(())
+    }
+
+    /// Fetch the stored output text for a command by id.
+    /// Returns None if no output was recorded (e.g. alt-screen apps like vim/htop)
+    /// or if the command id does not exist.
+    pub fn get_output_for_command(&self, command_id: i64) -> Result<Option<String>> {
+        // Use Option<String> to handle NULL output column values.
+        let result: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?1",
+                params![command_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(anyhow::Error::from)?;
+        // Flatten: None (no row) or Some(None) (NULL output) both become None.
+        Ok(result.flatten())
+    }
+
+    /// Fetch the command text for a command by id.
+    /// Returns None if the command id does not exist.
+    pub fn get_command_text(&self, command_id: i64) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT command FROM commands WHERE id = ?1",
+                params![command_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(anyhow::Error::from)
     }
 
     /// Get a reference to the underlying connection (for search/retention modules).
@@ -1158,5 +1198,121 @@ mod tests {
         // Both command and pipe_stages should be gone
         assert!(db.get_command(id).unwrap().is_none());
         assert!(db.get_pipe_stages(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_output_for_command() {
+        let dir = TempDir::new().unwrap();
+        let db = HistoryDb::open(&dir.path().join("test.db")).unwrap();
+        let record = CommandRecord {
+            id: None,
+            command: "echo hello".to_string(),
+            cwd: "/tmp".to_string(),
+            exit_code: Some(0),
+            started_at: 1000,
+            finished_at: 1001,
+            duration_ms: 100,
+            output: None,
+        };
+        let cmd_id = db.insert_command(&record).unwrap();
+        // Before update_output, should be None
+        assert!(db.get_output_for_command(cmd_id).unwrap().is_none());
+        db.update_output(cmd_id, "hello\n").unwrap();
+        assert_eq!(
+            db.get_output_for_command(cmd_id).unwrap(),
+            Some("hello\n".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_command_text() {
+        let dir = TempDir::new().unwrap();
+        let db = HistoryDb::open(&dir.path().join("test.db")).unwrap();
+        let record = CommandRecord {
+            id: None,
+            command: "cargo build".to_string(),
+            cwd: "/tmp".to_string(),
+            exit_code: Some(0),
+            started_at: 1000,
+            finished_at: 1001,
+            duration_ms: 100,
+            output: None,
+        };
+        let cmd_id = db.insert_command(&record).unwrap();
+        assert_eq!(
+            db.get_command_text(cmd_id).unwrap(),
+            Some("cargo build".to_string())
+        );
+    }
+
+    #[test]
+    fn test_db_path_accessor() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = HistoryDb::open(&db_path).unwrap();
+        assert_eq!(db.path(), db_path);
+    }
+
+    /// SOIL-04: SOI worker handles None output (alt-screen apps like vim/htop)
+    #[test]
+    fn soi_worker_no_output() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = HistoryDb::open(&db_path).unwrap();
+
+        let record = CommandRecord {
+            id: None,
+            command: "vim".to_string(),
+            cwd: "/tmp".to_string(),
+            exit_code: Some(0),
+            started_at: 1000,
+            finished_at: 6000,
+            duration_ms: 5000,
+            output: None,
+        };
+        let cmd_id = db.insert_command(&record).unwrap();
+
+        // No update_output called -- simulates alt-screen app
+        let output = db.get_output_for_command(cmd_id).unwrap();
+        assert!(output.is_none(), "Alt-screen commands should have None output");
+
+        // Verify command text is still retrievable
+        let cmd_text = db.get_command_text(cmd_id).unwrap();
+        assert_eq!(cmd_text, Some("vim".to_string()));
+    }
+
+    /// SOIL-04: SOI worker handles binary placeholder output
+    #[test]
+    fn soi_worker_binary() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = HistoryDb::open(&db_path).unwrap();
+
+        let record = CommandRecord {
+            id: None,
+            command: "cat binary.bin".to_string(),
+            cwd: "/tmp".to_string(),
+            exit_code: Some(0),
+            started_at: 1000,
+            finished_at: 1001,
+            duration_ms: 100,
+            output: None,
+        };
+        let cmd_id = db.insert_command(&record).unwrap();
+
+        // Store binary placeholder (what process_output produces for binary content)
+        db.update_output(cmd_id, "[binary output: 4096 bytes]")
+            .unwrap();
+
+        let output = db.get_output_for_command(cmd_id).unwrap();
+        assert!(output.is_some());
+        let text = output.unwrap();
+        assert!(
+            text.contains("binary output"),
+            "Binary placeholder should be retrievable"
+        );
+
+        let cmd_text = db.get_command_text(cmd_id).unwrap();
+        assert_eq!(cmd_text, Some("cat binary.bin".to_string()));
     }
 }
