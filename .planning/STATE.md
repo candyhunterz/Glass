@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: Post-milestone fix (v3.0 audit items)
-stopped_at: Completed 61-01-PLAN.md
-last_updated: "2026-03-13T19:36:31.956Z"
+stopped_at: Completed 62-01-PLAN.md
+last_updated: "2026-03-13T19:49:32.821Z"
 last_activity: 2026-03-13 -- completed Phase 61 Wire MCP Config to Agent (plan 01)
 progress:
   total_phases: 15
-  completed_phases: 14
-  total_plans: 28
-  completed_plans: 28
+  completed_phases: 15
+  total_plans: 29
+  completed_plans: 29
   percent: 100
 ---
 
@@ -129,6 +129,8 @@ Recent decisions relevant to v3.0:
 - [Phase 60]: Config hot-reload resets activity_filter with fresh ActivityStreamConfig to avoid stale dedup window state
 - [Phase 61]: MCP config uses closure returning Option<String> for graceful degradation -- unwrap_or_default yields empty string which build_agent_command_args now handles
 - [Phase 61]: flush_collapsed added at ConfigReloaded and AgentCrashed shutdown sites -- Drop impl cannot access Processor fields
+- [Phase 62]: parse() doc comment updated to list 12 implemented parsers, removing Phase 48 stub references
+- [Phase 62]: requirements-completed frontmatter backfilled in 8 SUMMARY.md files using hyphen form key to match existing convention
 
 ### Pending Todos
 
@@ -144,6 +146,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T19:33:25Z
-Stopped at: Completed 61-01-PLAN.md
+Last session: 2026-03-13T19:49:32.818Z
+Stopped at: Completed 62-01-PLAN.md
 Resume file: None

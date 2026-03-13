@@ -141,7 +141,7 @@
 - [x] **Phase 59: Agent Session Continuity** - Persist handoff summaries across context resets with chained session resumption (completed 2026-03-13)
 - [x] **Phase 60: Agent Configuration** - Complete [agent] and [soi] config sections with permission matrix and graceful degradation (completed 2026-03-13)
 - [x] **Phase 61: Wire MCP Config to Agent Subprocess** - Fix --mcp-config wiring so agent can invoke MCP tools, call flush_collapsed on shutdown (completed 2026-03-13)
-- [ ] **Phase 62: v3.0 Tech Debt Cleanup** - Fix stale doc comments and backfill SUMMARY.md frontmatter gaps
+- [x] **Phase 62: v3.0 Tech Debt Cleanup** - Fix stale doc comments and backfill SUMMARY.md frontmatter gaps (completed 2026-03-13)
 
 ## Phase Details
 
@@ -360,7 +360,7 @@ Plans:
   1. glass_soi/src/lib.rs doc comment no longer references "Phase 48 stubs"
   2. SUMMARY.md frontmatter requirements_completed includes all 13 previously missing REQ-IDs across phases 48, 51, 56, 57, 59
 
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 62-01-PLAN.md -- Fix stale doc comment and backfill SUMMARY.md frontmatter
 ## Progress
@@ -428,4 +428,4 @@ Plans:
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
 | 61. Wire MCP Config to Agent Subprocess | 1/1 | Complete    | 2026-03-13 | - |
-| 62. v3.0 Tech Debt Cleanup | v3.0 | 0/1 | Planned | - |
+| 62. v3.0 Tech Debt Cleanup | 1/1 | Complete   | 2026-03-13 | - |
