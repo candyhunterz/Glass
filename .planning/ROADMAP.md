@@ -317,8 +317,8 @@ Plans:
   4. After three sequential sessions working on the same task, each session's handoff references the previous one, forming a chain with compacted context
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 59-01-PLAN.md -- Types, AgentSessionDb, migration v3, extract_handoff, format_handoff_as_user_message
+- [ ] 59-02-PLAN.md -- Reader thread handoff detection, AgentHandoff handler, spawn handoff injection
 
 ### Phase 60: Agent Configuration and Polish
 **Goal**: All SOI and agent behavior is configurable via config.toml with hot-reload, a permission matrix, quiet rules, and graceful degradation when Claude CLI is absent
