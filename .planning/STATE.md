@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
-status: planning
-stopped_at: Completed 49-01-PLAN.md
-last_updated: "2026-03-13T05:59:42Z"
-last_activity: 2026-03-12 -- v3.0 roadmap created (phases 48-60)
+status: executing
+stopped_at: Completed 49-02-PLAN.md
+last_updated: "2026-03-13T06:08:02.114Z"
+last_activity: 2026-03-13 -- completed 49-01 SOI storage schema v3
 progress:
   total_phases: 13
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  completed_phases: 2
+  total_plans: 5
+  completed_plans: 5
   percent: 0
 ---
 
@@ -72,6 +72,7 @@ Recent decisions relevant to v3.0:
 - [Phase 49]: Severity strings use explicit match arms not Debug format in soi.rs for future rename safety
 - [Phase 49]: OutputType strings use Debug format (stable single-word identifiers like "RustCompiler")
 - [Phase 49]: Dynamic WHERE clause in get_output_records uses numbered positional params with Box<dyn ToSql> vec
+- [Phase 49-02]: Explicit DELETE loops added BEFORE commands_fts/commands deletion to match pipe_stages pattern -- guards against orphans if CASCADE is disabled
 
 ### Pending Todos
 
@@ -87,6 +88,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T05:59:42Z
-Stopped at: Completed 49-01-PLAN.md
+Last session: 2026-03-13T06:08:02.112Z
+Stopped at: Completed 49-02-PLAN.md
 Resume file: None

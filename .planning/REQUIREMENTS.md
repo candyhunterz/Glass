@@ -21,7 +21,7 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 - [x] **SOIS-01**: Parsed output records persist in SQLite tables (command_output_records, output_records) linked to existing commands table
 - [x] **SOIS-02**: Schema migration from v2 to v3 runs automatically on startup using existing PRAGMA user_version pattern
 - [x] **SOIS-03**: Individual records are queryable by command_id, severity, file path, and record type
-- [ ] **SOIS-04**: Retention/pruning of SOI records cascades with existing history retention policies
+- [x] **SOIS-04**: Retention/pruning of SOI records cascades with existing history retention policies
 
 ### SOI Pipeline
 
@@ -154,7 +154,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIS-01 | Phase 49 | Complete |
 | SOIS-02 | Phase 49 | Complete |
 | SOIS-03 | Phase 49 | Complete |
-| SOIS-04 | Phase 49 | Pending |
+| SOIS-04 | Phase 49 | Complete |
 | SOIL-01 | Phase 50 | Pending |
 | SOIL-02 | Phase 50 | Pending |
 | SOIL-03 | Phase 50 | Pending |
