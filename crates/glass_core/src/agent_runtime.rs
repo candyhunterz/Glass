@@ -1,3 +1,4 @@
+use crate::config::{PermissionKind, QuietRules};
 use std::time::{Duration, Instant};
 
 /// Controls which severity levels reach the agent subprocess.
@@ -322,6 +323,40 @@ pub fn extract_proposal(assistant_text: &str) -> Option<AgentProposalData> {
     })
 }
 
+/// Classify an agent proposal into the `PermissionKind` category it requires.
+///
+/// Decision logic:
+/// - If `proposal.file_changes` is non-empty → `EditFiles`
+/// - Else if `proposal.action` starts with `"git "` → `GitOperations`
+/// - Else → `RunCommands`
+pub fn classify_proposal(proposal: &AgentProposalData) -> PermissionKind {
+    if !proposal.file_changes.is_empty() {
+        PermissionKind::EditFiles
+    } else if proposal.action.starts_with("git ") {
+        PermissionKind::GitOperations
+    } else {
+        PermissionKind::RunCommands
+    }
+}
+
+/// Returns `true` when the event described by `summary`/`severity` should be
+/// suppressed according to the given `QuietRules`.
+///
+/// - If `quiet_rules.ignore_exit_zero` is true and `severity == "Success"` → `true`
+/// - If any pattern in `quiet_rules.ignore_patterns` is a substring of `summary` → `true`
+/// - Otherwise → `false`
+pub fn should_quiet(quiet_rules: &QuietRules, summary: &str, severity: &str) -> bool {
+    if quiet_rules.ignore_exit_zero && severity == "Success" {
+        return true;
+    }
+    for pattern in &quiet_rules.ignore_patterns {
+        if summary.contains(pattern.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Build the CLI argument list for invoking the Claude agent subprocess.
 ///
 /// Returns:
@@ -637,6 +672,80 @@ Let me know if you agree."#;
         tracker.add_cost(0.05);
         assert!(!tracker.is_exceeded());
         assert_eq!(tracker.cost_text(), "$0.4000");
+    }
+
+    // --- classify_proposal ---
+
+    fn make_proposal(action: &str, file_changes: Vec<(String, String)>) -> AgentProposalData {
+        AgentProposalData {
+            description: "test proposal".to_string(),
+            action: action.to_string(),
+            severity: "Info".to_string(),
+            command_id: 1,
+            raw_response: String::new(),
+            file_changes,
+        }
+    }
+
+    #[test]
+    fn classify_proposal_non_empty_file_changes_is_edit_files() {
+        let proposal = make_proposal(
+            "npm install",
+            vec![("src/main.rs".to_string(), "fn main() {}".to_string())],
+        );
+        assert_eq!(classify_proposal(&proposal), PermissionKind::EditFiles);
+    }
+
+    #[test]
+    fn classify_proposal_empty_file_changes_git_action_is_git_operations() {
+        let proposal = make_proposal("git commit -m \"fix\"", vec![]);
+        assert_eq!(classify_proposal(&proposal), PermissionKind::GitOperations);
+    }
+
+    #[test]
+    fn classify_proposal_empty_file_changes_non_git_is_run_commands() {
+        let proposal = make_proposal("npm install", vec![]);
+        assert_eq!(classify_proposal(&proposal), PermissionKind::RunCommands);
+    }
+
+    // --- should_quiet ---
+
+    fn make_quiet_rules(ignore_exit_zero: bool, ignore_patterns: Vec<&str>) -> QuietRules {
+        QuietRules {
+            ignore_exit_zero,
+            ignore_patterns: ignore_patterns.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn should_quiet_ignore_exit_zero_true_suppresses_success() {
+        let qr = make_quiet_rules(true, vec![]);
+        assert!(should_quiet(&qr, "cargo check: ok", "Success"));
+    }
+
+    #[test]
+    fn should_quiet_ignore_exit_zero_true_does_not_suppress_error() {
+        let qr = make_quiet_rules(true, vec![]);
+        assert!(!should_quiet(&qr, "cargo check: failed", "Error"));
+    }
+
+    #[test]
+    fn should_quiet_pattern_match_returns_true() {
+        let qr = make_quiet_rules(false, vec!["cargo check"]);
+        assert!(should_quiet(&qr, "cargo check: 0 errors", "Info"));
+    }
+
+    #[test]
+    fn should_quiet_pattern_no_match_returns_false() {
+        let qr = make_quiet_rules(false, vec!["cargo check"]);
+        assert!(!should_quiet(&qr, "npm install: 5 packages", "Info"));
+    }
+
+    #[test]
+    fn should_quiet_empty_rules_returns_false() {
+        let qr = QuietRules::default();
+        assert!(!should_quiet(&qr, "cargo build: ok", "Success"));
+        assert!(!should_quiet(&qr, "cargo build: failed", "Error"));
     }
 
     // --- build_agent_command_args ---

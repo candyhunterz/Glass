@@ -2,21 +2,16 @@ use serde::Deserialize;
 use std::fmt;
 
 /// Permission level for an agent action category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionLevel {
     /// Agent must request user approval before acting.
+    #[default]
     Approve,
     /// Agent may act automatically without user approval.
     Auto,
     /// Agent is never allowed to perform this category of action.
     Never,
-}
-
-impl Default for PermissionLevel {
-    fn default() -> Self {
-        PermissionLevel::Approve
-    }
 }
 
 /// Category of action a proposal is requesting permission for.
@@ -55,7 +50,7 @@ impl Default for PermissionMatrix {
 }
 
 /// Rules that suppress agent notifications for low-signal events.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct QuietRules {
     /// When true, suppress notifications for events with severity "Success".
     #[serde(default)]
@@ -63,15 +58,6 @@ pub struct QuietRules {
     /// Suppress notifications whose summary contains any of these substrings.
     #[serde(default)]
     pub ignore_patterns: Vec<String>,
-}
-
-impl Default for QuietRules {
-    fn default() -> Self {
-        Self {
-            ignore_exit_zero: false,
-            ignore_patterns: Vec::new(),
-        }
-    }
 }
 
 /// Structured error from config validation, including location info when available.
