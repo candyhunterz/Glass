@@ -61,10 +61,10 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### Agent Activity Stream
 
-- [ ] **AGTA-01**: Activity stream feeds compressed SOI summaries to agent runtime via bounded channel
-- [ ] **AGTA-02**: Rolling budget window constrains activity context to configurable token limit (default 4096)
-- [ ] **AGTA-03**: Noise filtering deduplicates and collapses repetitive success events
-- [ ] **AGTA-04**: Rate limiting prevents flooding on rapid command execution
+- [x] **AGTA-01**: Activity stream feeds compressed SOI summaries to agent runtime via bounded channel
+- [x] **AGTA-02**: Rolling budget window constrains activity context to configurable token limit (default 4096)
+- [x] **AGTA-03**: Noise filtering deduplicates and collapses repetitive success events
+- [x] **AGTA-04**: Rate limiting prevents flooding on rapid command execution
 
 ### Agent Runtime
 
@@ -176,10 +176,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIX-04 | Phase 54 | Complete |
 | SOIX-05 | Phase 54 | Complete |
 | SOIX-06 | Phase 54 | Complete |
-| AGTA-01 | Phase 55 | Pending |
-| AGTA-02 | Phase 55 | Pending |
-| AGTA-03 | Phase 55 | Pending |
-| AGTA-04 | Phase 55 | Pending |
+| AGTA-01 | Phase 55 | Complete |
+| AGTA-02 | Phase 55 | Complete |
+| AGTA-03 | Phase 55 | Complete |
+| AGTA-04 | Phase 55 | Complete |
 | AGTR-01 | Phase 56 | Pending |
 | AGTR-02 | Phase 56 | Pending |
 | AGTR-03 | Phase 56 | Pending |

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 54-02-PLAN.md
-last_updated: "2026-03-13T10:08:12.181Z"
+stopped_at: Completed 55-01-PLAN.md
+last_updated: "2026-03-13T10:25:21.993Z"
 last_activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
 progress:
   total_phases: 13
   completed_phases: 7
-  total_plans: 15
-  completed_plans: 15
+  total_plans: 17
+  completed_plans: 16
   percent: 100
 ---
 
@@ -93,6 +93,8 @@ Recent decisions relevant to v3.0:
 - [Phase 54-01]: Docker/kubectl receive NO content sniffers -- hint-only classification sufficient for devops tools
 - [Phase 54-02]: go_test chains to go_build::parse on compilation failure (no === RUN or ok/FAIL lines) — mirrors cargo_test -> cargo_build chain pattern
 - [Phase 54-02]: JSON lines parser requires >= 2 valid JSON lines for JsonLines output type — single JSON object in output falls through to freeform to avoid false positives
+- [Phase 55-01]: ActivityFilter collapses only Success/Info -- Error/Warning always pass through as actionable signals
+- [Phase 55-01]: pending_collapsed retroactively updates last window event collapsed_count on fingerprint change (lazy collapse)
 
 ### Pending Todos
 
@@ -108,6 +110,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T10:05:31.798Z
-Stopped at: Completed 54-02-PLAN.md
+Last session: 2026-03-13T10:25:21.991Z
+Stopped at: Completed 55-01-PLAN.md
 Resume file: None
