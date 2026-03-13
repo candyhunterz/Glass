@@ -32,6 +32,7 @@ metrics:
   tasks_completed: 2
   tasks_total: 2
   files_changed: 8
+requirements-completed: [AGTS-01, AGTS-02, AGTS-03]
 ---
 
 # Phase 59 Plan 01: Session Continuity - Types, DB, and Core Helpers Summary

@@ -29,6 +29,7 @@ metrics:
   tasks_completed: 1
   files_created: 1
   files_modified: 3
+requirements-completed: [AGTR-03]
 ---
 
 # Phase 56 Plan 01: Agent Runtime Types and Helpers Summary

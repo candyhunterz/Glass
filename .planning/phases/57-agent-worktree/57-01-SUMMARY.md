@@ -31,6 +31,7 @@ metrics:
   files_created: 5
   files_modified: 2
   tests_added: 15
+requirements-completed: [AGTW-06]
 ---
 
 # Phase 57 Plan 01: glass_agent Crate - WorktreeManager and SQLite Crash Recovery Summary
