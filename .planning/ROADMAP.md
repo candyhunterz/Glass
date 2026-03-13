@@ -398,4 +398,4 @@ Plans:
 | 57. Agent Worktree | 2/2 | Complete    | 2026-03-13 | - |
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
-| 60. Agent Configuration and Polish | 2/2 | Complete   | 2026-03-13 | - |
+| 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
