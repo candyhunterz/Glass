@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 58-01-PLAN.md
-last_updated: "2026-03-13T17:21:42.167Z"
-last_activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
+stopped_at: Completed 58-02-PLAN.md
+last_updated: "2026-03-13T17:40:00.000Z"
+last_activity: 2026-03-13 -- completed Phase 58 Agent Approval UI
 progress:
   total_phases: 13
-  completed_phases: 10
-  total_plans: 23
-  completed_plans: 22
+  completed_phases: 12
+  total_plans: 24
+  completed_plans: 24
   percent: 100
 ---
 
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 
 ## Current Position
 
-Phase: 54 of 60 (SOI Extended Parsers) -- Ready to plan
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
+Phase: 58 of 60 (Agent Approval UI) -- Complete
+Plan: 2 of 2 -- Complete
+Status: Phase complete
+Last activity: 2026-03-13 -- completed Phase 58 Agent Approval UI (plan 02)
 
-Progress: [████████████████████] 13/13 plans (100%) (v3.0: 7/13 phases)
+Progress: [████████████████████] 24/24 plans (100%) (v3.0: 12/13 phases)
 
 ## Performance Metrics
 
@@ -108,6 +108,10 @@ Recent decisions relevant to v3.0:
 - [Phase 58-01]: ProposalToastRenderer/ProposalOverlayRenderer are stateless pure-computation helpers following ConflictOverlay pattern -- no GPU state, unit-testable without wgpu
 - [Phase 58-01]: draw_multi_pane_frame renders proposal toast/overlay window-global after all panes -- per-plan spec
 - [Phase 58-01]: build_status_text gains agent_mode_text/proposal_count_text optional params -- fully backward compatible, None defaults
+- [Phase 58-02]: draw_frame and draw_multi_pane_frame gain agent_mode_text/proposal_count_text params forwarded to build_status_text -- avoids separate call site in main.rs
+- [Phase 58-02]: Diff cache stored as Option<(usize, String)> on Processor -- invalidated on selection change, regenerated lazily on next redraw
+- [Phase 58-02]: Arrow key / Escape overlay intercept placed before PTY forward with _ => {} fall-through to preserve AGTU-05 non-blocking guarantee
+- [Phase 58-02]: is_none_or() used instead of map_or(true, ...) per clippy unnecessary_map_or lint
 
 ### Pending Todos
 
@@ -123,6 +127,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T17:21:35.865Z
-Stopped at: Completed 58-01-PLAN.md
+Last session: 2026-03-13T17:40:00.000Z
+Stopped at: Completed 58-02-PLAN.md
 Resume file: None

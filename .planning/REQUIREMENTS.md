@@ -90,8 +90,8 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 - [x] **AGTU-01**: Status bar shows agent mode indicator and pending proposal count
 - [x] **AGTU-02**: Toast notification appears for new proposals with auto-dismiss and keyboard shortcut hint
 - [x] **AGTU-03**: Review overlay (Ctrl+Shift+A) shows scrollable proposal list with diff preview
-- [ ] **AGTU-04**: Keyboard-driven approval: accept, reject, and dismiss actions on proposals
-- [ ] **AGTU-05**: Approval UI is non-blocking -- terminal remains interactive while proposals are pending
+- [x] **AGTU-04**: Keyboard-driven approval: accept, reject, and dismiss actions on proposals
+- [x] **AGTU-05**: Approval UI is non-blocking -- terminal remains interactive while proposals are pending
 
 ### Agent Session Continuity
 
@@ -196,8 +196,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGTU-01 | Phase 58 | Complete |
 | AGTU-02 | Phase 58 | Complete |
 | AGTU-03 | Phase 58 | Complete |
-| AGTU-04 | Phase 58 | Pending |
-| AGTU-05 | Phase 58 | Pending |
+| AGTU-04 | Phase 58 | Complete |
+| AGTU-05 | Phase 58 | Complete |
 | AGTS-01 | Phase 59 | Pending |
 | AGTS-02 | Phase 59 | Pending |
 | AGTS-03 | Phase 59 | Pending |

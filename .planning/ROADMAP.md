@@ -137,7 +137,7 @@
 - [x] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering (completed 2026-03-13)
 - [x] **Phase 56: Agent Runtime** - Spawn background Claude CLI process with lifecycle management, autonomy modes, and cost cap (completed 2026-03-13)
 - [x] **Phase 57: Agent Worktree** - Implement git worktree isolation with SQLite-backed crash recovery and diff/apply/cleanup (completed 2026-03-13)
-- [ ] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals
+- [x] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals (completed 2026-03-13)
 - [ ] **Phase 59: Agent Session Continuity** - Persist handoff summaries across context resets with chained session resumption
 - [ ] **Phase 60: Agent Configuration** - Complete [agent] and [soi] config sections with permission matrix and graceful degradation
 
@@ -301,7 +301,7 @@ Plans:
   3. Pressing Ctrl+Shift+A opens a review overlay showing the proposal list with diff preview that does not capture keyboard focus from the terminal
   4. Pressing the accept key applies the worktree changes; pressing the reject key dismisses the proposal and removes the worktree
   5. The terminal remains fully interactive (typing, running commands) while a proposal toast is visible or the review overlay is open
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 58-01-PLAN.md -- ProposalToastRenderer, ProposalOverlayRenderer, StatusLabel extension, draw_frame wiring
 - [ ] 58-02-PLAN.md -- Processor state, keyboard shortcuts, toast/overlay data flow, human verification
@@ -396,6 +396,6 @@ Plans:
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
 | 57. Agent Worktree | 2/2 | Complete    | 2026-03-13 | - |
-| 58. Agent Approval UI | 1/2 | In Progress|  | - |
+| 58. Agent Approval UI | 2/2 | Complete   | 2026-03-13 | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |
