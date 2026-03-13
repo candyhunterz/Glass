@@ -14,11 +14,31 @@ use crate::scrollbar::SCROLLBAR_WIDTH;
 /// Map an SOI severity string to a display color.
 fn soi_color_for_severity(severity: Option<&str>) -> Rgb {
     match severity {
-        Some("Error") => Rgb { r: 200, g: 80, b: 80 },
-        Some("Warning") => Rgb { r: 200, g: 160, b: 60 },
-        Some("Info") => Rgb { r: 100, g: 160, b: 200 },
-        Some("Success") => Rgb { r: 80, g: 160, b: 80 },
-        _ => Rgb { r: 140, g: 140, b: 140 },
+        Some("Error") => Rgb {
+            r: 200,
+            g: 80,
+            b: 80,
+        },
+        Some("Warning") => Rgb {
+            r: 200,
+            g: 160,
+            b: 60,
+        },
+        Some("Info") => Rgb {
+            r: 100,
+            g: 160,
+            b: 200,
+        },
+        Some("Success") => Rgb {
+            r: 80,
+            g: 160,
+            b: 80,
+        },
+        _ => Rgb {
+            r: 140,
+            g: 140,
+            b: 140,
+        },
     }
 }
 
@@ -609,7 +629,10 @@ mod tests {
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
         let soi = labels.iter().find(|l| l.text == "3 errors");
-        assert!(soi.is_some(), "SOI label should be present for Complete block with soi_summary");
+        assert!(
+            soi.is_some(),
+            "SOI label should be present for Complete block with soi_summary"
+        );
     }
 
     #[test]
@@ -620,13 +643,23 @@ mod tests {
         let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
         // Only exit code badge "OK" should be present, no SOI-specific text
         let soi_labels: Vec<_> = labels.iter().filter(|l| l.text != "OK").collect();
-        assert!(soi_labels.is_empty(), "No SOI label when soi_summary is None");
+        assert!(
+            soi_labels.is_empty(),
+            "No SOI label when soi_summary is None"
+        );
     }
 
     #[test]
     fn test_soi_label_color_error() {
         let color = soi_color_for_severity(Some("Error"));
-        assert_eq!(color, Rgb { r: 200, g: 80, b: 80 });
+        assert_eq!(
+            color,
+            Rgb {
+                r: 200,
+                g: 80,
+                b: 80
+            }
+        );
     }
 
     #[test]
@@ -635,7 +668,10 @@ mod tests {
         let block = make_soi_block(Some("2 warnings"), Some("Warning"));
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
-        let soi = labels.iter().find(|l| l.text == "2 warnings").expect("SOI label should exist");
+        let soi = labels
+            .iter()
+            .find(|l| l.text == "2 warnings")
+            .expect("SOI label should exist");
         assert_eq!(soi.x, 10.0, "SOI label x should be cell_width * 1.0 = 10.0");
     }
 

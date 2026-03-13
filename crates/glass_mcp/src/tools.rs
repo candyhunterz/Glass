@@ -1776,11 +1776,25 @@ impl GlassServer {
                 let diff =
                     glass_history::compress::diff_compress(&curr_records, Some(&prev_records));
 
-                // Regression: any new TestResult records with severity Error
-                let has_regression = diff.new_count > 0
-                    && diff.new_records.iter().any(|r| {
-                        r.record_type == "TestResult" && r.severity.as_deref() == Some("Error")
-                    });
+                // Regression: the current run has failed TestResult records that the
+                // previous run did not. TestResult severity is None in the DB so we
+                // check the JSON data field for status "Failed".
+                let failed_test_in_run = |records: &[glass_history::OutputRecordRow]| {
+                    records.iter().any(|r| {
+                        if r.record_type != "TestResult" {
+                            return false;
+                        }
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r.data) {
+                            // serde serializes enum variants as {"TestResult": {...}}
+                            let inner = v.get("TestResult").unwrap_or(&v);
+                            inner.get("status").and_then(|s| s.as_str()) == Some("Failed")
+                        } else {
+                            false
+                        }
+                    })
+                };
+                let has_regression =
+                    failed_test_in_run(&curr_records) && !failed_test_in_run(&prev_records);
                 if has_regression {
                     regression_detected = true;
                 }
@@ -2841,5 +2855,257 @@ mod tests {
         assert!(result.contains("Npm"), "Expected output_type");
         assert!(result.contains("3 tests failed"), "Expected one_line");
         assert!(result.contains("npm test"), "Expected command");
+    }
+
+    // ── SOI MCP tool tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_budget_known_values() {
+        use glass_history::compress::TokenBudget;
+        assert_eq!(parse_budget(Some("one_line")), TokenBudget::OneLine);
+        assert_eq!(parse_budget(Some("summary")), TokenBudget::Summary);
+        assert_eq!(parse_budget(Some("detailed")), TokenBudget::Detailed);
+        assert_eq!(parse_budget(Some("full")), TokenBudget::Full);
+    }
+
+    #[test]
+    fn test_parse_budget_defaults_to_summary() {
+        use glass_history::compress::TokenBudget;
+        assert_eq!(parse_budget(None), TokenBudget::Summary);
+        assert_eq!(parse_budget(Some("unknown_value")), TokenBudget::Summary);
+    }
+
+    #[test]
+    fn test_query_params_deserialize_minimal() {
+        let json = r#"{"command_id": 42}"#;
+        let params: QueryParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 42);
+        assert!(params.budget.is_none());
+        assert!(params.severity.is_none());
+        assert!(params.file.is_none());
+        assert!(params.record_type.is_none());
+    }
+
+    #[test]
+    fn test_query_params_deserialize_full() {
+        let json = r#"{"command_id": 7, "budget": "detailed", "severity": "Error", "file": "src/main.rs", "record_type": "CompilerError"}"#;
+        let params: QueryParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command_id, 7);
+        assert_eq!(params.budget.as_deref(), Some("detailed"));
+        assert_eq!(params.severity.as_deref(), Some("Error"));
+        assert_eq!(params.file.as_deref(), Some("src/main.rs"));
+        assert_eq!(params.record_type.as_deref(), Some("CompilerError"));
+    }
+
+    #[test]
+    fn test_query_trend_params_deserialize() {
+        let json = r#"{"command": "cargo test%", "n": 3}"#;
+        let params: QueryTrendParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command, "cargo test%");
+        assert_eq!(params.n, Some(3));
+    }
+
+    #[test]
+    fn test_query_trend_params_default_n() {
+        let json = r#"{"command": "make build"}"#;
+        let params: QueryTrendParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.command, "make build");
+        assert!(params.n.is_none());
+    }
+
+    #[test]
+    fn test_query_drill_params_deserialize() {
+        let json = r#"{"record_id": 99}"#;
+        let params: QueryDrillParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.record_id, 99);
+    }
+
+    #[test]
+    fn test_glass_query_no_soi_data_returns_none() {
+        // compress_output returns None for commands with no SOI data
+        let (db, _dir) = make_soi_test_db();
+        let cmd_id = insert_cmd_for_soi(&db, "ls -la", "/tmp", Some(0), 1700000000);
+        // No insert_parsed_output -- command has no SOI data
+        let result = db
+            .compress_output(cmd_id, glass_history::compress::TokenBudget::Summary)
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "compress_output must return None with no SOI data"
+        );
+    }
+
+    #[test]
+    fn test_glass_query_with_soi_data_returns_compressed_output() {
+        // compress_output returns Some(CompressedOutput) when SOI data exists
+        let (db, _dir) = make_soi_test_db();
+        let cmd_id = insert_cmd_for_soi(&db, "cargo build", "/proj", Some(0), 1700000000);
+        let parsed = make_soi_parsed("Build succeeded", glass_soi::Severity::Info);
+        db.insert_parsed_output(cmd_id, &parsed).unwrap();
+
+        let result = db
+            .compress_output(cmd_id, glass_history::compress::TokenBudget::Summary)
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "compress_output must return Some when SOI data exists"
+        );
+        let compressed = result.unwrap();
+        assert!(
+            !compressed.text.is_empty(),
+            "Compressed text should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_glass_query_drill_unknown_id_returns_none() {
+        let (db, _dir) = make_soi_test_db();
+        let row: Option<(i64,)> = db
+            .conn()
+            .query_row(
+                "SELECT id FROM output_records WHERE id = ?1",
+                rusqlite::params![9999_i64],
+                |row| Ok((row.get::<_, i64>(0)?,)),
+            )
+            .optional()
+            .unwrap();
+        assert!(row.is_none(), "Non-existent record_id must return None");
+    }
+
+    #[test]
+    fn test_glass_query_drill_valid_record() {
+        use glass_soi::{OutputRecord, ParsedOutput, TestStatus};
+        let (db, _dir) = make_soi_test_db();
+        let cmd_id = insert_cmd_for_soi(&db, "cargo test", "/proj", Some(1), 1700000000);
+        let parsed = ParsedOutput {
+            output_type: glass_soi::OutputType::RustTest,
+            summary: glass_soi::OutputSummary {
+                one_line: "1 test failed".to_string(),
+                token_estimate: 5,
+                severity: glass_soi::Severity::Error,
+            },
+            records: vec![OutputRecord::TestResult {
+                name: "test_bar".to_string(),
+                status: TestStatus::Failed,
+                duration_ms: None,
+                failure_message: Some("panicked".to_string()),
+                failure_location: None,
+            }],
+            raw_line_count: 5,
+            raw_byte_count: 100,
+        };
+        db.insert_parsed_output(cmd_id, &parsed).unwrap();
+
+        let records = db
+            .get_output_records(cmd_id, None, None, None, 100)
+            .unwrap();
+        let record_id = records[0].id;
+
+        let row: Option<(i64, i64, String, Option<String>, Option<String>, String)> = db
+            .conn()
+            .query_row(
+                "SELECT id, command_id, record_type, severity, file_path, data \
+                 FROM output_records WHERE id = ?1",
+                rusqlite::params![record_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .unwrap();
+
+        assert!(row.is_some(), "Valid record_id must return a row");
+        let (_id, _cmd, record_type, severity, _file, data) = row.unwrap();
+        assert_eq!(record_type, "TestResult");
+        // TestResult records have severity=None in DB (severity is embedded in data JSON)
+        assert!(severity.is_none(), "TestResult severity must be None in DB");
+        let val: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert!(val.is_object(), "data column must be a valid JSON object");
+    }
+
+    #[test]
+    fn test_glass_query_trend_regression_detection() {
+        use glass_soi::{OutputRecord, ParsedOutput, TestStatus};
+        let (db, _dir) = make_soi_test_db();
+
+        // Run 1: test passes (success record)
+        let cmd1 = insert_cmd_for_soi(&db, "cargo test", "/proj", Some(0), 1000);
+        let p1 = ParsedOutput {
+            output_type: glass_soi::OutputType::RustTest,
+            summary: glass_soi::OutputSummary {
+                one_line: "all ok".to_string(),
+                token_estimate: 2,
+                severity: glass_soi::Severity::Success,
+            },
+            records: vec![OutputRecord::TestResult {
+                name: "test_alpha".to_string(),
+                status: TestStatus::Passed,
+                duration_ms: None,
+                failure_message: None,
+                failure_location: None,
+            }],
+            raw_line_count: 1,
+            raw_byte_count: 10,
+        };
+        db.insert_parsed_output(cmd1, &p1).unwrap();
+
+        // Run 2: test_alpha now fails (regression)
+        let cmd2 = insert_cmd_for_soi(&db, "cargo test", "/proj", Some(1), 2000);
+        let p2 = ParsedOutput {
+            output_type: glass_soi::OutputType::RustTest,
+            summary: glass_soi::OutputSummary {
+                one_line: "1 failed".to_string(),
+                token_estimate: 2,
+                severity: glass_soi::Severity::Error,
+            },
+            records: vec![OutputRecord::TestResult {
+                name: "test_alpha".to_string(),
+                status: TestStatus::Failed,
+                duration_ms: None,
+                failure_message: Some("panicked at assertion failed".to_string()),
+                failure_location: None,
+            }],
+            raw_line_count: 3,
+            raw_byte_count: 40,
+        };
+        db.insert_parsed_output(cmd2, &p2).unwrap();
+
+        let run_ids = db.get_last_n_run_ids("cargo test", 5).unwrap();
+        assert_eq!(run_ids.len(), 2);
+
+        let prev = db
+            .get_output_records(run_ids[0], None, None, None, 10000)
+            .unwrap();
+        let curr = db
+            .get_output_records(run_ids[1], None, None, None, 10000)
+            .unwrap();
+        let _diff = glass_history::compress::diff_compress(&curr, Some(&prev));
+
+        // TestResult severity is None in DB; regression is detected by checking JSON data.
+        let failed_test_in_run = |records: &[glass_history::OutputRecordRow]| {
+            records.iter().any(|r| {
+                if r.record_type != "TestResult" {
+                    return false;
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r.data) {
+                    let inner = v.get("TestResult").unwrap_or(&v);
+                    inner.get("status").and_then(|s| s.as_str()) == Some("Failed")
+                } else {
+                    false
+                }
+            })
+        };
+        let regression = failed_test_in_run(&curr) && !failed_test_in_run(&prev);
+        assert!(
+            regression,
+            "Regression must be detected when test_alpha goes from pass to fail"
+        );
     }
 }

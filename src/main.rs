@@ -2924,16 +2924,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .unwrap_or_default();
 
                                 let (summary, severity, raw_line_count) = match output_text {
-                                    None => (
-                                        "no output captured".to_string(),
-                                        "Info".to_string(),
-                                        0i64,
-                                    ),
-                                    Some(ref text) if text.is_empty() => (
-                                        "no output captured".to_string(),
-                                        "Info".to_string(),
-                                        0i64,
-                                    ),
+                                    None => {
+                                        ("no output captured".to_string(), "Info".to_string(), 0i64)
+                                    }
+                                    Some(ref text) if text.is_empty() => {
+                                        ("no output captured".to_string(), "Info".to_string(), 0i64)
+                                    }
                                     Some(text) => {
                                         let output_type =
                                             glass_soi::classify(&text, Some(&command_text));
@@ -3139,11 +3135,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
 
                             // SOID-02: Inject hint line if shell_summary enabled
-                            let (shell_summary_on, min_lines) =
-                                match self.config.soi.as_ref() {
-                                    Some(s) => (s.enabled && s.shell_summary, s.min_lines),
-                                    None => (false, 0),
-                                };
+                            let (shell_summary_on, min_lines) = match self.config.soi.as_ref() {
+                                Some(s) => (s.enabled && s.shell_summary, s.min_lines),
+                                None => (false, 0),
+                            };
                             if let Some(hint) = glass_terminal::build_soi_hint_line(
                                 &summary,
                                 soi_enabled,

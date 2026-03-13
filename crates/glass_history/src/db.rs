@@ -396,6 +396,24 @@ impl HistoryDb {
         crate::soi::get_previous_run_records(&self.conn, command_text, current_command_id)
     }
 
+    /// Return up to `n` command IDs for commands matching the LIKE pattern,
+    /// ordered oldest-first (ascending started_at).
+    ///
+    /// The `command_pattern` uses SQLite LIKE syntax: `%` matches any sequence,
+    /// `_` matches any single character.
+    pub fn get_last_n_run_ids(&self, command_pattern: &str, n: usize) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM commands WHERE command LIKE ?1 ORDER BY started_at DESC LIMIT ?2",
+        )?;
+        let rows: Vec<i64> = stmt
+            .query_map(params![command_pattern, n as i64], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        // Reverse so result is oldest-first (forward progression for diffs)
+        let mut result = rows;
+        result.reverse();
+        Ok(result)
+    }
+
     /// Compress output records for a command at the given token budget level.
     ///
     /// Fetches the summary and records from the DB, then runs the compression
@@ -425,6 +443,19 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = HistoryDb::open(&db_path).unwrap();
         (db, dir)
+    }
+
+    fn timed_record(command: &str, started_at: i64) -> CommandRecord {
+        CommandRecord {
+            id: None,
+            command: command.to_string(),
+            cwd: "/home/user".to_string(),
+            exit_code: Some(0),
+            started_at,
+            finished_at: started_at + 5,
+            duration_ms: 5000,
+            output: None,
+        }
     }
 
     fn sample_record(command: &str) -> CommandRecord {
@@ -1311,6 +1342,89 @@ mod tests {
         // Verify command text is still retrievable
         let cmd_text = db.get_command_text(cmd_id).unwrap();
         assert_eq!(cmd_text, Some("vim".to_string()));
+    }
+
+    // ── get_last_n_run_ids tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_get_last_n_run_ids_exact_match() {
+        let (db, _dir) = test_db();
+        // Insert three runs of "cargo test" at ascending timestamps
+        let id1 = db
+            .insert_command(&timed_record("cargo test", 1000))
+            .unwrap();
+        let id2 = db
+            .insert_command(&timed_record("cargo test", 2000))
+            .unwrap();
+        let id3 = db
+            .insert_command(&timed_record("cargo test", 3000))
+            .unwrap();
+        // Also insert an unrelated command
+        db.insert_command(&timed_record("git status", 4000))
+            .unwrap();
+
+        let ids = db.get_last_n_run_ids("cargo test", 5).unwrap();
+        // Should return all 3 cargo test commands, oldest-first
+        assert_eq!(ids, vec![id1, id2, id3]);
+    }
+
+    #[test]
+    fn test_get_last_n_run_ids_limit() {
+        let (db, _dir) = test_db();
+        let _id1 = db
+            .insert_command(&timed_record("cargo test", 1000))
+            .unwrap();
+        let id2 = db
+            .insert_command(&timed_record("cargo test", 2000))
+            .unwrap();
+        let id3 = db
+            .insert_command(&timed_record("cargo test", 3000))
+            .unwrap();
+
+        // Ask for only 2 -- should return the 2 most recent, oldest-first
+        let ids = db.get_last_n_run_ids("cargo test", 2).unwrap();
+        assert_eq!(ids, vec![id2, id3]);
+    }
+
+    #[test]
+    fn test_get_last_n_run_ids_like_pattern() {
+        let (db, _dir) = test_db();
+        let id1 = db
+            .insert_command(&timed_record("cargo test", 1000))
+            .unwrap();
+        let id2 = db
+            .insert_command(&timed_record("cargo test --workspace", 2000))
+            .unwrap();
+        let _id3 = db
+            .insert_command(&timed_record("cargo build", 3000))
+            .unwrap();
+
+        // Pattern "cargo test%" should match both "cargo test" and "cargo test --workspace"
+        let ids = db.get_last_n_run_ids("cargo test%", 10).unwrap();
+        assert_eq!(ids, vec![id1, id2]);
+    }
+
+    #[test]
+    fn test_get_last_n_run_ids_unknown_command_returns_empty() {
+        let (db, _dir) = test_db();
+        db.insert_command(&timed_record("cargo build", 1000))
+            .unwrap();
+
+        let ids = db.get_last_n_run_ids("nonexistent command xyz", 5).unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_get_last_n_run_ids_oldest_first_ordering() {
+        let (db, _dir) = test_db();
+        // Insert in reverse order of timestamps to confirm sorting works
+        let id3 = db.insert_command(&timed_record("make test", 3000)).unwrap();
+        let id1 = db.insert_command(&timed_record("make test", 1000)).unwrap();
+        let id2 = db.insert_command(&timed_record("make test", 2000)).unwrap();
+
+        let ids = db.get_last_n_run_ids("make test", 10).unwrap();
+        // Result must be oldest-first regardless of insertion order
+        assert_eq!(ids, vec![id1, id2, id3]);
     }
 
     /// SOIL-04: SOI worker handles binary placeholder output

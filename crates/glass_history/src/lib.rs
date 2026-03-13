@@ -13,7 +13,7 @@ pub mod retention;
 pub mod search;
 pub mod soi;
 
-pub use compress::{CompressedOutput, DiffSummary, RecordFingerprint, TokenBudget, diff_compress};
+pub use compress::{diff_compress, CompressedOutput, DiffSummary, RecordFingerprint, TokenBudget};
 pub use config::HistoryConfig;
 pub use db::{CommandRecord, HistoryDb, PipeStageRow};
 pub use query::QueryFilter;

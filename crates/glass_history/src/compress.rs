@@ -72,9 +72,7 @@ pub fn compress(
     match budget {
         TokenBudget::OneLine => compress_one_line(records, summary),
         TokenBudget::Full => compress_full(records),
-        TokenBudget::Summary | TokenBudget::Detailed => {
-            compress_greedy(records, summary, budget)
-        }
+        TokenBudget::Summary | TokenBudget::Detailed => compress_greedy(records, summary, budget),
     }
 }
 
@@ -345,28 +343,21 @@ pub fn diff_compress(
     use std::collections::HashSet;
 
     // Build fingerprint sets, skipping FreeformChunk records.
-    let current_set: HashSet<RecordFingerprint> = current_records
-        .iter()
-        .filter_map(fingerprint)
-        .collect();
+    let current_set: HashSet<RecordFingerprint> =
+        current_records.iter().filter_map(fingerprint).collect();
 
-    let prev_set: HashSet<RecordFingerprint> = prev
-        .iter()
-        .filter_map(fingerprint)
-        .collect();
+    let prev_set: HashSet<RecordFingerprint> = prev.iter().filter_map(fingerprint).collect();
 
-    let new_records: Vec<RecordFingerprint> = current_set
-        .difference(&prev_set)
-        .cloned()
-        .collect();
-    let resolved_records: Vec<RecordFingerprint> = prev_set
-        .difference(&current_set)
-        .cloned()
-        .collect();
+    let new_records: Vec<RecordFingerprint> = current_set.difference(&prev_set).cloned().collect();
+    let resolved_records: Vec<RecordFingerprint> =
+        prev_set.difference(&current_set).cloned().collect();
 
     let new_count = new_records.len();
     let resolved_count = resolved_records.len();
-    let change_line = format!("compared to last run: {} new, {} resolved", new_count, resolved_count);
+    let change_line = format!(
+        "compared to last run: {} new, {} resolved",
+        new_count, resolved_count
+    );
 
     DiffSummary {
         new_records,
@@ -458,8 +449,20 @@ mod tests {
     fn compress_one_line_failed_build() {
         // Two Error records in src/main.rs and src/lib.rs
         let records = vec![
-            make_record(1, "CompilerError", Some("Error"), Some("src/main.rs"), "mismatched types"),
-            make_record(2, "CompilerError", Some("Error"), Some("src/lib.rs"), "unused import"),
+            make_record(
+                1,
+                "CompilerError",
+                Some("Error"),
+                Some("src/main.rs"),
+                "mismatched types",
+            ),
+            make_record(
+                2,
+                "CompilerError",
+                Some("Error"),
+                Some("src/lib.rs"),
+                "unused import",
+            ),
         ];
         let summary = make_summary("2 errors");
 
@@ -495,7 +498,10 @@ mod tests {
         let summary = make_summary("1 warning");
 
         let out = compress(&records, &summary, TokenBudget::OneLine);
-        assert_eq!(out.text, "1 warning", "Expected fallback to summary.one_line");
+        assert_eq!(
+            out.text, "1 warning",
+            "Expected fallback to summary.one_line"
+        );
     }
 
     // ── Summary budget ───────────────────────────────────────────────────────
@@ -552,15 +558,31 @@ mod tests {
     #[test]
     fn compress_full_budget_no_truncation() {
         let records = vec![
-            make_record(1, "CompilerError", Some("Error"), Some("src/a.rs"), "error a"),
-            make_record(2, "CompilerError", Some("Warning"), Some("src/b.rs"), "warn b"),
+            make_record(
+                1,
+                "CompilerError",
+                Some("Error"),
+                Some("src/a.rs"),
+                "error a",
+            ),
+            make_record(
+                2,
+                "CompilerError",
+                Some("Warning"),
+                Some("src/b.rs"),
+                "warn b",
+            ),
             make_record(3, "CompilerError", Some("Info"), None, "info c"),
         ];
         let summary = make_summary("mixed");
 
         let out = compress(&records, &summary, TokenBudget::Full);
         assert!(!out.truncated, "Full budget should never truncate");
-        assert_eq!(out.record_ids.len(), 3, "Full budget should include all 3 records");
+        assert_eq!(
+            out.record_ids.len(),
+            3,
+            "Full budget should include all 3 records"
+        );
     }
 
     // ── Ordering / priority ──────────────────────────────────────────────────
@@ -569,8 +591,20 @@ mod tests {
     fn compress_errors_before_warnings() {
         // Mix Warning (id=1) and Error (id=2) -- Error should come first in output
         let records = vec![
-            make_record(1, "CompilerError", Some("Warning"), Some("src/main.rs"), "unused"),
-            make_record(2, "CompilerError", Some("Error"), Some("src/main.rs"), "mismatched types"),
+            make_record(
+                1,
+                "CompilerError",
+                Some("Warning"),
+                Some("src/main.rs"),
+                "unused",
+            ),
+            make_record(
+                2,
+                "CompilerError",
+                Some("Error"),
+                Some("src/main.rs"),
+                "mismatched types",
+            ),
         ];
         let summary = make_summary("1 error, 1 warning");
 
@@ -590,8 +624,20 @@ mod tests {
     #[test]
     fn compress_drill_down_record_ids() {
         let records = vec![
-            make_record(10, "CompilerError", Some("Error"), Some("src/main.rs"), "err1"),
-            make_record(20, "CompilerError", Some("Warning"), Some("src/lib.rs"), "warn1"),
+            make_record(
+                10,
+                "CompilerError",
+                Some("Error"),
+                Some("src/main.rs"),
+                "err1",
+            ),
+            make_record(
+                20,
+                "CompilerError",
+                Some("Warning"),
+                Some("src/lib.rs"),
+                "warn1",
+            ),
         ];
         let summary = make_summary("1 error, 1 warning");
 
@@ -624,7 +670,13 @@ mod tests {
 
     #[test]
     fn diff_compress_first_run_no_prior() {
-        let current = vec![make_record(1, "CompilerError", Some("Error"), None, "an error")];
+        let current = vec![make_record(
+            1,
+            "CompilerError",
+            Some("Error"),
+            None,
+            "an error",
+        )];
         let result = diff_compress(&current, None);
         assert!(
             result.change_line.contains("first run"),
@@ -637,10 +689,18 @@ mod tests {
 
     #[test]
     fn diff_compress_empty_previous() {
-        let current = vec![make_record(1, "CompilerError", Some("Error"), None, "an error")];
+        let current = vec![make_record(
+            1,
+            "CompilerError",
+            Some("Error"),
+            None,
+            "an error",
+        )];
         let result = diff_compress(&current, Some(&[]));
         assert!(
-            result.change_line.contains("no structured data for previous run"),
+            result
+                .change_line
+                .contains("no structured data for previous run"),
             "Expected 'no structured data' message, got: {}",
             result.change_line
         );
@@ -652,18 +712,45 @@ mod tests {
     fn diff_compress_second_run() {
         // Previous run: error A and warning B
         let previous = vec![
-            make_record(1, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
-            make_record(2, "CompilerError", Some("Warning"), Some("src/b.rs"), "warning B"),
+            make_record(
+                1,
+                "CompilerError",
+                Some("Error"),
+                Some("src/a.rs"),
+                "error A",
+            ),
+            make_record(
+                2,
+                "CompilerError",
+                Some("Warning"),
+                Some("src/b.rs"),
+                "warning B",
+            ),
         ];
         // Current run: error A remains, warning B resolved, new error C
         let current = vec![
-            make_record(3, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
-            make_record(4, "CompilerError", Some("Error"), Some("src/c.rs"), "error C"),
+            make_record(
+                3,
+                "CompilerError",
+                Some("Error"),
+                Some("src/a.rs"),
+                "error A",
+            ),
+            make_record(
+                4,
+                "CompilerError",
+                Some("Error"),
+                Some("src/c.rs"),
+                "error C",
+            ),
         ];
 
         let result = diff_compress(&current, Some(&previous));
         assert_eq!(result.new_count, 1, "Should have 1 new record (error C)");
-        assert_eq!(result.resolved_count, 1, "Should have 1 resolved record (warning B)");
+        assert_eq!(
+            result.resolved_count, 1,
+            "Should have 1 resolved record (warning B)"
+        );
         assert!(
             result.change_line.contains("new") && result.change_line.contains("resolved"),
             "change_line should contain 'new' and 'resolved', got: {}",
@@ -674,17 +761,47 @@ mod tests {
     #[test]
     fn diff_compress_identical_runs() {
         let run = vec![
-            make_record(1, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
-            make_record(2, "CompilerError", Some("Warning"), Some("src/b.rs"), "warning B"),
+            make_record(
+                1,
+                "CompilerError",
+                Some("Error"),
+                Some("src/a.rs"),
+                "error A",
+            ),
+            make_record(
+                2,
+                "CompilerError",
+                Some("Warning"),
+                Some("src/b.rs"),
+                "warning B",
+            ),
         ];
         // Identical run: same fingerprints (different IDs, same content)
         let run2 = vec![
-            make_record(3, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
-            make_record(4, "CompilerError", Some("Warning"), Some("src/b.rs"), "warning B"),
+            make_record(
+                3,
+                "CompilerError",
+                Some("Error"),
+                Some("src/a.rs"),
+                "error A",
+            ),
+            make_record(
+                4,
+                "CompilerError",
+                Some("Warning"),
+                Some("src/b.rs"),
+                "warning B",
+            ),
         ];
 
         let result = diff_compress(&run2, Some(&run));
-        assert_eq!(result.new_count, 0, "Identical runs should have 0 new records");
-        assert_eq!(result.resolved_count, 0, "Identical runs should have 0 resolved records");
+        assert_eq!(
+            result.new_count, 0,
+            "Identical runs should have 0 new records"
+        );
+        assert_eq!(
+            result.resolved_count, 0,
+            "Identical runs should have 0 resolved records"
+        );
     }
 }
