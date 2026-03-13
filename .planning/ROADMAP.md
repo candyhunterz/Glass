@@ -347,6 +347,9 @@ Plans:
   2. build_agent_command_args never emits a dangling --mcp-config flag with no path value
   3. flush_collapsed() is called during agent shutdown so the last collapsed activity event is not silently dropped
   4. E2E Flow 2 (MCP SOI Query from agent) completes: agent subprocess can call glass_query and receive structured output
+**Plans:** 1 plan
+Plans:
+- [ ] 61-01-PLAN.md -- Fix build_agent_command_args, write MCP config JSON, flush_collapsed at shutdown
 
 ### Phase 62: v3.0 Tech Debt Cleanup
 **Goal:** Eliminate accumulated documentation and metadata debt from the v3.0 milestone
@@ -421,5 +424,5 @@ Plans:
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
-| 61. Wire MCP Config to Agent Subprocess | v3.0 | 0/0 | Planned | - |
+| 61. Wire MCP Config to Agent Subprocess | v3.0 | 0/1 | Planned | - |
 | 62. v3.0 Tech Debt Cleanup | v3.0 | 0/0 | Planned | - |
