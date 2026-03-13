@@ -3986,6 +3986,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.agent_runtime = None;
                 }
             }
+            AppEvent::AgentHandoff {
+                session_id,
+                handoff,
+                project_root,
+                raw_json,
+            } => {
+                // Plan 59-02 will wire this into AgentSessionDb persistence.
+                // For now, log the handoff so it is visible and the variant is handled.
+                tracing::info!(
+                    "AgentRuntime: handoff received session_id={} project_root={} work_completed={}",
+                    session_id,
+                    project_root,
+                    handoff.work_completed
+                );
+                let _ = raw_json; // suppressed until Plan 59-02 persistence wiring
+            }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {

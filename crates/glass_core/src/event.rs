@@ -118,6 +118,17 @@ pub enum AppEvent {
     },
     /// The agent subprocess returned a structured proposal for user review.
     AgentProposal(crate::agent_runtime::AgentProposalData),
+    /// The agent subprocess emitted a structured handoff summary at session end.
+    AgentHandoff {
+        /// Claude session UUID from the system/init message.
+        session_id: String,
+        /// Parsed handoff data.
+        handoff: crate::agent_runtime::AgentHandoffData,
+        /// Canonicalized project root for DB storage.
+        project_root: String,
+        /// Raw JSON string of the handoff marker.
+        raw_json: String,
+    },
     /// The agent subprocess completed a query and reported its cost.
     AgentQueryResult { cost_usd: f64 },
     /// The agent subprocess terminated unexpectedly.
@@ -197,6 +208,38 @@ mod tests {
                 assert_eq!(raw_line_count, 15);
             }
             _ => panic!("Expected SoiReady"),
+        }
+    }
+
+    #[test]
+    fn app_event_agent_handoff_variant() {
+        let handoff = crate::agent_runtime::AgentHandoffData {
+            work_completed: "Refactored DB layer".to_string(),
+            work_remaining: "Add MCP tools".to_string(),
+            key_decisions: "Use WAL mode".to_string(),
+            previous_session_id: None,
+        };
+        let event = AppEvent::AgentHandoff {
+            session_id: "sess-xyz-789".to_string(),
+            handoff,
+            project_root: "/home/user/project".to_string(),
+            raw_json: r#"{"work_completed":"Refactored DB layer","work_remaining":"Add MCP tools","key_decisions":"Use WAL mode"}"#.to_string(),
+        };
+        match event {
+            AppEvent::AgentHandoff {
+                session_id,
+                handoff,
+                project_root,
+                raw_json,
+            } => {
+                assert_eq!(session_id, "sess-xyz-789");
+                assert_eq!(handoff.work_completed, "Refactored DB layer");
+                assert_eq!(handoff.work_remaining, "Add MCP tools");
+                assert_eq!(handoff.key_decisions, "Use WAL mode");
+                assert_eq!(project_root, "/home/user/project");
+                assert!(raw_json.contains("work_completed"));
+            }
+            _ => panic!("Expected AgentHandoff"),
         }
     }
 }

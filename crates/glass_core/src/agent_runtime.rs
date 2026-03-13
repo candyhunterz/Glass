@@ -191,6 +191,78 @@ pub fn parse_cost_from_result(line: &str) -> Option<f64> {
     v.get("cost_usd")?.as_f64()
 }
 
+/// Structured handoff data emitted by an agent at the end of a session.
+///
+/// Mirrors `HandoffData` in `glass_agent::types` but is defined here to keep
+/// `glass_core` dependency-free of `glass_agent` (same pattern as
+/// `AgentProposalData` vs glass_agent types).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AgentHandoffData {
+    /// Summary of work the agent completed in this session.
+    pub work_completed: String,
+    /// Summary of work that remains to be done.
+    pub work_remaining: String,
+    /// Key decisions or context for the next session.
+    pub key_decisions: String,
+    /// The `session_id` from the prior session, if this session was a continuation.
+    #[serde(default)]
+    pub previous_session_id: Option<String>,
+}
+
+/// Attempt to extract a structured handoff from the assistant's response text.
+///
+/// Searches for a `GLASS_HANDOFF:` prefix followed by a JSON object `{...}`.
+/// Uses the same brace-depth walker as `extract_proposal`.
+/// Returns `Some((handoff_data, raw_json_string))` on success, `None` on failure.
+pub fn extract_handoff(assistant_text: &str) -> Option<(AgentHandoffData, String)> {
+    let marker = "GLASS_HANDOFF:";
+    let start = assistant_text.find(marker)?;
+    let after_marker = assistant_text[start + marker.len()..].trim_start();
+
+    let brace_start = after_marker.find('{')?;
+    let json_slice = &after_marker[brace_start..];
+
+    let mut depth = 0usize;
+    let mut end = None;
+    for (i, ch) in json_slice.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    end = Some(i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let json_str = &json_slice[..end?];
+    let handoff: AgentHandoffData = serde_json::from_str(json_str).ok()?;
+    Some((handoff, json_str.to_string()))
+}
+
+/// Serialize a handoff as a Claude CLI stream-json user message.
+///
+/// Returns a JSON string of the form:
+/// ```json
+/// {"type":"user","message":{"role":"user","content":"[PRIOR_SESSION_CONTEXT] session_id=... work_completed=... work_remaining=... key_decisions=..."}}
+/// ```
+pub fn format_handoff_as_user_message(session_id: &str, handoff: &AgentHandoffData) -> String {
+    let content = format!(
+        "[PRIOR_SESSION_CONTEXT] session_id={} work_completed={} work_remaining={} key_decisions={}",
+        session_id, handoff.work_completed, handoff.work_remaining, handoff.key_decisions
+    );
+    serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content
+        }
+    })
+    .to_string()
+}
+
 /// Attempt to extract an agent proposal from the assistant's response text.
 ///
 /// Searches for a `GLASS_PROPOSAL:` prefix followed by a JSON object `{...}`.
@@ -376,6 +448,64 @@ mod tests {
     #[test]
     fn parse_cost_returns_none_for_invalid_json() {
         assert_eq!(parse_cost_from_result("not json"), None);
+    }
+
+    // --- extract_handoff ---
+
+    #[test]
+    fn extract_handoff_parses_valid_marker() {
+        let text = r#"Session complete.
+GLASS_HANDOFF: {"work_completed":"Implemented auth module","work_remaining":"Write integration tests","key_decisions":"Used JWT with refresh rotation","previous_session_id":"sess-prev-42"}
+Thanks for using Glass."#;
+        let (data, raw) = extract_handoff(text).expect("should parse handoff");
+        assert_eq!(data.work_completed, "Implemented auth module");
+        assert_eq!(data.work_remaining, "Write integration tests");
+        assert_eq!(data.key_decisions, "Used JWT with refresh rotation");
+        assert_eq!(data.previous_session_id, Some("sess-prev-42".to_string()));
+        assert!(raw.contains("work_completed"));
+    }
+
+    #[test]
+    fn extract_handoff_returns_none_without_marker() {
+        let text = "Here is some assistant output without any handoff.";
+        assert!(extract_handoff(text).is_none());
+    }
+
+    #[test]
+    fn extract_handoff_returns_none_for_malformed_json() {
+        let text = "GLASS_HANDOFF: {broken json here";
+        assert!(extract_handoff(text).is_none());
+    }
+
+    #[test]
+    fn extract_handoff_handles_surrounding_text() {
+        let text = r#"Prefix text before marker. GLASS_HANDOFF: {"work_completed":"Done","work_remaining":"Nothing","key_decisions":"Fast path"} Suffix text after marker."#;
+        let (data, _raw) = extract_handoff(text).expect("should parse with surrounding text");
+        assert_eq!(data.work_completed, "Done");
+        assert_eq!(data.work_remaining, "Nothing");
+        assert_eq!(data.key_decisions, "Fast path");
+        assert_eq!(data.previous_session_id, None);
+    }
+
+    #[test]
+    fn format_handoff_produces_valid_json() {
+        let handoff = AgentHandoffData {
+            work_completed: "Completed phase 1".to_string(),
+            work_remaining: "Phase 2 pending".to_string(),
+            key_decisions: "Use async throughout".to_string(),
+            previous_session_id: Some("old-sess".to_string()),
+        };
+        let json_str = format_handoff_as_user_message("new-sess-123", &handoff);
+        let v: serde_json::Value =
+            serde_json::from_str(&json_str).expect("must produce valid JSON");
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        let content = v["message"]["content"].as_str().unwrap();
+        assert!(content.contains("[PRIOR_SESSION_CONTEXT]"));
+        assert!(content.contains("session_id=new-sess-123"));
+        assert!(content.contains("work_completed=Completed phase 1"));
+        assert!(content.contains("work_remaining=Phase 2 pending"));
+        assert!(content.contains("key_decisions=Use async throughout"));
     }
 
     // --- extract_proposal ---
