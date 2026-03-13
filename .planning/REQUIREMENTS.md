@@ -9,7 +9,7 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### SOI Parsing
 
-- [ ] **SOIP-01**: SOI classifier detects output type from command text and content patterns (Rust compiler, test runner, package manager, git, docker, kubectl, structured data, freeform)
+- [x] **SOIP-01**: SOI classifier detects output type from command text and content patterns (Rust compiler, test runner, package manager, git, docker, kubectl, structured data, freeform)
 - [ ] **SOIP-02**: Rust/cargo compiler error parser extracts file, line, column, severity, error code, message from cargo build/clippy output
 - [ ] **SOIP-03**: Rust/cargo test parser extracts test name, status (passed/failed/ignored), duration, failure message from cargo test output
 - [ ] **SOIP-04**: npm/Node parser extracts package events (added, removed, audited, vulnerabilities) from npm install/update output
@@ -145,7 +145,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SOIP-01 | Phase 48 | Pending |
+| SOIP-01 | Phase 48 | Complete |
 | SOIP-02 | Phase 48 | Pending |
 | SOIP-03 | Phase 48 | Pending |
 | SOIP-04 | Phase 48 | Pending |

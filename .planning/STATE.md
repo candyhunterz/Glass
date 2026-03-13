@@ -2,14 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
-status: ready_to_plan
-stopped_at: null
-last_updated: "2026-03-12T00:00:00.000Z"
+status: planning
+stopped_at: Completed 48-01-PLAN.md
+last_updated: "2026-03-13T05:22:41.939Z"
+last_activity: 2026-03-12 -- v3.0 roadmap created (phases 48-60)
 progress:
   total_phases: 13
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 3
+  completed_plans: 1
+  percent: 0
 ---
 
 # Project State
@@ -59,6 +61,9 @@ Recent decisions relevant to v3.0:
 - max_budget_usd = 1.0 USD default is non-negotiable -- ships in Phase 56, not deferred
 - git worktree registered in SQLite BEFORE creation -- crash recovery pattern from opencode PR #14649
 - New crates needed: glass_soi, glass_agent; new deps: uuid 1.22, git2 0.20
+- [Phase 48]: SOI Severity enum (Error/Warning/Info/Success) differs from glass_errors::Severity intentionally -- outcome-oriented scale for AI consumption
+- [Phase 48]: OutputRecord is an enum not a trait object -- zero-cost dispatch and easy serde serialization
+- [Phase 48]: All Phase 54 OutputType command-hint arms wired now in classifier -- future phases only add parser implementations
 
 ### Pending Todos
 
@@ -74,6 +79,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-12
-Stopped at: v3.0 roadmap created -- 13 phases (48-60), 62 requirements mapped, ready to plan Phase 48
+Last session: 2026-03-13T05:22:41.937Z
+Stopped at: Completed 48-01-PLAN.md
 Resume file: None
