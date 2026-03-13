@@ -133,7 +133,7 @@
 - [x] **Phase 51: SOI Compression Engine** - Build 4-level token-budgeted summary engine with diff-aware change detection (completed 2026-03-13)
 - [x] **Phase 52: SOI Display** - Render SOI summaries as block decorations and inject shell hint lines into PTY output (completed 2026-03-13)
 - [x] **Phase 53: SOI MCP Tools** - Add glass_query, glass_query_trend, glass_query_drill tools and update glass_context (completed 2026-03-13)
-- [ ] **Phase 54: SOI Extended Parsers** - Add git, docker, kubectl, tsc, Go, and generic JSON parsers to the parser registry
+- [x] **Phase 54: SOI Extended Parsers** - Add git, docker, kubectl, tsc, Go, and generic JSON parsers to the parser registry (completed 2026-03-13)
 - [ ] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering
 - [ ] **Phase 56: Agent Runtime** - Spawn background Claude CLI process with lifecycle management, autonomy modes, and cost cap
 - [ ] **Phase 57: Agent Worktree** - Implement git worktree isolation with SQLite-backed crash recovery and diff/apply/cleanup
@@ -240,7 +240,7 @@ Plans:
   4. Running `tsc` with type errors produces records with file, line, column, error code, and message matching the TypeScript compiler output
   5. Running `go build` or `go test` produces records matching the Go compiler or test runner output format
   6. Commands emitting NDJSON (structured log lines) are parsed into individual JSON record entries rather than FreeformChunk
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 54-01-PLAN.md -- Git, docker, kubectl parsers with content sniffer and lib.rs wiring
 - [ ] 54-02-PLAN.md -- tsc, Go build/test, JSON lines parsers with content sniffers and lib.rs wiring
@@ -392,7 +392,7 @@ Plans:
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
-| 54. SOI Extended Parsers | 1/2 | In Progress|  | - |
+| 54. SOI Extended Parsers | 2/2 | Complete   | 2026-03-13 | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |

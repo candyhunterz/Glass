@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 54-01-PLAN.md
-last_updated: "2026-03-13T09:59:07.506Z"
+stopped_at: Completed 54-02-PLAN.md
+last_updated: "2026-03-13T10:05:31.800Z"
 last_activity: 2026-03-13 -- completed Phase 53 SOI MCP Tools
 progress:
   total_phases: 13
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 15
-  completed_plans: 14
+  completed_plans: 15
   percent: 100
 ---
 
@@ -91,6 +91,8 @@ Recent decisions relevant to v3.0:
 - [Phase 53-soi-mcp-tools]: glass_query_drill uses inline SQL with .optional() not a HistoryDb method -- one-off lookup not worth a public API method
 - [Phase 54-01]: BuildKit step lines filtered by Dockerfile instruction keywords to avoid capturing DONE/CACHED timing lines
 - [Phase 54-01]: Docker/kubectl receive NO content sniffers -- hint-only classification sufficient for devops tools
+- [Phase 54-02]: go_test chains to go_build::parse on compilation failure (no === RUN or ok/FAIL lines) — mirrors cargo_test -> cargo_build chain pattern
+- [Phase 54-02]: JSON lines parser requires >= 2 valid JSON lines for JsonLines output type — single JSON object in output falls through to freeform to avoid false positives
 
 ### Pending Todos
 
@@ -106,6 +108,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T09:59:07.504Z
-Stopped at: Completed 54-01-PLAN.md
+Last session: 2026-03-13T10:05:31.798Z
+Stopped at: Completed 54-02-PLAN.md
 Resume file: None

@@ -55,9 +55,9 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 - [x] **SOIX-01**: Git parser extracts action, files changed, insertions/deletions from git status/diff/log/merge/pull output
 - [x] **SOIX-02**: Docker parser extracts build progress, errors, compose events from docker build/compose output
 - [x] **SOIX-03**: kubectl parser extracts pod status, apply results, describe output from kubectl commands
-- [ ] **SOIX-04**: TypeScript/tsc parser extracts file, line, column, error code, message from tsc output
-- [ ] **SOIX-05**: Go compiler and test parser extracts build errors and test results from go build/test output
-- [ ] **SOIX-06**: Generic JSON lines parser handles NDJSON/structured logging output
+- [x] **SOIX-04**: TypeScript/tsc parser extracts file, line, column, error code, message from tsc output
+- [x] **SOIX-05**: Go compiler and test parser extracts build errors and test results from go build/test output
+- [x] **SOIX-06**: Generic JSON lines parser handles NDJSON/structured logging output
 
 ### Agent Activity Stream
 
@@ -173,9 +173,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIX-01 | Phase 54 | Complete |
 | SOIX-02 | Phase 54 | Complete |
 | SOIX-03 | Phase 54 | Complete |
-| SOIX-04 | Phase 54 | Pending |
-| SOIX-05 | Phase 54 | Pending |
-| SOIX-06 | Phase 54 | Pending |
+| SOIX-04 | Phase 54 | Complete |
+| SOIX-05 | Phase 54 | Complete |
+| SOIX-06 | Phase 54 | Complete |
 | AGTA-01 | Phase 55 | Pending |
 | AGTA-02 | Phase 55 | Pending |
 | AGTA-03 | Phase 55 | Pending |
