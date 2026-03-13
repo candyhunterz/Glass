@@ -1,5 +1,6 @@
 //! glass_renderer — wgpu GPU surface and rendering
 
+pub mod activity_overlay;
 pub mod block_renderer;
 pub mod config_error_overlay;
 pub mod conflict_overlay;
@@ -15,6 +16,10 @@ pub mod status_bar;
 pub mod surface;
 pub mod tab_bar;
 
+pub use activity_overlay::{
+    ActivityOverlayRenderData, ActivityOverlayRenderer, ActivityOverlayTextLabel,
+    ActivityViewFilter,
+};
 pub use block_renderer::{BlockLabel, BlockRenderer};
 pub use config_error_overlay::{ConfigErrorOverlay, ConfigErrorTextLabel};
 pub use conflict_overlay::{ConflictOverlay, ConflictTextLabel};
