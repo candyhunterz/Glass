@@ -4,6 +4,7 @@
 //! history. Supports project-local databases (`.glass/history.db`) with
 //! global fallback (`~/.glass/global-history.db`).
 
+pub mod compress;
 pub mod config;
 pub mod db;
 pub mod output;
@@ -12,6 +13,7 @@ pub mod retention;
 pub mod search;
 pub mod soi;
 
+pub use compress::{CompressedOutput, TokenBudget};
 pub use config::HistoryConfig;
 pub use db::{CommandRecord, HistoryDb, PipeStageRow};
 pub use query::QueryFilter;
