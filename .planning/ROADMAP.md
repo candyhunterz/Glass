@@ -392,7 +392,7 @@ Plans:
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
-| 54. SOI Extended Parsers | 2/2 | Complete   | 2026-03-13 | - |
+| 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
