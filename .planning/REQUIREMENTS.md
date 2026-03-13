@@ -35,7 +35,7 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 - [x] **SOIC-01**: Compression engine produces summaries at 4 token-budget levels: OneLine (~10 tokens), Summary (~100), Detailed (~500), Full (~1000+)
 - [x] **SOIC-02**: Smart truncation prioritizes errors over warnings, recent over old within budget
 - [x] **SOIC-03**: Drill-down support returns record IDs for expanding specific items to full detail
-- [ ] **SOIC-04**: Diff-aware compression produces "compared to last run" change summaries
+- [x] **SOIC-04**: Diff-aware compression produces "compared to last run" change summaries
 
 ### SOI Display
 
@@ -162,7 +162,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SOIC-01 | Phase 51 | Complete |
 | SOIC-02 | Phase 51 | Complete |
 | SOIC-03 | Phase 51 | Complete |
-| SOIC-04 | Phase 51 | Pending |
+| SOIC-04 | Phase 51 | Complete |
 | SOID-01 | Phase 52 | Pending |
 | SOID-02 | Phase 52 | Pending |
 | SOID-03 | Phase 52 | Pending |

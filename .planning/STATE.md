@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: executing
-stopped_at: Completed 51-01-PLAN.md
-last_updated: "2026-03-13T07:05:44.991Z"
-last_activity: 2026-03-13 -- completed 50-02 SOI pipeline wiring
+stopped_at: Completed 51-02-PLAN.md
+last_updated: "2026-03-13T07:39:21.691Z"
+last_activity: 2026-03-13 -- completed 51-02 diff-aware compression engine
 progress:
   total_phases: 13
-  completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
+  completed_phases: 4
+  total_plans: 9
+  completed_plans: 9
   percent: 0
 ---
 
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-12)
 
 ## Current Position
 
-Phase: 51 of 60 (SOI Compression Engine)
-Plan: 1 of 1 in current phase
-Status: In progress
-Last activity: 2026-03-13 -- completed 51-01 SOI compression engine
+Phase: 51 of 60 (SOI Compression Engine) -- COMPLETE
+Plan: 2 of 2 in current phase
+Status: Phase complete, moving to Phase 52
+Last activity: 2026-03-13 -- completed 51-02 diff-aware compression engine
 
-Progress: [░░░░░░░░░░] 0% (v3.0: 0/13 phases)
+Progress: [██████████] 100% (v3.0: 4/13 phases)
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Recent decisions relevant to v3.0:
 - [Phase 51-01]: compress() uses serde_json::Value not glass_soi::OutputRecord to avoid tight coupling and future enum churn
 - [Phase 51-01]: Full budget populates record_ids (all IDs) for symmetry with greedy path even though truncated=false
 - [Phase 51-01]: OneLine budget uses empty record_ids (not useful for drill-down at single-line granularity)
+- [Phase 51]: FreeformChunk excluded from fingerprinting -- no stable identity; diff_compress uses None vs Some-empty for distinct messages
 
 ### Pending Todos
 
@@ -95,6 +96,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T07:30:59.000Z
-Stopped at: Completed 51-01-PLAN.md
+Last session: 2026-03-13T07:39:21.689Z
+Stopped at: Completed 51-02-PLAN.md
 Resume file: None
