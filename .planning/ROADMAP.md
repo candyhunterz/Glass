@@ -303,8 +303,8 @@ Plans:
   5. The terminal remains fully interactive (typing, running commands) while a proposal toast is visible or the review overlay is open
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 58-01-PLAN.md -- ProposalToastRenderer, ProposalOverlayRenderer, StatusLabel extension, draw_frame wiring
+- [ ] 58-02-PLAN.md -- Processor state, keyboard shortcuts, toast/overlay data flow, human verification
 
 ### Phase 59: Agent Session Continuity
 **Goal**: Agent sessions survive context resets by producing handoff summaries that restore context for the next session
@@ -396,6 +396,6 @@ Plans:
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
 | 57. Agent Worktree | 2/2 | Complete    | 2026-03-13 | - |
-| 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
+| 58. Agent Approval UI | v3.0 | 0/2 | Not started | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |
