@@ -212,8 +212,8 @@ Plans:
   3. Setting soi.enabled = false in config.toml suppresses all SOI decorations and shell hints without requiring a restart
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 52-01-PLAN.md -- SoiSection config, Block SOI fields, SoiReady raw_line_count, SOI label rendering in build_block_text
+- [ ] 52-02-PLAN.md -- SoiReady handler: block field population and shell hint line injection
 
 ### Phase 53: SOI MCP Tools
 **Goal**: AI agents can query, trend, and drill into structured command output via three new MCP tools, and glass_context includes SOI summaries
@@ -390,7 +390,7 @@ Plans:
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
-| 52. SOI Display | v3.0 | 0/TBD | Not started | - |
+| 52. SOI Display | v3.0 | 0/2 | Planned | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
