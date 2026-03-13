@@ -424,5 +424,5 @@ Plans:
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
-| 61. Wire MCP Config to Agent Subprocess | 1/1 | Complete   | 2026-03-13 | - |
+| 61. Wire MCP Config to Agent Subprocess | 1/1 | Complete    | 2026-03-13 | - |
 | 62. v3.0 Tech Debt Cleanup | v3.0 | 0/0 | Planned | - |
