@@ -401,7 +401,7 @@ impl ActivityOverlayRenderer {
         for event in visible {
             // Minute group header
             let minute = event.timestamp / 60;
-            if last_minute.map_or(true, |m| m != minute) {
+            if last_minute != Some(minute) {
                 let time_str = format_timestamp_minute(event.timestamp);
                 labels.push(ActivityOverlayTextLabel {
                     text: time_str,

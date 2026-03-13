@@ -287,6 +287,14 @@ struct Processor {
     )>,
     /// Active toast notification for the most recent proposal. Auto-dismisses after 30s.
     active_toast: Option<ProposalToast>,
+    /// Whether the activity stream overlay is visible.
+    activity_overlay_visible: bool,
+    /// Current filter tab in the activity overlay.
+    activity_view_filter: glass_renderer::ActivityViewFilter,
+    /// Scroll offset in the activity overlay timeline.
+    activity_scroll_offset: usize,
+    /// Whether verbose mode is on (shows dismissed events).
+    activity_verbose: bool,
     /// Whether the proposal review overlay is open (Ctrl+Shift+A to toggle).
     agent_review_open: bool,
     /// Selected proposal index in the review overlay. Clamped to list bounds.
@@ -1880,6 +1888,67 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                 }
 
+                // Activity stream overlay (fullscreen, on top of everything)
+                if self.activity_overlay_visible {
+                    let agents: Vec<glass_renderer::activity_overlay::ActivityAgentCard> = self
+                        .coordination_state
+                        .agents
+                        .iter()
+                        .map(|a| glass_renderer::activity_overlay::ActivityAgentCard {
+                            name: a.name.clone(),
+                            agent_type: a.agent_type.clone(),
+                            status: a.status.clone(),
+                            task: a.task.clone(),
+                            locked_files: a.locked_files.clone(),
+                            is_idle: a.status == "idle",
+                        })
+                        .collect();
+
+                    let events: Vec<glass_renderer::activity_overlay::ActivityTimelineEvent> = self
+                        .coordination_state
+                        .recent_events
+                        .iter()
+                        .map(|e| glass_renderer::activity_overlay::ActivityTimelineEvent {
+                            timestamp: e.timestamp,
+                            agent_name: e.agent_name.clone(),
+                            category: e.category.clone(),
+                            event_type: e.event_type.clone(),
+                            summary: e.summary.clone(),
+                            pinned: e.pinned,
+                        })
+                        .collect();
+
+                    let pinned: Vec<glass_renderer::activity_overlay::ActivityPinnedAlert> = self
+                        .coordination_state
+                        .recent_events
+                        .iter()
+                        .filter(|e| e.pinned)
+                        .map(|e| glass_renderer::activity_overlay::ActivityPinnedAlert {
+                            id: e.id,
+                            summary: e.summary.clone(),
+                            timestamp: e.timestamp,
+                        })
+                        .collect();
+
+                    let render_data = glass_renderer::ActivityOverlayRenderData {
+                        agents,
+                        events,
+                        pinned,
+                        filter: self.activity_view_filter,
+                        scroll_offset: self.activity_scroll_offset,
+                        verbose: self.activity_verbose,
+                    };
+
+                    ctx.frame_renderer.draw_activity_overlay(
+                        ctx.renderer.device(),
+                        ctx.renderer.queue(),
+                        &view,
+                        sc.width,
+                        sc.height,
+                        &render_data,
+                    );
+                }
+
                 frame.present();
 
                 if !ctx.first_frame_logged {
@@ -2291,6 +2360,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     return;
                                 }
                             }
+                            // Ctrl+Shift+G: Toggle activity stream overlay.
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("g") => {
+                                self.activity_overlay_visible = !self.activity_overlay_visible;
+                                if !self.activity_overlay_visible {
+                                    self.activity_view_filter = Default::default();
+                                    self.activity_scroll_offset = 0;
+                                    self.activity_verbose = false;
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
                             // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
                             Key::Character(c)
                                 if c.as_str().eq_ignore_ascii_case("y")
@@ -2585,6 +2665,49 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // When the activity overlay is open, intercept navigation keys.
+                    if self.activity_overlay_visible && event.state == ElementState::Pressed {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                self.activity_overlay_visible = false;
+                                self.activity_view_filter = Default::default();
+                                self.activity_scroll_offset = 0;
+                                self.activity_verbose = false;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
+                                self.activity_view_filter = self.activity_view_filter.prev();
+                                self.activity_scroll_offset = 0;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Tab) => {
+                                self.activity_view_filter = self.activity_view_filter.next();
+                                self.activity_scroll_offset = 0;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                self.activity_scroll_offset =
+                                    self.activity_scroll_offset.saturating_sub(1);
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                self.activity_scroll_offset += 1;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
+                                self.activity_verbose = !self.activity_verbose;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            _ => {} // Fall through to PTY
                         }
                     }
 
@@ -5096,6 +5219,10 @@ fn main() {
                 },
                 agent_proposal_worktrees: Vec::new(),
                 active_toast: None,
+                activity_overlay_visible: false,
+                activity_view_filter: Default::default(),
+                activity_scroll_offset: 0,
+                activity_verbose: false,
                 agent_review_open: false,
                 proposal_review_selected: 0,
                 proposal_diff_cache: None,
