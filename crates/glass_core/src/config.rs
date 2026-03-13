@@ -1,6 +1,79 @@
 use serde::Deserialize;
 use std::fmt;
 
+/// Permission level for an agent action category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionLevel {
+    /// Agent must request user approval before acting.
+    Approve,
+    /// Agent may act automatically without user approval.
+    Auto,
+    /// Agent is never allowed to perform this category of action.
+    Never,
+}
+
+impl Default for PermissionLevel {
+    fn default() -> Self {
+        PermissionLevel::Approve
+    }
+}
+
+/// Category of action a proposal is requesting permission for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionKind {
+    /// Proposal edits one or more files.
+    EditFiles,
+    /// Proposal runs shell commands (non-git).
+    RunCommands,
+    /// Proposal performs a git operation.
+    GitOperations,
+}
+
+/// Per-category permission levels for the agent runtime.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PermissionMatrix {
+    /// Permission level for file-editing proposals.
+    #[serde(default)]
+    pub edit_files: PermissionLevel,
+    /// Permission level for shell-command proposals.
+    #[serde(default)]
+    pub run_commands: PermissionLevel,
+    /// Permission level for git-operation proposals.
+    #[serde(default)]
+    pub git_operations: PermissionLevel,
+}
+
+impl Default for PermissionMatrix {
+    fn default() -> Self {
+        Self {
+            edit_files: PermissionLevel::Approve,
+            run_commands: PermissionLevel::Approve,
+            git_operations: PermissionLevel::Approve,
+        }
+    }
+}
+
+/// Rules that suppress agent notifications for low-signal events.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct QuietRules {
+    /// When true, suppress notifications for events with severity "Success".
+    #[serde(default)]
+    pub ignore_exit_zero: bool,
+    /// Suppress notifications whose summary contains any of these substrings.
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
+}
+
+impl Default for QuietRules {
+    fn default() -> Self {
+        Self {
+            ignore_exit_zero: false,
+            ignore_patterns: Vec::new(),
+        }
+    }
+}
+
 /// Structured error from config validation, including location info when available.
 #[derive(Debug, Clone)]
 pub struct ConfigError {
@@ -42,6 +115,12 @@ pub struct AgentSection {
     /// Comma-separated list of allowed MCP tools.
     #[serde(default = "default_agent_allowed_tools")]
     pub allowed_tools: String,
+    /// Per-category permission levels. None when section is absent.
+    #[serde(default)]
+    pub permissions: Option<PermissionMatrix>,
+    /// Rules for suppressing low-signal notifications. None when section is absent.
+    #[serde(default)]
+    pub quiet_rules: Option<QuietRules>,
 }
 
 fn default_agent_max_budget_usd() -> f64 {
@@ -61,6 +140,8 @@ impl Default for AgentSection {
             max_budget_usd: default_agent_max_budget_usd(),
             cooldown_secs: default_agent_cooldown_secs(),
             allowed_tools: default_agent_allowed_tools(),
+            permissions: None,
+            quiet_rules: None,
         }
     }
 }
@@ -562,5 +643,71 @@ mod tests {
     fn test_soi_section_absent_uses_defaults() {
         let config = GlassConfig::load_from_str("");
         assert!(config.soi.is_none());
+    }
+
+    // === PermissionMatrix / QuietRules / AgentSection extension tests ===
+
+    #[test]
+    fn permission_matrix_full_toml() {
+        let toml = "[agent.permissions]\nedit_files = \"never\"\nrun_commands = \"auto\"\ngit_operations = \"approve\"";
+        let config = GlassConfig::load_from_str(toml);
+        let agent = config.agent.expect("agent section should be Some");
+        let perms = agent.permissions.expect("permissions should be Some");
+        assert_eq!(perms.edit_files, PermissionLevel::Never);
+        assert_eq!(perms.run_commands, PermissionLevel::Auto);
+        assert_eq!(perms.git_operations, PermissionLevel::Approve);
+    }
+
+    #[test]
+    fn quiet_rules_full_toml() {
+        let toml = "[agent.quiet_rules]\nignore_exit_zero = true\nignore_patterns = [\"cargo check\", \"git status\"]";
+        let config = GlassConfig::load_from_str(toml);
+        let agent = config.agent.expect("agent section should be Some");
+        let qr = agent.quiet_rules.expect("quiet_rules should be Some");
+        assert!(qr.ignore_exit_zero);
+        assert_eq!(qr.ignore_patterns, vec!["cargo check", "git status"]);
+    }
+
+    #[test]
+    fn agent_section_no_sub_tables_backward_compat() {
+        // [agent] section with only existing fields (no permissions/quiet_rules sub-tables)
+        // must still parse successfully with permissions=None and quiet_rules=None.
+        let toml = "[agent]\nmax_budget_usd = 2.0";
+        let config = GlassConfig::load_from_str(toml);
+        let agent = config.agent.expect("agent section should be Some");
+        assert!(agent.permissions.is_none());
+        assert!(agent.quiet_rules.is_none());
+        assert_eq!(agent.max_budget_usd, 2.0);
+    }
+
+    #[test]
+    fn permission_matrix_partial_fields_uses_approve_default() {
+        let toml = "[agent.permissions]\nedit_files = \"never\"";
+        let config = GlassConfig::load_from_str(toml);
+        let agent = config.agent.expect("agent section should be Some");
+        let perms = agent.permissions.expect("permissions should be Some");
+        assert_eq!(perms.edit_files, PermissionLevel::Never);
+        // Omitted fields should default to Approve
+        assert_eq!(perms.run_commands, PermissionLevel::Approve);
+        assert_eq!(perms.git_operations, PermissionLevel::Approve);
+    }
+
+    #[test]
+    fn default_agent_section_has_none_permissions_and_quiet_rules() {
+        let agent = AgentSection::default();
+        assert!(agent.permissions.is_none());
+        assert!(agent.quiet_rules.is_none());
+    }
+
+    #[test]
+    fn permission_level_serde_snake_case() {
+        // approve, auto, never must all round-trip through serde
+        let toml = "[agent.permissions]\nedit_files = \"approve\"\nrun_commands = \"auto\"\ngit_operations = \"never\"";
+        let config = GlassConfig::load_from_str(toml);
+        let agent = config.agent.expect("agent section should be Some");
+        let perms = agent.permissions.expect("permissions should be Some");
+        assert_eq!(perms.edit_files, PermissionLevel::Approve);
+        assert_eq!(perms.run_commands, PermissionLevel::Auto);
+        assert_eq!(perms.git_operations, PermissionLevel::Never);
     }
 }
