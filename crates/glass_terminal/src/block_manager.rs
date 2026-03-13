@@ -373,6 +373,25 @@ impl Default for BlockManager {
     }
 }
 
+/// Build the shell hint line for SOI summary injection.
+/// Returns None if gating conditions are not met (disabled, shell_summary off, below min_lines, empty summary).
+/// The returned string uses ANSI SGR dim formatting only (no OSC sequences).
+pub fn build_soi_hint_line(
+    summary: &str,
+    enabled: bool,
+    shell_summary: bool,
+    min_lines: u32,
+    raw_line_count: i64,
+) -> Option<String> {
+    if !enabled || !shell_summary || summary.is_empty() {
+        return None;
+    }
+    if min_lines > 0 && raw_line_count < min_lines as i64 {
+        return None;
+    }
+    Some(format!("\x1b[2m[glass-soi] {}\x1b[0m\r\n", summary))
+}
+
 /// Format a duration into a human-readable string.
 pub fn format_duration(d: Duration) -> String {
     let total_secs = d.as_secs_f64();
@@ -862,5 +881,40 @@ mod tests {
         assert_eq!(bm.blocks()[1].pipeline_stage_count, None);
         // First block still has its pipeline data
         assert_eq!(bm.blocks()[0].pipeline_stages.len(), 1);
+    }
+
+    // -- SOI hint line builder tests (Phase 52 Plan 02) --
+
+    #[test]
+    fn test_soi_hint_line_format() {
+        let result = build_soi_hint_line("3 errors found", true, true, 0, 15);
+        assert_eq!(
+            result,
+            Some("\x1b[2m[glass-soi] 3 errors found\x1b[0m\r\n".to_string())
+        );
+        // Verify no OSC sequences (\x1b]) present
+        assert!(!result.as_ref().unwrap().contains("\x1b]"));
+    }
+
+    #[test]
+    fn test_soi_hint_line_gating_disabled() {
+        // shell_summary=false -> None
+        assert_eq!(build_soi_hint_line("ok", true, false, 0, 10), None);
+        // enabled=false -> None
+        assert_eq!(build_soi_hint_line("ok", false, true, 0, 10), None);
+        // empty summary -> None
+        assert_eq!(build_soi_hint_line("", true, true, 0, 10), None);
+    }
+
+    #[test]
+    fn test_soi_hint_line_min_lines_threshold() {
+        // raw_line_count (15) < min_lines (20) -> None
+        assert_eq!(build_soi_hint_line("ok", true, true, 20, 15), None);
+        // raw_line_count (15) == min_lines (15) -> Some
+        assert!(build_soi_hint_line("ok", true, true, 15, 15).is_some());
+        // raw_line_count (25) > min_lines (20) -> Some
+        assert!(build_soi_hint_line("ok", true, true, 20, 25).is_some());
+        // min_lines=0 always passes
+        assert!(build_soi_hint_line("ok", true, true, 0, 0).is_some());
     }
 }

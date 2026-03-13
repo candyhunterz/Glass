@@ -3108,21 +3108,53 @@ impl ApplicationHandler<AppEvent> for Processor {
                 command_id,
                 summary,
                 severity,
-                raw_line_count: _,
+                raw_line_count,
             } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     if let Some(session) = ctx.session_mux.session_mut(session_id) {
                         if session.last_command_id == Some(command_id) {
+                            // Store session-level summary
                             session.last_soi_summary = Some(glass_mux::session::SoiSummary {
                                 command_id,
-                                one_line: summary,
-                                severity,
+                                one_line: summary.clone(),
+                                severity: severity.clone(),
                             });
-                            tracing::debug!(
-                                "SOI ready for cmd {}: {}",
-                                command_id,
-                                session.last_soi_summary.as_ref().unwrap().one_line
-                            );
+
+                            tracing::debug!("SOI ready for cmd {}: {}", command_id, summary);
+
+                            // SOID-01: Populate block fields if enabled
+                            let soi_enabled =
+                                self.config.soi.as_ref().map(|s| s.enabled).unwrap_or(true);
+                            if soi_enabled {
+                                if let Some(block) = session
+                                    .block_manager
+                                    .blocks_mut()
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|b| b.state == glass_terminal::BlockState::Complete)
+                                {
+                                    block.soi_summary = Some(summary.clone());
+                                    block.soi_severity = Some(severity.clone());
+                                }
+                            }
+
+                            // SOID-02: Inject hint line if shell_summary enabled
+                            let (shell_summary_on, min_lines) =
+                                match self.config.soi.as_ref() {
+                                    Some(s) => (s.enabled && s.shell_summary, s.min_lines),
+                                    None => (false, 0),
+                                };
+                            if let Some(hint) = glass_terminal::build_soi_hint_line(
+                                &summary,
+                                soi_enabled,
+                                shell_summary_on,
+                                min_lines,
+                                raw_line_count,
+                            ) {
+                                let _ = session.pty_sender.send(glass_terminal::PtyMsg::Input(
+                                    std::borrow::Cow::Owned(hint.into_bytes()),
+                                ));
+                            }
                         }
                     }
                     ctx.window.request_redraw();
