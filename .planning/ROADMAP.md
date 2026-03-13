@@ -135,7 +135,7 @@
 - [x] **Phase 53: SOI MCP Tools** - Add glass_query, glass_query_trend, glass_query_drill tools and update glass_context (completed 2026-03-13)
 - [x] **Phase 54: SOI Extended Parsers** - Add git, docker, kubectl, tsc, Go, and generic JSON parsers to the parser registry (completed 2026-03-13)
 - [x] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering (completed 2026-03-13)
-- [ ] **Phase 56: Agent Runtime** - Spawn background Claude CLI process with lifecycle management, autonomy modes, and cost cap
+- [x] **Phase 56: Agent Runtime** - Spawn background Claude CLI process with lifecycle management, autonomy modes, and cost cap (completed 2026-03-13)
 - [ ] **Phase 57: Agent Worktree** - Implement git worktree isolation with SQLite-backed crash recovery and diff/apply/cleanup
 - [ ] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals
 - [ ] **Phase 59: Agent Session Continuity** - Persist handoff summaries across context resets with chained session resumption
@@ -270,7 +270,7 @@ Plans:
   4. Killing Glass forcibly (crash simulation) does not leave an orphaned Claude CLI process running in the background
   5. The status bar shows real-time API cost and stops accepting new proposals once max_budget_usd (default $1.00) is reached
   6. No new proposals are emitted within the cooldown window (default 30s) after the previous proposal
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 56-01-PLAN.md -- Agent runtime types, helpers, AppEvent variants, and unit tests
 - [ ] 56-02-PLAN.md -- Subprocess spawn, reader/writer threads, platform orphan prevention, status bar cost
@@ -398,7 +398,7 @@ Plans:
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
-| 56. Agent Runtime | 1/2 | In Progress|  | - |
+| 56. Agent Runtime | 2/2 | Complete   | 2026-03-13 | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
