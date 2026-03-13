@@ -397,5 +397,5 @@ Plans:
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
 | 57. Agent Worktree | 2/2 | Complete    | 2026-03-13 | - |
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
-| 59. Agent Session Continuity | 2/2 | Complete   | 2026-03-13 | - |
+| 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |
