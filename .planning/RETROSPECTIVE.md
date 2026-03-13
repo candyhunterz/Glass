@@ -2,6 +2,73 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v3.0 -- SOI & Agent Mode
+
+**Shipped:** 2026-03-13
+**Phases:** 15 | **Plans:** 29 | **Sessions:** ~3
+
+### What Was Built
+- glass_soi crate with output classifier, ANSI stripper, and 12 format-specific parsers (cargo build/test, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines)
+- SOI storage (SQLite schema v3 migration) with auto-parse on CommandFinished via spawn_blocking, output_records and command_output_records tables
+- 4-level token-budgeted compression engine (OneLine/Summary/Detailed/Full) with diff-aware change detection and drill-down record IDs
+- SOI display: block decorations and shell hint line injection for agent Bash tool discovery
+- 3 SOI MCP tools (glass_query, glass_query_trend, glass_query_drill) and SOI integration in glass_context/glass_compressed_context
+- glass_agent crate with bounded activity stream, noise filtering/deduplication, rate limiting, rolling budget window
+- Background Claude CLI agent runtime with Watch/Assist/Autonomous modes, platform-safe process lifecycle (Windows Job Objects, Unix prctl), cooldown timer, $1.00 budget cap
+- Git worktree isolation with SQLite crash recovery, unified diff review, apply/dismiss lifecycle, non-git fallback
+- Non-blocking approval UI: toast notifications, review overlay (Ctrl+Shift+A), status bar indicators, keyboard-driven accept/reject
+- Agent session continuity with structured handoff summaries, chained resumption, context compaction
+- Full [agent] config section with permission matrix, quiet rules, hot-reload, graceful degradation, coordination lock integration
+- MCP config wiring and tech debt cleanup
+
+### What Worked
+- Two new crates (glass_soi, glass_agent) kept concerns clean -- SOI parsing is independent of agent runtime
+- SOI parser registry pattern (command hint + content sniffer) made adding new parsers trivial (Phase 54 added 6 parsers in 2 plans)
+- Processor-based agent runtime (struct on Processor, not separate process) matched existing coordination poller pattern -- simple lifecycle
+- Worktree-before-SQLite registration pattern (from opencode PR #14649) gave crash recovery for free
+- Non-modal approval UI (toast + hotkeys) preserved terminal interactivity -- AGTU-05 satisfied by design
+- Audit-driven gap closure: Phases 61-62 closed integration gaps and tech debt identified by milestone audit
+- All 62/62 requirements satisfied, 5/5 E2E flows verified
+- compress() using serde_json::Value instead of OutputRecord avoided tight coupling across the SOI pipeline
+- AgentHandoffData in glass_core (not glass_agent) avoided circular dependency -- mirrors AgentProposalData pattern
+
+### What Was Inefficient
+- SUMMARY.md files lack one_liner frontmatter across all 29 plans -- summary extraction during milestone completion requires manual reading
+- Nyquist validation still partial (11th consecutive milestone with this gap)
+- Activity stream rate limiting (AGTA-04) partial: flush_collapsed not called at budget-exceeded path
+- Budget enforcement at proposal level but not at event forwarding level (AGTR-06 partial)
+- Phase 62 was metadata-only (doc comments + frontmatter) -- could have been handled as part of Phase 61
+
+### Patterns Established
+- SOI parser registry: OutputType classifier + per-type parse() functions with content sniffer fallback
+- Token-budgeted compression: greedy packing with priority (errors > warnings > info) and record_ids for drill-down
+- Diff-aware compression: RecordFingerprint for stable identity, None vs Some-empty for distinct diff messages
+- Activity stream: bounded channel with noise filter (collapse Success/Info, pass Error/Warning)
+- Agent runtime: JSON lines stdin/stdout protocol with reader/writer threads
+- Worktree lifecycle: register-before-create, diff-review-apply/dismiss-cleanup
+- Non-modal overlay: toast + hotkey + overlay without keyboard capture
+- Permission matrix: classify_proposal checks file_changes first (higher specificity), then action prefix
+- Graceful degradation: closure returning Option<String> for optional external tools
+
+### Key Lessons
+1. Two-crate split (glass_soi + glass_agent) was correct -- SOI has value without agent mode, and agent mode depends on SOI
+2. Parser registry pattern (hint + sniffer + parse) scales well -- 12 parsers with zero architectural changes
+3. serde_json::Value for cross-boundary data avoids enum churn -- compression engine doesn't need to know about OutputRecord variants
+4. Non-modal UI (toast + hotkeys) is the right pattern for background agent notifications -- never steal focus from the terminal
+5. Worktree-before-SQLite registration prevents orphaned worktrees on crash -- register intent before side effect
+6. Agent cooldown and budget cap are essential safety rails -- $1.00 default prevents runaway API costs
+7. Processor-struct pattern (not separate process) for agent runtime keeps lifecycle simple in single-threaded event loop
+8. flush_collapsed at every shutdown path is easy to miss -- consider Drop impl or explicit shutdown method
+9. 15 phases in 2 days demonstrates that well-established patterns (crate creation, MCP tools, config sections) accelerate dramatically
+10. Milestone audit continues to find real gaps -- Phases 61-62 fixed integration wiring and metadata debt that would have shipped broken
+
+### Cost Observations
+- Model mix: predominantly opus for execution, balanced profile
+- Sessions: ~3 sessions across 2 days
+- Notable: 29 plans in 2 days; largest milestone by phase count (15) and plan count (29); established patterns kept velocity high despite scope
+
+---
+
 ## Milestone: v2.5 -- UI Controls
 
 **Shipped:** 2026-03-11
@@ -500,6 +567,7 @@
 | v2.3 | ~1 | 5 | IPC channel architecture, OnceLock regex, testable JSON builders, idempotent cancel, graceful degradation |
 | v2.4 | ~1 | 5 | Per-cell Buffer rendering, font-metric cell height, zero new dependencies, full DPI handler pattern |
 | v2.5 | ~1 | 3 | Priority hit-testing, drag threshold state machine, hover-clear-on-close, pure-data renderer pattern |
+| v3.0 | ~3 | 15 | SOI parser registry, token-budgeted compression, agent runtime on Processor, worktree isolation, non-modal approval UI |
 
 ### Cumulative Quality
 
@@ -515,6 +583,7 @@
 | v2.3 | 550+ (full workspace) | Partial (Nyquist partial across phases 35-39) | 0 |
 | v2.4 | 500+ (full workspace) | Partial (Nyquist partial across phases 40-44) | 0 |
 | v2.5 | 540+ (full workspace) | Partial (Nyquist partial across phases 45-47) | 0 |
+| v3.0 | 500+ (full workspace) | Partial (Nyquist partial across phases 48-62) | 2 (AGTR-06, AGTA-04 partial) |
 
 ### Top Lessons (Verified Across Milestones)
 
