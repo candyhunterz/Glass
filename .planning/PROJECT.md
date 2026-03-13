@@ -116,7 +116,7 @@ A terminal that looks and feels normal but passively watches, indexes, and snaps
 - [ ] SOI pipeline integration into command lifecycle (auto-parse on CommandFinished)
 - [ ] SOI compression engine with token-budgeted multi-level summaries
 - [ ] SOI shell summary injection into terminal output stream
-- [ ] SOI MCP tools (glass_query, glass_query_trend, glass_query_drill)
+- ✓ SOI MCP tools (glass_query, glass_query_trend, glass_query_drill) — Phase 53
 - [ ] SOI additional parsers for common dev tools (git, docker, tsc, go, kubectl, JSON)
 - [ ] Agent Mode activity stream feeding compressed SOI data to agent runtime
 - [ ] Agent Mode agent runtime (background Claude CLI session with proposal output)
@@ -170,7 +170,7 @@ Shipped v2.5 with ~34,000 LOC Rust across 14 crates (glass_core, glass_terminal,
 Tech stack: wgpu 28.0 (DX12), winit 0.30.13, alacritty_terminal 0.25.1, glyphon 0.10.0, tokio 1.50.0, rusqlite 0.38, rmcp 1.1.0, blake3, notify 8.2, ignore 0.4, shlex, chrono 0.4, criterion 0.5, tracing-chrome 0.7, ureq 3, semver 1, tempfile 3, dunce 1.0, similar 2.
 Windows 11 primary -- ConPTY for PTY, DX12 for GPU rendering. Cross-compiles for macOS and Linux via CI.
 Built across 10 milestones (47 phases, 101 plans) in 8 days. 500+ workspace tests.
-MCP tool count: 25 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools).
+MCP tool count: 28 tools (history, context, undo, file_diff, pipe_inspect, ping, 5 tab tools, cache_check, command_diff, compressed_context, extract_errors, has_running_command, cancel_command, 7 coordination tools, 3 SOI query tools).
 Performance baselines: 522ms cold start, 3-7us input latency, 86MB idle memory.
 
 Known tech debt:
@@ -282,4 +282,4 @@ Known tech debt:
 | Midpoint-rounding drop slot computation | ((x / stride) + 0.5) as usize for natural drop feel | ✓ Good -- predictable behavior |
 
 ---
-*Last updated: 2026-03-12 after v3.0 milestone started*
+*Last updated: 2026-03-13 after Phase 53*
