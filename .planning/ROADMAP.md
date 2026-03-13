@@ -256,8 +256,8 @@ Plans:
   4. A burst of 10 commands in under 1 second is rate-limited so the agent receives no more than the configured rate of activity events
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 55-01-PLAN.md -- ActivityEvent, ActivityFilter (noise/rate/budget), channel factory in glass_core
+- [ ] 55-02-PLAN.md -- Wire activity stream into Processor and SoiReady handler
 
 ### Phase 56: Agent Runtime
 **Goal**: A background Claude CLI process watches the activity stream and emits proposals in three autonomy modes, with platform-safe process lifecycle and API cost cap
@@ -393,7 +393,7 @@ Plans:
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
-| 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
+| 55. Agent Activity Stream | v3.0 | 0/2 | Planning | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
