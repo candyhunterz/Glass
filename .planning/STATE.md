@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 52-01-PLAN.md
-last_updated: "2026-03-13T08:06:46.301Z"
+stopped_at: Completed 52-02-PLAN.md
+last_updated: "2026-03-13T08:11:23.924Z"
 last_activity: 2026-03-13 -- completed 51-02 diff-aware compression engine
 progress:
   total_phases: 13
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 11
-  completed_plans: 10
+  completed_plans: 11
   percent: 100
 ---
 
@@ -83,6 +83,8 @@ Recent decisions relevant to v3.0:
 - [Phase 51]: FreeformChunk excluded from fingerprinting -- no stable identity; diff_compress uses None vs Some-empty for distinct messages
 - [Phase 52-soi-display]: SoiSection uses Option<SoiSection> in GlassConfig (None when absent) matching PipesSection pattern
 - [Phase 52-soi-display]: SOI label placed at x=cell_width*1.0 left-anchored to avoid right-side badge/duration/undo collisions
+- [Phase 52-soi-display]: build_soi_hint_line is a pure module-level function (not method) so it is unit-testable without BlockManager state
+- [Phase 52-soi-display]: rev().find(Complete) used instead of current_block_mut() to handle SoiReady-arrives-after-PromptStart race condition
 
 ### Pending Todos
 
@@ -98,6 +100,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T08:06:46.298Z
-Stopped at: Completed 52-01-PLAN.md
+Last session: 2026-03-13T08:11:23.922Z
+Stopped at: Completed 52-02-PLAN.md
 Resume file: None

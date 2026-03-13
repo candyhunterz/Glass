@@ -131,7 +131,7 @@
 - [x] **Phase 49: SOI Storage Schema** - Add command_output_records and output_records tables to the history DB with schema v3 migration (completed 2026-03-13)
 - [x] **Phase 50: SOI Pipeline Integration** - Wire auto-parse on CommandFinished via spawn_blocking with SoiReady event emission (completed 2026-03-13)
 - [x] **Phase 51: SOI Compression Engine** - Build 4-level token-budgeted summary engine with diff-aware change detection (completed 2026-03-13)
-- [ ] **Phase 52: SOI Display** - Render SOI summaries as block decorations and inject shell hint lines into PTY output
+- [x] **Phase 52: SOI Display** - Render SOI summaries as block decorations and inject shell hint lines into PTY output (completed 2026-03-13)
 - [ ] **Phase 53: SOI MCP Tools** - Add glass_query, glass_query_trend, glass_query_drill tools and update glass_context
 - [ ] **Phase 54: SOI Extended Parsers** - Add git, docker, kubectl, tsc, Go, and generic JSON parsers to the parser registry
 - [ ] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering
@@ -210,7 +210,7 @@ Plans:
   1. After a cargo build with errors, the command block in the terminal displays a muted decoration line summarizing the error count without altering PTY output content
   2. With shell_summary enabled in config, a hint line appears in the terminal output stream visible to the Claude Code Bash tool after each classified command
   3. Setting soi.enabled = false in config.toml suppresses all SOI decorations and shell hints without requiring a restart
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 52-01-PLAN.md -- SoiSection config, Block SOI fields, SoiReady raw_line_count, SOI label rendering in build_block_text
 - [ ] 52-02-PLAN.md -- SoiReady handler: block field population and shell hint line injection
@@ -390,7 +390,7 @@ Plans:
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
 | 50. SOI Pipeline Integration | 2/2 | Complete    | 2026-03-13 | - |
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
-| 52. SOI Display | 1/2 | In Progress|  | - |
+| 52. SOI Display | 2/2 | Complete   | 2026-03-13 | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
 | 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
