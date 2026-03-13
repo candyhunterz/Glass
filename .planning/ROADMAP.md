@@ -153,7 +153,7 @@
   3. Running `npm install` produces ParsedOutput with package events (added, removed, audited, vulnerabilities counts)
   4. Running `pytest` or `jest` produces ParsedOutput with per-test status, duration, and failure details
   5. Commands with unrecognized output produce OutputType::Freeform with no false positive records
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 Plans:
 - [ ] 48-01-PLAN.md -- Crate scaffold, types, ANSI stripper, and output classifier
 - [ ] 48-02-PLAN.md -- Cargo build/clippy and cargo test parsers
@@ -350,7 +350,7 @@ Plans:
 | 45. Scrollbar | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 46. Tab Bar Controls | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 47. Tab Drag Reorder | v2.5 | 2/2 | Complete | 2026-03-11 |
-| 48. SOI Classifier and Parser Crate | 1/3 | In Progress|  | - |
+| 48. SOI Classifier and Parser Crate | 2/3 | In Progress|  | - |
 | 49. SOI Storage Schema | v3.0 | 0/TBD | Not started | - |
 | 50. SOI Pipeline Integration | v3.0 | 0/TBD | Not started | - |
 | 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |

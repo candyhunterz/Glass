@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 48-01-PLAN.md
-last_updated: "2026-03-13T05:22:41.939Z"
+stopped_at: Completed 48-02-PLAN.md
+last_updated: "2026-03-13T05:30:31.094Z"
 last_activity: 2026-03-12 -- v3.0 roadmap created (phases 48-60)
 progress:
   total_phases: 13
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -64,6 +64,9 @@ Recent decisions relevant to v3.0:
 - [Phase 48]: SOI Severity enum (Error/Warning/Info/Success) differs from glass_errors::Severity intentionally -- outcome-oriented scale for AI consumption
 - [Phase 48]: OutputRecord is an enum not a trait object -- zero-cost dispatch and easy serde serialization
 - [Phase 48]: All Phase 54 OutputType command-hint arms wired now in classifier -- future phases only add parser implementations
+- [Phase 48]: cargo_build::parse delegates to glass_errors::extract_errors with Note/Help -> Info severity mapping
+- [Phase 48]: cargo_test::parse chains to cargo_build::parse on compilation failure (no 'running N tests' line)
+- [Phase 48]: Duration in cargo test is on summary line not separate line -- extracted from same regex match
 
 ### Pending Todos
 
@@ -79,6 +82,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T05:22:41.937Z
-Stopped at: Completed 48-01-PLAN.md
+Last session: 2026-03-13T05:30:31.092Z
+Stopped at: Completed 48-02-PLAN.md
 Resume file: None
