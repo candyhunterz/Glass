@@ -731,20 +731,38 @@ Session Continuity:
         return None;
     }
 
-    // Build command args (no MCP config for Phase 56 -- skip --mcp-config)
+    // Generate MCP config JSON so the agent subprocess can discover Glass MCP tools.
+    // Gracefully degrade to empty path (no --mcp-config flag) if exe path or write fails.
+    let mcp_config_path = (|| -> Option<String> {
+        let exe_path = std::env::current_exe().ok()?;
+        let mcp_json_path = glass_dir.join("agent-mcp.json");
+        let mcp_json = serde_json::json!({
+            "mcpServers": {
+                "glass": {
+                    "command": exe_path.to_string_lossy(),
+                    "args": ["mcp", "serve"]
+                }
+            }
+        });
+        match std::fs::write(&mcp_json_path, mcp_json.to_string()) {
+            Ok(()) => Some(mcp_json_path.to_string_lossy().to_string()),
+            Err(e) => {
+                tracing::warn!("AgentRuntime: failed to write MCP config JSON: {}", e);
+                None
+            }
+        }
+    })()
+    .unwrap_or_default();
+
     let args = glass_core::agent_runtime::build_agent_command_args(
         &config,
         &prompt_path.to_string_lossy(),
-        "", // empty = no mcp config
+        &mcp_config_path,
     );
 
     // Build the command
     let mut cmd = Command::new("claude");
-    for arg in &args {
-        if !arg.is_empty() {
-            cmd.arg(arg);
-        }
-    }
+    cmd.args(&args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -3899,6 +3917,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // AGTC-01: Restart agent runtime when [agent] section changes.
                     let agent_config_changed = old_agent != self.config.agent;
                     if agent_config_changed {
+                        // Flush any pending collapsed event before dropping the runtime.
+                        if let Some(event) = self.activity_filter.flush_collapsed() {
+                            if let Some(tx) = &self.activity_stream_tx {
+                                let _ = tx.try_send(event);
+                            }
+                        }
                         // Drop old runtime (triggers Drop -> kill child + deregister).
                         self.agent_runtime = None;
 
@@ -4260,6 +4284,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     tracing::error!(
                         "AgentRuntime: restart limit reached or backoff not elapsed -- agent disabled"
                     );
+                    // Flush any pending collapsed event before disabling the runtime.
+                    if let Some(event) = self.activity_filter.flush_collapsed() {
+                        if let Some(tx) = &self.activity_stream_tx {
+                            let _ = tx.try_send(event);
+                        }
+                    }
                     self.agent_runtime = None;
                 }
             }
