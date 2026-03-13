@@ -1,186 +1,269 @@
-# Feature Landscape
+# Feature Research
 
-**Domain:** GPU terminal emulator rendering correctness
-**Researched:** 2026-03-09
+**Domain:** Structured Output Intelligence (SOI) + Agent Mode for GPU terminal emulator
+**Researched:** 2026-03-12
+**Confidence:** HIGH (SOI patterns), MEDIUM (Agent Mode UX patterns — emerging space)
 
-## Table Stakes
+---
 
-Features users expect from any terminal emulator claiming TUI app support. Missing = broken rendering in vim, htop, tmux, Claude Code, etc.
+## Context: What Already Exists
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| Per-cell glyph positioning | Every glyph must land at column * cell_width. Without it, characters drift horizontally and TUI borders misalign. Every GPU terminal (Alacritty, Ghostty, Kitty, WezTerm) positions glyphs per-cell. | Medium | Current approach: per-line glyphon Buffer with text shaping. Shaping can shift glyphs off-grid. Must switch to per-cell x-offset or post-shaping snap. |
-| Correct line height from font metrics | Line height must equal ascent + descent (+ optional leading) so box-drawing characters (U+2500-U+259F) connect vertically without gaps. The current `1.2 * font_size` multiplier creates visible gaps between lines. | Low | Change `Metrics::new()` to derive line_height from font's actual ascent + descent instead of hardcoded 1.2x multiplier. |
-| Wide character / CJK support | CJK characters occupy 2 cells. Without double-width rendering, Chinese/Japanese/Korean text overlaps or misaligns. alacritty_terminal already sets WIDE_CHAR and WIDE_CHAR_SPACER flags. | Medium | Renderer already skips WIDE_CHAR_SPACER cells. Need: (1) render wide chars at 2x cell_width, (2) background rects span 2 cells, (3) PTY column count must account for wide chars during resize. |
-| Underline rendering | SGR 4 (underline) is universally used. grep --color, compiler errors, TUI highlights all use it. alacritty_terminal provides UNDERLINE flag. | Low | Draw a 1-2px rect at cell bottom (y + ascent + 1px). Color from cell fg or underline_color if set. Reuse existing RectInstance pipeline. |
-| Strikethrough rendering | SGR 9 (strikethrough) used by diff tools, todo apps, and TUI frameworks. alacritty_terminal provides STRIKEOUT flag. | Low | Draw a 1px rect at vertical center of cell (y + ascent/2). Same approach as underline -- rect instance per cell with flag. |
-| Dynamic DPI / scale factor handling | Users drag windows between monitors with different DPI. Without handling ScaleFactorChanged, text becomes blurry or wrong size on the new monitor. | Medium | Infrastructure exists: `update_font()` on FrameRenderer already rebuilds everything. Just need to wire ScaleFactorChanged event to call it with new scale_factor, then resize PTY. |
+These features are DONE. Research below covers only NEW work for v3.0.
 
-## Differentiators
+- Output capture (50KB, ANSI-stripped, alt-screen filtered) — `glass_terminal`
+- `glass_errors` crate — Rust JSON, Rust human, and generic `file:line:col` parsers
+- `glass_extract_errors` MCP tool — structured error extraction
+- `glass_compressed_context` MCP tool — budget-aware context compression
+- `glass_context` MCP tool — full context assembly
+- 25 MCP tools total — agents can already query history, snapshots, pipe stages
+- Command block lifecycle — `PromptActive -> InputActive -> Executing -> Complete`
+- `glass_coordination` — multi-agent registry, advisory locks, inter-agent messaging
 
-Features that go beyond baseline but make the terminal feel polished. Not expected, but appreciated.
+The v3.0 work builds ABOVE this foundation, not beside it.
+
+---
+
+## Feature Landscape
+
+### Table Stakes — SOI
+
+Features that agents and power users will expect from any "AI-native terminal" claim.
+Missing these makes the entire SOI value proposition hollow.
+
+| Feature | Why Expected | Complexity | Existing Foundation |
+|---------|--------------|------------|---------------------|
+| Output classifier — detect output type from command + content | Agents can't use structured data they don't know exists. Classification is the entry point. Every structured output tool (Pare, IDE agents) classifies before parsing. | MEDIUM | `glass_errors` already classifies Rust vs generic. Extend to test runners, package managers, git, JSON. |
+| Parser for Rust/cargo test results | `cargo test` is the #1 command run in a Rust project. Fail to parse it and SOI is useless for the target audience. | LOW | `glass_errors` already parses Rust compiler. Test result format (`test X ... ok/FAILED`) is simple. |
+| Parser for Rust/cargo compiler errors | Already partially in `glass_errors`. Port and normalize into SOI's `OutputRecord` type. | LOW | Direct port from `glass_errors`. |
+| One-line compressed summary per command | The headline feature. "3 errors, 247 passed" in 10 tokens vs 2000 raw. Industry standard for AI-optimized output (Pare does this, OpenAI structured outputs do this). | LOW | Compression logic already in `glass_compressed_context`. Adapt for per-command summaries. |
+| Structured record storage in SQLite | Summaries are worthless if they don't persist and remain queryable. AI agent workflow requires lookup-by-command and lookup-by-severity. | MEDIUM | History DB already has schema migration path. Add `command_output_records` and `output_records` tables. |
+| `glass_query` MCP tool | Agents need a single tool to query structured output. Without it, they have to re-parse raw captured output via `glass_history`. | MEDIUM | IPC channel and MCP server already exist. Add tool that queries new tables. |
+| Auto-parse on `CommandFinished` | SOI is invisible machinery. Users and agents should never have to manually trigger parsing. | LOW | `CommandFinished` event already exists in `main.rs` event loop. Hook it. |
+| Token-budget-aware drill-down | Agents have finite context windows. Summary at 10 tokens, detailed at 500 tokens, full at 1000+ — agent chooses what fits. | MEDIUM | `glass_compressed_context` has budget logic. Generalize it to per-command structured data. |
+
+### Table Stakes — Agent Mode
+
+Features that make Agent Mode credible as a "proactive development partner."
+Missing these makes it a glorified notification system.
+
+| Feature | Why Expected | Complexity | Existing Foundation |
+|---------|--------------|------------|---------------------|
+| Background agent process that watches terminal activity | The core promise. Without it, Agent Mode is just SOI + alerts. Copilot, Cursor, and Claude Code all ship background agents (2025 baseline). | HIGH | `glass_coordination` has agent registry. SOI provides the compressed activity stream it needs. |
+| Worktree isolation for agent code changes | Industry consensus (2025): agents must NEVER touch the working tree directly. git worktrees are the standard pattern. Copilot, ccswarm, Claude Code all use worktrees. Non-negotiable for trust. | HIGH | Glass already uses `git` integration (git branch in status bar). No worktree management exists yet. |
+| Proposal approval UI | Users must see what the agent wants to do BEFORE it happens. Standard pattern across all AI IDEs. Without this, no developer will trust or enable Agent Mode. | HIGH | Status bar, overlay rendering already exist. No proposal data model exists yet. |
+| Agent activity feed to AI runtime | The agent can't act on things it doesn't know about. The feed turns SOI summaries into an agent-readable stream. | MEDIUM | SOI pipeline provides compressed events. Need a channel and subscription mechanism. |
+| Configurable autonomy levels (Watch / Assist / Autonomous) | Developers have different risk tolerances. Copilot and Cursor both ship "auto-approve off by default" with escalating autonomy tiers. Single hardcoded behavior is a dealbreaker for cautious teams. | LOW | Config system (hot-reload) already exists. Add `[agent]` section. |
+| Default opt-in to conservative mode | Copilot, Cursor, and Aider all default to requiring approval. Trust must be earned incrementally. Autonomous-by-default is a user trust killer. | LOW | Config default: `mode = "watch"`, `edit_files = "approve"`. |
+| Session handoff on context exhaustion | Long-running agent sessions inevitably hit context limits. Without handoff, each new session starts blind. Industry consensus (2025): structured handoff documents are essential for continuity. | HIGH | `glass_history` DB can store handoff records. `glass_coordination` has session tracking. |
+
+### Differentiators — SOI
+
+Features that distinguish Glass SOI from existing tools like Pare or MCP wrappers.
+Glass's advantage: it's IN the terminal loop, not wrapping CLI calls from outside.
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Built-in box drawing character rendering | Custom-draw U+2500-U+259F geometrically instead of using font glyphs. Eliminates font-dependent gaps/overlaps. Alacritty, Kitty, Ghostty, WezTerm all do this. | High | ~100 characters to implement as procedural geometry. Each is a combination of horizontal/vertical lines, arcs, and filled regions. Can be done as RectInstances. Worth doing but deferrable. |
-| Multiple underline styles (double, curly, dotted, dashed) | Modern terminals support SGR 4:2 (double), 4:3 (curly/undercurl), 4:4 (dotted), 4:5 (dashed). Neovim, tmux, and editors rely on these. alacritty_terminal provides all five flags. | Medium | Double underline: two 1px rects. Curly: sine wave via small rect steps or custom shader. Dotted/dashed: alternating rects. Curly is hardest. |
-| Colored underlines (SGR 58) | Underline color independent of foreground. Used heavily by LSP error highlighting in Neovim (red underline under errors). alacritty_terminal stores underline_color in CellExtra. | Low | Need to extract underline_color from Cell during snapshot. Add optional `underline_color: Option<Rgb>` to RenderedCell. Use it instead of fg for underline rect color. |
-| Font fallback cascade | When primary font lacks a glyph (emoji, Nerd Font icons, CJK), automatically find a system font that has it. cosmic-text/glyphon has built-in fallback via fontdb. | Low-Medium | glyphon/cosmic-text already does font fallback internally via FontSystem. The main work is: (1) verify it works with current per-line Buffer approach, (2) ensure fallback glyphs are sized to match primary font metrics, (3) optionally allow configuring fallback font list. |
-| Powerline symbol rendering | Powerline glyphs (U+E0B0-U+E0B3) used by Starship, Oh My Posh, Powerlevel10k. Custom rendering ensures pixel-perfect triangles regardless of font. | Medium | 4 characters: right triangle, left triangle, right half-circle, left half-circle. Can be done as custom geometry alongside box drawing. |
-| DIM text rendering | SGR 2 (faint/dim) reduces text brightness. alacritty_terminal already resolves DIM colors in the grid. | Already done | Color resolution in grid_snapshot.rs already handles DIM via `name.to_dim()`. No renderer changes needed. |
+| Shell summary injection into terminal output | Claude Code's Bash tool captures the summary naturally in its output — no agent workflow change required. Agents using any MCP tool see SOI hints inline. Pare and MCP wrappers can't do this because they're outside the PTY. | MEDIUM | Write summary line to PTY after `CommandFinished`. OSC 133 boundary awareness required to avoid breaking shell integration. |
+| Trend analysis across runs of same command | "test_login regressed 2 runs ago" — only possible because Glass has ALL historical command output in SQLite. External tools parse one invocation at a time. `glass_query_trend` is genuinely unique. | MEDIUM | History DB FTS5 already indexes commands. Query last-N runs of same command pattern, compare structured records. |
+| Drill-down from summary to specific record | Hierarchical: one-liner → error list → full error context. Minimizes agent token usage while preserving access to full detail when needed. Pattern validated by OpenAI structured outputs and Pare's compact mode. | LOW | `glass_query_drill(record_id)` completes the loop started by `glass_query`. Record IDs returned in summaries. |
+| Parsers for 10+ dev tools beyond errors | Cargo test, jest, pytest, go test, git, docker, kubectl, tsc, npm, generic JSON lines. The more parsers, the wider the value. Pare covers 222 CLI tools; Glass covers the subset humans actually run in a dev session. | HIGH | Each parser is independent. Prioritize by dev-tool ubiquity. Rust/npm/git first (aligned with target user). |
+| SOI integrated with existing pipe stage data | Pipe stages already captured per-stage. SOI can parse each stage independently. No other terminal does per-stage structured output. | LOW | `pipe_stages` table already exists. Add SOI parsing per stage in Phase 7+. |
+
+### Differentiators — Agent Mode
+
+Features that make Glass Agent Mode better than running `claude --dangerously-skip-permissions` in a separate terminal.
+
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| Agent sees COMPRESSED terminal activity, not raw output | Raw output is 10-100x more tokens than SOI summaries. Agent with SOI summaries can watch 10x more commands per context window. No other tool provides pre-compressed, structured activity feeds to background agents. | LOW | SOI pipeline is already the compression layer. Activity stream subscribes to `SoiReady` events. |
+| Agent uses SAME MCP tools as the human's AI assistant | `glass_query`, `glass_history`, `glass_snapshot`, `glass_pipes` — same 25+ tools. Agent and human assistant share context infrastructure. No duplication. | LOW | Agent is spawned with same MCP server config. No new MCP work needed for agent tool access. |
+| Multi-agent coordination with existing `glass_coordination` | If user is also running Claude Code or another agent, the background Glass Agent coordinates via advisory locks. No conflicting edits. Unique to Glass because coordination infrastructure already exists. | LOW | Wire `glass_agent` through `glass_coordination` on session start. |
+| Proposal from worktree means zero working-tree contamination until approval | User can review, reject, and retry without any uncommitted files in their working tree. Copilot creates draft PRs (requires GitHub); Glass does it locally with `git worktree`. | HIGH | `WorktreeManager` is new. `git worktree add/remove` cross-platform. Non-git fallback to temp dir. |
+
+---
 
 ## Anti-Features
 
-Features to explicitly NOT build in this milestone.
+Features that seem good but create real problems. Explicitly out of scope.
 
-| Anti-Feature | Why Avoid | What to Do Instead |
-|--------------|-----------|-------------------|
-| Font ligatures | Requires HarfBuzz shaping pipeline, fundamentally changes per-cell rendering model, massive complexity. Glass already uses `Shaping::Advanced` via cosmic-text but ligatures would merge multiple cells into one glyph. | Explicitly out of scope per PROJECT.md. Would require rethinking the entire cell-grid rendering model. |
-| Image protocol support (Kitty, Sixel) | Separate rendering layer (texture upload, placement, scrolling). Orthogonal to text rendering correctness. | Defer to future milestone. No dependency on text rendering fixes. |
-| Custom glyph atlas / texture atlas rendering | Building a custom glyph atlas and doing texture-mapped quad rendering (like Alacritty does) instead of using glyphon. Would be faster but requires abandoning glyphon entirely. | Use glyphon as-is. The per-cell positioning fix works within glyphon's API. Only consider atlas approach if profiling shows glyphon is a bottleneck. |
-| HarfBuzz text shaping | Full complex text layout for Arabic, Thai, Devanagari, etc. Requires HarfBuzz integration, bidirectional text support, and fundamentally different cell model. | cosmic-text already uses harfrust (a Rust HarfBuzz port) internally. For terminal use, complex scripts aren't grid-aligned anyway. Not a terminal-emulator concern. |
-| Sub-pixel anti-aliasing | ClearType-style rendering with per-subpixel color channels. Would require knowledge of physical pixel layout and changes to the rasterization pipeline. | Let the OS/GPU driver handle sub-pixel rendering. glyphon/swash handle rasterization; Glass doesn't need to intervene. |
-| Configurable line height / cell padding | Allowing users to add extra padding between lines or within cells. Nice for readability but complicates box-drawing alignment. | Get the correct default line height first. Config option can be added later as a simple multiplier. |
+| Feature | Why Requested | Why Problematic | Alternative |
+|---------|---------------|-----------------|-------------|
+| Auto-apply agent code changes without approval | "Faster workflow" | Single bad suggestion trashes the working tree. Zero users will trust or enable Agent Mode after first bad experience. Copilot and Cursor explicitly default to approval-required after learning this lesson. | Keep `edit_files = "approve"` as default. Power users can flip to `"auto"`. |
+| FTS5 full-text search on raw command output | "Find anything in terminal history" | Storage explosion — 50KB per command × 10,000 commands = 500MB index. Already deferred in PROJECT.md. | SOI structured records ARE the searchable layer. Search errors by file, messages by severity. Raw output FTS5 is future work. |
+| Built-in AI chat in the terminal | "One tool for everything" | Explicitly out of scope (PROJECT.md). Glass exposes data TO AI assistants, it's not an AI. Shipping chat requires model access, key management, and UX that dilutes the terminal focus. | MCP server serves as the bridge. Users keep their preferred AI assistant. |
+| Agent that runs continuously 24/7 | "Always watching" | API cost explodes. Users get proposal fatigue. Copilot agents are task-scoped, not perpetual. | Activity-driven polling with cooldown. Agent activates on events, not on a heartbeat. Cooldown default: 30 seconds. |
+| Real-time streaming SOI parsing during command execution | "See structure as it emerges" | PTY output is streamed in small chunks. Parsers need full output to produce accurate summaries. Incremental parsing is error-prone and complex. | Parse on `CommandFinished` when full output is available. Latency is ~100ms — invisible to users. |
+| Parser for every CLI tool | "100% coverage" | Long tail of tools has diminishing returns. Pare built 222 parsers as a dedicated product. Glass builds parsers for tools developers actually run daily. | Graceful `FreeformChunk` fallback for unrecognized output. Add parsers incrementally. Prioritize by command frequency in history DB. |
+| Agent permission to push branches or open PRs | "Close the loop" | Cross-project repo hosting assumptions. GitHub-only feature. Requires OAuth. | Worktree diff + apply brings changes to local working tree. User runs `git push` manually. |
+| Networked/cloud MCP transport | "Remote agent access" | Security surface expansion. PROJECT.md explicitly defers. | stdio MCP sufficient for local AI assistants. |
+
+---
 
 ## Feature Dependencies
 
 ```
-Correct line height ─────────────┐
-                                 ├──> Box drawing looks correct
-Per-cell glyph positioning ──────┘
-                                 ├──> TUI apps render correctly (vim, htop, tmux)
-Wide char / CJK support ─────────┘
+[SOI Output Classifier]
+    └──requires──> [Format-Specific Parsers]
+                       └──produces──> [ParsedOutput / OutputRecord types]
+                                          └──requires──> [SOI Storage Schema (SQLite)]
+                                                             └──enables──> [glass_query MCP tool]
+                                                             └──enables──> [glass_query_trend MCP tool]
+                                                             └──enables──> [glass_query_drill MCP tool]
 
-Per-cell glyph positioning ──────> Underline/strikethrough positioned correctly
-                                   (decorations need accurate cell boundaries)
+[CommandFinished event] ──triggers──> [SOI Auto-Parse Pipeline]
+    └──uses──> [OutputBuffer (existing, 50KB capture)]
+    └──fires──> [SoiReady { command_id }] ──feeds──> [Activity Stream]
 
-Font fallback cascade ───────────> CJK characters actually render
-                                   (without fallback, CJK shows tofu/missing glyphs)
+[SOI Compression Engine]
+    └──requires──> [ParsedOutput types]
+    └──enables──> [Shell Summary Injection]
+    └──enables──> [Activity Stream token budgeting]
 
-Dynamic DPI handling ────────────> Requires: update_font() (already exists)
-                                   Independent of other features.
+[Activity Stream]
+    └──requires──> [SOI Compression Engine]
+    └──requires──> [SoiReady events]
+    └──feeds──> [Agent Runtime]
 
-Underline rendering ─────────────> Multiple underline styles (extension)
-                                   Colored underlines (extension)
+[Agent Runtime]
+    └──requires──> [Activity Stream]
+    └──requires──> [glass_query MCP tool] (for drill-down)
+    └──produces──> [AgentProposal]
+    └──requires──> [Worktree Isolation] (for CodeFix proposals)
+
+[Worktree Isolation]
+    └──independent of SOI (git operation, not output parsing)
+    └──requires──> [AgentProposal data model]
+    └──feeds──> [Approval UI]
+
+[Approval UI]
+    └──requires──> [AgentProposal data model]
+    └──requires──> [Worktree diff output]
+    └──uses──> [existing overlay rendering infrastructure]
+    └──uses──> [existing status bar rendering]
+
+[Session Continuity]
+    └──requires──> [Agent Runtime] (session tracking)
+    └──requires──> [SOI historical data] (for context reconstruction)
+    └──uses──> [glass_history DB] (handoff storage)
+
+[glass_errors (existing)]
+    └──refactors-into──> [SOI Parser Registry] (backward-compatible)
+    └──glass_extract_errors MCP tool delegates to SOI internally
 ```
 
-## MVP Recommendation
+### Dependency Notes
 
-Prioritize (in implementation order):
+- **SOI must ship before Agent Mode:** Activity stream requires `SoiReady` events and `glass_query`. Agent Mode without SOI is a blind watcher.
+- **Compression Engine before Shell Summary Injection:** Injection uses compression output. Both in same SOI crate.
+- **Worktree Isolation before Proposal Approval UI:** Approval UI renders worktree diffs. Can stub worktree for basic UI, but full flow requires both.
+- **Session Continuity last:** Requires runtime (to detect context exhaustion) and SOI history (for context reconstruction). Most complex, least critical for initial release.
+- **`glass_errors` refactor is non-breaking:** Port parsers INTO SOI; `glass_extract_errors` becomes a thin delegate. Existing MCP tool behavior unchanged.
 
-1. **Correct line height from font metrics** -- Lowest complexity, highest visual impact. Changes one line in GridRenderer::new(). Fixes box-drawing gaps immediately.
+---
 
-2. **Per-cell glyph positioning** -- Core fix. Without this, all other features render at wrong positions. Change build_text_buffers() to position each cell's glyph at column * cell_width instead of relying on text shaping to place them.
+## MVP Definition
 
-3. **Underline and strikethrough rendering** -- Low complexity, high value. Read UNDERLINE/STRIKEOUT flags (already in RenderedCell.flags), emit RectInstances at appropriate positions.
+### Launch With (v3.0 core — SOI)
 
-4. **Wide character / CJK support** -- Medium complexity but critical for internationalization. Render WIDE_CHAR cells at 2x width, ensure backgrounds span correctly.
+Minimum to deliver the "AI agents get structured, compressed, queryable intelligence" value.
 
-5. **Font fallback cascade** -- Verify/configure cosmic-text's built-in fallback. May already partially work. Test with emoji and CJK characters.
+- [ ] SOI classifier + parsers for cargo build, cargo test, npm install, pytest, jest — covers 80% of commands for target users
+- [ ] SOI storage schema (two new SQLite tables, schema migration)
+- [ ] SOI auto-parse on `CommandFinished` (non-blocking, Tokio spawn)
+- [ ] Compression engine with OneLine / Summary / Detailed levels
+- [ ] Shell summary injection (configurable, off by default to start)
+- [ ] `glass_query` MCP tool (query by command_id, scope, budget)
+- [ ] `glass_query_trend` MCP tool (compare last-N runs of same command)
+- [ ] `glass_query_drill` MCP tool (expand specific record)
 
-6. **Dynamic DPI handling** -- Wire ScaleFactorChanged to existing update_font(). Infrastructure already exists, just needs the event handler.
+### Launch With (v3.0 core — Agent Mode)
 
-Defer to later:
-- **Built-in box drawing rendering**: High complexity, and correct line height + per-cell positioning will fix most box-drawing issues with good fonts. Only needed for fonts with poorly-designed box drawing glyphs.
-- **Multiple underline styles**: Extension of basic underline. Add after basic underline works.
-- **Colored underlines**: Requires RenderedCell schema change. Add after basic underline works.
-- **Powerline symbols**: Niche. Most users have Nerd Fonts installed which include these glyphs.
+Minimum to deliver "proactive development partner" value.
 
-## Detailed Feature Specifications
+- [ ] Activity stream (subscribes to `SoiReady`, budget-constrained rolling window)
+- [ ] Agent runtime (background Claude CLI process, system prompt, proposal output protocol)
+- [ ] Worktree isolation (create/diff/apply/cleanup via `git worktree`)
+- [ ] Approval UI (status bar indicator, toast notifications, review overlay with diff)
+- [ ] Configuration (`[agent]` section, autonomy levels, permission matrix)
+- [ ] Agent mode integrated with `glass_coordination` (register on start, deregister on stop)
 
-### Per-Cell Glyph Positioning
+### Add After Validation (v3.x)
 
-**Current behavior:** `build_text_buffers()` creates one glyphon Buffer per line, sets the full line text, and lets cosmic-text's shaper position glyphs. The shaper uses each glyph's advance width, which may differ from cell_width, causing cumulative drift.
+- [ ] Git, Docker, kubectl, tsc, Go parsers — expand SOI coverage to devops/infrastructure tools
+- [ ] Session continuity / handoff across context resets
+- [ ] Generic JSON lines parser (structured logging, NDJSON)
+- [ ] SOI per-stage parsing for pipe stages
+- [ ] Agent quiet rules (ignore patterns, exit-0 filtering)
+- [ ] `glass agent status` CLI subcommand
 
-**Expected behavior:** Each glyph's x-position must be `column * cell_width`, regardless of the glyph's natural advance. This is how all GPU terminals work -- the terminal grid dictates position, not the font metrics.
+### Future Consideration (v4+)
 
-**Implementation approaches:**
-1. **Per-cell Buffer (simple, possibly slow):** Create one glyphon Buffer per cell. Guarantees positioning but creates N*M buffers per frame.
-2. **Post-shaping position override (ideal):** Shape text per-line for shaping benefits, then override each glyph's x-position to snap to grid. Requires glyphon API access to glyph positions after shaping.
-3. **Pre-padded text (hacky):** Insert spaces to force grid alignment. Fragile, doesn't work with variable-width glyphs.
+- [ ] SOI parser plugin system (user-defined parsers)
+- [ ] SOI trend anomaly detection (e.g., build time increasing over last 10 runs)
+- [ ] Agent Mode multi-model routing (Haiku for watch, Sonnet for autonomous)
+- [ ] Agent PR/branch creation (requires GitHub integration)
+- [ ] FTS5 on structured record messages (after storage impact measured)
 
-Approach 2 is what Alacritty, Ghostty, and other terminals do. The exact API depends on whether glyphon exposes glyph positions for modification after shaping. If not, approach 1 (per-cell Buffer) is the fallback -- performance impact can be mitigated by caching buffers between frames.
+---
 
-### Line Height from Font Metrics
+## Feature Prioritization Matrix
 
-**Current:** `line_height = (physical_font_size * 1.2).ceil()` -- hardcoded 1.2x multiplier.
+| Feature | User Value | Implementation Cost | Priority |
+|---------|------------|---------------------|----------|
+| SOI classifier + core parsers (cargo, npm, pytest) | HIGH | MEDIUM | P1 |
+| SOI storage schema + auto-parse pipeline | HIGH | LOW | P1 |
+| `glass_query` MCP tool | HIGH | MEDIUM | P1 |
+| Compression engine | HIGH | MEDIUM | P1 |
+| Shell summary injection | HIGH | MEDIUM | P1 |
+| `glass_query_trend` + `glass_query_drill` | HIGH | LOW | P1 |
+| Activity stream | HIGH | MEDIUM | P1 |
+| Agent runtime (background Claude CLI) | HIGH | HIGH | P1 |
+| Worktree isolation | HIGH | HIGH | P1 |
+| Approval UI (status bar + toast + overlay) | HIGH | HIGH | P1 |
+| Agent configuration + permissions | MEDIUM | LOW | P1 |
+| Git, Docker, kubectl, tsc parsers | MEDIUM | MEDIUM | P2 |
+| Session continuity / handoff | MEDIUM | HIGH | P2 |
+| Generic JSON lines parser | MEDIUM | LOW | P2 |
+| SOI per-stage pipe parsing | LOW | LOW | P3 |
+| Agent CLI status command | LOW | LOW | P3 |
 
-**Expected:** `line_height = ascent + descent` from the font's actual metrics. cosmic-text provides these via `FontSystem`. The `Metrics` struct takes `(font_size, line_height)` where line_height should match the font's natural height for box-drawing to connect.
+**Priority key:**
+- P1: Required for v3.0 milestone completion
+- P2: Adds significant value, deliver in v3.x patch releases
+- P3: Nice to have, defer to v4.0
 
-**Key detail:** Some terminals use `ascent + descent + leading` while others use just `ascent + descent`. For box-drawing correctness, the line height must exactly match what the font designer intended for the cell height. If the font's `ascent + descent` is smaller than expected, cell_height should be `max(ascent + descent, font_size)` to prevent overlap.
+---
 
-### Wide Character / CJK Support
+## Competitor / Ecosystem Comparison
 
-**Current:** WIDE_CHAR_SPACER cells are skipped in text building. WIDE_CHAR cells are rendered at 1x width.
+| Feature | Pare (MCP wrappers) | GitHub Copilot Agent | Aider | Glass v3.0 Approach |
+|---------|---------------------|---------------------|-------|---------------------|
+| Structured CLI output | 222 CLI tools, MCP-only, external to PTY | IDE-native, not terminal | None — raw git/test output | In-PTY parsing, 10+ tools, shell summary injected into output stream |
+| Token compression | Compact mode auto-switch | None exposed | None | 4-level compression engine, budget-aware, per-command |
+| Historical trend analysis | None — single-invocation | None | None | `glass_query_trend` across full command history DB |
+| Background agent watching | None | Yes (GitHub Actions) | No | Yes — background Claude CLI process fed SOI activity stream |
+| Worktree isolation | N/A | GitHub sandbox (remote) | Optional `--dirty` | Local `git worktree`, non-git fallback to temp dir |
+| Approval UI | N/A | PR review (GitHub) | Chat-based confirmation | Status bar + toast + review overlay (keyboard-driven) |
+| Context continuity | N/A | PR-scoped | Session-scoped | Cross-session handoff stored in SQLite |
+| Agent coordination | N/A | None | None | `glass_coordination` advisory locks |
+| Works offline | Yes | No (requires GitHub) | Yes | Yes (local SQLite, local git) |
 
-**Expected:**
-- WIDE_CHAR cells render their glyph centered over 2x cell_width
-- Background rect for WIDE_CHAR spans 2 cells
-- WIDE_CHAR_SPACER cells contribute no glyph but may need background rect if bg differs from default
-- Cursor on a wide char should be 2x cell_width
-- Selection highlighting should cover both cells
-
-**Edge cases:**
-- Wide char at last column wraps to next line (terminal handles this, but renderer must not clip)
-- Half-overwritten wide char (cursor or overwrite in middle) -- alacritty_terminal handles this by clearing the spacer
-- LEADING_WIDE_CHAR_SPACER flag exists for wide chars that wrap -- spacer is at end of previous line
-
-### Underline / Strikethrough
-
-**alacritty_terminal flags available:**
-- `UNDERLINE` -- standard single underline (SGR 4)
-- `DOUBLE_UNDERLINE` -- two parallel lines (SGR 21)
-- `UNDERCURL` -- wavy/curly line (SGR 4:3)
-- `DOTTED_UNDERLINE` -- dotted line (SGR 4:4)
-- `DASHED_UNDERLINE` -- dashed line (SGR 4:5)
-- `STRIKEOUT` -- strikethrough (SGR 9)
-
-**Positioning (standard practice):**
-- Underline: 1-2px below baseline. Position = `y + descent - underline_position` (from font metrics) or `y + cell_height - 2px` as fallback.
-- Strikethrough: centered vertically. Position = `y + ascent * 0.65` (approximate strikethrough position).
-- All decorations span full cell_width, colored with fg color (or underline_color if set via SGR 58).
-
-**For MVP:** Implement UNDERLINE and STRIKEOUT only. Both are simple horizontal rects added to the RectInstance list during `build_rects()`.
-
-### Font Fallback
-
-**How it works in cosmic-text/glyphon:** FontSystem loads all system fonts via fontdb. When shaping text, if the primary font family lacks a glyph, cosmic-text automatically searches loaded fonts for one that has it. This is built-in behavior.
-
-**What Glass needs to do:**
-1. Verify fallback works by testing with CJK text and emoji
-2. Ensure fallback glyph sizes are reasonable (cosmic-text should handle this)
-3. Optionally expose a `font.fallback` config array to let users prioritize specific fallback fonts
-4. Handle the case where NO font has the glyph (show a replacement character, not crash)
-
-**Known issue (from Bevy/cosmic-text research):** cosmic-text's fallback can sometimes produce inconsistent sizing. Ghostty addresses this by adjusting fallback font sizes to match the primary font's metrics. Glass may need similar adjustment if fallback glyphs appear too large/small.
-
-### Dynamic DPI Handling
-
-**Current:** ScaleFactorChanged event is logged but ignored (documented tech debt).
-
-**Required:**
-1. In ScaleFactorChanged handler, call `frame_renderer.update_font(font_family, font_size, new_scale_factor)`
-2. update_font() already rebuilds GridRenderer with new metrics
-3. After font rebuild, recalculate terminal columns/rows and resize PTY
-4. Request redraw
-
-**Platform behavior:**
-- Windows: Per-monitor DPI (125%, 150%, 200% common). Triggered by dragging between monitors.
-- macOS: Retina (2x) vs non-Retina. Less common to change dynamically.
-- Linux/Wayland: Integer scale factors (1x, 2x). X11: global DPI via Xft.dpi.
+---
 
 ## Sources
 
-- [Alacritty box drawing PR](https://github.com/alacritty/alacritty/commit/f7177101eda589596ab08866892bd4629bd1ef44) -- builtin box drawing implementation
-- [Alacritty box drawing issues](https://github.com/alacritty/alacritty/issues/7067) -- community discussion on box drawing rendering
-- [Alacritty cell Flags docs](https://docs.rs/alacritty_terminal/0.25.1/alacritty_terminal/term/cell/struct.Flags.html) -- all available flags including underline variants
-- [Ghostty font system](https://deepwiki.com/ghostty-org/ghostty/5.5-font-system) -- per-cell positioning and fallback size adjustment
-- [Ghostty config reference](https://ghostty.org/docs/config/reference) -- glyph positioning configuration
-- [Contour terminal text stack](https://contour-terminal.org/internals/text-stack/) -- CJK wide char and grid alignment internals
-- [Zutty GPU rendering](https://tomscii.sig7.se/2020/11/How-Zutty-works) -- compute shader approach to grid rendering
-- [WezTerm font height issues](https://github.com/wezterm/wezterm/issues/2753) -- line height discrepancies between terminals
-- [cosmic-text font fallback issue](https://github.com/pop-os/cosmic-term/issues/104) -- fallback font search strictness
-- [Bevy cosmic-text fallback issue](https://github.com/bevyengine/bevy/issues/16354) -- inconsistent fallback rendering
-- [winit DPI documentation](https://docs.rs/winit/latest/winit/dpi/index.html) -- ScaleFactorChanged event semantics
-- [Ghostty CJK height constraining](https://github.com/ghostty-org/ghostty/issues/8709) -- CJK glyph height adjustment
-- [Alacritty underline support PR](https://github.com/alacritty/alacritty/pull/1078) -- underline and strikethrough implementation
+- [Pare: Structured Output for AI Coding Agents](https://dev.to/dave_london_d0728737f5d67/structured-output-for-ai-coding-agents-why-i-built-pare-2k5f) — validates SOI approach; Glass's advantage is in-PTY injection
+- [Pare GitHub](https://github.com/Dave-London/Pare) — 222 tools, Zod schemas, compact-mode auto-switch pattern
+- [GitHub Copilot Agent Mode 2025](https://redmonk.com/kholterhoff/2025/12/22/10-things-developers-want-from-their-agentic-ides-in-2025/) — approval-gate pattern, autonomy spectrum
+- [Git Worktrees for AI Agents — Nick Mitchinson](https://www.nrmitchi.com/2025/10/using-git-worktrees-for-multi-feature-development-with-ai-agents/) — worktree isolation as industry standard
+- [ccswarm: Multi-agent worktree isolation](https://github.com/nwiizo/ccswarm) — parallel agent + worktree pattern in Rust
+- [AI Agent Handoff — xtrace.ai](https://xtrace.ai/blog/ai-agent-handoff-why-context-gets-lost-between-agents-and-how-to-fix-it) — structured handoff beats summarization
+- [Session Handoff Protocol — Blake Link](https://blakelink.us/posts/session-handoff-protocol-solving-ai-agent-continuity-in-complex-projects/) — handoff document pattern; "30/90 tests passing" specificity requirement
+- [Context Compression for AI Agents — Medium](https://medium.com/ai-artistry/context-compression-for-ai-agents-why-structured-memory-beats-aggressive-truncation-0b03596caa5b) — structured memory beats truncation
+- [Agentic IDE expectations 2025 — Redmonk](https://redmonk.com/kholterhoff/2025/12/22/10-things-developers-want-from-their-agentic-ides-in-2025/) — approval gates, fine-grained permissions, audit trails
+- [Git Worktrees Parallel Agents — Upsun](https://devcenter.upsun.com/posts/git-worktrees-for-parallel-ai-coding-agents/) — shared DB/port conflict pitfalls
+
+---
+
+*Feature research for: Glass v3.0 SOI + Agent Mode*
+*Researched: 2026-03-12*

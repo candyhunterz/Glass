@@ -1,225 +1,307 @@
-# Technology Stack: v2.4 Rendering Correctness
+# Stack Research: v3.0 SOI & Agent Mode
 
-**Project:** Glass v2.4 -- Per-cell glyph positioning, box-drawing, CJK wide chars, underline/strikethrough, font fallback, dynamic DPI
-**Researched:** 2026-03-09
-**Overall Confidence:** HIGH
+**Domain:** Structured output parsing, background AI process management, git worktree isolation
+**Researched:** 2026-03-12
+**Confidence:** HIGH
 
-## Key Finding: No New Dependencies Required
+## Context: What Already Exists
 
-The existing stack (glyphon 0.10.0 -> cosmic-text 0.15.0 -> fontdb 0.23.0) already provides all the primitives needed for every v2.4 feature. The work is architectural (how we use these libraries) not additive (adding new libraries).
+Glass ships with the following stack. Do NOT re-add any of these:
 
-## Current Stack (Verified from Cargo.lock)
+| Already Have | Version | Do Not Re-Add Because |
+|-------------|---------|----------------------|
+| `regex` | 1 (workspace dep) | Already in Cargo.toml root and glass_errors |
+| `serde` / `serde_json` | 1.0 | Used throughout all crates |
+| `rusqlite` | 0.38.0 (bundled) | Used by glass_history, glass_coordination, glass_snapshot |
+| `tokio` | 1.50.0 (full features) | Async runtime, includes `tokio::process`, `tokio::sync::mpsc` |
+| `strip-ansi-escapes` | 0.2 | Used in glass_history for ANSI stripping before DB store |
+| `chrono` | 0.4 | Timestamps throughout |
+| `anyhow` | 1.0 | Error handling throughout |
+| `tracing` | 0.1 | Logging throughout |
+| `similar` | 2 | Unified diffs in glass_mcp |
+| `dirs` | 6 | Path resolution |
+| `blake3` | 1.8.3 | Content hashing |
 
-| Technology | Version | Role |
-|------------|---------|------|
-| glyphon | 0.10.0 | wgpu text rendering (TextArea, Buffer, TextRenderer) |
-| cosmic-text | 0.15.0 | Text shaping, layout, font matching (transitive via glyphon) |
-| fontdb | 0.23.0 | System font database, font discovery (transitive via cosmic-text) |
-| wgpu | 28.0.0 | GPU rendering pipeline |
-| alacritty_terminal | =0.25.1 | VTE parsing, cell Flags (UNDERLINE, STRIKEOUT, WIDE_CHAR, etc.) |
-| unicode-width | 0.2.2 | Already in dependency tree (used by alacritty_terminal) |
+---
 
-## Feature-by-Feature Stack Analysis
+## New Dependencies Needed
 
-### 1. Per-Cell Glyph Positioning
+### For glass_soi (new crate)
 
-**What exists now:** Per-line `Buffer` with `set_rich_text()` -- cosmic-text shapes the entire line as a text run, applying kerning and proportional spacing. This causes horizontal drift where glyph `x` positions don't align with `column * cell_width`.
+| Library | Version | Purpose | Why This One |
+|---------|---------|---------|--------------|
+| `regex` (workspace) | 1.12.3 | Pattern matching for output classification and format-specific parsers | Already a workspace dep — no new dependency. Use `std::sync::LazyLock<Regex>` for zero-overhead compilation (official regex docs recommendation). OnceLock pattern already established in glass_errors |
+| `serde` (workspace) | 1.0 | Serialize `ParsedOutput`, `OutputRecord` to JSON for SQLite storage | Already workspace dep |
+| `serde_json` | 1.0 | JSON serialization of `OutputRecord` into `detail_json` column; JSON lines parser for NDJSON output type | Already in several crates — add as direct dep in glass_soi |
+| `rusqlite` (workspace) | 0.38.0 | New tables (`command_output_records`, `output_records`) in glass_history DB via schema migration | Already workspace dep |
 
-**What to change:** After calling `buffer.shape_until_scroll()`, iterate `buffer.layout_runs()` -> `run.glyphs` and read each `LayoutGlyph.x` position. Compare to `column * cell_width`. If drift exceeds a threshold, either:
+**Assessment: glass_soi requires zero new crates.** All parsing, storage, and serialization is covered by existing workspace dependencies. The `regex` crate at 1.12.3 handles all pattern matching; the `LazyLock<Regex>` pattern (already used in glass_errors via `OnceLock`) provides zero-overhead compilation.
 
-- **Option A (recommended): Per-cell Buffer approach** -- Create one `Buffer` per cell (or per contiguous-attribute span). Position each at `column * cell_width`. This eliminates drift entirely because cosmic-text cannot accumulate cross-cell kerning. Cost: more Buffer objects, but each is trivially small (1 char).
-- **Option B: Post-layout x correction** -- Keep per-line Buffer but override each `LayoutGlyph.x` to snap to `column * cell_width`. This requires accessing glyphs mutably after shaping, which cosmic-text's `LayoutGlyph` does expose (x, y, w are pub fields on the struct).
+**Do NOT add:**
+- `nom` — parser combinator is overkill for line-oriented output parsing. Regex + line-by-line iteration is faster to write, easier to test, and sufficient for compiler/test output
+- `pest` — same rationale as nom; structural parsers for context-free grammars are not needed for terminal output
+- `tap_parser` crate — TAP output can be parsed with 5 regexes; pulling in a dependency for this is not justified
+- `junit-parser` crate — JUnit XML is not in scope for v3.0 (SOI_AND_AGENT_MODE.md scope is `cargo test`, `jest`, `pytest`, `go test`, `npm`, `git`, `docker`, `kubectl`, `tsc`)
+- `ndjson-stream` — JSON lines parsing with serde_json is 3 lines: split on `\n`, filter blank, `serde_json::from_str` per line
 
-**Recommendation:** Option A (per-cell Buffers). Terminals require strict grid alignment. Trying to patch cosmic-text's layout output is fragile and fights the shaping engine. Per-cell Buffers are simple, correct, and avoid all kerning/ligature drift. The glyph atlas cache in glyphon means the GPU cost is nearly identical -- the same glyphs hit the same atlas entries regardless of how many Buffers reference them.
+### For glass_agent (new crate)
 
-**Libraries needed:** None new. `glyphon::Buffer`, `cosmic_text::Metrics`, `cosmic_text::LayoutGlyph` are all available.
+| Library | Version | Purpose | Why This One |
+|---------|---------|---------|--------------|
+| `tokio::process` (tokio workspace dep) | 1.50.0 | Spawn background Claude CLI process with piped stdin/stdout; async read agent proposals, async write activity stream | Already in workspace as `tokio = { version = "1.50.0", features = ["full"] }`. `tokio::process::Command` provides `Stdio::piped()`, `AsyncWriteExt`, `BufReader` for line-by-line stdout reading |
+| `tokio::sync::mpsc` (tokio workspace dep) | 1.50.0 | Bounded channel for activity stream (SOI → agent runtime); bounded channel for proposals (agent runtime → approval UI) | Already in workspace; bounded mpsc is the correct choice — back-pressure prevents flooding the agent on rapid command execution |
+| `uuid` | 1.22.0 | `AgentProposal.id`, `agent_sessions.id` — unique identifiers for proposals and sessions | NEW. Lightweight (pure Rust, no system deps). Only need `v4` feature for random UUIDs. The `AgentProposal` struct (defined in SOI_AND_AGENT_MODE.md) explicitly uses `Uuid` |
+| `git2` | 0.20.4 | Worktree creation, diff generation, worktree cleanup for `WorktreeManager` | NEW. See rationale below |
+| `serde` (workspace) | 1.0 | Serialize `ActivityEvent`, `AgentProposal`, `SessionHandoff` for JSON wire protocol and DB storage | Already workspace dep |
+| `serde_json` | 1.0 | JSON protocol between Glass and Claude CLI process (Glass writes JSON events to stdin, reads JSON proposals from stdout) | Already in several crates |
+| `rusqlite` (workspace) | 0.38.0 | `agent_sessions` table for session continuity | Already workspace dep |
 
-**Confidence:** HIGH -- cosmic-text's Buffer API and LayoutGlyph struct verified from docs.rs.
+---
 
-### 2. Correct Line Height (Box-Drawing Characters)
+## git2 vs Subprocess for Worktree Management
 
-**What exists now:** `line_height = (physical_font_size * 1.2).ceil()` -- hardcoded 1.2x multiplier. This creates gaps between lines because box-drawing characters (U+2500-U+257F) are designed to touch vertically when line_height equals the font's actual em height (ascent + descent).
+**Recommendation: git2 0.20.4 for worktrees, subprocess (`std::process::Command`) for fallback diff.**
 
-**What to change:** Derive line_height from font metrics instead of a multiplier:
+**Rationale:**
 
-```rust
-// After shaping a reference character, read the LayoutRun
-let metrics_run = measure_buf.layout_runs().next().unwrap();
-let actual_line_height = metrics_run.line_height;
-// Or compute from font metrics directly:
-// cell_height = (font_ascent + font_descent).ceil()
+git2 0.20.4 exposes `WorktreeAddOptions`, `Repository::worktree_add()`, and `Worktree::prune()` — exactly what `WorktreeManager` needs. The libgit2 source is bundled in `libgit2-sys` so there is no system dependency requirement. The `Worktree` struct provides: `path()`, `validate()`, `lock()`, `unlock()`, `prune()`, `is_prunable()`.
+
+The alternative — shelling out to `git worktree add/remove` — would work but introduces process spawning overhead for operations that happen during the approval flow, and requires parsing `git` command output (fragile across git versions). git2 is already the de facto Rust binding for libgit2 at 0.20.4.
+
+**Limitation noted:** `Worktree` is not `Send` or `Sync` in git2. This means `WorktreeManager` operations must run on a single thread or use `spawn_blocking`. The `spawn_blocking` pattern is already established in glass_mcp (used for `SnapshotStore` which is similarly `!Send`), so this is a known-good approach.
+
+**Non-git projects:** Fall back to `std::fs::copy` + temp directories. No library needed for this fallback path.
+
+**For diff generation:** Use the existing `similar` crate (already in glass_mcp) to produce unified diffs between worktree files and working tree files. No new dependency needed for diffing.
+
+---
+
+## Recommended Stack Summary
+
+### New Crates to Add
+
+| Library | Version | Add To | Cargo.toml Entry |
+|---------|---------|--------|------------------|
+| `uuid` | 1.22.0 | workspace deps + glass_agent | `uuid = { version = "1", features = ["v4"] }` |
+| `git2` | 0.20.4 | workspace deps + glass_agent | `git2 = "0.20"` |
+
+That is the complete list of new dependencies. Two crates.
+
+### Workspace vs Crate-Level
+
+Add `uuid` and `git2` to `[workspace.dependencies]` in root `Cargo.toml` so other crates (e.g., glass_mcp for proposal queries) can reference them without version divergence. glass_agent declares both as `workspace = true`.
+
+---
+
+## New Crate Dependency Graphs
+
+### glass_soi
+
+```
+glass_soi
+  ├── regex (workspace)       — output classification patterns
+  ├── serde (workspace)       — serialize ParsedOutput, OutputRecord
+  ├── serde_json              — JSON storage in detail_json column
+  ├── rusqlite (workspace)    — command_output_records / output_records tables
+  ├── strip-ansi-escapes      — clean ANSI before parsing (reuse glass_history version)
+  ├── tracing (workspace)     — parser telemetry
+  ├── anyhow (workspace)      — error propagation
+  └── glass_history (path)    — access history DB, link records to command_id
 ```
 
-cosmic-text's `LayoutRun` exposes `line_height`, `line_top`, and `line_y` (baseline offset). The `Metrics::new(font_size, line_height)` constructor lets you set line_height explicitly. For terminals, `line_height` should equal the font's natural height (ascent + |descent|), not 1.2x font_size.
+Note: `strip-ansi-escapes 0.2` is already a dep of `glass_history`. glass_soi must add it as a direct dep too since it strips ANSI before parsing — same version, no conflict.
 
-**Implementation approach:**
-1. Shape a reference glyph with `Metrics::new(font_size, font_size)` (line_height = font_size as initial)
-2. Read `layout_run.line_height` to get cosmic-text's computed natural line height
-3. Use that as cell_height in `Metrics::new(font_size, natural_line_height)`
+### glass_agent
 
-**Libraries needed:** None new. `cosmic_text::LayoutRun.line_height` is already available.
+```
+glass_agent
+  ├── tokio (workspace)       — process::Command, sync::mpsc, spawn_blocking
+  ├── uuid (workspace)        — AgentProposal.id, agent_sessions.id
+  ├── git2 (workspace)        — WorktreeManager: worktree_add, prune, path
+  ├── serde (workspace)       — ActivityEvent, AgentProposal serialization
+  ├── serde_json              — JSON wire protocol for Claude CLI stdin/stdout
+  ├── rusqlite (workspace)    — agent_sessions table
+  ├── tracing (workspace)     — agent lifecycle logging
+  ├── anyhow (workspace)      — error propagation
+  ├── chrono (workspace)      — session timestamps
+  ├── dirs (workspace)        — ~/.glass/ path resolution
+  ├── glass_soi (path)        — ActivityEvent feeds from SOI completion events
+  ├── glass_history (path)    — session storage, command_id for drill-down
+  └── glass_coordination (path) — advisory lock integration for agent file ops
+```
 
-**Confidence:** HIGH -- LayoutRun fields verified from docs.rs (line_y, line_top, line_height are pub f32 fields).
+---
 
-### 3. Wide Character / CJK Support
+## Integration Points with Existing Crates
 
-**What exists now:** `WIDE_CHAR_SPACER` cells are skipped during rendering (correct), but the wide character itself is rendered at single-cell width. The glyph visually overflows or gets clipped.
+| New Code | Hooks Into | How |
+|----------|-----------|-----|
+| `glass_soi::OutputClassifier` | `glass_terminal::block_manager.rs` | Called after `CommandFinished` with captured output bytes |
+| `glass_soi::CompressionEngine` | `glass_mcp` tools | `glass_compressed_context` delegates to SOI for command summaries |
+| `glass_soi` parsers | `glass_errors` | `glass_errors::extract_errors` becomes one parser dispatch path within SOI; existing `StructuredError` maps to `OutputRecord::CompilerError` |
+| `glass_agent::ActivityStream` | `src/main.rs` event loop | Subscribes to `AppEvent::SoiReady { command_id }` events via `tokio::sync::mpsc` sender cloned at startup |
+| `glass_agent::AgentRuntime` | `glass_mcp` | Agent receives glass_query/glass_query_drill tools via the existing MCP IPC channel (same named pipe / Unix socket infrastructure from v2.3) |
+| `glass_agent::WorktreeManager` | `similar` (already in glass_mcp) | Diffs generated between worktree file and working tree file using `similar::TextDiff` |
+| `glass_agent` approval UI | `glass_renderer` | New `AgentOverlay` following `SearchOverlay` / `ErrorOverlay` architectural pattern from v2.1 |
 
-**What to change:** When a cell has `Flags::WIDE_CHAR` set (already available from alacritty_terminal =0.25.1), render the glyph positioned at `column * cell_width` but with a TextArea/Buffer sized to `2 * cell_width`. The background rect should also span 2 cells.
+---
 
-**alacritty_terminal Flags available (verified):**
-- `Flags::WIDE_CHAR` -- cell contains a double-width character
-- `Flags::WIDE_CHAR_SPACER` -- placeholder cell after a wide character (already skipped)
+## Regex Strategy for SOI Parsers
 
-**Libraries needed:** None new. `unicode-width` 0.2.2 is already in the dependency tree (alacritty_terminal uses it internally for width classification). The `Flags::WIDE_CHAR` flag on `RenderedCell.flags` is all that's needed.
+The glass_errors crate already establishes the correct pattern: `OnceLock<Regex>` compiled once, dispatched via enum. SOI extends this with more parser kinds.
 
-**Confidence:** HIGH -- Flags::WIDE_CHAR confirmed from alacritty_terminal docs and existing code (WIDE_CHAR_SPACER already handled).
+**Pattern to follow (already in glass_errors/detect.rs):**
 
-### 4. Underline and Strikethrough GPU Rendering
-
-**What exists now:** `Flags::BOLD` and `Flags::ITALIC` are checked in `build_text_buffers()`, but `UNDERLINE`, `STRIKEOUT`, and variants are ignored.
-
-**What to change:** Render underline/strikethrough as RectInstance quads in `build_rects()`, not as text attributes. This reuses the existing instanced rect pipeline (zero new GPU code).
-
-**alacritty_terminal =0.25.1 Flags (verified):**
-- `Flags::UNDERLINE` -- single underline
-- `Flags::DOUBLE_UNDERLINE` -- double underline
-- `Flags::UNDERCURL` -- wavy underline (approximate with 2px rect for v1)
-- `Flags::DOTTED_UNDERLINE` -- dotted underline (approximate or skip for v1)
-- `Flags::DASHED_UNDERLINE` -- dashed underline (approximate or skip for v1)
-- `Flags::STRIKEOUT` -- strikethrough
-
-**Rendering approach:**
 ```rust
-// In build_rects(), after cell background rects:
-if cell.flags.contains(Flags::UNDERLINE) {
-    let underline_y = y + self.cell_height - 2.0; // 2px from bottom
-    rects.push(RectInstance {
-        pos: [x, underline_y, self.cell_width, 1.0],
-        color: rgb_to_color(cell.fg, 1.0), // underline uses fg color
-    });
-}
-if cell.flags.contains(Flags::STRIKEOUT) {
-    let strike_y = y + self.cell_height * 0.5; // middle of cell
-    rects.push(RectInstance {
-        pos: [x, strike_y, self.cell_width, 1.0],
-        color: rgb_to_color(cell.fg, 1.0),
-    });
+use std::sync::OnceLock;
+use regex::Regex;
+
+static CARGO_TEST_RE: OnceLock<Regex> = OnceLock::new();
+
+fn cargo_test_regex() -> &'static Regex {
+    CARGO_TEST_RE.get_or_init(|| {
+        Regex::new(r"test (.+) \.\.\. (ok|FAILED|ignored)").unwrap()
+    })
 }
 ```
 
-For `DOUBLE_UNDERLINE`: two 1px rects separated by 1px gap.
-For `UNDERCURL`: approximate with a thicker rect (2px) or defer true wavy rendering.
-For `DOTTED_UNDERLINE`/`DASHED_UNDERLINE`: can be approximated or deferred.
+The official regex 1.12.3 docs recommend `std::sync::LazyLock` as the preferred modern idiom (stable since Rust 1.80). Either `OnceLock` or `LazyLock` works. Use whichever matches the pattern in existing glass_errors code for consistency.
 
-**Underline color:** alacritty_terminal 0.25.1's `Cell` struct may include an `underline_color` field. If present, use it; otherwise fall back to fg color. This needs verification at implementation time.
+**No `lazy-regex` crate needed.** The macro convenience is not worth the extra dependency given the existing OnceLock pattern is already established in the codebase.
 
-**Libraries needed:** None new. Existing `RectInstance` pipeline handles this. No new shaders, no new GPU pipelines.
+---
 
-**Confidence:** HIGH for basic UNDERLINE/STRIKEOUT. MEDIUM for UNDERCURL/DOTTED/DASHED (may need custom shader for pixel-perfect rendering, but rect approximation works for v1).
+## Agent Runtime: Process Communication Pattern
 
-### 5. Font Fallback Cascade
+The Claude CLI communicates via stdin/stdout. glass_agent uses `tokio::process::Command` with `Stdio::piped()`:
 
-**What exists now:** `FontSystem::new()` loads system fonts. `Attrs::new().family(Family::Name("Cascadia Code"))` requests a specific font. If a glyph is missing, cosmic-text's built-in fallback kicks in -- but the behavior depends on FontSystem configuration.
+```rust
+// Spawn Claude CLI with piped I/O
+let mut child = tokio::process::Command::new("claude")
+    .args(&["--model", &config.model, "--no-markdown"])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()?;
 
-**What cosmic-text 0.15.0 provides (verified):**
-- `FontSystem::new()` -- loads all system fonts, automatic fallback enabled
-- `FontSystem::new_with_locale_and_db()` -- custom font database
-- `FontSystem::db_mut()` -- access to fontdb::Database for loading additional fonts
-- `get_monospace_ids_for_scripts()` -- find monospace fonts for specific Unicode scripts (CJK, Arabic, etc.)
-- Built-in font fallback: cosmic-text automatically falls back to other loaded fonts when the primary font lacks a glyph
+// Write activity updates to stdin (JSON lines protocol)
+let mut stdin = child.stdin.take().unwrap();
+// async write via AsyncWriteExt::write_all
 
-**What to change:**
-1. Ensure `FontSystem::new()` is called (it already is) -- this loads system fonts including CJK fonts if installed
-2. Optionally expose a `font_fallback` config list in `config.toml` for user-specified fallback order
-3. Use `db_mut().load_font_file()` to load user-specified fallback fonts if they aren't system-installed
-4. cosmic-text handles the actual fallback matching internally during shaping -- no manual glyph-by-glyph fallback needed
+// Read proposals from stdout (line-by-line via BufReader)
+let stdout = child.stdout.take().unwrap();
+let reader = tokio::io::BufReader::new(stdout);
+// async read via AsyncBufReadExt::lines()
+```
 
-**Libraries needed:** None new. cosmic-text 0.15.0's built-in fallback + fontdb 0.23.0's font discovery handles this.
+This pattern is entirely within existing `tokio 1.50.0` — no new crate needed.
 
-**Confidence:** HIGH -- FontSystem API verified from docs.rs. cosmic-text's automatic fallback is well-documented and used by COSMIC Terminal (same stack).
+**Session continuity:** The `--resume <session-token>` flag on Claude CLI provides session continuation. glass_agent stores the session token in `agent_sessions.session_token` (VARCHAR column) and passes it on restart. This is a Claude CLI protocol detail, not a library dependency.
 
-### 6. Dynamic DPI / Scale Factor Handling
-
-**What exists now:** `ScaleFactorChanged` event is logged but ignored (confirmed in main.rs line 1052-1056). `update_font()` already exists and recalculates everything from font metrics -- it just isn't called on DPI change.
-
-**What to change:** In the `WindowEvent::ScaleFactorChanged` handler:
-1. Call `frame_renderer.update_font(font_family, font_size, new_scale_factor)`
-2. Recalculate terminal grid dimensions (columns, rows)
-3. Resize the PTY to match new grid
-4. Request a window redraw
-
-This is almost identical to the existing font-change hot-reload path (already implemented in the `font_changed` branch around line 2365 of main.rs).
-
-**Libraries needed:** None new. `winit::WindowEvent::ScaleFactorChanged` already provides the new scale factor. `FrameRenderer::update_font()` already accepts scale_factor.
-
-**Confidence:** HIGH -- all integration points verified from source code. The hot-reload path proves the pattern works.
-
-## Recommended Stack (No Changes)
-
-### Core Framework (unchanged)
-| Technology | Version | Purpose | Why No Change |
-|------------|---------|---------|---------------|
-| glyphon | 0.10.0 | Text rendering | Provides Buffer, TextArea, FontSystem re-exports. Per-cell Buffers use same API |
-| cosmic-text | 0.15.0 | Text shaping/layout | Built-in font fallback, LayoutRun metrics, Metrics struct -- all needed APIs present |
-| wgpu | 28.0.0 | GPU pipeline | Existing instanced rect pipeline handles underline/strikethrough |
-| alacritty_terminal | =0.25.1 | VTE parsing | Already exposes all needed Flags (UNDERLINE, STRIKEOUT, WIDE_CHAR, etc.) |
-
-### Supporting Libraries (unchanged)
-| Library | Version | Purpose | Relevance to v2.4 |
-|---------|---------|---------|-------------------|
-| fontdb | 0.23.0 | Font database | System font discovery for fallback cascade |
-| unicode-width | 0.2.2 | Character width | CJK width detection (already transitive dep) |
-| winit | 0.30.13 | Window events | ScaleFactorChanged event for DPI handling |
+---
 
 ## What NOT to Add
 
-| Library | Why Not |
-|---------|---------|
-| **harfbuzz-rs** | cosmic-text already includes swash for shaping. HarfBuzz would be needed for ligatures (out of scope per PROJECT.md) |
-| **fontdue** | Redundant with cosmic-text's glyph rasterization. Would create two text pipelines |
-| **ab_glyph** | Same problem as fontdue -- cosmic-text already handles rasterization |
-| **rusttype** | Deprecated in favor of ab_glyph, and cosmic-text supersedes both |
-| **unicode-width (explicit)** | Already a transitive dependency via alacritty_terminal. No need to add directly |
-| **freetype-rs** | System dependency, complex build. cosmic-text uses swash (pure Rust) instead |
-| **custom WGSL shaders for underline** | Overkill for v1. RectInstance quads work for straight lines. Only needed later for true UNDERCURL rendering |
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| `nom` / `pest` | Parser combinators are overkill for line-oriented terminal output. Adds compile time, learning curve, and complexity for no benefit over regex | `regex` crate with `LazyLock<Regex>` |
+| `tap_parser` crate | 5 regexes cover TAP 12/13 (ok/not ok, plan, SKIP, TODO). External crate for this is unjustified | regex-based parser in glass_soi |
+| `junit-parser` | JUnit XML is not in v3.0 scope per SOI_AND_AGENT_MODE.md | Defer to future milestone |
+| `ndjson-stream` | JSON lines = split on `\n` + `serde_json::from_str` per line. 3 lines of code | `serde_json` (already present) |
+| `lazy_static` | Superseded by `std::sync::OnceLock` (stable since 1.70) and `LazyLock` (stable since 1.80). Both are in stdlib | `std::sync::OnceLock` or `LazyLock` |
+| `once_cell` | Same as lazy_static — superceded by stdlib equivalents in modern Rust | `std::sync::OnceLock` |
+| `gitoxide` / `gix` | Promising pure-Rust git but still maturing for worktree operations; not battle-tested for the create/diff/apply/cleanup flow. git2 (libgit2 bindings) is stable and complete | `git2` |
+| `subprocess` crate | Thin wrapper over std::process with no async support. tokio::process handles async process management better | `tokio::process` (already present) |
+| `crossbeam-channel` | tokio's bounded mpsc channels cover the activity stream and proposal queue needs. No need for crossbeam in an async-first codebase | `tokio::sync::mpsc` (already present) |
+| `reqwest` / `ureq` (new) | ureq 3 is already in the workspace for update checker. No additional HTTP client needed | existing `ureq` |
 
-## Alternatives Considered
+---
 
-| Feature | Recommended | Alternative | Why Not Alternative |
-|---------|-------------|-------------|---------------------|
-| Cell positioning | Per-cell Buffer | Post-layout x snap | Fighting the shaping engine; fragile with complex scripts |
-| Line height | Font metric derived | Keep 1.2x multiplier | Box-drawing gaps are the #1 visual bug to fix |
-| Underline rendering | RectInstance quads | Glyph-based underline | Rect approach reuses existing pipeline; no new GPU code |
-| Font fallback | cosmic-text built-in | Manual per-glyph lookup | cosmic-text's fallback is battle-tested (COSMIC Desktop uses it) |
-| DPI handling | update_font() on event | Recreate renderer | update_font() already works for hot-reload; same pattern |
-| Undercurl | Rect approximation (v1) | Custom compute shader | Defer true wavy line to future milestone; rect is good enough |
+## Cargo.toml Changes Required
 
-## Installation
+### Root `[workspace.dependencies]` additions:
 
-```bash
-# No new dependencies to install. Existing Cargo.toml is sufficient.
-# The only changes are in how existing APIs are used.
+```toml
+# Agent Mode
+uuid    = { version = "1", features = ["v4"] }
+git2    = "0.20"
 ```
 
-## Integration Points Summary
+### New `crates/glass_soi/Cargo.toml`:
 
-| Feature | Primary File | API Used | Change Type |
-|---------|-------------|----------|-------------|
-| Per-cell positioning | grid_renderer.rs | `Buffer::new()`, `Metrics`, `TextArea` | Rewrite build_text_buffers() |
-| Line height | grid_renderer.rs | `Metrics::new()`, `LayoutRun.line_height` | Change GridRenderer::new() |
-| Wide chars | grid_renderer.rs | `Flags::WIDE_CHAR`, `RectInstance` | Extend build_text_buffers() + build_rects() |
-| Underline/strike | grid_renderer.rs | `Flags::UNDERLINE/STRIKEOUT`, `RectInstance` | Extend build_rects() |
-| Font fallback | frame.rs | `FontSystem::new()`, `db_mut()` | Minimal -- cosmic-text auto-fallback |
-| Dynamic DPI | main.rs | `ScaleFactorChanged`, `update_font()` | Wire existing handler |
+```toml
+[package]
+name = "glass_soi"
+version = "0.1.0"
+edition = "2021"
+description = "Structured Output Intelligence: output classification, parsing, compression"
+
+[dependencies]
+regex          = { workspace = true }
+serde          = { workspace = true }
+serde_json     = "1.0"
+rusqlite       = { workspace = true }
+strip-ansi-escapes = "0.2"
+tracing        = { workspace = true }
+anyhow         = { workspace = true }
+glass_history  = { path = "../glass_history" }
+
+[dev-dependencies]
+tempfile = "3"
+```
+
+### New `crates/glass_agent/Cargo.toml`:
+
+```toml
+[package]
+name = "glass_agent"
+version = "0.1.0"
+edition = "2021"
+description = "Agent Mode: background Claude CLI runtime, activity stream, worktree isolation, approval system"
+
+[dependencies]
+tokio          = { workspace = true }
+uuid           = { workspace = true }
+git2           = { workspace = true }
+serde          = { workspace = true }
+serde_json     = "1.0"
+rusqlite       = { workspace = true }
+tracing        = { workspace = true }
+anyhow         = { workspace = true }
+chrono         = { workspace = true }
+dirs           = { workspace = true }
+glass_soi      = { path = "../glass_soi" }
+glass_history  = { path = "../glass_history" }
+glass_coordination = { path = "../glass_coordination" }
+
+[dev-dependencies]
+tempfile = "3"
+```
+
+---
+
+## Version Compatibility
+
+| Package | Compatible With | Notes |
+|---------|-----------------|-------|
+| `git2 0.20` | Rust 2021 edition | Bundles libgit2 via libgit2-sys; no system libgit2 install needed. `Worktree` is `!Send` — must use `spawn_blocking` for async contexts (same pattern as `SnapshotStore` in glass_mcp) |
+| `uuid 1.22` | `serde 1.0` | Add `features = ["v4", "serde"]` if UUID serialization to JSON is needed directly; otherwise `v4` alone suffices for generation |
+| `regex 1.12.3` | Already in workspace | Root Cargo.toml has `regex = "1"` which resolves to 1.12.3. glass_soi uses workspace dep, no version conflict |
+| `strip-ansi-escapes 0.2` | Already in glass_history | Same version — Cargo deduplicates, no conflict |
+
+---
 
 ## Sources
 
-- [glyphon 0.10.0 docs](https://docs.rs/glyphon/0.10.0/glyphon/) -- TextArea, Buffer, CustomGlyph APIs
-- [cosmic-text FontSystem](https://docs.rs/cosmic-text/latest/cosmic_text/struct.FontSystem.html) -- font fallback methods (verified 0.18.2 docs, applicable to 0.15.0 API)
-- [cosmic-text Metrics](https://docs.rs/cosmic-text/latest/cosmic_text/struct.Metrics.html) -- font_size and line_height fields
-- [cosmic-text LayoutRun](https://docs.rs/cosmic-text/latest/cosmic_text/struct.LayoutRun.html) -- line_y, line_top, line_height fields
-- [cosmic-text LayoutGlyph](https://docs.rs/cosmic-text/latest/cosmic_text/struct.LayoutGlyph.html) -- x, y, w, glyph_id, font_id fields
-- [alacritty_terminal cell Flags](https://docs.rs/alacritty_terminal/0.25.1/alacritty_terminal/term/cell/struct.Flags.html) -- UNDERLINE, STRIKEOUT, WIDE_CHAR, etc.
-- [COSMIC Terminal (cosmic-term)](https://github.com/pop-os/cosmic-term) -- reference implementation using same cosmic-text + alacritty_terminal stack
-- Cargo.lock verification: glyphon 0.10.0 -> cosmic-text 0.15.0 -> fontdb 0.23.0, unicode-width 0.2.2
+- `C:/Users/nkngu/apps/Glass/Cargo.toml` — verified existing workspace deps (regex, serde_json, tokio full, rusqlite, similar, strip-ansi-escapes, chrono, dirs, anyhow)
+- `C:/Users/nkngu/apps/Glass/SOI_AND_AGENT_MODE.md` — feature spec defining OutputRecord types, AgentProposal struct, WorktreeManager API, SessionHandoff schema
+- [docs.rs/regex/latest](https://docs.rs/regex/latest/regex/) — version 1.12.3 confirmed; `LazyLock<Regex>` recommended pattern for single compilation (HIGH confidence)
+- [docs.rs/uuid/latest](https://docs.rs/uuid/latest/uuid/) — version 1.22.0 confirmed; `features = ["v4"]` for `Uuid::new_v4()` (HIGH confidence)
+- [docs.rs/git2/latest — Worktree struct](https://docs.rs/git2/latest/git2/struct.Worktree.html) — version 0.20.4, `WorktreeAddOptions`, `path()`, `validate()`, `prune()`, `is_prunable()` methods confirmed (HIGH confidence)
+- [tokio::process docs](https://docs.rs/tokio/latest/tokio/process/index.html) — `Command`, `Stdio::piped()`, `AsyncWriteExt`, `BufReader` for background process management; all in tokio 1.50.0 `full` features (HIGH confidence)
+- [tokio::sync::mpsc docs](https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html) — bounded channel for activity stream back-pressure (HIGH confidence)
+- Codebase review: `glass_errors/src/lib.rs`, `glass_errors/src/detect.rs` — OnceLock<Regex> pattern already established, confirms zero new infra needed for regex parsing
+
+---
+*Stack research for: Glass v3.0 SOI & Agent Mode*
+*Researched: 2026-03-12*

@@ -1,157 +1,263 @@
 # Pitfalls Research
 
-**Domain:** GPU terminal emulator rendering correctness (per-cell positioning, box-drawing, CJK, decorations, font fallback, DPI)
-**Researched:** 2026-03-09
-**Confidence:** HIGH (verified against codebase, glyphon issues, alacritty patterns, cosmic-term architecture)
+**Domain:** SOI (Structured Output Intelligence) output parsing + Agent Mode background AI agent capabilities added to existing Rust terminal emulator
+**Researched:** 2026-03-12
+**Confidence:** HIGH (verified against Glass codebase architecture, VSCode terminal integration race conditions, git worktree orphan issues, MCP tool token bloat research, Claude agent cost management docs, Rust subprocess management patterns)
+
+---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Per-Line Buffer Shaping Causes Horizontal Glyph Drift
+### Pitfall 1: SOI Parser Blocks the PTY Reader Thread
 
 **What goes wrong:**
-The current `build_text_buffers` creates one `cosmic_text::Buffer` per terminal line, concatenates all cell characters into a string, and lets cosmic-text shape/layout the entire line. Cosmic-text applies kerning and proportional spacing between glyphs, so glyph positions drift from the expected `column * cell_width` grid. By column 40+, characters can be off by several pixels. TUI apps like vim, htop, and tmux assume exact grid alignment -- drift makes borders misalign and text appear in wrong columns.
+The PTY reader thread is a `std::thread` (not Tokio) that does blocking I/O. If SOI parsing runs inline on this thread after a `CommandFinished` event, the thread stalls waiting for parser completion before reading the next PTY bytes. With large outputs (50KB cap, or longer before truncation), a regex-heavy or multi-pass parser takes 10–100ms. During that window, the PTY buffer fills up and the shell blocks on write, causing visible input lag even on an idle session.
 
 **Why it happens:**
-The per-line approach was a correct initial design: it gives cosmic-text rich text spans with per-character color/weight/style, which is how glyphon is designed to work. But terminal emulators are NOT proportional text -- they require each glyph locked to `column * cell_width` regardless of what the shaping engine thinks.
+The existing shell event handler at `AppEvent::Shell` in `src/main.rs` (lines 1732–2188) already runs 456 lines of sequential logic on the main thread. Appending SOI classification inline to the `CommandFinished` arm feels natural — it's where all other post-command work happens — but that arm already does history DB insert, snapshot comparison, and FS watcher drain. Adding a parser here multiplies synchronous work on the hot path.
 
 **How to avoid:**
-Switch to per-cell rendering: create one `Buffer` per cell (or per run of identical-attribute cells where each glyph is positioned at its exact column offset). Set each `TextArea.left` to `column * cell_width` to force grid alignment. The key insight: do NOT let cosmic-text decide horizontal positioning -- override it with the grid math. An alternative is to use one Buffer per line but post-process glyph positions, but this fights the API rather than working with it.
+SOI parsing must happen off the main thread. Pattern: at `CommandFinished`, enqueue the captured output bytes into a bounded channel (capacity ~8) and spawn a dedicated Tokio task (or a `std::thread` worker pool) to classify and parse. The parsed result is written to SQLite via a separate `soi_records` table. The main event loop gets a lightweight `AppEvent::SoiComplete(session_id, command_id, SoiRecord)` callback to update the block's UI decoration after the fact. Never put parser execution between the PTY read loop and the next `term.process()` call.
 
 **Warning signs:**
-- Box-drawing borders don't connect horizontally between adjacent cells
-- TUI column separators (pipes `|`) don't align vertically across lines
-- Text in TUI apps appears progressively shifted right on longer lines
-- `vim` column numbers don't match actual cursor position visually
+- Input latency rises from 3–7µs baseline to >5ms after commands with large output
+- `cargo build` output causes visible input stuttering
+- Benchmark: `criterion` `input_latency` test regresses under SOI
 
 **Phase to address:**
-Phase 1 (Per-cell glyph positioning) -- this is the foundational fix that all other rendering improvements depend on.
+SOI Phase 1 (classification pipeline) — design the async dispatch path before writing any parser logic. Make the async boundary the first thing built, not retrofitted.
 
 ---
 
-### Pitfall 2: Line Height 1.2x Multiplier Breaks Box-Drawing Vertical Continuity
+### Pitfall 2: ANSI Escape Sequences Corrupt SOI Parser Input
 
 **What goes wrong:**
-The current `GridRenderer::new()` uses `line_height = (physical_font_size * 1.2).ceil()` (line 49 of grid_renderer.rs). This 1.2x multiplier adds vertical padding between lines. Box-drawing characters (U+2500-U+259F) are designed to fill the entire cell vertically so that vertical lines connect seamlessly between rows. The extra padding creates visible gaps between rows, breaking TUI borders.
+Command output stored in `OutputBuffer` is already ANSI-stripped by the existing `strip_ansi` function in `glass_history`. However, the strip function uses a regex, and regex-based ANSI stripping is provably incomplete: OSC sequences with non-standard terminators (`ST` vs `BEL`), DCS sequences, private-use sequences, and sequences split across read boundaries all have edge cases the regex misses. When a SOI parser (e.g., the JSON classifier) receives output with residual escape bytes, `serde_json::from_str` returns errors on what should be clean JSON, the git log parser matches wrong field boundaries, and the TypeScript error parser counts line numbers incorrectly.
 
 **Why it happens:**
-The 1.2x multiplier is standard for paragraph text (readability spacing). Terminal emulators must NOT use paragraph line spacing -- they need cell height derived from font metrics: `ascent + descent` (plus optional minimal padding), which gives the tightest cell that fits all glyphs without gaps.
+The existing ANSI stripping was designed for readability and history search, not for machine parsing. It tolerates imperfect stripping because humans can still read the text. SOI parsers are strict and fail on unexpected bytes. The test suite for `OutputBuffer` likely uses synthetic output without complex escape sequences. Production shells (especially those running Starship, Oh My Posh, or LSP-enhanced editors) emit heavy escape traffic.
 
 **How to avoid:**
-Derive line height from font metrics: query `cosmic_text::FontSystem` for the primary font's ascent + descent (and optionally + leading). Use `ceil(ascent + descent)` as cell_height. Do NOT add a multiplier. Verify with box-drawing test: render `tmux` or a box-drawing grid and confirm no gaps between rows. The font metrics are available via `Buffer::metrics()` after shaping, or by querying the font database directly.
+Before SOI classification, pass output through a state-machine-based ANSI stripper rather than the regex. The `anstyle-parse` crate (Rust, implements Paul Williams' ANSI parser state machine) or `strip_ansi_escapes` crate are correct choices. State machine parsers handle split-buffer sequences and all OSC terminators correctly. Add a fuzzing test that feeds SOI parsers real captured output from `cargo build`, `git log --oneline`, `tsc --noEmit`, and `docker build` runs. Verify zero residual escape bytes in the parser's input.
 
 **Warning signs:**
-- Visible horizontal gaps between rows of box-drawing characters
-- tmux pane borders have dashed appearance instead of solid lines
-- Powerline prompt symbols don't connect vertically
+- SOI parser failure rate >5% on real command output
+- JSON classifier triggers on `cargo build` output (which is not JSON)
+- Git log parser matches wrong fields on colorized `git log` output
 
 **Phase to address:**
-Phase 2 (Line height from font metrics) -- must be done before or alongside per-cell positioning since both affect cell dimensions.
+SOI Phase 1 — establish a clean parser input pipeline before writing any format-specific parsers. A single correct stripping layer prevents all downstream format parsers from having to defensively handle ANSI bytes.
 
 ---
 
-### Pitfall 3: Wide Character Background Rect Uses Single Cell Width
+### Pitfall 3: Shell Summary Injection Races with OSC 133 Prompt Boundary
 
 **What goes wrong:**
-When adding CJK/wide character support, the background rectangle for a wide character cell must span 2 * cell_width, but the spacer cell (WIDE_CHAR_SPACER) is currently skipped entirely. If the wide character's background color differs from default, the second cell appears as default background -- creating a visual "hole" behind CJK characters.
+SOI shell summary injection writes a formatted summary line into the PTY's input side (simulating shell output) immediately after `CommandFinished`. The OSC 133;D sequence that fires `CommandFinished` and the injection of the summary line are on different code paths. If the summary line arrives before the shell renders the next OSC 133;A (PromptStart), `BlockManager` assigns the summary text to the current block's output instead of treating it as inter-block content. The summary appears inside the wrong block, distorts the block's output capture, and the history DB stores it as part of the command's real output.
 
 **Why it happens:**
-The current `build_rects` iterates cells and draws `cell_width` wide rects. It doesn't check `Flags::WIDE_CHAR` to double the width. The spacer cell is correctly skipped in text rendering but its background still needs coverage. Developers fix text rendering (skip spacer) and forget that backgrounds need the inverse treatment (extend to cover spacer).
+VSCode has a documented 80% failure rate on an equivalent race condition in their terminal integration (OSC 633;D vs AsyncIterable consumer). The root cause is that OSC sequences and PTY writes share the same byte stream but the consumers (OSC parser, terminal grid, block manager) observe them with different latencies. Writing synthetic bytes to the PTY from the host side races with the shell's natural sequence of events.
 
 **How to avoid:**
-In `build_rects`, when a cell has `Flags::WIDE_CHAR`, emit a rect with width `2 * cell_width`. When a cell has `Flags::WIDE_CHAR_SPACER`, skip it for background rects (since the wide char's rect already covers it). Apply the same logic to selection highlighting in `build_selection_rects`.
+Do NOT inject summary text into the PTY byte stream. Instead, render the summary as a host-side overlay or decoration — an additional rendered line in `BlockRenderer` that reads from `SoiRecord`, similar to how exit code badges and duration labels already work as host-side UI, not injected terminal text. This keeps the PTY stream clean, avoids all race conditions with OSC sequences, and means summary text is never stored in history output or captured by OutputBuffer. The Block struct gains an optional `soi_summary: Option<String>` field that BlockRenderer renders after the output section.
 
 **Warning signs:**
-- CJK characters have correct text but wrong/missing background on their right half
-- Selection highlighting appears to have gaps on CJK text
-- Cursor block appears half-width on wide characters
+- SOI summaries appear inside command output instead of after it
+- History DB records contain SOI text mixed with real command output
+- `cargo test` block shows TypeScript summary from previous command
+- Starship/Oh My Posh prompts render before the summary line appears
 
 **Phase to address:**
-Phase 3 (CJK/wide character support) -- specifically the rect rendering portion.
+SOI Phase 5 (shell summary injection) — but the architectural decision (overlay vs PTY injection) must be made in Phase 1. If the wrong architecture is chosen in Phase 1, Phase 5 requires a rewrite.
 
 ---
 
-### Pitfall 4: glyphon TextArea.scale Breaks Alignment (Do NOT Use It for DPI)
+### Pitfall 4: Binary and Alt-Screen Output Misclassified as Structured Data
 
 **What goes wrong:**
-Glyphon's `TextArea` has a `scale` field that appears to be the right place to handle DPI scaling. Using it causes text to render at the wrong horizontal position -- text moves "way to the right and off the screen" for any alignment other than Left. This is a confirmed bug in glyphon (GitHub issue #117).
+The SOI classifier runs heuristics on command output to determine format (JSON, git log, TypeScript errors, Docker build output, etc.). Commands that produce binary output (`xxd`, `cat /dev/random`, `openssl rand -base64`, `tar -cv`) or alt-screen TUI output (`vim`, `htop`, `less`) produce output that triggers false-positive classification. The JSON classifier triggers on hex dump lines that start with `{`. The TypeScript parser triggers on Vim error messages with `file.ts:N:M` format. Alt-screen output is garbage bytes that should never reach a SOI parser but may if alt-screen detection has edge cases (the existing alt-screen detection is `AppEvent::CommandOutput` gated on `not alt_screen`).
 
 **Why it happens:**
-The `scale` parameter was added before cosmic-text had horizontal alignment support. It incorrectly multiplies alignment offsets by the scale factor, breaking positioning. The Glass codebase currently sets `scale: 1.0` (correct), but any DPI handling code that touches this field will break rendering.
+Heuristic classifiers optimize for recall over precision. Test suites use clean, real command output as fixtures, so edge cases from binary and TUI output are never covered. The existing `OutputBuffer` already has binary detection, but it uses a byte-frequency heuristic that may pass through binary output that happens to look textual.
 
 **How to avoid:**
-NEVER set `TextArea.scale` to anything other than `1.0`. Handle DPI by applying the scale factor to font metrics instead: `Metrics::new(font_size * scale_factor, line_height * scale_factor)`. This is the documented workaround from the glyphon issue. Add a code comment warning against changing `scale` with a link to the issue.
+Classify `None` (no SOI) as the preferred default. The classifier must reject output aggressively: require ≥3 consecutive lines matching the target format before committing to a classification. For JSON, the first byte must be `{` or `[` with no leading whitespace from ANSI residue; validate fully with `serde_json`. For git log, require the `commit [0-9a-f]{40}` anchor. Extend the existing `OutputBuffer` binary test to explicitly gate SOI classification — if `is_binary()` returns true, skip SOI entirely. Alt-screen output should already be excluded by the existing `CommandOutput` gating, but add an explicit `output_was_alt_screen` flag to `CommandFinished` and short-circuit SOI in the `CommandFinished` handler.
 
 **Warning signs:**
-- Text renders correctly at 100% DPI but is mispositioned at 125%, 150%, etc.
-- Text works with Left alignment but breaks with Center alignment (status bar, overlays)
-- Moving window between monitors causes text to jump to wrong position
+- `vim` sessions produce spurious SOI records after exit
+- `curl https://api.example.com/data` triggers JSON parser on error HTML responses
+- SOI classification rate above 40% of all commands (most commands produce unstructured output)
 
 **Phase to address:**
-Phase 6 (Dynamic DPI handling) -- but the constraint must be documented from Phase 1 since per-cell positioning will be tempted to use `scale`.
+SOI Phase 1 (classification) — the classifier's rejection threshold is the most important design decision. Over-classify later through refinement; do not start permissive.
 
 ---
 
-### Pitfall 5: ScaleFactorChanged Without Full Pipeline Rebuild
+### Pitfall 5: Agent Mode Background Process Leaves Zombies on Crash
 
 **What goes wrong:**
-When a window moves between monitors with different DPI (e.g., 100% to 150%), winit fires `ScaleFactorChanged`. Currently Glass only logs this event (line 1052 of main.rs). A naive fix updates just the surface size but not font metrics, cell dimensions, or the PTY's terminal size. Result: text appears too small/large, grid misaligns, and the terminal reports wrong column/row counts to the shell.
+Agent Mode spawns a Claude CLI subprocess (`claude` binary) per background agent session. If the Glass process crashes, is killed with `SIGKILL`, or the user force-quits the window, the Claude CLI process becomes orphaned. On Windows, orphaned processes are not automatically cleaned up unless they are in a Job Object attached to the parent. On Unix, the orphaned `claude` process continues consuming API quota, accrues costs, and may write files to the worktree indefinitely with no owner to approve or reject its proposals.
 
 **Why it happens:**
-DPI changes require rebuilding the entire rendering pipeline in the correct order: (1) update scale factor, (2) recalculate font metrics (cell_width, cell_height), (3) resize the wgpu surface, (4) resize the PTY terminal (new rows/cols), (5) clear the glyph atlas (old glyphs are wrong size), (6) trigger a full redraw. Missing any step causes subtle bugs. The existing `update_font` method does steps 1-2 but callers must also do 3-6.
+Rust's `std::process::Child` drop handler sends SIGTERM on Unix but does nothing on Windows (by design — Windows has no SIGTERM). In practice, a crashed parent never drops `Child`, so the child is never signaled at all. The Glass process is also a GUI process; it can be killed by the OS (low-memory killer, Windows task kill) without running destructors.
 
 **How to avoid:**
-Create a single `handle_scale_factor_changed(new_factor)` method that performs ALL steps atomically in the correct order. Reuse the existing `update_font` path (which already handles font rebuild on config change) but add surface resize and PTY resize. Critically: call `atlas.trim()` or rebuild the atlas entirely, since rasterized glyphs at the old DPI are the wrong pixel size.
+On Windows: create a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assign each spawned agent process to the job. The job handle lives for the Glass process lifetime. When Glass terminates for any reason (including `TerminateProcess`), the OS closes the job handle and kills all member processes. On Unix: use `prctl(PR_SET_PDEATHSIG, SIGTERM)` in the child process (or via `Command::pre_exec`) to ensure the child receives SIGTERM when the parent dies. Store agent PIDs in a persistent SQLite table (`~/.glass/agents.db`, which already exists for `glass_coordination`). On Glass startup, scan this table for PIDs that are no longer live and clean up their worktrees.
 
 **Warning signs:**
-- Text looks blurry after moving window to a different-DPI monitor
-- Terminal content appears zoomed but cursor/selection rects are at original scale
-- Shell commands report wrong COLUMNS/LINES after DPI change
-- Box-drawing gaps appear only on one monitor but not another
+- `claude` processes visible in Task Manager / `ps aux` after Glass exits
+- API billing shows charges after Glass is closed
+- Git worktrees accumulate in `~/.glass/worktrees/` across restarts
 
 **Phase to address:**
-Phase 6 (Dynamic DPI handling) -- this is the entire purpose of that phase.
+Agent Mode Phase 1 (agent runtime) — process lifecycle management must be part of the first implementation, not added later. Retrofitting Job Objects after subprocess spawning is architectural, not cosmetic.
 
 ---
 
-### Pitfall 6: Box-Drawing Characters Rendered Through Font Instead of Custom GPU Geometry
+### Pitfall 6: Git Worktree Cleanup Fails on Crash, Accumulates Disk Usage
 
 **What goes wrong:**
-Box-drawing characters (U+2500-U+259F) rendered through the font's glyphs often have gaps at cell boundaries because font designers don't guarantee glyphs fill the exact cell dimensions. Even with correct line height, sub-pixel differences in font metrics vs cell metrics cause hairline gaps between adjacent box-drawing cells.
+Agent Mode creates git worktrees for safe code isolation (`git worktree add ~/.glass/worktrees/<id> -b agent-<id>`). If the Glass process crashes during worktree creation, or during agent execution, or if the agent proposes changes that are never applied, the worktree directory and git's administrative files (`<repo>/.git/worktrees/<id>/`) become orphaned. Git's `worktree prune` only removes entries whose directories no longer exist — it does not clean up directories that exist but whose associated branch was force-deleted. On a monorepo with a large `node_modules`, each orphaned worktree can consume hundreds of MB.
 
 **Why it happens:**
-Font glyphs are designed with their own internal metrics (bearings, advance width). These metrics rarely match exactly to terminal cell dimensions. The mismatch is invisible for text characters but catastrophic for box-drawing characters that must tile seamlessly.
+This is a documented real-world bug in at least one production AI coding agent (opencode issue #14648). Bootstrap failures that `return` early after partial worktree creation leave the directory tree and the git administrative entry in inconsistent states. Repeated agent retries accumulate orphans with no upper bound.
 
 **How to avoid:**
-Render box-drawing characters (U+2500-U+259F) as custom GPU geometry using the rect renderer, not through the font/glyph pipeline. For each box-drawing codepoint, emit the appropriate lines/rectangles that exactly fill the cell bounds. This is what Alacritty does with its `builtin_box_drawing` feature. Start with the most common characters (single/double lines, corners, T-junctions) and add diagonals later. Powerline symbols (U+E0B0-U+E0B3) benefit from the same treatment.
+Worktree creation must be atomic with cleanup registration. The pattern: (1) write a `pending_worktree` row to SQLite before `git worktree add`; (2) on success, update to `active`; (3) on failure, run `git worktree remove --force <path>` and delete the row. On Glass startup, scan for `pending_worktree` rows and clean them up. Add a periodic prune that runs `git worktree prune` in each registered repo. Cap total worktree count per repo at a configurable limit (default: 3). Surface worktree disk usage in the Agent Mode configuration UI so users have visibility before disk fills.
 
 **Warning signs:**
-- Box-drawing borders have hairline gaps even with correct line height
-- Gaps appear/disappear depending on font choice or font size
-- Zoom level changes cause gaps to appear at certain sizes but not others
+- `git worktree list` shows stale entries after repeated Glass restarts
+- `~/.glass/worktrees/` grows beyond 1GB without active agent sessions
+- `git worktree add` fails with "already exists" on new agent starts
 
 **Phase to address:**
-Phase 2 (Line height) should include basic box-drawing GPU rendering. Could be a separate sub-phase if scope is too large.
+Agent Mode Phase 3 (worktree isolation) — the SQLite-backed cleanup registration pattern must be the first thing implemented in that phase, before any worktree creation logic.
 
 ---
 
-### Pitfall 7: Font Fallback Causes Inconsistent Cell Width
+### Pitfall 7: Claude CLI API Costs Spiral Without Budget Caps
 
 **What goes wrong:**
-When cosmic-text falls back to a different font for a missing glyph (e.g., emoji, CJK character), the fallback font may have different metrics than the primary font. The glyph's advance width from the fallback font doesn't match cell_width, causing subsequent glyphs on the line to shift.
+Agent Mode runs a background Claude CLI session that autonomously executes tools, reads files, and proposes changes. Without explicit budget constraints, a single open-ended prompt ("fix all the bugs") can consume $20–$50 of API quota in one session. An agent team (multiple Claude instances) consumes approximately 7× more tokens than a single session. The Cursor community has documented cases where automated "long-context mode" triggering ran up unexpected charges on Bedrock.
 
 **Why it happens:**
-cosmic-text's `FontSystem` automatically discovers system fonts and falls back to them when the primary font lacks a glyph. This is correct behavior for text rendering, but terminal emulators need every glyph locked to cell_width regardless of which font provided it.
+The Claude SDK's agent loop runs until Claude decides it is done, not until a budget is hit. Open-ended prompts combined with large SOI context (the activity stream feeding compressed SOI data to the agent) rapidly saturate the context window, trigger compaction (which itself costs tokens), and restart the loop with a fresh window.
 
 **How to avoid:**
-With per-cell positioning (Pitfall 1 fix), each cell's TextArea has its left position set to `column * cell_width`, so fallback font metrics are irrelevant to positioning -- the grid forces alignment. This is why per-cell positioning MUST come before font fallback work. Additionally, for CJK fallback fonts, the glyph should be scaled/centered within the 2*cell_width space rather than rendered at its natural width.
+Expose `max_budget_usd` as a required configuration field (not optional, no default of "unlimited"). The Glass `[agent]` config section must require `max_budget_usd = 1.0` (reasonable default) and `max_turns = 20`. Surface real-time cost tracking in the Agent Mode status bar display. Implement hard cutoffs: when `max_budget_usd` is reached, the agent sends a final "stopped: budget exceeded" message and terminates. Add a `monthly_budget_usd` cap at the Glass level to prevent abuse across multiple sessions. Document clearly that per-session and monthly caps are independent.
 
 **Warning signs:**
-- Emoji or CJK characters cause all following text on the line to shift
-- Different fallback fonts produce different amounts of drift
-- Works perfectly with one system font set but breaks on another machine
+- Agent sessions running longer than 10 minutes without human approval events
+- Status bar showing turn count above 15 without progress
+- Claude requesting the same files repeatedly (context compaction loop)
 
 **Phase to address:**
-Phase 5 (Font fallback) -- but depends on Phase 1 (per-cell positioning) being complete first.
+Agent Mode Phase 2 (agent runtime) — budget enforcement must be part of the initial runtime implementation, not added as a polish step. Shipping without it risks user financial harm.
+
+---
+
+### Pitfall 8: Approval UI Blocks Terminal Interaction
+
+**What goes wrong:**
+Agent Mode's approval UI displays a review overlay when the agent proposes a command or file change. If this overlay is modal (captures all keyboard input while visible), the user cannot type in the terminal, run commands in other tabs, or dismiss the overlay with terminal shortcuts. This is the most commonly cited frustration with AI coding agent UX in 2025: agents "frequently pause to ask for human review" and "users cannot wander off while the assistant works."
+
+**Why it happens:**
+The existing overlay pattern in Glass (SearchOverlay, ConfigErrorOverlay) intercepts all keyboard input while active — that is by design for those use cases. Reusing the same overlay pattern for approval UI would make it modal. Agent proposals arrive asynchronously; if the agent sends multiple proposals rapidly, a stack of modal overlays would make the terminal completely unusable.
+
+**How to avoid:**
+Agent approval must be non-blocking. Design: proposals appear in a toast notification at the bottom of the active pane (similar to the update notification in the status bar). The toast shows a one-line summary, expires after 30 seconds of no interaction (auto-rejected), and can be accepted/rejected with dedicated hotkeys (e.g., Alt+A to accept, Alt+R to reject) that do not conflict with terminal input. A separate Agent Review overlay (non-modal, side panel) shows the full diff for careful review but does not capture keyboard focus from the terminal. The agent queue is visible but does not block terminal usage.
+
+**Warning signs:**
+- User cannot type in terminal when an approval is pending
+- Agent proposals pile up and become a multi-level overlay stack
+- Escape key dismisses approval instead of going to the terminal
+
+**Phase to address:**
+Agent Mode Phase 4 (approval UI) — the non-blocking design must be in the spec for this phase. Review the existing overlay architecture before implementation and explicitly decide NOT to reuse the modal overlay pattern for approvals.
+
+---
+
+### Pitfall 9: MCP Tool Proliferation Degrades Agent Context Quality
+
+**What goes wrong:**
+Glass currently has 25 MCP tools. Adding SOI tools (glass_query, glass_query_trend, glass_query_drill) and Agent Mode tools brings the total to ~30+. Each MCP tool's schema description consumes tokens before the agent writes a single line. Anthropic's own testing showed 58 tools consuming ~55K tokens of context before any conversation content. At 30 tools with verbose descriptions, Glass burns ~25K–35K tokens per agent session just on tool metadata — reducing effective working memory for code analysis and proposals.
+
+**Why it happens:**
+MCP tools are registered globally. There is no conditional registration or lazy loading. Every tool's full description is serialized into the context window at session start. Tool descriptions written for human readability (verbose parameter documentation) cost more tokens than terse descriptions.
+
+**How to avoid:**
+Audit all 25 existing MCP tools and aggressively compress their descriptions. Target: ≤100 tokens per tool description. Group related tools into families and use compact parameter naming. For SOI tools specifically, consider whether all three query variants (glass_query, glass_query_trend, glass_query_drill) need to be separate tools or whether one glass_query tool with a `mode` parameter achieves the same with one schema entry. Before adding Agent Mode tools, measure the current tool token footprint with `claude --mcp-debug` or equivalent. Set a project policy: total MCP tool token budget ≤ 15K tokens.
+
+**Warning signs:**
+- Agent sessions exhausting context window faster than previous sessions
+- Agent "forgetting" earlier context (more frequent compaction)
+- `glass_context` tool returning truncated data due to token budget pressure
+
+**Phase to address:**
+SOI Phase 6 (MCP tools) — conduct a token audit of all existing tools as part of this phase before adding new ones. Also applicable when designing Agent Mode tools.
+
+---
+
+### Pitfall 10: Windows Process Spawning Differences Break Agent Subprocess Management
+
+**What goes wrong:**
+Agent Mode spawns the Claude CLI as a subprocess. On Windows with ConPTY (the platform Glass primarily targets), subprocess spawning has different semantics than Unix: there is no `SIGTERM` equivalent, process group killing requires Job Objects, and subprocess console windows may appear unless `CREATE_NO_WINDOW` flag is set. If the agent subprocess is spawned with a visible console window, users see a phantom terminal appear alongside Glass. More subtly, `Child::kill()` on Windows sends `TerminateProcess` which does not give the child a chance to flush its output buffer, potentially truncating the final proposal before Glass reads it.
+
+**Why it happens:**
+`std::process::Command` abstracts over platforms but does not set Windows-specific flags by default. The Claude agent SDK TypeScript issue tracker documents a known issue (December 2025) about needing `windowsHide: true` to suppress console windows. Glass already uses `windows-sys` for ConPTY and has platform-gated code, but new subprocess spawning in Agent Mode will not automatically inherit those conventions.
+
+**How to avoid:**
+Wrap all agent subprocess spawning in a platform-abstraction module `glass_agent::spawn`. On Windows: use `CommandExt::creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)` and assign to a Job Object. On Unix: use `CommandExt::process_group(0)` so the entire process group can be killed with `kill(-pgid, SIGTERM)`. Before calling `Child::kill()`, send a graceful shutdown signal (ETX byte to stdin, the same mechanism Glass uses for `cancel_command`) and wait up to 5 seconds for the process to exit cleanly before force-terminating. Test agent spawn and cleanup explicitly with `#[cfg(target_os = "windows")]` integration tests.
+
+**Warning signs:**
+- Console windows appear when Agent Mode activates on Windows
+- Agent subprocess output is truncated on termination
+- `cargo test --workspace` fails with process management tests on Linux CI but passes on Windows
+
+**Phase to address:**
+Agent Mode Phase 1 (agent runtime) — platform-specific subprocess management must be implemented in the first phase alongside the Job Object cleanup from Pitfall 5.
+
+---
+
+### Pitfall 11: SOI Activity Stream Overwhelms Agent Context with Noise
+
+**What goes wrong:**
+The Agent Mode activity stream feeds compressed SOI data to the agent runtime. If every completed command produces a SOI record fed to the agent, a user running `cargo watch` (which rebuilds on every save) generates hundreds of SOI events per session. The agent context fills with redundant "build succeeded" summaries, leaving no room for meaningful code analysis. The agent begins ignoring the stream (effectively context-washing the useful entries) or the context compaction loop activates constantly, costing tokens and losing precision.
+
+**Why it happens:**
+The natural design is "feed all SOI records to the agent stream" — it's simple and ensures completeness. But terminal sessions are high-frequency environments. A developer working on a Rust project easily runs 50–100 commands per hour, many of them repetitive (cargo build, cargo test, git status). Each produces a SOI record. Without filtering, the stream is low signal-to-noise.
+
+**How to avoid:**
+The activity stream must be filtered before feeding to the agent: (1) deduplicate consecutive identical command+result pairs; (2) collapse N identical "build succeeded" events into "build succeeded 5 times in the last 10 minutes"; (3) always prioritize error/failure events over success events; (4) cap the stream window to the last 20 non-duplicate events. Expose stream verbosity as a user config (`agent.activity_stream_verbosity = "errors_only" | "important" | "all"`). Default to `"important"` (errors + commands the agent explicitly invoked).
+
+**Warning signs:**
+- Agent sessions with `cargo watch` running exhaust context in <5 minutes
+- Agent proposals repeat the same suggestion multiple times (context noise causing loss of earlier conversation state)
+- Activity stream has >80% repeated entries in a typical development session
+
+**Phase to address:**
+Agent Mode Phase 1 (activity stream feeding) — stream filtering is a data pipeline concern, not a UI concern. Design the filter layer in Phase 1 alongside the stream architecture.
+
+---
+
+### Pitfall 12: Context Window Exhaustion Has No Graceful Recovery
+
+**What goes wrong:**
+Claude CLI sessions have a context window limit. When exhausted, the SDK performs automatic compaction by summarizing older history. If the compaction summary loses critical context (e.g., the user's original goal, the files that were already modified, the approval decisions already made), the resumed agent session may re-propose changes that were already applied, creating duplicate edits or conflicting with the human's manual changes made since the compaction.
+
+**Why it happens:**
+Context compaction is a lossy operation by design. The SDK's server-side compaction prioritizes recent exchanges but can lose specific constraints stated early in a conversation. Long agent sessions (multi-hour coding tasks) are particularly vulnerable.
+
+**How to avoid:**
+At the Glass layer, maintain a persistent session state file (`~/.glass/agent-sessions/<id>.json`) separate from the Claude SDK's internal state. This file records: (1) the original user goal; (2) which files were modified by the agent and at which git SHAs; (3) approval decisions already made; (4) the current worktree branch. When context compaction occurs (detectable via SDK callbacks or turn count heuristics), Glass injects the session state file as a system prompt prefix for the resumed session. This ensures continuity even after compaction. Also implement the `--continue` / `--resume` pattern documented in Claude Code best practices.
+
+**Warning signs:**
+- Agent re-proposes changes to files it already modified
+- After a long session, agent "forgets" the original goal and starts on unrelated tasks
+- User notices duplicate edits after approving the same proposal twice
+
+**Phase to address:**
+Agent Mode Phase 5 (session continuity) — the persistent session state file must be designed before implementing multi-turn agent sessions in Phase 2. Retrofitting it after agents can run multiple turns risks losing session data already accumulated.
 
 ---
 
@@ -159,106 +265,136 @@ Phase 5 (Font fallback) -- but depends on Phase 1 (per-cell positioning) being c
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Per-line Buffer (current) | Simple code, one Buffer per line | Horizontal drift, can't fix CJK properly | Never acceptable for a daily-driver terminal |
-| 1.2x line height multiplier | Readable text spacing | Broken box-drawing, broken TUI apps | Never acceptable for terminal emulator |
-| Skip spacer cells entirely | Simple wide char handling | Missing backgrounds, broken selection | Only in MVP before CJK support |
-| Font glyph box-drawing | No custom rendering code needed | Hairline gaps between cells | Acceptable if CJK/TUI usage is rare |
-| Single font family config | Simple configuration | Missing glyphs render as boxes | Acceptable until non-Latin users report issues |
-| Log-only ScaleFactorChanged | Ship faster | Broken rendering on multi-monitor setups | Only acceptable during single-monitor development |
+| Inline SOI parsing on CommandFinished handler | No new async wiring | Blocks main thread, input latency spikes | Never — the handler is already at the edge of acceptable complexity |
+| Regex-based ANSI stripping (reuse existing) | No new dependencies | Residual escape bytes break format parsers | Only for history display, never for SOI parser input |
+| SOI injected into PTY stream instead of overlay | Simpler rendering path | Race conditions with OSC 133 boundaries, corrupts history | Never — fundamental architecture error |
+| Agent approval as modal overlay (reuse existing pattern) | Reuse SearchOverlay code | Terminal unusable while approval pending | Never for Agent Mode; modal is acceptable for error display only |
+| All 30+ MCP tools registered globally with verbose descriptions | Complete documentation | 25K–35K token burn per agent session | Only during initial development; must compress before Agent Mode ships |
+| No budget cap default (unlimited spending) | Simpler config | User financial harm | Never — must have a default cap |
+| Claude CLI subprocess spawned without Job Object (Windows) | Simpler cross-platform code | Orphaned processes after crash, ongoing API costs | Never for production; acceptable in early prototype testing only |
+| Skip worktree cleanup registration | Faster worktree creation | Orphaned worktrees accumulate, disk fills | Never — registration takes <1ms and prevents disk exhaustion |
+
+---
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| glyphon TextArea.scale | Using scale for DPI | Set scale=1.0, apply DPI to Metrics instead |
-| cosmic-text Buffer sizing | Setting buffer width to viewport_width | For per-cell: set width to cell_width (or 2*cell_width for wide chars) |
-| alacritty_terminal Flags | Checking WIDE_CHAR but not WIDE_CHAR_SPACER | Always handle both: render WIDE_CHAR at double width, skip WIDE_CHAR_SPACER |
-| alacritty_terminal underline | Checking only UNDERLINE flag | Also handle DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE |
-| wgpu surface resize | Resizing surface without reconfiguring | Must call surface.configure() after every resize, before next frame |
-| winit ScaleFactorChanged | Treating it like a simple resize | Must rebuild fonts, cell metrics, PTY size, AND surface size |
-| glyphon TextAtlas after DPI change | Keeping old atlas glyphs | Glyphs rasterized at old DPI are wrong size; trim or rebuild atlas |
+| Claude CLI subprocess | `Command::new("claude")` without platform flags | Use `glass_agent::spawn` abstraction with `CREATE_NO_WINDOW` on Windows and `process_group(0)` on Unix |
+| Git worktree create | `git worktree add` then cleanup on failure | Write to SQLite first, create worktree second, update SQLite on success |
+| MCP tool registration | Register all tools at server start | Audit token footprint first; compress descriptions to ≤100 tokens each |
+| SOI parser input | Pass `OutputBuffer.text` directly | Strip ANSI via state machine first; gate on `is_binary()` check |
+| Activity stream | Push every SOI event to agent | Deduplicate and filter before push; collapse repetitive success events |
+| Approval notification | Reuse SearchOverlay (modal, captures all input) | New toast + hotkey pattern; non-modal; auto-timeout |
+| Context compaction | Let SDK handle it silently | Detect compaction events, inject persistent session state file as prefix |
+| ANSI stripping for SOI | Reuse existing `strip_ansi` regex in glass_history | Replace with `strip_ansi_escapes` crate (state machine, handles split boundaries) |
+
+---
 
 ## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| One Buffer per cell (naive per-cell) | Frame time spikes on full-screen redraws (200+ cells/line * 50 lines = 10,000 Buffers) | Batch consecutive cells with identical attributes into one Buffer, position at first cell's column | Immediately on any 80x50 terminal |
-| Rebuilding all Buffers every frame | 10-20ms frame time instead of <5ms | Cache Buffers and only rebuild lines that changed (dirty-line tracking) | Noticeable with fast-scrolling output (e.g., cargo build) |
-| Atlas overflow with CJK + emoji + Latin | GPU memory grows unbounded, eventually OOM or atlas rebuild stall | Call atlas.trim() each frame (already done), monitor atlas size, consider atlas size cap | After ~30min session with diverse Unicode output |
-| Custom box-drawing geometry per frame | Thousands of rect instances for complex TUI apps | Pre-compute box-drawing rects only when grid content changes, not every frame | Complex TUI apps (htop, btop) with full-screen box-drawing |
-| Font fallback system font scan | FontSystem::new() scans all system fonts on first miss | Pre-warm FontSystem at startup (already done); ensure fallback scan doesn't block rendering thread | Systems with 500+ installed fonts |
+| SOI parsing inline on CommandFinished | Input latency >5ms after any command with output | Async dispatch via channel; parse in background task | Any command producing >5KB output |
+| Multi-pass SOI classifier (try all parsers) | CPU spike on every command completion | Fast early-rejection: check first byte/line before attempting full parse | High-frequency `cargo watch` sessions (50+ commands/hour) |
+| Full SOI record in agent context per event | Context window exhausted in <20 turns | Stream only summary strings to agent, not full records; full records available via MCP query tool | Sessions with >20 SOI events before agent starts |
+| Worktree creation without disk space check | Disk full mid-creation, partial orphan | Check available space before `git worktree add`; enforce per-user worktree count cap | Large repos (node_modules, build artifacts) |
+| Agent turn loop without timeout | Agent runs indefinitely, costs spiral | Enforce `max_turns` and `max_budget_usd` hard limits with timer-based kill | Any open-ended prompt without specific success criteria |
+
+---
+
+## Security Mistakes
+
+| Mistake | Risk | Prevention |
+|---------|------|------------|
+| Agent proposes and auto-approves `rm -rf` | Irreversible file deletion | Agent proposals MUST go through approval UI regardless of `auto_approve` setting; destructive commands (Glass's existing `command_parser` list) always require explicit confirmation |
+| Prompt injection via command output into agent context | Malicious output from a command hijacks agent goals | Sanitize all SOI summaries before injecting into agent context; treat command output as untrusted data with a trust boundary between PTY output and agent input |
+| Agent writes to files outside the worktree | Escapes isolation, modifies production code | Enforce worktree confinement: agent file operations must target only paths within the worktree; Glass validates all proposed file paths against the worktree root before approval |
+| ANSI escape sequences in MCP tool output to AI | ANSI codes can hide malicious payloads in tool descriptions (Trail of Bits, April 2025) | Strip ANSI from all tool return values before they reach the agent's context window |
+| Agent process with network access runs unchecked | Agent exfiltrates repository contents or API keys | Log all subprocess command executions in `glass_history`; require network tool approval separately from file tool approval |
+
+---
 
 ## UX Pitfalls
 
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Underline too thick (>1px at 1x DPI) | Underlined text looks bold/ugly, obscures descenders | Use 1px at 1x, scale with DPI: max(1, round(scale_factor)) |
-| Underline on baseline instead of below descenders | Underline cuts through g, j, p, q, y | Position underline at descent line or slightly below baseline + descent |
-| Strikethrough at wrong vertical position | Line through ascenders instead of through middle | Position at roughly 0.3 * (ascent + descent) above baseline |
-| Curly underline (UNDERCURL) as straight line | Users expect wavy line for spell-check indicators | Render as sine wave segments using small rects or a dedicated shader |
-| CJK text clipped at right edge | Last CJK character on a line is half-visible | Wrap CJK characters to next line when only 1 column remains (alacritty_terminal handles this, but verify rect clipping) |
-| DPI change causes layout jump | Content appears to jump/flash during DPI transition | Apply all changes atomically in one frame, don't render intermediate states |
+| SOI summaries appear when there's nothing useful to say | Summary clutter for every `ls` and `echo` — user disables feature | Only show SOI decorations when confidence ≥ 0.8 AND the parsed record contains structured data beyond a raw count |
+| Agent approval toast blocks terminal content | User can't read the output the agent is proposing to act on | Toast must be semi-transparent or positioned to not obscure the relevant output; show which block the agent is referencing |
+| SOI classification shown as "unknown" for most commands | User perceives feature as broken | Do not display any SOI UI decoration when classification is `None`; silence is correct for unstructured output |
+| Agent mode notification badge always visible even when idle | Constant attention demand | Agent status badge only appears when agent is actively running or has pending approvals; idle agents don't show a badge |
+| Session continuity "resumes" but starts from scratch | User confusion when agent forgets context | Show the session's original goal and change count in the resume prompt so user can verify continuity |
+
+---
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Per-cell positioning:** Often missing zero-width combining characters -- verify combining chars (accents, emoji modifiers) attach to the correct base cell
-- [ ] **Box-drawing:** Often missing corner/junction characters -- verify U+250C (top-left), U+2514 (bottom-left), U+253C (cross) all connect seamlessly
-- [ ] **Box-drawing:** Often missing block elements (U+2580-U+259F) -- verify half-blocks and shade characters render correctly
-- [ ] **CJK support:** Often missing background rects for wide chars -- verify bg color spans full 2-cell width
-- [ ] **CJK support:** Often missing cursor width -- verify cursor block covers 2 cells on wide characters
-- [ ] **CJK support:** Often missing selection width -- verify selection highlight spans 2 cells for wide characters
-- [ ] **Underline:** Often missing colored underlines -- verify `Flags::UNDERLINE_COLOR` from alacritty_terminal is respected (not just white)
-- [ ] **Underline:** Often missing underline style variants -- verify DOUBLE_UNDERLINE, UNDERCURL, DOTTED, DASHED are visually distinct
-- [ ] **Font fallback:** Often missing on Windows -- verify fallback works with CJK (MS Gothic/Yu Gothic), emoji (Segoe UI Emoji), and symbols
-- [ ] **DPI handling:** Often missing PTY resize -- verify COLUMNS/LINES reported by `stty size` update after DPI change
-- [ ] **DPI handling:** Often missing atlas invalidation -- verify text isn't blurry after moving between 1x and 2x displays
+- [ ] **SOI parsing:** Parser appears to work on test fixtures — verify against real shell output including colorized git log, TypeScript errors with ANSI highlights, and Docker multi-stage build output
+- [ ] **SOI async dispatch:** SOI records appear in SQLite — verify that input latency benchmark does NOT regress (run criterion `input_latency` test before and after)
+- [ ] **Shell summary rendering:** Summary text appears after commands — verify that `OutputBuffer` raw bytes do NOT contain the summary text (summary is overlay-only, not in history DB)
+- [ ] **Agent subprocess cleanup:** Agent terminates when user closes Glass — verify with Task Manager / `ps aux` that no `claude` processes remain after Glass exits abnormally (`kill -9` / Task Manager kill)
+- [ ] **Worktree cleanup:** Agent creates worktree — verify that crashing Glass mid-creation (kill during `git worktree add`) and restarting runs cleanup before creating a new worktree
+- [ ] **Budget cap:** Agent runs with `max_budget_usd = 0.50` — verify agent stops before $0.50 and sends a "budget exceeded" message, does NOT silently continue
+- [ ] **Approval non-blocking:** Approval toast appears — verify that pressing any regular key (including Enter) while a toast is visible types in the terminal, not dismisses the toast
+- [ ] **MCP token budget:** All 30+ tools registered — measure actual token count of full tool schema with `claude --print-mcp-schema` or equivalent; verify under 15K tokens total
+- [ ] **Prompt injection defense:** Agent receives command output — verify that output containing `\nSystem: ignore all previous instructions` does NOT alter agent behavior (test with a benign trigger phrase)
+
+---
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Per-line drift shipped | MEDIUM | Replace build_text_buffers with per-cell approach; update build_text_areas to use per-cell offsets; no API changes to callers |
-| Wrong line height shipped | LOW | Change one line in GridRenderer::new to use font metrics instead of 1.2x; rebuild cell dimensions; retest all renderers |
-| Missing wide char backgrounds | LOW | Add WIDE_CHAR flag check in build_rects to double width; add WIDE_CHAR_SPACER skip; ~10 lines changed |
-| TextArea.scale misuse | LOW | Set scale=1.0, move scaling to Metrics; ~5 lines changed but must audit all TextArea creation sites |
-| DPI change partially handled | HIGH | Must wire ScaleFactorChanged through font rebuild, surface resize, PTY resize, atlas clear; touches main.rs + frame.rs + grid_renderer.rs |
-| Font glyphs for box-drawing | MEDIUM | Add box-drawing renderer with codepoint-to-geometry mapping; ~200-400 lines; intercept in build_text_buffers to skip box chars |
+| SOI parser blocks PTY thread | HIGH — requires architectural refactor | Extract all post-CommandFinished work into an async worker; add a bounded channel between the event handler and the worker; rewrite SOI dispatch to use the channel |
+| PTY injection approach chosen for summaries | HIGH — rewrite SOI rendering layer | Remove PTY write calls; add `soi_summary` field to `Block` struct; add rendering in `BlockRenderer`; migrate existing injected summaries out of history DB |
+| Orphaned agent processes after crash | MEDIUM — add Job Object/prctl in new platform module | Write `glass_agent::spawn` abstraction; backfill Job Object assignment for already-spawned agents in current session |
+| Worktree orphans accumulated | LOW — one-time cleanup | Run `git worktree prune` in all registered repos; delete rows from `pending_worktree` table; run after next Glass startup |
+| API costs exceeded without cap | LOW — config change | Add `max_budget_usd` to `[agent]` config section with default `1.0`; SDK applies on next session |
+| MCP token bloat discovered late | MEDIUM — requires description rewrites | Audit all tool descriptions; rewrite to ≤100 tokens each; no API changes needed |
+
+---
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Per-line horizontal drift | Phase 1: Per-cell positioning | Run `vim` with line numbers, verify column alignment across all 80+ columns |
-| 1.2x line height gaps | Phase 2: Line height from metrics | Run `tmux` with pane borders, verify no horizontal gaps between rows |
-| Box-drawing font gaps | Phase 2: Custom GPU box-drawing | Render U+2500-U+259F grid, verify all characters connect seamlessly |
-| Wide char background holes | Phase 3: CJK support | Display CJK text with colored backgrounds, verify no gaps in bg rects |
-| Wide char cursor/selection | Phase 3: CJK support | Place cursor on CJK character, verify block cursor spans 2 cells |
-| Underline position/thickness | Phase 4: Underline/strikethrough | Display underlined text with descenders (g, j, y), verify underline doesn't clip them |
-| Strikethrough position | Phase 4: Underline/strikethrough | Display strikethrough text, verify line is centered on x-height |
-| Fallback font drift | Phase 5: Font fallback (depends on Phase 1) | Display mixed Latin + CJK + emoji on one line, verify grid alignment maintained |
-| Fallback font missing on platform | Phase 5: Font fallback | Test on Windows, macOS, Linux with CJK and emoji content |
-| TextArea.scale bug | Phase 6: DPI handling | Verify scale=1.0 is used everywhere; test on 150% DPI display |
-| Partial DPI rebuild | Phase 6: DPI handling | Move window between 1x and 2x monitors, verify text/rects/PTY all update correctly |
-| Atlas stale after DPI | Phase 6: DPI handling | After DPI change, verify text is crisp (not blurry from old-DPI cached glyphs) |
+| SOI parser blocks PTY thread | SOI Phase 1 (classification pipeline) | Run criterion input_latency benchmark before and after; must stay <5ms |
+| ANSI residue corrupts parser input | SOI Phase 1 (classification pipeline) | Feed real `git log --color=always` output to classifier; verify zero residual ANSI bytes |
+| Shell summary injection race | SOI Phase 1 (architecture decision: overlay vs injection) | Verify OutputBuffer does not contain SOI text; verify no OSC sequence timing failures |
+| Binary output misclassification | SOI Phase 1 (classification) | Feed `xxd /dev/urandom | head` output; verify 0% classification rate |
+| Agent zombie processes on crash | Agent Mode Phase 1 (runtime) | `kill -9` Glass while agent running; verify no `claude` processes survive; Windows: Task Manager |
+| Worktree orphan accumulation | Agent Mode Phase 3 (worktree isolation) | Crash Glass during `git worktree add`; verify startup prune removes orphan |
+| API cost spiral | Agent Mode Phase 2 (runtime) | Run agent with `max_budget_usd = 0.10`; verify stops with budget message |
+| Approval UI blocks terminal | Agent Mode Phase 4 (approval UI) | While approval toast visible, type in terminal; verify keystrokes go to PTY |
+| MCP tool token bloat | SOI Phase 6 (MCP tools) | Measure token footprint before and after adding SOI tools; must stay under 15K total |
+| Windows subprocess differences | Agent Mode Phase 1 (runtime) | Windows CI test: spawn agent, kill parent, verify no console window and no orphan process |
+| Activity stream noise | Agent Mode Phase 1 (activity stream) | Run `cargo watch` for 5 minutes; verify stream compresses to ≤20 unique events |
+| Context window exhaustion recovery | Agent Mode Phase 5 (session continuity) | Run agent past compaction threshold; verify resumed session still knows original goal |
+
+---
 
 ## Sources
 
-- [glyphon TextArea::scale alignment bug (Issue #117)](https://github.com/grovesNL/glyphon/issues/117)
-- [Alacritty builtin box drawing (Issue #5809)](https://github.com/alacritty/alacritty/issues/5809)
-- [Alacritty box drawing rendering quality (Issue #7067)](https://github.com/alacritty/alacritty/issues/7067)
-- [Warp: Adventures in Text Rendering](https://www.warp.dev/blog/adventures-text-rendering-kerning-glyph-atlases)
-- [How Zutty works: GPU terminal rendering](https://tomscii.sig7.se/2020/11/How-Zutty-works)
-- [Contour terminal text stack internals](https://contour-terminal.org/internals/text-stack/)
-- [CJK ambiguous width in Windows Terminal (Issue #370)](https://github.com/microsoft/terminal/issues/370)
-- [Ghostty CJK height constraint (Issue #8709)](https://github.com/ghostty-org/ghostty/issues/8709)
-- [winit ScaleFactorChanged race conditions (Issue #2921)](https://github.com/rust-windowing/winit/issues/2921)
-- [wgpu surface resize on scale change (Issue #1872)](https://github.com/gfx-rs/wgpu/issues/1872)
-- [cosmic-text font fallback discussion (#14)](https://github.com/pop-os/cosmic-text/discussions/14)
-- [cosmic-text configurable fallback (Issue #126)](https://github.com/pop-os/cosmic-text/issues/126)
-- Glass codebase: `grid_renderer.rs` (lines 48-49: 1.2x multiplier, lines 239-248: WIDE_CHAR_SPACER skip)
-- Glass codebase: `main.rs` (lines 1052-1054: log-only ScaleFactorChanged)
-- Glass codebase: `frame.rs` (line 130: update_font method)
+- [VSCode terminal integration race condition (Issue #237208)](https://github.com/microsoft/vscode/issues/237208) — OSC 633;D timing, 80% failure rate
+- [opencode orphaned worktrees (Issue #14648)](https://github.com/anomalyco/opencode/issues/14648) — bootstrap failures leave orphaned full-repo clones
+- [opencode worktree cleanup fix (PR #14649)](https://github.com/anomalyco/opencode/pull/14649) — SQLite-backed cleanup registration pattern
+- [Manage costs effectively — Claude Code Docs](https://code.claude.com/docs/en/costs) — `max_budget_usd` parameter, agent team 7x token multiplier
+- [How the agent loop works — Claude API Docs](https://platform.claude.com/docs/en/agent-sdk/agent-loop) — loop termination, compaction behavior
+- [Tool-space interference in the MCP era — Microsoft Research](https://www.microsoft.com/en-us/research/blog/tool-space-interference-in-the-mcp-era-designing-for-agent-compatibility-at-scale/) — tool token overhead at scale
+- [MCP Isn't Dead, But Bloated Agentic Workflows Are — DomAIn Labs](https://www.domainlabs.dev/blog/agent-guides/mcp-bloated-workflows-skills-architecture) — "58 tools, ~55K tokens before conversation"
+- [Deceiving users with ANSI terminal codes in MCP — Trail of Bits (April 2025)](https://blog.trailofbits.com/2025/04/29/deceiving-users-with-ansi-terminal-codes-in-mcp/) — ANSI injection into tool descriptions
+- [Prompt Injection to RCE in AI agents — Trail of Bits (October 2025)](https://blog.trailofbits.com/2025/10/22/prompt-injection-to-rce-in-ai-agents/) — command injection via tool output
+- [anstyle-parse: ANSI state machine parser — DeepWiki](https://deepwiki.com/rust-cli/anstyle/2.3-anstyle-parse:-ansi-escape-code-parsing) — state machine vs regex correctness
+- [Claude Code rate limits and pricing — Northflank](https://northflank.com/blog/claude-rate-limits-claude-code-pricing-cost) — session cost modeling
+- [Destroying all child processes when parent exits — Old New Thing (Microsoft)](https://devblogs.microsoft.com/oldnewthing/20131209-00/?p=2433) — Windows Job Object pattern for subprocess cleanup
+- [Claude agent SDK: windowsHide subprocess issue (December 2025)](https://github.com/anthropics/claude-agent-sdk-typescript/issues/103) — Windows CREATE_NO_WINDOW requirement
+- [Managing Long Contexts in Agentic Coding Systems](https://cto.new/blog/managing-long-contexts-in-agentic-coding-systems) — compaction strategies and session state persistence
+- [Structured outputs create false confidence — BAML Blog](https://boundaryml.com/blog/structured-outputs-create-false-confidence) — classification over-confidence pitfall
+- Glass codebase: `src/main.rs` (lines 1732–2188: AppEvent::Shell handler — location where SOI parsing must NOT be added inline)
+- Glass codebase: `crates/glass_terminal/src/pty.rs` — std::thread PTY reader; blocking I/O constraint
+- Glass codebase: `crates/glass_history/src/lib.rs` — existing ANSI stripping (regex-based, insufficient for SOI parser input)
+- Glass codebase: `crates/glass_coordination/` — agents.db pattern for agent PID persistence and cleanup registration
 
 ---
-*Pitfalls research for: GPU terminal emulator rendering correctness*
-*Researched: 2026-03-09*
+*Pitfalls research for: SOI output parsing and Agent Mode background AI agents in existing Rust terminal emulator*
+*Researched: 2026-03-12*

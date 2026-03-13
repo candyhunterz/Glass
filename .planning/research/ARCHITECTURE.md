@@ -1,316 +1,636 @@
-# Architecture Patterns
+# Architecture Research
 
-**Domain:** Rendering correctness features for GPU terminal emulator (v2.4)
-**Researched:** 2026-03-09
+**Domain:** SOI & Agent Mode integration into Glass GPU terminal emulator (v3.0)
+**Researched:** 2026-03-12
+**Confidence:** HIGH — derived from direct code inspection of existing crates, not documentation alone
 
-## Current Architecture Summary
+---
 
-The rendering stack has three layers:
+## System Overview
 
-1. **GridSnapshot** (glass_terminal) -- Flat `Vec<RenderedCell>` with per-cell `Point`, `char`, `fg`, `bg`, `Flags`, `zerowidth`. Flags include UNDERLINE, STRIKETHROUGH (STRIKEOUT), DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE, WIDE_CHAR, WIDE_CHAR_SPACER, BOLD, ITALIC, DIM, INVERSE -- all already preserved from alacritty_terminal.
+### Existing Pipeline (v2.5, unchanged for v3.0)
 
-2. **GridRenderer** (glass_renderer) -- Converts snapshot to GPU primitives:
-   - `build_rects()`: cell bg rects at `column * cell_width`, `line * cell_height`
-   - `build_text_buffers()`: one glyphon `Buffer` per line with rich text spans (fg color, bold, italic)
-   - `build_text_areas()`: positions each line buffer at `line_idx * cell_height`
-
-3. **FrameRenderer** (glass_renderer) -- Orchestrates: rects -> text -> present. Owns GlyphCache (FontSystem, TextAtlas, TextRenderer, SwashCache), GridRenderer, RectRenderer. Has `draw_frame()` for single-pane and `draw_multi_pane_frame()` for split panes.
-
-**Key observation:** The current architecture builds ONE glyphon Buffer per line and lets glyphon handle horizontal glyph placement. This means glyph x-positions are determined by glyphon's shaping, NOT by `column * cell_width`. This is the root cause of horizontal drift in TUI apps.
-
-**Second key observation:** Line height uses `(font_size * scale * 1.2).ceil()` -- a hard-coded 1.2x multiplier. This adds inter-line spacing that prevents box-drawing characters from connecting vertically.
-
-## Integration Analysis: What Changes vs What Gets Added
-
-### Feature 1: Per-Cell Glyph Positioning
-
-**Problem:** glyphon positions glyphs via its own shaping engine. If a glyph's advance width differs from cell_width (common with non-monospace fallback glyphs, combining characters, or rounding), characters drift horizontally. TUI borders misalign.
-
-**What CHANGES (modify existing):**
-
-- `GridRenderer::build_text_buffers()` -- MAJOR REWRITE. Instead of one Buffer per line with all characters concatenated, create one Buffer per cell. Each cell's buffer is positioned at exactly `column * cell_width`.
-
-- `GridRenderer::build_text_areas()` / `build_text_areas_offset()` -- MAJOR REWRITE. Instead of one TextArea per line at `line_idx * cell_height`, produce one TextArea per cell at `(column * cell_width, line_idx * cell_height)`.
-
-- `FrameRenderer::text_buffers` field -- Type stays `Vec<Buffer>` but the count changes from `screen_lines` (~50) to non-empty cells (~2000-4000).
-
-**Recommended approach -- Per-cell Buffers:**
-
-Create one Buffer per non-empty, non-spacer cell. Skip empty/space cells entirely (most terminals are <50% filled). Position each buffer at grid-locked coordinates.
-
-The simpler and more correct approach used by Alacritty itself: render each glyph individually at grid-locked positions.
-
-**New data flow:**
 ```
-snapshot.cells
-  -> for each non-spacer, non-empty cell:
-       Buffer::new() with single char (+ zerowidth combining chars)
-       set_size(cell_width, cell_height)  [or 2*cell_width for WIDE_CHAR]
-       shape_until_scroll()
-  -> TextArea { left: col * cell_width + x_offset, top: line * cell_height + y_offset }
+PTY reader thread (std::thread, blocking I/O)
+    |
+    ├── OscScanner (glass_terminal/osc_scanner.rs)
+    |       Detects OSC 133 shell lifecycle sequences
+    |       Emits AppEvent::Shell { ShellEvent::CommandFinished, ... }
+    |
+    ├── OutputBuffer (glass_terminal/output_capture.rs)
+    |       Accumulates raw bytes between CommandExecuted and CommandFinished
+    |       Emits AppEvent::CommandOutput { raw_output: Vec<u8> }
+    |
+    └── EventProxy (glass_terminal)
+            Sends AppEvent → winit EventLoopProxy<AppEvent>
+
+winit main event loop (src/main.rs, ~2200 lines)
+    |
+    ├── AppEvent::Shell { CommandFinished } → insert CommandRecord into HistoryDb
+    |       location: main.rs:2664
+    |       stores: command text, cwd, exit_code, started_at, finished_at, duration_ms
+    |
+    ├── AppEvent::CommandOutput { raw_output } → update_output() in HistoryDb
+    |       location: main.rs:2882
+    |       processes: ANSI strip, binary filter, truncation (glass_history::output::process_output)
+    |       stores: processed text into commands.output column
+    |
+    └── AppEvent renders to wgpu via FrameRenderer (glass_renderer)
+
+MCP server (glass_mcp, separate process `glass mcp serve`)
+    IPC channel: named pipe (Windows) / Unix socket
+    Reads HistoryDb directly via glass_history
+    Sends MCP requests back to GUI via AppEvent::McpRequest
 ```
 
-**Performance mitigation:**
-- Only create Buffers for non-empty cells (skip spaces and WIDE_CHAR_SPACER)
-- Reuse the Buffer Vec capacity between frames (already done with `text_buffers.clear()`)
-- glyphon's TextAtlas caches rasterized glyphs -- same glyph at different positions shares atlas entry
-- The hot path is `Buffer::new()` + `set_text()` + `shape_until_scroll()` per cell -- micro-benchmark needed
+### New Pipeline (v3.0, SOI + Agent Mode)
 
-### Feature 2: Correct Line Height (Box-Drawing)
-
-**Problem:** `cell_height = (font_size * scale * 1.2).ceil()` adds inter-line spacing. Box-drawing characters (U+2500-U+257F) need to connect vertically with zero gap.
-
-**What CHANGES (modify existing):**
-
-- `GridRenderer::new()` -- Change line height calculation. Use actual font metrics (ascent + descent) from cosmic-text instead of `font_size * 1.2`. Measure via the same Buffer used for cell_width measurement -- examine `layout_runs()` for `line_height`.
-
-  Specifically: after shaping "M" to get cell_width, read the `line_y` or metric values from the layout run. The font's own metrics are authoritative. If the resulting line height is too tight (text overlaps), add minimal leading but NOT 20%.
-
-- `GridRenderer::cell_height` -- Value changes. This cascades through `FrameRenderer::update_font()` to ALL consumers: BlockRenderer, StatusBarRenderer, TabBarRenderer, SearchOverlayRenderer. The cascade is already wired correctly.
-
-- `main.rs` terminal size calculation -- Uses `cell_height` for computing num_lines. Value changes but code stays the same.
-
-**What STAYS:** `FrameRenderer::update_font()` already rebuilds all sub-renderers when cell_height changes. No structural change needed.
-
-**Box-drawing consideration:** Even with correct line height, box-drawing glyphs from the font may not perfectly fill the cell. Two options:
-1. Trust the font (simpler, usually works with good monospace fonts like Cascadia Code)
-2. Custom-render box-drawing characters as GPU rects (pixel-perfect, what Alacritty/WezTerm do)
-
-**Recommendation:** Start with option 1 (correct metrics). If box-drawing still has gaps with specific fonts, add option 2 as a follow-up. Custom box-drawing rendering would add a detection step in `build_cell_buffers()` that emits RectInstances instead of text Buffers for U+2500-U+257F.
-
-### Feature 3: Wide Character / CJK Support
-
-**Problem:** CJK characters occupy 2 columns. `build_text_buffers()` already skips `WIDE_CHAR_SPACER` cells. But with per-line Buffers, the wide char is shaped as part of a line and may not be centered in 2 * cell_width.
-
-**What CHANGES (modify existing):**
-
-- `GridRenderer::build_rects()` -- WIDE_CHAR cells need `2 * cell_width` for their background rect. WIDE_CHAR_SPACER cells should be skipped entirely (currently they get a bg rect if bg != default, which causes a duplicate background).
-
-  ```rust
-  if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-      continue; // skip spacer, wide char already covers 2 cells
-  }
-  let width = if cell.flags.contains(Flags::WIDE_CHAR) {
-      self.cell_width * 2.0
-  } else {
-      self.cell_width
-  };
-  ```
-
-- `build_cell_buffers()` (the replacement for build_text_buffers) -- When a cell has `Flags::WIDE_CHAR`, its Buffer should have `set_size(2 * cell_width, cell_height)` so the glyph is properly shaped and centered within the double-width space.
-
-- `build_selection_rects()` -- May need awareness that a wide char selection should highlight 2 cells, though this likely already works since selection ranges use column indices from alacritty_terminal which handle wide chars.
-
-**What STAYS:** `snapshot_term()` already preserves WIDE_CHAR and WIDE_CHAR_SPACER flags. No changes to glass_terminal.
-
-### Feature 4: Underline and Strikethrough Rendering
-
-**Problem:** Flags (UNDERLINE, STRIKEOUT, DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE) are preserved in `RenderedCell.flags` but never read during rendering.
-
-**What GETS ADDED (new code):**
-
-- `GridRenderer::build_decoration_rects()` -- NEW METHOD. Iterates cells, checks decoration flags, emits RectInstances using the cell's fg color for decoration color.
-
-  Positions (relative to cell top-left at `col * cell_width, line * cell_height`):
-  - UNDERLINE: 1px rect at `y + cell_height - 2` (above cell bottom)
-  - DOUBLE_UNDERLINE: two 1px rects, 2px apart near bottom
-  - STRIKEOUT: 1px rect at `y + cell_height * 0.5` (vertical center)
-  - UNDERCURL: approximate with alternating small rects (wavy). Or defer to simple underline.
-  - DOTTED_UNDERLINE: 1px rects with 1px gaps
-  - DASHED_UNDERLINE: 3px rects with 2px gaps
-  - WIDE_CHAR_SPACER: skip (decoration only on the WIDE_CHAR cell, spanning 2*cell_width)
-
-**What CHANGES (modify existing):**
-
-- `FrameRenderer::draw_frame()` -- Insert `build_decoration_rects()` call. Decoration rects should render between bg rects and text:
-  1. bg rects (existing)
-  2. decoration rects (NEW -- underlines go under text)
-  3. text (existing)
-
-- `FrameRenderer::draw_multi_pane_frame()` -- Same addition with viewport offset applied to decoration rect positions.
-
-**No changes needed to:** RectRenderer (decorations are just more RectInstances), GridSnapshot, snapshot_term.
-
-### Feature 5: Font Fallback Configuration
-
-**What cosmic-text already does:** FontSystem automatically discovers all system fonts at startup and performs font fallback when the primary font family lacks a glyph. glyphon's `Shaping::Advanced` (already used) enables HarfBuzz shaping which includes fallback.
-
-**What CHANGES:** Likely nothing for basic fallback to work. The automatic fallback already handles most CJK and symbol cases.
-
-**What MAY NEED ADDING:**
-
-- If users need to control fallback order (e.g., prioritize "Noto Sans CJK SC" over other CJK fonts), add config support:
-
-  ```toml
-  [font]
-  family = "Cascadia Code"
-  fallback = ["Noto Sans CJK SC", "Segoe UI Symbol"]
-  ```
-
-- `GlyphCache::new()` or `FrameRenderer::new()` -- Load specified fallback fonts with higher priority via `FontSystem::db_mut()`.
-
-- With per-cell positioning (Feature 1), fallback font glyph width mismatches are already handled -- each cell is positioned at `col * cell_width` regardless of the actual glyph width.
-
-**Confidence:** MEDIUM. cosmic-text does automatic font fallback but the quality/ordering may not be ideal without explicit configuration. Need to test with CJK text.
-
-### Feature 6: Dynamic DPI / Scale Factor Handling
-
-**Problem:** `WindowEvent::ScaleFactorChanged` in main.rs is currently log-only. Comment says "FrameRenderer does not yet support dynamic scale factor updates."
-
-**What CHANGES (modify existing):**
-
-- `main.rs` ScaleFactorChanged handler -- Must call:
-  1. `frame_renderer.update_font(font_family, font_size, new_scale_factor)` -- already exists and works
-  2. Get new cell dimensions: `frame_renderer.cell_size()`
-  3. Recalculate columns/rows from window size and new cell dims
-  4. Resize PTY via `pty_sender.send(PtyMsg::Resize { cols, rows })`
-  5. Resize wgpu surface via `renderer.resize(new_width, new_height)` if inner_size changed
-  6. `window.request_redraw()`
-
-**What STAYS:** `FrameRenderer::update_font()` already handles scale_factor. `GlassRenderer::resize()` already handles surface resize. The `update_font` path is already exercised by config hot-reload.
-
-**Key detail:** The `ScaleFactorChanged` event on Windows may come with a new `PhysicalSize` via `inner_size_writer`. The handler must apply the new size.
-
-## Component Boundaries
-
-| Component | Responsibility | Changes For v2.4 |
-|-----------|---------------|-------------------|
-| `GridSnapshot` / `RenderedCell` | Cell data with flags | NO CHANGE -- already has all needed data |
-| `snapshot_term()` | Extract cells from alacritty_terminal | NO CHANGE -- already preserves all flags |
-| `GridRenderer` | Cell -> GPU primitives | MAJOR CHANGE -- per-cell positioning, line height, wide char rects, decoration rects |
-| `RectRenderer` | Instanced quad pipeline | NO CHANGE -- just receives more RectInstances |
-| `GlyphCache` / `FontSystem` | Font discovery, atlas, shaping | MINOR CHANGE -- possible explicit fallback font loading |
-| `FrameRenderer` | Orchestrate draw pipeline | MODERATE CHANGE -- integrate decoration rects, update draw order, per-cell buffer flow |
-| `GlassRenderer` | wgpu surface management | NO CHANGE |
-| `main.rs` | Event loop, window management | MINOR CHANGE -- ScaleFactorChanged handler wiring |
-| `BlockRenderer` et al. | Overlay rendering | NO CHANGE -- cell_size cascades automatically via update_font |
-
-## Data Flow: Current vs New
-
-### Current Flow
 ```
-GridSnapshot
-  -> build_rects(): cell bgs at (col*cw, line*ch), each width=cw
-  -> build_text_buffers(): one Buffer per line, chars concatenated as rich text
-  -> build_text_areas(): one TextArea per line at (0, line*ch)
-  -> FrameRenderer: prepare rects, prepare text, render pass (rects then text)
+PTY reader thread
+    |
+    ├── (unchanged) OscScanner → AppEvent::Shell
+    └── (unchanged) OutputBuffer → AppEvent::CommandOutput
+
+winit main event loop
+    |
+    ├── AppEvent::Shell { CommandFinished }
+    |       (existing) → insert CommandRecord → HistoryDb → session.last_command_id = Some(id)
+    |       (NEW) → signal SOI pipeline: (command_id, raw_output_ref, command_text, exit_code)
+    |
+    ├── AppEvent::CommandOutput
+    |       (existing) → update_output() in HistoryDb
+    |       (NEW) → store raw_output in session.pending_soi_output: Vec<u8>
+    |
+    ├── (NEW) AppEvent::SoiReady { command_id, summary }
+    |       → store summary on Block for rendering (shell injection)
+    |       → write summary line to PTY stdin (shell summary injection)
+    |       → forward ActivityEvent to glass_agent activity stream
+    |
+    └── (NEW) AppEvent::AgentProposal { proposal }
+            → add to Processor.pending_proposals queue
+            → show toast notification via FrameRenderer
+            → update status bar agent indicator
+
+glass_soi crate (new, Tokio task, NOT a separate process)
+    Spawned per CommandFinished via tokio::spawn in main event loop
+    Receives: (command_id, command_text, raw_bytes, exit_code, db_path)
+    Pipeline: classify → parse → compress → store → emit SoiReady
+
+glass_agent crate (new, background OS process managed by glass_agent::Runtime)
+    AgentRuntime struct in main process (not a separate process itself)
+    Spawns: `claude` CLI as Child process
+    Feeds: ActivityEvent stream via claude stdin
+    Reads: AgentProposal from claude stdout
+    Persists: agent_sessions table in HistoryDb
+
+MCP server (glass_mcp, unchanged process boundary)
+    (NEW) glass_query, glass_query_trend, glass_query_drill tools
+    Read from new command_output_records + output_records tables in HistoryDb
 ```
 
-### New Flow
+---
+
+## Component Responsibilities
+
+### New: glass_soi
+
+| Sub-component | Responsibility | Location in crate |
+|---------------|----------------|-------------------|
+| OutputClassifier | Detect output type from command text + output content | src/classifier.rs |
+| Parser registry | Route to correct format parser | src/parsers/mod.rs |
+| Rust/cargo parser | Parse cargo test, cargo build, cargo clippy | src/parsers/rust.rs |
+| Jest/pytest/gotest parsers | Test runner extraction | src/parsers/test_runners.rs |
+| npm/pip/cargo-add parsers | Package event extraction | src/parsers/pkg_mgr.rs |
+| Git/docker/kubectl parsers | DevOps tool extraction | src/parsers/devops.rs |
+| JSON/CSV parsers | Structured data extraction | src/parsers/structured.rs |
+| CompressionEngine | Token-budgeted summaries at 4 levels | src/compression.rs |
+| SoiDb | Write command_output_records + output_records tables | src/db.rs |
+| SoiStore | Public API wrapping SoiDb + CompressionEngine | src/store.rs |
+
+glass_soi depends on: glass_core (config), glass_errors (reuse existing parsers), serde_json, regex
+
+### New: glass_agent
+
+| Sub-component | Responsibility | Location in crate |
+|---------------|----------------|-------------------|
+| AgentRuntime | Spawn + manage `claude` CLI child process | src/runtime.rs |
+| ActivityStream | Bounded mpsc channel, rolling budget window | src/activity.rs |
+| WorktreeManager | git worktree create/diff/apply/cleanup | src/worktree.rs |
+| ProposalQueue | Ordered list of pending AgentProposals | src/proposals.rs |
+| SessionStore | Write/read agent_sessions table in HistoryDb | src/session_store.rs |
+
+glass_agent depends on: glass_core (config, events), glass_soi (ActivityEvent), glass_history (agent_sessions table), tokio, uuid, serde_json
+
+### Modified: glass_core (glass_core/src/event.rs)
+
+Add new AppEvent variants:
+
+```rust
+// Add to AppEvent enum:
+SoiReady {
+    window_id: winit::window::WindowId,
+    session_id: SessionId,
+    command_id: i64,
+    summary: String,           // one-line SOI summary for shell injection
+    severity: glass_soi::Severity,
+},
+AgentProposal {
+    proposal: Box<glass_agent::AgentProposal>,
+},
+AgentStatusChanged {
+    mode: Option<glass_agent::AgentMode>,  // None = agent off
+    proposal_count: usize,
+},
 ```
-GridSnapshot
-  -> build_rects(): cell bgs at (col*cw, line*ch)
-     - Skip WIDE_CHAR_SPACER cells
-     - WIDE_CHAR cells get width=2*cw
-  -> build_cell_buffers(): one Buffer per non-empty, non-spacer cell
-     - Each positioned at (col*cw, line*ch) via TextArea
-     - WIDE_CHAR gets buffer size 2*cw
-  -> build_decoration_rects(): underline/strikethrough RectInstances
-     - Uses cell fg color for decoration color
-     - WIDE_CHAR decorations span 2*cw, skip WIDE_CHAR_SPACER
-  -> build_cell_text_areas(): one TextArea per cell buffer at exact grid position
-  -> FrameRenderer: prepare bg_rects + decoration_rects, prepare cell text,
-     render pass: bg rects -> decoration rects -> text
+
+### Modified: glass_history (glass_history/src/db.rs)
+
+Add new tables to existing HistoryDb (schema v2 → v3):
+
+```sql
+-- Linked to commands.id (existing table)
+CREATE TABLE command_output_records ( ... );  -- per-command SOI summary
+CREATE TABLE output_records ( ... );          -- individual structured records
+CREATE TABLE agent_sessions ( ... );          -- agent session lifecycle + handoff
 ```
 
-## Suggested Build Order
+Schema migration handled by existing migrate() pattern (PRAGMA user_version bump).
 
-Order follows dependencies. Each phase produces testable, shippable improvement.
+No new crate — SoiDb and SessionStore write into the same HistoryDb file via the same Connection pattern. This maintains the existing "open per-request in spawn_blocking" thread safety property.
 
-### Phase 1: Line Height Fix (Foundation)
-**Why first:** Affects cell_height which cascades everywhere. All subsequent work uses correct metrics. Smallest code change, largest visual impact on box-drawing.
-- Change `GridRenderer::new()` to derive line height from font ascent+descent instead of `font_size * 1.2`
-- Verify box-drawing characters (U+2500-U+257F) connect vertically
-- All existing tests pass (cell_height is just a different number)
-- Verify status bar, tab bar, block decorations still render correctly (cascades via update_font)
+### Modified: glass_mcp (crates/glass_mcp/src/tools.rs)
 
-### Phase 2: Per-Cell Glyph Positioning (Core Fix)
-**Why second:** Biggest change and most impactful for TUI correctness. Depends on Phase 1 for correct cell_height.
-- Rename/rewrite `build_text_buffers()` -> `build_cell_buffers()` (per-cell Buffers)
-- Rewrite `build_text_areas()` / `build_text_areas_offset()` for per-cell positioning
-- Update `draw_frame()` and `draw_multi_pane_frame()` to use new buffer flow
-- Performance benchmark: compare frame time per-cell vs per-line
-- Visual test: TUI apps (vim, htop, Claude Code) render with aligned borders
+Add 3 new tools to GlassServer:
+- `glass_query` — query structured output by command_id/scope/file/budget
+- `glass_query_trend` — compare recent runs of same command pattern
+- `glass_query_drill` — expand specific record_id for full detail
 
-### Phase 3: Wide Character / CJK Support
-**Why third:** Builds directly on per-cell positioning. Without it, wide chars cannot be correctly placed.
-- Modify `build_rects()` for WIDE_CHAR (2*cw bg) and skip WIDE_CHAR_SPACER bg
-- Modify `build_cell_buffers()` to use 2*cw for WIDE_CHAR cells
-- Modify `build_selection_rects()` for wide char awareness if needed
-- Test with CJK text, `htop` in CJK locale, mixed ASCII/CJK content
+GlassServer already receives db_path; it will instantiate SoiStore from the same path.
 
-### Phase 4: Underline / Strikethrough Rendering
-**Why fourth:** Independent feature, but benefits from correct cell positioning for pixel alignment.
-- Add `build_decoration_rects()` to GridRenderer
-- Integrate into `draw_frame()` and `draw_multi_pane_frame()` render pipeline
-- Support: UNDERLINE, DOUBLE_UNDERLINE, STRIKEOUT (most common)
-- Defer or approximate: UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE (lower priority)
+### Modified: glass_renderer (crates/glass_renderer/src/)
 
-### Phase 5: Font Fallback Configuration
-**Why fifth:** cosmic-text already does automatic fallback. This phase adds user control.
-- Add `[font] fallback = [...]` to config schema
-- Load fallback fonts into FontSystem on startup and hot-reload
-- Test with mixed Latin/CJK/Symbol text to verify fallback ordering
-- May be unnecessary if automatic fallback proves sufficient
+Add new rendering components:
 
-### Phase 6: Dynamic DPI Handling
-**Why last:** Smallest change, isolated to main.rs event handler. Depends on update_font() working correctly (validated by earlier phases).
-- Wire `ScaleFactorChanged` to `update_font()` + PTY resize + surface resize
-- Handle the `inner_size_writer` from the event
-- Test with Windows display scaling changes (100% -> 150% -> 100%)
+| Component | What it renders | Parallel to |
+|-----------|-----------------|-------------|
+| ToastRenderer | Agent proposal toast (auto-dismiss) | config_error_overlay.rs |
+| AgentOverlayRenderer | Review overlay with diff preview | search_overlay_renderer.rs |
+| Updated StatusBarRenderer | Agent mode indicator + proposal count | status_bar.rs (extend) |
+| Updated BlockRenderer | SOI summary label on complete blocks | block_renderer.rs (extend) |
 
-### Phase 7: Tech Debt Cleanup
-- Remove 1.2x line height constant (replaced in Phase 1)
-- Consolidate build_rects / build_rects_offset if possible
-- Profile per-cell buffer creation, optimize if >5ms per frame
-- Add box-drawing custom rendering if font-based rendering has gaps
+### Modified: src/main.rs
 
-## Performance Considerations
+Two integration points require changes:
 
-| Concern | Current (per-line) | After Per-Cell | Mitigation |
-|---------|-------------------|----------------|------------|
-| Buffer count per frame | ~50 (screen_lines) | ~2000-4000 (non-empty cells) | Skip empty/space cells, reuse Vec capacity |
-| Buffer::new() + set_text() cost | ~50 calls | ~2000-4000 calls | Profile; each call is <1us for single char |
-| TextArea count | ~50 | ~2000-4000 | glyphon TextRenderer handles many TextAreas |
-| Atlas pressure | Low | Same (same glyphs, different positions) | Atlas caches rasterized glyphs by font+size+glyph |
-| Total build time | ~0.5ms typical | ~2-5ms estimate | Must stay under 8ms for 120fps budget |
-| Memory | ~1MB text buffers | ~5-10MB estimate | Reuse Vec capacity between frames |
+**Point 1 — CommandFinished handler (line 2664):**
+After `db.insert_command(&record)` succeeds and `session.last_command_id = Some(id)`:
+```rust
+// Spawn SOI parsing as non-blocking Tokio task
+if let Some(raw) = session.pending_soi_output.take() {
+    let db_path = session.history_db_path.clone();
+    let proxy = self.proxy.clone();
+    let window_id = window_id;
+    let session_id = session_id;
+    tokio::task::spawn_blocking(move || {
+        // glass_soi::pipeline::run(id, command_text, raw, exit_code, &db_path)
+        // emits AppEvent::SoiReady on completion
+    });
+}
+```
 
-**Critical performance validation:** After Phase 2, benchmark `build_cell_buffers()` + `TextRenderer::prepare()` with a full terminal screen. If >5ms, consider:
-1. Batching runs of identical-attribute ASCII characters (confirmed monospace) into single buffers
-2. Skipping Buffer creation for common ASCII chars that are known to be exactly cell_width
-3. Caching Buffer objects between frames for unchanged cells (complex but effective)
+**Point 2 — CommandOutput handler (line 2882):**
+Before or alongside update_output(), stash raw bytes for SOI:
+```rust
+session.pending_soi_output = Some(raw_output.clone());
+```
+
+**Point 3 — New AppEvent handlers:**
+```
+SoiReady → inject summary into PTY, forward to agent activity stream
+AgentProposal → add to Processor.pending_proposals, trigger toast
+AgentStatusChanged → update status bar render state
+```
+
+**Point 4 — Keyboard shortcuts:**
+```
+Ctrl+Shift+A → open agent review overlay
+```
+
+**Point 5 — Processor struct additions:**
+```rust
+agent_runtime: Option<glass_agent::AgentRuntime>,
+pending_proposals: Vec<glass_agent::AgentProposal>,
+agent_toast: Option<(AgentProposal, std::time::Instant)>,  // auto-dismiss
+```
+
+---
+
+## Data Flow
+
+### SOI Pipeline Data Flow
+
+```
+CommandExecuted OSC 133;C
+    ↓
+OutputBuffer starts accumulating raw PTY bytes
+    ↓
+CommandFinished OSC 133;D
+    ↓
+AppEvent::Shell { CommandFinished } → main loop
+    ↓
+db.insert_command() → command_id: i64          ← EXISTING
+    ↓
+AppEvent::CommandOutput → main loop
+    ↓
+process_output() → ANSI strip/truncate
+    ↓
+db.update_output(command_id, text)              ← EXISTING
+session.pending_soi_output = Some(raw_bytes)    ← NEW (stash before/alongside)
+    ↓
+tokio::task::spawn_blocking (non-blocking)      ← NEW
+    ↓
+glass_soi::pipeline::run(command_id, command_text, raw_bytes, exit_code)
+    |
+    ├── OutputClassifier.classify(command_text, &raw_bytes) → OutputType
+    ├── parser_registry.parse(output_type, &raw_bytes) → ParsedOutput
+    ├── SoiDb.insert(command_id, &parsed_output)    → stored in HistoryDb
+    └── CompressionEngine.compress(&parsed, budget=50) → one-line summary
+    ↓
+EventLoopProxy.send_event(AppEvent::SoiReady { command_id, summary, severity })
+    ↓
+main loop: SoiReady handler
+    ├── write summary to PTY stdin (shell summary injection)
+    └── send ActivityEvent to AgentRuntime.activity_tx
+```
+
+### Agent Mode Data Flow
+
+```
+AppEvent::SoiReady → ActivityEvent into AgentRuntime.activity_tx (mpsc)
+    ↓
+AgentRuntime background task (tokio::spawn)
+    |
+    ├── Collects ActivityEvents into rolling budget window
+    ├── Every N seconds OR on high-severity event:
+    |       Formats context JSON → writes to claude stdin
+    ↓
+claude CLI process (Child)
+    |
+    ├── Reads context from stdin
+    ├── Calls glass_query MCP tool for drill-down
+    └── Outputs AgentProposal JSON to stdout
+    ↓
+AgentRuntime reads from claude stdout
+    ↓
+EventLoopProxy.send_event(AppEvent::AgentProposal { proposal })
+    ↓
+main loop: AgentProposal handler
+    ├── pending_proposals.push(proposal)
+    ├── agent_toast = Some((proposal.clone(), Instant::now()))
+    └── window.request_redraw()
+    ↓
+FrameRenderer.draw_frame()
+    ├── ToastRenderer draws notification if agent_toast is Some and < 10s old
+    └── StatusBarRenderer shows "Agent: N proposals" indicator
+    ↓
+User presses Ctrl+Shift+A
+    ↓
+AgentOverlayRenderer.draw_overlay(pending_proposals)
+    |
+    ├── Shows proposal list with diff preview
+    └── [Apply] / [Dismiss] keyboard handling
+        ↓
+    Apply → WorktreeManager.apply(proposal.worktree_path)
+    Dismiss → pending_proposals.remove(idx)
+```
+
+### Shell Summary Injection Data Flow
+
+```
+AppEvent::SoiReady arrives with summary="3 errors in src/auth.rs"
+    ↓
+main loop:
+    let summary_line = format!("\r\n\x1b[2m⎡ Glass: {} │ glass_query(\"last\") for details ⎤\x1b[0m\r\n", summary);
+    session.pty_sender.send(PtyMsg::Write(summary_line.into_bytes()))
+    ↓
+PTY receives bytes → terminal renders muted summary line
+↓
+Claude Code Bash tool sees the summary line in its output capture
+↓
+Claude Code calls glass_query("last") MCP tool for structured drill-down
+```
+
+---
+
+## New Crate Structure
+
+### glass_soi
+
+```
+crates/glass_soi/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # Public API: OutputType, ParsedOutput, OutputRecord, Severity
+    ├── classifier.rs       # OutputClassifier: command hint + regex pattern matching
+    ├── compression.rs      # CompressionEngine: token-budgeted summaries
+    ├── db.rs               # SoiDb: write/read command_output_records + output_records
+    ├── store.rs            # SoiStore: high-level API combining db + compression
+    ├── pipeline.rs         # run(): orchestrates classify→parse→store→return summary
+    └── parsers/
+        ├── mod.rs          # Parser registry + trait
+        ├── rust.rs         # cargo build, cargo test, cargo clippy, rustc
+        ├── test_runners.rs # jest, pytest, go test, generic TAP
+        ├── pkg_mgr.rs      # npm, pip, cargo add/update
+        ├── devops.rs       # git, docker, kubectl, terraform
+        └── structured.rs   # JSON lines, JSON object, CSV
+```
+
+Key design: parsers implement a common `Parser` trait returning `ParsedOutput`. The registry matches `OutputType` to the correct parser. Adding new parsers requires no changes to pipeline.rs.
+
+### glass_agent
+
+```
+crates/glass_agent/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # Public types: AgentProposal, AgentMode, ActivityEvent
+    ├── runtime.rs          # AgentRuntime: spawn/manage claude CLI child process
+    ├── activity.rs         # ActivityStream: bounded channel + rolling budget window
+    ├── worktree.rs         # WorktreeManager: git worktree create/diff/apply/cleanup
+    ├── proposals.rs        # ProposalQueue: ordered pending proposals with max limit
+    └── session_store.rs    # SessionStore: agent_sessions table reads/writes
+```
+
+Key design: AgentRuntime is NOT a separate process — it is a struct held in Processor in main.rs. It manages the `claude` CLI child process internally. This matches the existing pattern of background pollers (coordination_poller, update_checker) being spawned from main.rs.
+
+---
+
+## Architectural Patterns
+
+### Pattern 1: Async Off Main Thread via spawn_blocking
+
+**What:** SOI parsing is CPU-bound work. It must not block winit's event loop (which handles rendering). Use `tokio::task::spawn_blocking` with a channel-back to main loop via EventLoopProxy.
+
+**When to use:** Any work >1ms that can be deferred after CommandFinished.
+
+**Trade-offs:** Slight delay (1-100ms) between command finishing and summary appearing. Acceptable — the next prompt renders immediately regardless.
+
+**Example:**
+```rust
+// In AppEvent::CommandOutput handler, after update_output():
+let proxy = self.proxy.clone();
+let window_id = *window_id;
+let session_id = *session_id;
+let db_path = session.history_db_path.clone();
+tokio::task::spawn_blocking(move || {
+    match glass_soi::pipeline::run(cmd_id, &command_text, &raw_bytes, exit_code, &db_path) {
+        Ok((summary, severity)) => {
+            let _ = proxy.send_event(AppEvent::SoiReady {
+                window_id, session_id, command_id: cmd_id, summary, severity,
+            });
+        }
+        Err(e) => tracing::warn!("SOI pipeline failed: {}", e),
+    }
+});
+```
+
+Note: Glass already runs a Tokio runtime (for the MCP IPC listener). `tokio::task::spawn_blocking` is available.
+
+### Pattern 2: Open-Per-Request SQLite for New Tables
+
+**What:** SoiDb and SessionStore open the HistoryDb connection fresh per operation (not holding a persistent Connection). This matches the existing pattern in glass_mcp (GlassServer opens HistoryDb in spawn_blocking per request).
+
+**When to use:** Any crate that needs DB access but isn't the primary owner of the connection.
+
+**Trade-offs:** Slight overhead per operation. WAL mode + busy_timeout=5000ms prevents conflicts. Acceptable at command-level granularity (not per-keystroke).
+
+**Why not a shared Arc<Mutex<HistoryDb>>:** Connection is !Send in rusqlite by default. The open-per-request pattern avoids this entirely, consistent with all existing DB users in the codebase.
+
+### Pattern 3: Overlay Pattern for New UI (Toast + Agent Review)
+
+**What:** New UI elements follow the existing overlay pattern: stateless renderers passed data from main.rs, drawn on top of the terminal frame via additional draw calls after the main frame.
+
+**When to use:** Any UI that doesn't affect the terminal grid itself.
+
+**Existing overlays to model after:**
+- `config_error_overlay.rs` — single-line banner, drawn after main frame
+- `conflict_overlay.rs` — amber warning with text, drawn after main frame
+- `search_overlay_renderer.rs` — complex scrollable list
+
+**Trade-offs:** Each overlay is an additional GPU draw call. Acceptable — overlays are rare (not every frame).
+
+### Pattern 4: AppEvent for Cross-Thread Communication
+
+**What:** All cross-thread communication flows through `AppEvent` via `EventLoopProxy<AppEvent>`. New components (SOI pipeline, AgentRuntime) use the same proxy pattern.
+
+**When to use:** Any background thread/task that needs to update GUI state.
+
+**Trade-offs:** All GUI state changes are serialized through the winit event loop. Cannot update renderer state directly from background threads. This is a feature — prevents data races.
+
+---
+
+## Integration Points: New vs Modified
+
+### Unmodified (no changes needed)
+
+| Component | Why unchanged |
+|-----------|---------------|
+| glass_terminal (PTY, VT, block_manager) | SOI taps captured bytes in main.rs, not in glass_terminal |
+| glass_pipes | No interaction with SOI — pipeline stages are separate |
+| glass_snapshot | No interaction with SOI or agent mode |
+| glass_coordination | Agent mode uses it for lock management via MCP (already exists) |
+| glass_mux (SessionMux, SplitTree) | No changes |
+| alacritty_terminal | No changes |
+| Shell integration scripts | No changes — summary injection happens via PTY write, not shell scripts |
+
+### Modified (extend existing)
+
+| Component | What changes | Where |
+|-----------|-------------|-------|
+| glass_core/event.rs | +3 AppEvent variants (SoiReady, AgentProposal, AgentStatusChanged) | event.rs |
+| glass_history/db.rs | +3 new tables, schema v2→v3 migration | db.rs, migrate() |
+| glass_history/lib.rs | Export SoiDb and SessionStore types | lib.rs |
+| glass_mcp/tools.rs | +3 new MCP tools (glass_query, glass_query_trend, glass_query_drill) | tools.rs |
+| glass_renderer/frame.rs | +ToastRenderer, +AgentOverlayRenderer draw calls | frame.rs |
+| glass_renderer/status_bar.rs | Agent mode indicator + proposal count text | status_bar.rs |
+| glass_renderer/block_renderer.rs | SOI summary label on complete blocks (optional) | block_renderer.rs |
+| src/main.rs | SOI spawn in CommandFinished/CommandOutput handlers; new AppEvent arms; agent keyboard shortcuts; Processor state fields | main.rs |
+
+### New (create from scratch)
+
+| Component | Location | Dependencies |
+|-----------|----------|-------------|
+| glass_soi crate | crates/glass_soi/ | glass_core, glass_errors, serde_json, regex |
+| glass_agent crate | crates/glass_agent/ | glass_core, glass_soi, glass_history, tokio, uuid, serde_json |
+
+---
+
+## Build Order
+
+The dependency graph dictates this order. Each phase must compile before the next.
+
+```
+Phase 1: glass_soi crate core (classifier + parsers + types)
+    No new crate dependencies. Can be built and tested in isolation.
+    Produces: OutputType, ParsedOutput, OutputRecord, OutputSummary
+
+Phase 2: glass_history schema extension (new tables)
+    Depends on: Phase 1 types (ParsedOutput for DB shape)
+    Produces: SoiDb, SessionStore, schema v3 migration
+
+Phase 3: glass_soi pipeline integration (SOI fires on CommandFinished)
+    Depends on: Phase 1 + Phase 2
+    Modifies: glass_core/event.rs (+SoiReady), src/main.rs (spawn SOI task)
+    Produces: End-to-end SOI parsing on every command
+
+Phase 4: glass_soi compression engine
+    Depends on: Phase 1 (ParsedOutput types)
+    No new crate changes — internal to glass_soi
+    Produces: CompressionEngine with OneLine/Summary/Detailed/Full levels
+
+Phase 5: SOI shell summary injection
+    Depends on: Phase 3 (SoiReady AppEvent exists), Phase 4 (summaries exist)
+    Modifies: src/main.rs (SoiReady handler writes to PTY)
+    Produces: Summary lines visible in terminal after commands
+
+Phase 6: SOI MCP tools
+    Depends on: Phase 2 (SoiDb queryable), Phase 4 (CompressedOutput type)
+    Modifies: glass_mcp/tools.rs (+3 tools)
+    Produces: glass_query, glass_query_trend, glass_query_drill
+
+Phase 7: SOI additional parsers
+    Depends on: Phase 1 (parser trait)
+    Internal to glass_soi/parsers/
+    Produces: Coverage for 10+ dev tools
+
+Phase 8: glass_agent activity stream
+    Depends on: Phase 3 (SoiReady emits ActivityEvent)
+    Creates: glass_agent crate with ActivityStream
+    Produces: Bounded activity channel with rolling budget
+
+Phase 9: glass_agent runtime
+    Depends on: Phase 8 (ActivityStream), Phase 2 (agent_sessions table)
+    Creates: AgentRuntime, spawns claude CLI
+    Modifies: src/main.rs (agent_runtime field in Processor, AppEvent::AgentProposal handler)
+    Produces: Background agent session, structured proposals
+
+Phase 10: WorktreeManager
+    Depends on: Phase 9 (AgentProposal::CodeFix type defined)
+    Internal to glass_agent/worktree.rs
+    Produces: Isolated git worktree for agent code changes
+
+Phase 11: Approval UI
+    Depends on: Phase 9 (proposals exist), Phase 10 (worktree diffs)
+    Modifies: glass_renderer (+ToastRenderer, +AgentOverlayRenderer, status_bar update)
+    Modifies: src/main.rs (keyboard shortcuts, toast state in Processor)
+    Produces: Status bar indicator, toast notifications, Ctrl+Shift+A review overlay
+
+Phase 12: Session continuity
+    Depends on: Phase 9 (agent_sessions table), Phase 2 (SessionStore)
+    Internal to glass_agent/session_store.rs + runtime.rs
+    Produces: Handoff JSON on session end, restored context on new session start
+
+Phase 13: Configuration and polish
+    Depends on: All above
+    Modifies: glass_core/config.rs (+[soi] and [agent] sections), src/main.rs
+    Produces: Full config.toml support, permission system, graceful degradation
+```
+
+**Critical dependency:** Phases 1-3 must complete before any agent work (Phases 8+) because the agent runtime feeds on SOI events. Phases 1-3 are also independently shippable — SOI without agent mode is immediately useful.
+
+---
+
+## Scaling Considerations
+
+Glass is a local desktop application. "Scaling" means handling edge cases under heavy usage, not distributed load.
+
+| Concern | Risk | Mitigation |
+|---------|------|-----------|
+| SOI parsing large output (10MB+ logs) | Parser hangs, high memory | Truncate at 1MB before classifying; FreeformChunk fallback for unrecognized |
+| output_records table growth | DB size explodes over weeks | Aligned with existing retention/pruning via FK cascade from commands table |
+| Agent activity stream flooding | 100 commands/minute overwhelms context | Rate limiting + deduplication in ActivityStream; rolling window evicts old events |
+| claude CLI process crash | AgentRuntime in broken state | Restart with exponential backoff; proposals queue preserved across restarts |
+| claude CLI API rate limits | Agent blocked, proposal latency | Cooldown timer (30s default) prevents bursts; graceful degradation (silent, no crash) |
+| shell summary injection timing | Summary appears before next prompt | SoiReady arrives async; injection timing relies on PTY buffering being fast enough. Risk: summary interleaved with prompt. Mitigation: prepend \r\n, append \r\n |
+| HistoryDb lock contention | SOI + MCP + main loop all writing | WAL mode + PRAGMA busy_timeout=5000 handles this; open-per-request prevents long locks |
+
+---
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Per-Character String Allocation
-**What:** Creating a new `String` for every cell character.
-**Why bad:** 2000+ allocations per frame at 60fps.
-**Instead:** Use `&str` from a pre-built lookup or a reusable small buffer. For single chars, `char::encode_utf8()` into a stack `[u8; 4]` avoids allocation.
+### Anti-Pattern 1: Blocking the Winit Event Loop with SOI Parsing
 
-### Anti-Pattern 2: Rebuilding FontSystem on DPI Change
-**What:** Destroying and recreating FontSystem (which rediscovers all system fonts).
-**Why bad:** FontSystem::new() takes 50-200ms for font discovery.
-**Instead:** Keep FontSystem, rebuild GridRenderer only. The existing `update_font()` path already does this correctly.
+**What people do:** Call `glass_soi::pipeline::run(...)` directly in the CommandFinished handler in main.rs.
 
-### Anti-Pattern 3: Custom WGSL Shader for Decorations
-**What:** Writing a new wgpu shader pipeline for underlines/strikethrough.
-**Why bad:** Unnecessary complexity, another GPU pipeline to manage.
-**Instead:** Use existing RectRenderer instanced pipeline. Underlines are just thin rectangles. The pipeline already handles thousands of rects efficiently with alpha blending.
+**Why it's wrong:** SOI parsing involves regex matching, JSON serialization, and SQLite writes. Even at 10ms, this blocks the event loop and makes the terminal feel sluggish. On large outputs (cargo test with 500 tests), it could take 100ms+.
 
-### Anti-Pattern 4: Modifying RenderedCell for Rendering Hints
-**What:** Adding rendering-specific fields (pixel positions, buffer indices) to RenderedCell.
-**Why bad:** Couples glass_terminal to glass_renderer concerns. RenderedCell is a data transfer type.
-**Instead:** Compute all rendering positions in GridRenderer from `cell.point` and cell dimensions.
+**Do this instead:** `tokio::task::spawn_blocking(|| ...)` and emit `AppEvent::SoiReady` when done. The Tokio runtime for the IPC listener is already initialized in main.rs — reuse it.
 
-### Anti-Pattern 5: Conditional Per-Line vs Per-Cell Based on Content
-**What:** Using per-line buffers for "simple" lines and per-cell for "complex" lines.
-**Why bad:** Two code paths, hard to maintain, edge cases where detection is wrong.
-**Instead:** Always use per-cell positioning. Optimize the per-cell path to be fast enough.
+### Anti-Pattern 2: glass_soi Holding a Persistent SQLite Connection
+
+**What people do:** Store `conn: Connection` in `SoiStore` and reuse it across calls.
+
+**Why it's wrong:** rusqlite Connection is !Send. Storing it in a struct that crosses thread boundaries (spawn_blocking) requires unsafe Send impl or Arc<Mutex<>> gymnastics. All existing DB users in Glass use open-per-request.
+
+**Do this instead:** Open the Connection at the start of `pipeline::run()`, do all operations, close it. This is the established pattern in glass_mcp/tools.rs and glass_snapshot.
+
+### Anti-Pattern 3: Making glass_agent a Separate Process
+
+**What people do:** Implement `glass agent serve` as a second long-running process, with IPC to the GUI.
+
+**Why it's wrong:** Doubles the IPC complexity already present (MCP server is already a separate process). Agent runtime needs tight coupling with the GUI (real-time proposal delivery, toast auto-dismiss timers). Separate process adds latency and failure modes.
+
+**Do this instead:** AgentRuntime as a struct in Processor (main.rs), managing the claude CLI child process internally. This is the same pattern as glass_core::coordination_poller::spawn_coordination_poller — a background Tokio task that sends AppEvents.
+
+### Anti-Pattern 4: Injecting SOI Summary via Shell Integration Scripts
+
+**What people do:** Modify glass.bash/glass.zsh to emit the SOI summary after each command.
+
+**Why it's wrong:** Shell integration scripts can't call into Rust to get the SOI result. The SOI pipeline runs asynchronously after the shell emits CommandFinished. The timing gap makes this unreliable.
+
+**Do this instead:** Write the summary directly to the PTY's input side (via `session.pty_sender.send(PtyMsg::Write(...))`) in the SoiReady handler. The PTY delivers it to the terminal emulator as if it were output, appearing after the command output but before the next prompt is drawn.
+
+### Anti-Pattern 5: glass_soi Depending on glass_history
+
+**What people do:** Import glass_history::HistoryDb directly in glass_soi and write records there.
+
+**Why it's wrong:** Creates a direct dependency between glass_soi and glass_history. The SOI DB operations should be self-contained within glass_soi (using raw rusqlite, same as glass_history does internally).
+
+**Do this instead:** glass_soi defines its own SoiDb struct that opens the same HistoryDb *file path* but manages its own Connection. The tables are co-located in the same SQLite file but owned by different crates. This matches how glass_pipes data is stored via glass_history::HistoryDb::insert_pipe_stages() — the caller (main.rs) bridges between the two crates. For SOI, the bridge is `pipeline::run(command_id, ..., &db_path)`.
+
+---
+
+## Integration Boundaries Summary
+
+```
+glass_core ←── glass_soi ───→ (rusqlite directly)
+     ↑               ↓
+  AppEvent      ActivityEvent
+     |               |
+src/main.rs ←── glass_agent ──→ glass_history (db_path only)
+     |
+     ↓
+glass_renderer (ToastRenderer, AgentOverlayRenderer)
+     +
+glass_mcp (glass_query tools) ←── glass_soi::SoiStore
+```
+
+**Key boundary rule:** glass_soi does NOT import glass_history. It receives a `db_path: &Path` and opens its own connection. Main.rs bridges the two by passing `command_id` (from history DB insert) into the SOI pipeline.
+
+---
 
 ## Sources
 
-- [alacritty_terminal Flags documentation](https://docs.rs/alacritty_terminal/latest/alacritty_terminal/term/cell/struct.Flags.html) -- confirms UNDERLINE, STRIKEOUT, DOUBLE_UNDERLINE, UNDERCURL, DOTTED_UNDERLINE, DASHED_UNDERLINE, WIDE_CHAR, WIDE_CHAR_SPACER flags (HIGH confidence)
-- [cosmic-text FontSystem](https://pop-os.github.io/cosmic-text/cosmic_text/struct.FontSystem.html) -- font discovery and automatic fallback (MEDIUM confidence)
-- [cosmic-text font fallback in Bevy](https://github.com/bevyengine/bevy/issues/16354) -- real-world font fallback behavior with cosmic-text (MEDIUM confidence)
-- Direct source code analysis of grid_renderer.rs, frame.rs, surface.rs, grid_snapshot.rs, rect_renderer.rs, glyph_cache.rs, main.rs (HIGH confidence)
+- Direct code inspection: `src/main.rs` (lines 2664-2752, 2882-2917) — CommandFinished and CommandOutput handlers
+- Direct code inspection: `crates/glass_core/src/event.rs` — AppEvent variants and ShellEvent
+- Direct code inspection: `crates/glass_history/src/db.rs` — HistoryDb open-per-request pattern
+- Direct code inspection: `crates/glass_mcp/src/lib.rs` — MCP server spawn_blocking pattern
+- Direct code inspection: `crates/glass_renderer/src/frame.rs` — overlay draw call pattern
+- Direct code inspection: `crates/glass_terminal/src/block_manager.rs` — Block lifecycle
+- `.planning/PROJECT.md` — SOI_AND_AGENT_MODE.md feature spec with full type definitions
+- `SOI_AND_AGENT_MODE.md` — Architecture diagram, phase breakdown, risk table
+
+---
+
+*Architecture research for: Glass v3.0 SOI & Agent Mode integration*
+*Researched: 2026-03-12*
