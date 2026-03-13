@@ -149,6 +149,11 @@ fn classify_by_content(output: &str) -> OutputType {
         return OutputType::Jest;
     }
 
+    // Git status output
+    if has_git_marker(output) {
+        return OutputType::Git;
+    }
+
     OutputType::FreeformText
 }
 
@@ -188,6 +193,13 @@ fn has_jest_marker(output: &str) -> bool {
         Regex::new(r"(?m)^(PASS|FAIL) \S+\.(js|ts|jsx|tsx|mjs|cjs)").expect("valid regex")
     });
     re.is_match(output)
+}
+
+fn has_git_marker(output: &str) -> bool {
+    output.contains("On branch ")
+        || output.contains("Changes not staged for commit")
+        || output.contains("nothing to commit")
+        || output.contains("Untracked files:")
 }
 
 #[cfg(test)]
@@ -359,5 +371,23 @@ mod tests {
     fn sniff_jest_pass_fail_lines() {
         let output = "PASS src/auth.test.ts\nFAIL src/user.test.js\nTests: 2 failed, 8 passed";
         assert_eq!(classify(output, None), OutputType::Jest);
+    }
+
+    #[test]
+    fn sniff_git_status_detected() {
+        let output = "On branch main\nnothing to commit";
+        assert_eq!(classify(output, None), OutputType::Git);
+    }
+
+    #[test]
+    fn sniff_git_status_untracked_detected() {
+        let output = "On branch main\nUntracked files:\n\tfoo.txt\n\nnothing added to commit but untracked files present";
+        assert_eq!(classify(output, None), OutputType::Git);
+    }
+
+    #[test]
+    fn sniff_git_changes_not_staged_detected() {
+        let output = "Changes not staged for commit:\n\tmodified: src/main.rs\n";
+        assert_eq!(classify(output, None), OutputType::Git);
     }
 }

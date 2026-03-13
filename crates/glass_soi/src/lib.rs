@@ -22,7 +22,10 @@ mod types;
 // Stub parser modules — implemented in plans 48-02 and 48-03
 mod cargo_build;
 mod cargo_test;
+mod docker;
+mod git;
 mod jest;
+mod kubectl;
 mod npm;
 mod pytest;
 
@@ -41,6 +44,9 @@ pub fn parse(output: &str, output_type: OutputType, command_hint: Option<&str>) 
         OutputType::Npm => npm::parse(output),
         OutputType::Pytest => pytest::parse(output),
         OutputType::Jest => jest::parse(output),
+        OutputType::Git => git::parse(output),
+        OutputType::Docker => docker::parse(output),
+        OutputType::Kubectl => kubectl::parse(output),
         other => freeform_parse(output, Some(other), command_hint),
     }
 }
@@ -102,6 +108,14 @@ mod tests {
         let output = "On branch main\nnothing to commit\n";
         let parsed = parse(output, OutputType::Git, Some("git status"));
         assert_eq!(parsed.output_type, OutputType::Git);
+        // With the git parser wired in, this should produce GitEvent records, not freeform
+        assert!(
+            parsed
+                .records
+                .iter()
+                .any(|r| matches!(r, OutputRecord::GitEvent { .. })),
+            "git status output should produce GitEvent records"
+        );
     }
 
     #[test]
