@@ -230,6 +230,11 @@ struct AgentRuntime {
     restart_count: u32,
     /// Timestamp of last crash, used for exponential backoff.
     last_crash: Option<std::time::Instant>,
+    /// Coordination agent ID (UUID), if registration succeeded (AGTC-05).
+    agent_id: Option<String>,
+    /// Project root path used for coordination lock, if registration succeeded.
+    #[allow(dead_code)]
+    project_root: Option<String>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -295,6 +300,18 @@ struct Processor {
 
 impl Drop for AgentRuntime {
     fn drop(&mut self) {
+        // AGTC-05: Deregister from coordination (soft errors -- never prevent shutdown).
+        if let Some(ref agent_id) = self.agent_id {
+            if let Ok(mut db) = glass_coordination::CoordinationDb::open_default() {
+                if let Err(e) = db.unlock_all(agent_id) {
+                    tracing::warn!("AgentRuntime: failed to release coordination locks: {}", e);
+                }
+                if let Err(e) = db.deregister(agent_id) {
+                    tracing::warn!("AgentRuntime: failed to deregister from coordination: {}", e);
+                }
+            }
+        }
+
         if let Some(ref mut child) = self.child {
             // Dropping stdin (done in writer thread) causes EOF to claude.
             // Give it a moment to exit cleanly, then kill.
@@ -918,6 +935,51 @@ Session Continuity:
         restart_count
     );
 
+    // AGTC-05: Register with coordination DB (soft errors -- agent starts regardless).
+    let (coord_agent_id, coord_project_root) = {
+        let canonical = std::fs::canonicalize(&project_root)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&project_root));
+        let canonical_str = canonical.to_string_lossy().to_string();
+        match glass_coordination::CoordinationDb::open_default() {
+            Ok(mut db) => {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| canonical_str.clone());
+                match db.register("glass-agent", "claude-code", &canonical_str, &cwd, None) {
+                    Ok(agent_id) => {
+                        // Advisory lock on the project root directory
+                        let lock_path = std::path::PathBuf::from(&canonical_str);
+                        match db.lock_files(&agent_id, &[lock_path], Some("agent session")) {
+                            Ok(_) => tracing::info!(
+                                "AgentRuntime: registered with coordination (id={})",
+                                agent_id
+                            ),
+                            Err(e) => tracing::warn!(
+                                "AgentRuntime: coordination lock failed (soft): {}",
+                                e
+                            ),
+                        }
+                        (Some(agent_id), Some(canonical_str))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "AgentRuntime: coordination registration failed (soft): {}",
+                            e
+                        );
+                        (None, None)
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "AgentRuntime: failed to open coordination DB (soft): {}",
+                    e
+                );
+                (None, None)
+            }
+        }
+    };
+
     Some(AgentRuntime {
         child: Some(child),
         cooldown: glass_core::agent_runtime::CooldownTracker::new(config.cooldown_secs),
@@ -925,6 +987,8 @@ Session Continuity:
         config,
         restart_count,
         last_crash,
+        agent_id: coord_agent_id,
+        project_root: coord_project_root,
     })
 }
 
@@ -1172,6 +1236,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .to_string_lossy()
                         .to_string(),
                 );
+                // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
+                if self.agent_runtime.is_none() {
+                    self.config_error = Some(glass_core::config::ConfigError {
+                        message: "'claude' CLI not found on PATH. Install from https://claude.ai/download, or set agent.mode = \"off\" in ~/.glass/config.toml".to_string(),
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    });
+                }
             } else {
                 // Store rx so it isn't dropped -- activity events are silently discarded
                 // when agent is Off (channel fills up and try_send returns Err, which is ignored)
