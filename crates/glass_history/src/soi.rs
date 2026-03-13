@@ -8,7 +8,7 @@
 //! delegation from `HistoryDb`.
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use glass_soi::{OutputRecord, ParsedOutput, Severity};
 
@@ -178,6 +178,32 @@ pub fn get_output_records(
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// Fetch output records for the most recent prior run of the same command text.
+///
+/// Excludes `current_command_id` so the current run is never compared to itself.
+/// Returns `Ok(None)` if no prior run exists (first time this command ran).
+pub fn get_previous_run_records(
+    conn: &Connection,
+    command_text: &str,
+    current_command_id: i64,
+) -> Result<Option<Vec<OutputRecordRow>>> {
+    let prev_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM commands WHERE command = ?1 AND id != ?2 ORDER BY started_at DESC LIMIT 1",
+            params![command_text, current_command_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    match prev_id {
+        Some(id) => {
+            let records = get_output_records(conn, id, None, None, None, 10000)?;
+            Ok(Some(records))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Extract record_type, severity string, and file_path from an `OutputRecord`.
@@ -417,6 +443,78 @@ mod tests {
         assert_eq!(s.token_estimate, 42);
         assert_eq!(s.raw_line_count, 50);
         assert_eq!(s.raw_byte_count, 1024);
+    }
+
+    #[test]
+    fn get_previous_run_records_finds_prior() {
+        let (db, _dir) = make_db();
+        // Insert first command (same text, earlier timestamp)
+        let cmd1_id = db
+            .insert_command(&crate::db::CommandRecord {
+                id: None,
+                command: "cargo build".to_string(),
+                cwd: "/home/user/project".to_string(),
+                exit_code: Some(1),
+                started_at: 1700000000,
+                finished_at: 1700000005,
+                duration_ms: 5000,
+                output: None,
+            })
+            .unwrap();
+
+        // Insert SOI data for first command
+        let parsed1 = ParsedOutput {
+            output_type: OutputType::RustCompiler,
+            summary: OutputSummary {
+                one_line: "1 error".to_string(),
+                token_estimate: 10,
+                severity: Severity::Error,
+            },
+            records: vec![OutputRecord::CompilerError {
+                file: "src/main.rs".to_string(),
+                line: 10,
+                column: None,
+                severity: Severity::Error,
+                code: None,
+                message: "mismatched types".to_string(),
+                context_lines: None,
+            }],
+            raw_line_count: 5,
+            raw_byte_count: 100,
+        };
+        db.insert_parsed_output(cmd1_id, &parsed1).unwrap();
+
+        // Insert second command (same text, later timestamp)
+        let cmd2_id = db
+            .insert_command(&crate::db::CommandRecord {
+                id: None,
+                command: "cargo build".to_string(),
+                cwd: "/home/user/project".to_string(),
+                exit_code: Some(1),
+                started_at: 1700000010,
+                finished_at: 1700000015,
+                duration_ms: 5000,
+                output: None,
+            })
+            .unwrap();
+
+        // get_previous_run_records for cmd2 should return cmd1's records
+        let prev = crate::soi::get_previous_run_records(db.conn(), "cargo build", cmd2_id).unwrap();
+        assert!(prev.is_some(), "should find prior run");
+        let records = prev.unwrap();
+        assert_eq!(records.len(), 1, "prior run should have 1 record");
+        assert_eq!(records[0].record_type, "CompilerError");
+        assert_eq!(records[0].command_id, cmd1_id);
+    }
+
+    #[test]
+    fn get_previous_run_records_no_prior() {
+        let (db, _dir) = make_db();
+        let cmd_id = sample_command(&db);
+
+        // Single command -- no prior run exists
+        let prev = crate::soi::get_previous_run_records(db.conn(), "cargo build", cmd_id).unwrap();
+        assert!(prev.is_none(), "should return None for first run");
     }
 
     #[test]

@@ -385,6 +385,17 @@ impl HistoryDb {
         )
     }
 
+    /// Fetch output records for the most recent prior run of the same command.
+    ///
+    /// Returns `None` if no prior run exists (first time this command ran).
+    pub fn get_previous_run_records(
+        &self,
+        command_text: &str,
+        current_command_id: i64,
+    ) -> Result<Option<Vec<crate::soi::OutputRecordRow>>> {
+        crate::soi::get_previous_run_records(&self.conn, command_text, current_command_id)
+    }
+
     /// Compress output records for a command at the given token budget level.
     ///
     /// Fetches the summary and records from the DB, then runs the compression

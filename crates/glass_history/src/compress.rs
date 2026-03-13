@@ -280,6 +280,140 @@ pub fn estimate_tokens(text: &str) -> usize {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Diff-aware compression types
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A stable fingerprint for an output record, used for diff comparison.
+///
+/// FreeformChunk records are excluded from fingerprinting because they lack
+/// a stable identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct RecordFingerprint {
+    pub record_type: String,
+    pub severity: Option<String>,
+    pub file_path: Option<String>,
+    /// First 80 chars of the identity field for this record type.
+    pub message_prefix: String,
+}
+
+/// Summary of changes between the current run and the most recent prior run.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffSummary {
+    /// Records that appear in the current run but not the previous run.
+    pub new_records: Vec<RecordFingerprint>,
+    /// Records that appeared in the previous run but not the current run.
+    pub resolved_records: Vec<RecordFingerprint>,
+    pub new_count: usize,
+    pub resolved_count: usize,
+    /// Human-readable one-liner describing the delta.
+    pub change_line: String,
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Diff-aware compression entry point
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Compare the current run's output records against the most recent prior run.
+///
+/// * `previous_records = None`         — first run, no comparison available.
+/// * `previous_records = Some(&[])`    — prior run had no structured data.
+/// * `previous_records = Some(records)` — normal diff against prior records.
+pub fn diff_compress(
+    current_records: &[crate::soi::OutputRecordRow],
+    previous_records: Option<&[crate::soi::OutputRecordRow]>,
+) -> DiffSummary {
+    let Some(prev) = previous_records else {
+        return DiffSummary {
+            new_records: Vec::new(),
+            resolved_records: Vec::new(),
+            new_count: 0,
+            resolved_count: 0,
+            change_line: "first run -- no comparison available".to_string(),
+        };
+    };
+
+    if prev.is_empty() {
+        return DiffSummary {
+            new_records: Vec::new(),
+            resolved_records: Vec::new(),
+            new_count: 0,
+            resolved_count: 0,
+            change_line: "no structured data for previous run".to_string(),
+        };
+    }
+
+    use std::collections::HashSet;
+
+    // Build fingerprint sets, skipping FreeformChunk records.
+    let current_set: HashSet<RecordFingerprint> = current_records
+        .iter()
+        .filter_map(fingerprint)
+        .collect();
+
+    let prev_set: HashSet<RecordFingerprint> = prev
+        .iter()
+        .filter_map(fingerprint)
+        .collect();
+
+    let new_records: Vec<RecordFingerprint> = current_set
+        .difference(&prev_set)
+        .cloned()
+        .collect();
+    let resolved_records: Vec<RecordFingerprint> = prev_set
+        .difference(&current_set)
+        .cloned()
+        .collect();
+
+    let new_count = new_records.len();
+    let resolved_count = resolved_records.len();
+    let change_line = format!("compared to last run: {} new, {} resolved", new_count, resolved_count);
+
+    DiffSummary {
+        new_records,
+        resolved_records,
+        new_count,
+        resolved_count,
+        change_line,
+    }
+}
+
+/// Build a `RecordFingerprint` from a row. Returns `None` for FreeformChunk.
+fn fingerprint(row: &crate::soi::OutputRecordRow) -> Option<RecordFingerprint> {
+    if row.record_type == "FreeformChunk" {
+        return None;
+    }
+
+    let message_prefix = extract_identity_prefix(&row.record_type, &row.data);
+
+    Some(RecordFingerprint {
+        record_type: row.record_type.clone(),
+        severity: row.severity.clone(),
+        file_path: row.file_path.clone(),
+        message_prefix,
+    })
+}
+
+/// Extract the first 80 chars of the identity field for a given record type.
+fn extract_identity_prefix(record_type: &str, data: &str) -> String {
+    let v: serde_json::Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+
+    let field = match record_type {
+        "CompilerError" | "GenericDiagnostic" => "message",
+        "TestResult" => "name",
+        "PackageEvent" => "package",
+        _ => "message",
+    };
+
+    v.get(field)
+        .and_then(|f| f.as_str())
+        .map(|s| s.chars().take(80).collect())
+        .unwrap_or_default()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -484,5 +618,73 @@ mod tests {
         let out = compress(&records, &summary, TokenBudget::Summary);
         assert_eq!(out.text, "no output", "Expected summary.one_line fallback");
         assert!(out.record_ids.is_empty(), "No record_ids for empty input");
+    }
+
+    // ── diff_compress tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn diff_compress_first_run_no_prior() {
+        let current = vec![make_record(1, "CompilerError", Some("Error"), None, "an error")];
+        let result = diff_compress(&current, None);
+        assert!(
+            result.change_line.contains("first run"),
+            "Expected 'first run' message, got: {}",
+            result.change_line
+        );
+        assert_eq!(result.new_count, 0);
+        assert_eq!(result.resolved_count, 0);
+    }
+
+    #[test]
+    fn diff_compress_empty_previous() {
+        let current = vec![make_record(1, "CompilerError", Some("Error"), None, "an error")];
+        let result = diff_compress(&current, Some(&[]));
+        assert!(
+            result.change_line.contains("no structured data for previous run"),
+            "Expected 'no structured data' message, got: {}",
+            result.change_line
+        );
+        assert_eq!(result.new_count, 0);
+        assert_eq!(result.resolved_count, 0);
+    }
+
+    #[test]
+    fn diff_compress_second_run() {
+        // Previous run: error A and warning B
+        let previous = vec![
+            make_record(1, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
+            make_record(2, "CompilerError", Some("Warning"), Some("src/b.rs"), "warning B"),
+        ];
+        // Current run: error A remains, warning B resolved, new error C
+        let current = vec![
+            make_record(3, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
+            make_record(4, "CompilerError", Some("Error"), Some("src/c.rs"), "error C"),
+        ];
+
+        let result = diff_compress(&current, Some(&previous));
+        assert_eq!(result.new_count, 1, "Should have 1 new record (error C)");
+        assert_eq!(result.resolved_count, 1, "Should have 1 resolved record (warning B)");
+        assert!(
+            result.change_line.contains("new") && result.change_line.contains("resolved"),
+            "change_line should contain 'new' and 'resolved', got: {}",
+            result.change_line
+        );
+    }
+
+    #[test]
+    fn diff_compress_identical_runs() {
+        let run = vec![
+            make_record(1, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
+            make_record(2, "CompilerError", Some("Warning"), Some("src/b.rs"), "warning B"),
+        ];
+        // Identical run: same fingerprints (different IDs, same content)
+        let run2 = vec![
+            make_record(3, "CompilerError", Some("Error"), Some("src/a.rs"), "error A"),
+            make_record(4, "CompilerError", Some("Warning"), Some("src/b.rs"), "warning B"),
+        ];
+
+        let result = diff_compress(&run2, Some(&run));
+        assert_eq!(result.new_count, 0, "Identical runs should have 0 new records");
+        assert_eq!(result.resolved_count, 0, "Identical runs should have 0 resolved records");
     }
 }
