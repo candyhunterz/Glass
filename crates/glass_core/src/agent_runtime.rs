@@ -37,7 +37,7 @@ impl Default for AgentRuntimeConfig {
             mode: AgentMode::Off,
             max_budget_usd: 1.0,
             cooldown_secs: 30,
-            allowed_tools: "glass_query,glass_context,Bash,Read".to_string(),
+            allowed_tools: "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read".to_string(),
         }
     }
 }
@@ -359,10 +359,13 @@ pub fn should_quiet(quiet_rules: &QuietRules, summary: &str, severity: &str) -> 
 
 /// Build the CLI argument list for invoking the Claude agent subprocess.
 ///
+/// The `--mcp-config` flag is only included when `mcp_config_path` is non-empty.
+/// This prevents a dangling flag when no MCP config file is available.
+///
 /// Returns:
 /// ```text
 /// ["-p", "--output-format", "stream-json", "--input-format", "stream-json",
-///  "--system-prompt-file", prompt_path, "--mcp-config", mcp_config_path,
+///  "--system-prompt-file", prompt_path, [--mcp-config, mcp_config_path],
 ///  "--allowedTools", allowed_tools, "--dangerously-skip-permissions"]
 /// ```
 pub fn build_agent_command_args(
@@ -370,7 +373,7 @@ pub fn build_agent_command_args(
     prompt_path: &str,
     mcp_config_path: &str,
 ) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-p".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),
@@ -378,12 +381,15 @@ pub fn build_agent_command_args(
         "stream-json".to_string(),
         "--system-prompt-file".to_string(),
         prompt_path.to_string(),
-        "--mcp-config".to_string(),
-        mcp_config_path.to_string(),
-        "--allowedTools".to_string(),
-        config.allowed_tools.clone(),
-        "--dangerously-skip-permissions".to_string(),
-    ]
+    ];
+    if !mcp_config_path.is_empty() {
+        args.push("--mcp-config".to_string());
+        args.push(mcp_config_path.to_string());
+    }
+    args.push("--allowedTools".to_string());
+    args.push(config.allowed_tools.clone());
+    args.push("--dangerously-skip-permissions".to_string());
+    args
 }
 
 #[cfg(test)]
@@ -446,7 +452,7 @@ mod tests {
         assert_eq!(cfg.max_budget_usd, 1.0);
         assert_eq!(cfg.cooldown_secs, 30);
         assert_eq!(cfg.mode, AgentMode::Off);
-        assert_eq!(cfg.allowed_tools, "glass_query,glass_context,Bash,Read");
+        assert_eq!(cfg.allowed_tools, "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read");
     }
 
     // --- format_activity_as_user_message ---
@@ -760,6 +766,21 @@ Let me know if you agree."#;
         assert!(args.contains(&"/tmp/prompt.md".to_string()));
         assert!(args.contains(&"--mcp-config".to_string()));
         assert!(args.contains(&"/tmp/mcp.json".to_string()));
+        assert!(args.contains(&"--allowedTools".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn build_args_omits_mcp_when_empty() {
+        let config = AgentRuntimeConfig::default();
+        let args = build_agent_command_args(&config, "/tmp/prompt.md", "");
+        assert!(
+            !args.contains(&"--mcp-config".to_string()),
+            "empty mcp_config_path must not produce --mcp-config flag"
+        );
+        // Other flags must still be present
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"--system-prompt-file".to_string()));
         assert!(args.contains(&"--allowedTools".to_string()));
         assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     }
