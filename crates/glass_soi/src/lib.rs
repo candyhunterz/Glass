@@ -28,9 +28,7 @@ mod pytest;
 
 pub use ansi::strip_ansi;
 pub use classifier::classify;
-pub use types::{
-    OutputRecord, OutputSummary, OutputType, ParsedOutput, Severity, TestStatus,
-};
+pub use types::{OutputRecord, OutputSummary, OutputType, ParsedOutput, Severity, TestStatus};
 
 /// Dispatch parsed output to the appropriate parser based on `output_type`.
 ///
@@ -93,7 +91,10 @@ mod tests {
         let parsed = parse(output, OutputType::FreeformText, None);
         assert_eq!(parsed.output_type, OutputType::FreeformText);
         assert_eq!(parsed.raw_line_count, 2);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 
     #[test]

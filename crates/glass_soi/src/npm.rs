@@ -28,9 +28,7 @@ fn re_audited() -> &'static Regex {
 
 fn re_vulns() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(\d+) vulnerabilit(?:y|ies)").expect("npm vulns regex")
-    })
+    RE.get_or_init(|| Regex::new(r"(\d+) vulnerabilit(?:y|ies)").expect("npm vulns regex"))
 }
 
 fn re_vuln_detail() -> &'static Regex {
@@ -198,9 +196,7 @@ pub fn parse(output: &str) -> ParsedOutput {
         parts.join(", ")
     };
 
-    let token_estimate = one_line.split_whitespace().count()
-        + records.len() * 5
-        + raw_line_count;
+    let token_estimate = one_line.split_whitespace().count() + records.len() * 5 + raw_line_count;
 
     ParsedOutput {
         output_type: OutputType::Npm,
@@ -269,7 +265,10 @@ found 0 vulnerabilities
 
         assert!(events.contains(&"added"), "should have added event");
         assert!(events.contains(&"audited"), "should have audited event");
-        assert!(events.contains(&"vulnerabilities"), "should have vulns event");
+        assert!(
+            events.contains(&"vulnerabilities"),
+            "should have vulns event"
+        );
         assert_eq!(
             events.iter().filter(|&&a| a == "deprecated").count(),
             2,
@@ -281,7 +280,10 @@ found 0 vulnerabilities
     fn npm_install_with_vulns_added_count() {
         let parsed = parse(NPM_INSTALL_WITH_VULNS);
         let added = parsed.records.iter().find_map(|r| {
-            if let OutputRecord::PackageEvent { action, package, .. } = r {
+            if let OutputRecord::PackageEvent {
+                action, package, ..
+            } = r
+            {
                 if action == "added" {
                     return Some(package.clone());
                 }
@@ -295,7 +297,10 @@ found 0 vulnerabilities
     fn npm_install_with_vulns_audited_count() {
         let parsed = parse(NPM_INSTALL_WITH_VULNS);
         let audited = parsed.records.iter().find_map(|r| {
-            if let OutputRecord::PackageEvent { action, package, .. } = r {
+            if let OutputRecord::PackageEvent {
+                action, package, ..
+            } = r
+            {
                 if action == "audited" {
                     return Some(package.clone());
                 }
@@ -317,7 +322,10 @@ found 0 vulnerabilities
             None
         });
         let detail = vuln.expect("should have vulnerability detail");
-        assert!(detail.contains("moderate"), "detail should mention moderate");
+        assert!(
+            detail.contains("moderate"),
+            "detail should mention moderate"
+        );
         assert!(detail.contains("high"), "detail should mention high");
     }
 
@@ -338,7 +346,13 @@ found 0 vulnerabilities
             .records
             .iter()
             .filter_map(|r| {
-                if let OutputRecord::PackageEvent { action, package, detail, .. } = r {
+                if let OutputRecord::PackageEvent {
+                    action,
+                    package,
+                    detail,
+                    ..
+                } = r
+                {
                     if action == "deprecated" {
                         return Some((package.clone(), detail.clone()));
                     }
@@ -348,9 +362,15 @@ found 0 vulnerabilities
             .collect();
         assert_eq!(deprecated.len(), 2);
         // First deprecated: lodash@4.17.20
-        assert!(deprecated[0].0.contains("lodash"), "first deprecated package");
         assert!(
-            deprecated[0].1.as_ref().map_or(false, |d| d.contains("Critical")),
+            deprecated[0].0.contains("lodash"),
+            "first deprecated package"
+        );
+        assert!(
+            deprecated[0]
+                .1
+                .as_ref()
+                .map_or(false, |d| d.contains("Critical")),
             "first deprecated detail"
         );
     }
@@ -359,7 +379,10 @@ found 0 vulnerabilities
     fn npm6_permissive_regex_extracts_count() {
         let parsed = parse(NPM_INSTALL_NPM6);
         let added = parsed.records.iter().find_map(|r| {
-            if let OutputRecord::PackageEvent { action, package, .. } = r {
+            if let OutputRecord::PackageEvent {
+                action, package, ..
+            } = r
+            {
                 if action == "added" {
                     return Some(package.clone());
                 }
@@ -385,7 +408,10 @@ found 0 vulnerabilities
     fn npm_remove_produces_removed_event() {
         let parsed = parse(NPM_REMOVE);
         let removed = parsed.records.iter().find_map(|r| {
-            if let OutputRecord::PackageEvent { action, package, .. } = r {
+            if let OutputRecord::PackageEvent {
+                action, package, ..
+            } = r
+            {
                 if action == "removed" {
                     return Some(package.clone());
                 }

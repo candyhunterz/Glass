@@ -264,7 +264,10 @@ mod tests {
             })
             .collect();
         assert!(!errors.is_empty(), "Should have at least one error record");
-        assert!(!warnings.is_empty(), "Should have at least one warning record");
+        assert!(
+            !warnings.is_empty(),
+            "Should have at least one warning record"
+        );
     }
 
     #[test]

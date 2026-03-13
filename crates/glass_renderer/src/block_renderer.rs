@@ -9,6 +9,7 @@ use glass_pipes::FinalizedBuffer;
 use glass_terminal::{Block, BlockState};
 
 use crate::rect_renderer::RectInstance;
+use crate::scrollbar::SCROLLBAR_WIDTH;
 
 /// Count lines in a FinalizedBuffer.
 fn line_count(data: &FinalizedBuffer) -> usize {
@@ -101,7 +102,7 @@ impl BlockRenderer {
             // Exit code badge (if available)
             if let Some(exit_code) = block.exit_code {
                 let badge_width = self.cell_width * 3.0;
-                let badge_x = viewport_width - badge_width;
+                let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH;
                 let badge_color = if exit_code == 0 {
                     // Green for success
                     [40.0 / 255.0, 160.0 / 255.0, 40.0 / 255.0, 1.0]
@@ -146,7 +147,7 @@ impl BlockRenderer {
             // Exit code badge text
             if let Some(exit_code) = block.exit_code {
                 let badge_width = self.cell_width * 3.0;
-                let badge_x = viewport_width - badge_width + self.cell_width;
+                let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH + self.cell_width;
                 let (text, color) = if exit_code == 0 {
                     (
                         "OK".to_string(),
@@ -180,7 +181,11 @@ impl BlockRenderer {
                 let duration_text = glass_terminal::format_duration(duration);
                 let duration_width = duration_text.len() as f32 * self.cell_width;
                 let badge_width = self.cell_width * 3.0;
-                let x = viewport_width - badge_width - duration_width - self.cell_width;
+                let x = viewport_width
+                    - badge_width
+                    - SCROLLBAR_WIDTH
+                    - duration_width
+                    - self.cell_width;
                 duration_x = Some(x);
                 labels.push(BlockLabel {
                     x,
@@ -204,7 +209,7 @@ impl BlockRenderer {
                     dx - undo_width - self.cell_width
                 } else {
                     // No duration text, position relative to badge
-                    viewport_width - badge_width - undo_width - self.cell_width
+                    viewport_width - badge_width - SCROLLBAR_WIDTH - undo_width - self.cell_width
                 };
                 labels.push(BlockLabel {
                     x: undo_x,
@@ -343,7 +348,7 @@ impl BlockRenderer {
             let indicator = if selected { "[-]" } else { "[+]" };
 
             let indicator_width = indicator.len() as f32 * self.cell_width;
-            let indicator_x = viewport_width - indicator_width - self.cell_width;
+            let indicator_x = viewport_width - indicator_width - SCROLLBAR_WIDTH - self.cell_width;
             labels.push(BlockLabel {
                 x: indicator_x,
                 y: row_y,

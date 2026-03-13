@@ -163,8 +163,7 @@ pub fn get_output_records(
         param_values.push(Box::new(r.to_string()));
     }
 
-    let params_refs: Vec<&dyn rusqlite::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
 
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
         Ok(OutputRecordRow {
@@ -187,17 +186,17 @@ pub fn get_output_records(
 /// "Success"), not via `Debug` format, to guard against future rename churn.
 fn extract_record_meta(record: &OutputRecord) -> (&'static str, Option<&str>, Option<&str>) {
     match record {
-        OutputRecord::CompilerError {
-            file, severity, ..
-        } => ("CompilerError", Some(severity_to_str(severity)), Some(file.as_str())),
+        OutputRecord::CompilerError { file, severity, .. } => (
+            "CompilerError",
+            Some(severity_to_str(severity)),
+            Some(file.as_str()),
+        ),
         OutputRecord::TestResult { .. } => ("TestResult", None, None),
         OutputRecord::TestSummary { .. } => ("TestSummary", None, None),
         OutputRecord::PackageEvent { .. } => ("PackageEvent", None, None),
         OutputRecord::GitEvent { .. } => ("GitEvent", None, None),
         OutputRecord::DockerEvent { .. } => ("DockerEvent", None, None),
-        OutputRecord::GenericDiagnostic {
-            file, severity, ..
-        } => (
+        OutputRecord::GenericDiagnostic { file, severity, .. } => (
             "GenericDiagnostic",
             Some(severity_to_str(severity)),
             file.as_deref(),

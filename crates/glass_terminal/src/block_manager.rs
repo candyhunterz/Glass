@@ -140,13 +140,11 @@ impl BlockManager {
     }
 
     /// Notify the block manager that the terminal was resized.
-    /// If the column count changed, block line positions are stale due to
-    /// reflow — clear all blocks so shell integration can recreate them.
+    /// We keep existing blocks even when column count changes — their line
+    /// positions may be slightly off after reflow, but clearing them would
+    /// permanently lose all decorations (separators, badges, etc.) since
+    /// shell integration only re-emits OSC 133 for the current prompt.
     pub fn notify_resize(&mut self, columns: usize) {
-        if self.last_columns != 0 && columns != self.last_columns {
-            self.blocks.clear();
-            self.current = None;
-        }
         self.last_columns = columns;
     }
 

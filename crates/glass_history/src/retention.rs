@@ -31,6 +31,19 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
         for &id in &ids_to_delete {
             tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
         }
+        // Belt-and-suspenders: explicitly delete SOI rows before CASCADE
+        for &id in &ids_to_delete {
+            tx.execute(
+                "DELETE FROM output_records WHERE command_id = ?1",
+                params![id],
+            )?;
+        }
+        for &id in &ids_to_delete {
+            tx.execute(
+                "DELETE FROM command_output_records WHERE command_id = ?1",
+                params![id],
+            )?;
+        }
         for &id in &ids_to_delete {
             // Delete from FTS table (standard FTS5 -- just DELETE by rowid)
             tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
@@ -70,6 +83,19 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
             for &id in &old_ids {
                 tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
             }
+            // Belt-and-suspenders: explicitly delete SOI rows before CASCADE
+            for &id in &old_ids {
+                tx.execute(
+                    "DELETE FROM output_records WHERE command_id = ?1",
+                    params![id],
+                )?;
+            }
+            for &id in &old_ids {
+                tx.execute(
+                    "DELETE FROM command_output_records WHERE command_id = ?1",
+                    params![id],
+                )?;
+            }
             for &id in &old_ids {
                 tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
             }
@@ -87,6 +113,7 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
 #[cfg(test)]
 mod tests {
     use crate::db::{CommandRecord, HistoryDb};
+    use glass_soi::{OutputRecord, OutputSummary, OutputType, ParsedOutput, Severity};
     use tempfile::TempDir;
 
     fn test_db() -> (HistoryDb, TempDir) {
@@ -201,5 +228,207 @@ mod tests {
         // FTS should now return empty
         let results = db.search("uniqueoldcommand_xyz", 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    fn make_parsed_output() -> ParsedOutput {
+        ParsedOutput {
+            output_type: OutputType::RustCompiler,
+            summary: OutputSummary {
+                one_line: "2 errors".to_string(),
+                token_estimate: 10,
+                severity: Severity::Error,
+            },
+            records: vec![
+                OutputRecord::CompilerError {
+                    file: "src/main.rs".to_string(),
+                    line: 1,
+                    column: None,
+                    severity: Severity::Error,
+                    code: None,
+                    message: "type mismatch".to_string(),
+                    context_lines: None,
+                },
+                OutputRecord::CompilerError {
+                    file: "src/lib.rs".to_string(),
+                    line: 5,
+                    column: Some(3),
+                    severity: Severity::Error,
+                    code: Some("E0308".to_string()),
+                    message: "mismatched types".to_string(),
+                    context_lines: None,
+                },
+            ],
+            raw_line_count: 10,
+            raw_byte_count: 200,
+        }
+    }
+
+    #[test]
+    fn test_prune_cascades_to_soi() {
+        let (db, _dir) = test_db();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Insert old command (2 days ago) with SOI data
+        let old_time = now - 2 * 86400;
+        let old_id = db
+            .insert_command(&CommandRecord {
+                id: None,
+                command: "old_build_cmd".to_string(),
+                cwd: "/tmp".to_string(),
+                exit_code: Some(1),
+                started_at: old_time,
+                finished_at: old_time + 1,
+                duration_ms: 1000,
+                output: None,
+            })
+            .unwrap();
+        db.insert_parsed_output(old_id, &make_parsed_output())
+            .unwrap();
+
+        // Insert recent command with SOI data
+        let recent_id = db
+            .insert_command(&CommandRecord {
+                id: None,
+                command: "recent_build_cmd".to_string(),
+                cwd: "/tmp".to_string(),
+                exit_code: Some(0),
+                started_at: now,
+                finished_at: now + 1,
+                duration_ms: 500,
+                output: None,
+            })
+            .unwrap();
+        db.insert_parsed_output(recent_id, &make_parsed_output())
+            .unwrap();
+
+        // Prune by age (1 day max) -- old command should go
+        let deleted = db.prune(1, u64::MAX).unwrap();
+        assert_eq!(deleted, 1, "one command should be pruned");
+
+        // Old command's SOI records must be gone
+        let old_summary = db.get_output_summary(old_id).unwrap();
+        assert!(
+            old_summary.is_none(),
+            "old command_output_records row must be deleted"
+        );
+        let old_records = db
+            .get_output_records(old_id, None, None, None, 100)
+            .unwrap();
+        assert!(
+            old_records.is_empty(),
+            "old output_records rows must be deleted"
+        );
+
+        // Recent command's SOI records must survive
+        let recent_summary = db.get_output_summary(recent_id).unwrap();
+        assert!(
+            recent_summary.is_some(),
+            "recent command_output_records row must survive"
+        );
+        let recent_records = db
+            .get_output_records(recent_id, None, None, None, 100)
+            .unwrap();
+        assert_eq!(
+            recent_records.len(),
+            2,
+            "recent output_records rows must survive"
+        );
+    }
+
+    #[test]
+    fn test_size_prune_cascades_to_soi() {
+        let (db, _dir) = test_db();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Insert 10 commands each with SOI data, oldest first
+        let mut ids = Vec::new();
+        for i in 0..10i64 {
+            let ts = now - (10 - i) * 1000; // oldest has smallest ts
+            let id = db
+                .insert_command(&CommandRecord {
+                    id: None,
+                    command: format!("build_{}", i),
+                    cwd: "/tmp".to_string(),
+                    exit_code: Some(0),
+                    started_at: ts,
+                    finished_at: ts + 1,
+                    duration_ms: 100,
+                    output: Some("x".repeat(1000)),
+                })
+                .unwrap();
+            db.insert_parsed_output(id, &make_parsed_output()).unwrap();
+            ids.push(id);
+        }
+
+        // Prune by size (max_size_bytes=1 forces pruning)
+        let deleted = db.prune(u32::MAX, 1).unwrap();
+        assert!(deleted > 0, "size prune should delete at least one command");
+
+        // The oldest command (ids[0]) should have its SOI records gone
+        let oldest_summary = db.get_output_summary(ids[0]).unwrap();
+        assert!(
+            oldest_summary.is_none(),
+            "oldest command_output_records row must be deleted by size prune"
+        );
+        let oldest_records = db
+            .get_output_records(ids[0], None, None, None, 100)
+            .unwrap();
+        assert!(
+            oldest_records.is_empty(),
+            "oldest output_records rows must be deleted by size prune"
+        );
+    }
+
+    #[test]
+    fn test_delete_command_cascades_soi() {
+        let (db, _dir) = test_db();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let id = db
+            .insert_command(&CommandRecord {
+                id: None,
+                command: "some_command".to_string(),
+                cwd: "/tmp".to_string(),
+                exit_code: Some(0),
+                started_at: now,
+                finished_at: now + 1,
+                duration_ms: 500,
+                output: None,
+            })
+            .unwrap();
+        db.insert_parsed_output(id, &make_parsed_output()).unwrap();
+
+        // Verify SOI data was inserted
+        assert!(db.get_output_summary(id).unwrap().is_some());
+        assert_eq!(
+            db.get_output_records(id, None, None, None, 100)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Delete the command
+        db.delete_command(id).unwrap();
+
+        // SOI records must be gone
+        let summary = db.get_output_summary(id).unwrap();
+        assert!(
+            summary.is_none(),
+            "delete_command must cascade to command_output_records"
+        );
+        let records = db.get_output_records(id, None, None, None, 100).unwrap();
+        assert!(
+            records.is_empty(),
+            "delete_command must cascade to output_records"
+        );
     }
 }

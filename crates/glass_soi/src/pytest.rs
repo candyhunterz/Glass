@@ -43,9 +43,7 @@ fn re_summary_alt() -> &'static Regex {
 fn re_short_summary() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // Matches: "FAILED tests/test_auth.py::test_logout - assert False"
-    RE.get_or_init(|| {
-        Regex::new(r"^FAILED (.+) - (.+)$").expect("pytest short summary regex")
-    })
+    RE.get_or_init(|| Regex::new(r"^FAILED (.+) - (.+)$").expect("pytest short summary regex"))
 }
 
 /// Parse pytest output into structured `TestResult` and `TestSummary` records.
@@ -94,11 +92,26 @@ pub fn parse(output: &str) -> ParsedOutput {
 
         // Summary line with counts and duration
         if let Some(caps) = re_summary().captures(line) {
-            let passed: u32 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let failed: u32 = caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let errors: u32 = caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let skipped: u32 = caps.get(4).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let duration_s: f64 = caps.get(5).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+            let passed: u32 = caps
+                .get(1)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let failed: u32 = caps
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let errors: u32 = caps
+                .get(3)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let skipped: u32 = caps
+                .get(4)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let duration_s: f64 = caps
+                .get(5)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0.0);
             let total_duration_ms = Some((duration_s * 1000.0) as u64);
             if failed + errors > 0 {
                 any_failed = true;
@@ -116,12 +129,22 @@ pub fn parse(output: &str) -> ParsedOutput {
         // Alt summary line: only failures, no passed count
         if summary_record.is_none() {
             if let Some(caps) = re_summary_alt().captures(line) {
-                let failed: u32 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-                let errors: u32 = caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-                let skipped: u32 =
-                    caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-                let duration_s: f64 =
-                    caps.get(4).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+                let failed: u32 = caps
+                    .get(1)
+                    .and_then(|m| m.as_str().parse().ok())
+                    .unwrap_or(0);
+                let errors: u32 = caps
+                    .get(2)
+                    .and_then(|m| m.as_str().parse().ok())
+                    .unwrap_or(0);
+                let skipped: u32 = caps
+                    .get(3)
+                    .and_then(|m| m.as_str().parse().ok())
+                    .unwrap_or(0);
+                let duration_s: f64 = caps
+                    .get(4)
+                    .and_then(|m| m.as_str().parse().ok())
+                    .unwrap_or(0.0);
                 let total_duration_ms = Some((duration_s * 1000.0) as u64);
                 if failed + errors > 0 {
                     any_failed = true;
@@ -212,15 +235,39 @@ fn build_one_line(records: &[OutputRecord]) -> String {
     // No TestSummary — count from TestResult records
     let passed = records
         .iter()
-        .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Passed, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                OutputRecord::TestResult {
+                    status: TestStatus::Passed,
+                    ..
+                }
+            )
+        })
         .count();
     let failed = records
         .iter()
-        .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Failed, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                OutputRecord::TestResult {
+                    status: TestStatus::Failed,
+                    ..
+                }
+            )
+        })
         .count();
     let skipped = records
         .iter()
-        .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Skipped, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                OutputRecord::TestResult {
+                    status: TestStatus::Skipped,
+                    ..
+                }
+            )
+        })
         .count();
 
     let mut parts = Vec::new();
@@ -317,17 +364,41 @@ FAILED tests/test_db.py::test_query - AssertionError: Expected row count 5, got 
         let passed_count = parsed
             .records
             .iter()
-            .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Passed, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    OutputRecord::TestResult {
+                        status: TestStatus::Passed,
+                        ..
+                    }
+                )
+            })
             .count();
         let failed_count = parsed
             .records
             .iter()
-            .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Failed, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    OutputRecord::TestResult {
+                        status: TestStatus::Failed,
+                        ..
+                    }
+                )
+            })
             .count();
         let skipped_count = parsed
             .records
             .iter()
-            .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Skipped, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    OutputRecord::TestResult {
+                        status: TestStatus::Skipped,
+                        ..
+                    }
+                )
+            })
             .count();
 
         assert_eq!(passed_count, 2, "2 PASSED (login + register)");
@@ -352,8 +423,7 @@ FAILED tests/test_db.py::test_query - AssertionError: Expected row count 5, got 
                 None
             }
         });
-        let (passed, failed, skipped, duration) =
-            summary.expect("should have TestSummary record");
+        let (passed, failed, skipped, duration) = summary.expect("should have TestSummary record");
         assert_eq!(passed, 3);
         assert_eq!(failed, 1);
         assert_eq!(skipped, 1);
@@ -379,7 +449,15 @@ FAILED tests/test_db.py::test_query - AssertionError: Expected row count 5, got 
         let skipped_count = parsed
             .records
             .iter()
-            .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Skipped, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    OutputRecord::TestResult {
+                        status: TestStatus::Skipped,
+                        ..
+                    }
+                )
+            })
             .count();
         // SKIPPED + XFAIL = 2 Skipped; XPASS maps to Passed
         assert_eq!(skipped_count, 2);
@@ -448,7 +526,8 @@ FAILED tests/test_db.py::test_query - AssertionError: Expected row count 5, got 
     fn pytest_summary_one_line_has_counts() {
         let parsed = parse(PYTEST_MIXED);
         assert!(
-            parsed.summary.one_line.contains("failed") || parsed.summary.one_line.contains("passed"),
+            parsed.summary.one_line.contains("failed")
+                || parsed.summary.one_line.contains("passed"),
             "one_line should mention test outcomes: {}",
             parsed.summary.one_line
         );

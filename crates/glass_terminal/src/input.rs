@@ -76,11 +76,12 @@ fn encode_named_key(key: NamedKey, mods: ModifiersState, mode: TermMode) -> Opti
         NamedKey::ArrowLeft => Some(arrow_seq(b'D', modifier_param, app_cursor)),
 
         // Simple keys
-        NamedKey::Enter => Some(vec![0x0d]),     // CR
-        NamedKey::Tab => Some(vec![0x09]),       // HT
-        NamedKey::Backspace => Some(vec![0x7f]), // DEL
-        NamedKey::Escape => Some(vec![0x1b]),    // ESC
-        NamedKey::Space => Some(vec![0x20]),     // Space
+        NamedKey::Enter if mods.control_key() => Some(vec![0x0a]), // Ctrl+Enter: LF (newline)
+        NamedKey::Enter => Some(vec![0x0d]),                       // CR
+        NamedKey::Tab => Some(vec![0x09]),                         // HT
+        NamedKey::Backspace => Some(vec![0x7f]),                   // DEL
+        NamedKey::Escape => Some(vec![0x1b]),                      // ESC
+        NamedKey::Space => Some(vec![0x20]),                       // Space
 
         // Navigation keys (CSI tilde sequences)
         NamedKey::Home => Some(csi_tilde(1, modifier_param)),
@@ -257,6 +258,12 @@ mod tests {
     fn enter_sends_cr() {
         let result = encode_key(&Key::Named(NamedKey::Enter), no_mods(), normal_mode());
         assert_eq!(result, Some(vec![0x0d]));
+    }
+
+    #[test]
+    fn ctrl_enter_sends_lf() {
+        let result = encode_key(&Key::Named(NamedKey::Enter), ctrl(), normal_mode());
+        assert_eq!(result, Some(vec![0x0a]));
     }
 
     #[test]

@@ -255,7 +255,10 @@ impl HistoryDb {
     pub fn delete_command(&self, id: i64) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         // Delete SOI records first (belt and suspenders with CASCADE)
-        tx.execute("DELETE FROM output_records WHERE command_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM output_records WHERE command_id = ?1",
+            params![id],
+        )?;
         tx.execute(
             "DELETE FROM command_output_records WHERE command_id = ?1",
             params![id],
@@ -332,7 +335,14 @@ impl HistoryDb {
         record_type: Option<&str>,
         limit: usize,
     ) -> Result<Vec<crate::soi::OutputRecordRow>> {
-        crate::soi::get_output_records(&self.conn, command_id, severity, file_path, record_type, limit)
+        crate::soi::get_output_records(
+            &self.conn,
+            command_id,
+            severity,
+            file_path,
+            record_type,
+            limit,
+        )
     }
 }
 

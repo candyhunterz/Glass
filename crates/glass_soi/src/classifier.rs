@@ -159,25 +159,20 @@ fn has_rust_json_marker(output: &str) -> bool {
 
 fn has_rust_human_marker(output: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"error\[E\d+\]|warning\[E\d+\]").expect("valid regex")
-    });
+    let re = RE.get_or_init(|| Regex::new(r"error\[E\d+\]|warning\[E\d+\]").expect("valid regex"));
     re.is_match(output)
 }
 
 fn has_rust_test_marker(output: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"running \d+ tests?|test result:").expect("valid regex")
-    });
+    let re =
+        RE.get_or_init(|| Regex::new(r"running \d+ tests?|test result:").expect("valid regex"));
     re.is_match(output)
 }
 
 fn has_npm_marker(output: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"added \d+ packages?").expect("valid regex")
-    });
+    let re = RE.get_or_init(|| Regex::new(r"added \d+ packages?").expect("valid regex"));
     re.is_match(output)
 }
 
@@ -213,10 +208,7 @@ mod tests {
 
     #[test]
     fn hint_cargo_clippy_is_rust_compiler() {
-        assert_eq!(
-            classify("", Some("cargo clippy")),
-            OutputType::RustCompiler
-        );
+        assert_eq!(classify("", Some("cargo clippy")), OutputType::RustCompiler);
     }
 
     #[test]
@@ -261,10 +253,7 @@ mod tests {
 
     #[test]
     fn hint_pytest_with_args_is_pytest() {
-        assert_eq!(
-            classify("", Some("pytest tests/ -v")),
-            OutputType::Pytest
-        );
+        assert_eq!(classify("", Some("pytest tests/ -v")), OutputType::Pytest);
     }
 
     // Phase 54 future: these arms are wired now, parsers implemented later
@@ -354,7 +343,8 @@ mod tests {
     #[test]
     fn sniff_pytest_conservative() {
         // Must have both "::" and PASSED/FAILED
-        let output = "PASSED tests/test_auth.py::test_login\nFAILED tests/test_auth.py::test_logout";
+        let output =
+            "PASSED tests/test_auth.py::test_login\nFAILED tests/test_auth.py::test_logout";
         assert_eq!(classify(output, None), OutputType::Pytest);
     }
 

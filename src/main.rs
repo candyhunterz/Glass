@@ -2321,6 +2321,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
+            WindowEvent::DroppedFile(path) => {
+                // Send the file path as input to the active PTY.
+                // Quote paths containing spaces so they work in shell commands.
+                let path_str = path.to_string_lossy();
+                let text = if path_str.contains(' ') {
+                    format!("\"{}\"", path_str)
+                } else {
+                    path_str.into_owned()
+                };
+                let _ = ctx
+                    .session()
+                    .pty_sender
+                    .send(PtyMsg::Input(Cow::Owned(text.into_bytes())));
+            }
             _ => {}
         }
     }

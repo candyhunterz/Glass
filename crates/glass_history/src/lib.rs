@@ -14,9 +14,9 @@ pub mod soi;
 
 pub use config::HistoryConfig;
 pub use db::{CommandRecord, HistoryDb, PipeStageRow};
-pub use soi::{CommandOutputSummaryRow, OutputRecordRow};
 pub use query::QueryFilter;
 pub use search::SearchResult;
+pub use soi::{CommandOutputSummaryRow, OutputRecordRow};
 
 use std::path::{Path, PathBuf};
 

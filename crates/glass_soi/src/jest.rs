@@ -22,8 +22,7 @@ fn re_test_pass() -> &'static Regex {
     // Matches: "    ✓ test name (42 ms)" or "    ✔ test name"
     // Unicode check marks: U+2713 (✓), U+2714 (✔)
     RE.get_or_init(|| {
-        Regex::new(r"^\s+[✓✔]\s+(.+?)(?:\s+\((\d+)\s*m?s\))?$")
-            .expect("jest test pass regex")
+        Regex::new(r"^\s+[✓✔]\s+(.+?)(?:\s+\((\d+)\s*m?s\))?$").expect("jest test pass regex")
     })
 }
 
@@ -32,8 +31,7 @@ fn re_test_fail() -> &'static Regex {
     // Matches: "    ✕ test name (12 ms)" or "    ✗ test name" or "    × test name"
     // Failure marks: U+2715 (✕), U+2717 (✗), U+00D7 (×)
     RE.get_or_init(|| {
-        Regex::new(r"^\s+[✕✗×]\s+(.+?)(?:\s+\((\d+)\s*m?s\))?$")
-            .expect("jest test fail regex")
+        Regex::new(r"^\s+[✕✗×]\s+(.+?)(?:\s+\((\d+)\s*m?s\))?$").expect("jest test fail regex")
     })
 }
 
@@ -90,8 +88,9 @@ fn parse_clean(clean: &str, raw_byte_count: usize) -> ParsedOutput {
             if let Some(idx) = last_fail_idx.take() {
                 if !failure_lines.is_empty() {
                     let msg = failure_lines.join("\n");
-                    if let Some(OutputRecord::TestResult { failure_message, .. }) =
-                        records.get_mut(idx)
+                    if let Some(OutputRecord::TestResult {
+                        failure_message, ..
+                    }) = records.get_mut(idx)
                     {
                         *failure_message = Some(msg);
                     }
@@ -110,8 +109,9 @@ fn parse_clean(clean: &str, raw_byte_count: usize) -> ParsedOutput {
             if let Some(idx) = last_fail_idx.take() {
                 if !failure_lines.is_empty() {
                     let msg = failure_lines.join("\n");
-                    if let Some(OutputRecord::TestResult { failure_message, .. }) =
-                        records.get_mut(idx)
+                    if let Some(OutputRecord::TestResult {
+                        failure_message, ..
+                    }) = records.get_mut(idx)
                     {
                         *failure_message = Some(msg);
                     }
@@ -142,8 +142,9 @@ fn parse_clean(clean: &str, raw_byte_count: usize) -> ParsedOutput {
             if let Some(idx) = last_fail_idx.take() {
                 if !failure_lines.is_empty() {
                     let msg = failure_lines.join("\n");
-                    if let Some(OutputRecord::TestResult { failure_message, .. }) =
-                        records.get_mut(idx)
+                    if let Some(OutputRecord::TestResult {
+                        failure_message, ..
+                    }) = records.get_mut(idx)
                     {
                         *failure_message = Some(msg);
                     }
@@ -177,8 +178,9 @@ fn parse_clean(clean: &str, raw_byte_count: usize) -> ParsedOutput {
             if let Some(idx) = last_fail_idx.take() {
                 if !failure_lines.is_empty() {
                     let msg = failure_lines.join("\n");
-                    if let Some(OutputRecord::TestResult { failure_message, .. }) =
-                        records.get_mut(idx)
+                    if let Some(OutputRecord::TestResult {
+                        failure_message, ..
+                    }) = records.get_mut(idx)
                     {
                         *failure_message = Some(msg);
                     }
@@ -187,9 +189,18 @@ fn parse_clean(clean: &str, raw_byte_count: usize) -> ParsedOutput {
             }
             collecting_failure = false;
 
-            summary_failed = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            summary_skipped = caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            summary_passed = caps.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            summary_failed = caps
+                .get(1)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            summary_skipped = caps
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            summary_passed = caps
+                .get(3)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
             if summary_failed > 0 {
                 any_failed = true;
             }
@@ -224,7 +235,10 @@ fn parse_clean(clean: &str, raw_byte_count: usize) -> ParsedOutput {
     if let Some(idx) = last_fail_idx {
         if !failure_lines.is_empty() {
             let msg = failure_lines.join("\n");
-            if let Some(OutputRecord::TestResult { failure_message, .. }) = records.get_mut(idx) {
+            if let Some(OutputRecord::TestResult {
+                failure_message, ..
+            }) = records.get_mut(idx)
+            {
                 *failure_message = Some(msg);
             }
         }
@@ -301,11 +315,27 @@ fn build_one_line(records: &[OutputRecord]) -> String {
 
     let passed = records
         .iter()
-        .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Passed, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                OutputRecord::TestResult {
+                    status: TestStatus::Passed,
+                    ..
+                }
+            )
+        })
         .count();
     let failed = records
         .iter()
-        .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Failed, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                OutputRecord::TestResult {
+                    status: TestStatus::Failed,
+                    ..
+                }
+            )
+        })
         .count();
 
     let mut parts = Vec::new();
@@ -384,12 +414,28 @@ mod tests {
         let passed_count = parsed
             .records
             .iter()
-            .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Passed, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    OutputRecord::TestResult {
+                        status: TestStatus::Passed,
+                        ..
+                    }
+                )
+            })
             .count();
         let failed_count = parsed
             .records
             .iter()
-            .filter(|r| matches!(r, OutputRecord::TestResult { status: TestStatus::Failed, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    OutputRecord::TestResult {
+                        status: TestStatus::Failed,
+                        ..
+                    }
+                )
+            })
             .count();
 
         assert_eq!(passed_count, 3, "3 tests should pass");
@@ -422,9 +468,7 @@ mod tests {
         let parsed = parse(JEST_WITH_ANSI);
         let test_pass = parsed.records.iter().find_map(|r| {
             if let OutputRecord::TestResult {
-                name,
-                duration_ms,
-                ..
+                name, duration_ms, ..
             } = r
             {
                 if name.contains("should login") {
@@ -520,7 +564,8 @@ mod tests {
     fn jest_summary_one_line_has_counts() {
         let parsed = parse(JEST_WITH_ANSI);
         assert!(
-            parsed.summary.one_line.contains("failed") || parsed.summary.one_line.contains("passed"),
+            parsed.summary.one_line.contains("failed")
+                || parsed.summary.one_line.contains("passed"),
             "one_line should mention test outcomes: {}",
             parsed.summary.one_line
         );
