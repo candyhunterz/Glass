@@ -95,10 +95,10 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### Agent Session Continuity
 
-- [ ] **AGTS-01**: Agent produces structured handoff summary before session ends (context exhaustion, timeout)
-- [ ] **AGTS-02**: Handoff stored in agent_sessions table with work completed, remaining, key decisions
-- [ ] **AGTS-03**: New agent session loads most recent handoff as initial context
-- [ ] **AGTS-04**: Multiple sequential sessions form a chain of handoffs with context compaction
+- [x] **AGTS-01**: Agent produces structured handoff summary before session ends (context exhaustion, timeout)
+- [x] **AGTS-02**: Handoff stored in agent_sessions table with work completed, remaining, key decisions
+- [x] **AGTS-03**: New agent session loads most recent handoff as initial context
+- [x] **AGTS-04**: Multiple sequential sessions form a chain of handoffs with context compaction
 
 ### Agent Configuration
 
@@ -198,10 +198,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGTU-03 | Phase 58 | Complete |
 | AGTU-04 | Phase 58 | Complete |
 | AGTU-05 | Phase 58 | Complete |
-| AGTS-01 | Phase 59 | Pending |
-| AGTS-02 | Phase 59 | Pending |
-| AGTS-03 | Phase 59 | Pending |
-| AGTS-04 | Phase 59 | Pending |
+| AGTS-01 | Phase 59 | Complete |
+| AGTS-02 | Phase 59 | Complete |
+| AGTS-03 | Phase 59 | Complete |
+| AGTS-04 | Phase 59 | Complete |
 | AGTC-01 | Phase 60 | Pending |
 | AGTC-02 | Phase 60 | Pending |
 | AGTC-03 | Phase 60 | Pending |

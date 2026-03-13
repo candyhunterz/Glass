@@ -315,7 +315,7 @@ Plans:
   2. The handoff JSON is stored in the agent_sessions table and survives Glass restarts
   3. Starting a new agent session automatically loads the most recent handoff as initial context without manual user intervention
   4. After three sequential sessions working on the same task, each session's handoff references the previous one, forming a chain with compacted context
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 59-01-PLAN.md -- Types, AgentSessionDb, migration v3, extract_handoff, format_handoff_as_user_message
 - [ ] 59-02-PLAN.md -- Reader thread handoff detection, AgentHandoff handler, spawn handoff injection
@@ -397,5 +397,5 @@ Plans:
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
 | 57. Agent Worktree | 2/2 | Complete    | 2026-03-13 | - |
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
-| 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
+| 59. Agent Session Continuity | 1/2 | In Progress|  | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |

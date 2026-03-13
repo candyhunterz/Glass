@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 58-02-PLAN.md
-last_updated: "2026-03-13T17:36:31.756Z"
+stopped_at: Completed 59-01-PLAN.md
+last_updated: "2026-03-13T17:58:19.138Z"
 last_activity: 2026-03-13 -- completed Phase 58 Agent Approval UI (plan 02)
 progress:
   total_phases: 13
   completed_phases: 11
-  total_plans: 23
-  completed_plans: 23
+  total_plans: 25
+  completed_plans: 24
   percent: 100
 ---
 
@@ -112,6 +112,9 @@ Recent decisions relevant to v3.0:
 - [Phase 58-02]: Diff cache stored as Option<(usize, String)> on Processor -- invalidated on selection change, regenerated lazily on next redraw
 - [Phase 58-02]: Arrow key / Escape overlay intercept placed before PTY forward with _ => {} fall-through to preserve AGTU-05 non-blocking guarantee
 - [Phase 58-02]: is_none_or() used instead of map_or(true, ...) per clippy unnecessary_map_or lint
+- [Phase 59-01]: AgentHandoffData defined in glass_core to avoid circular dep with glass_agent (mirrors AgentProposalData pattern)
+- [Phase 59-01]: session_db migrate() replicates v1+v2 DDL with CREATE TABLE IF NOT EXISTS for idempotency when both modules open same physical file
+- [Phase 59-01]: AgentHandoff main.rs arm is log-only stub until Plan 59-02 wires AgentSessionDb persistence
 
 ### Pending Todos
 
@@ -127,6 +130,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T17:40:00.000Z
-Stopped at: Completed 58-02-PLAN.md
+Last session: 2026-03-13T17:58:19.135Z
+Stopped at: Completed 59-01-PLAN.md
 Resume file: None
