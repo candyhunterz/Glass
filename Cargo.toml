@@ -50,8 +50,11 @@ shlex         = "1.3.0"
 # Database (future phases)
 rusqlite      = { version = "0.38.0", features = ["bundled"] }
 
-# Windows API (UTF-8 console code page)
-windows-sys   = { version = "0.59", features = ["Win32_System_Console", "Win32_System_JobObjects", "Win32_Foundation"] }
+# Windows API (UTF-8 console code page, Job Objects for orphan prevention)
+windows-sys   = { version = "0.59", features = ["Win32_System_Console", "Win32_System_JobObjects", "Win32_Foundation", "Win32_System_Threading"] }
+
+# Unix process control (prctl for orphan prevention)
+libc          = "0.2"
 
 [package]
 name = "glass"
@@ -102,6 +105,9 @@ regex = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 winresource = "0.1"

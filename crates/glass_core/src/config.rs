@@ -27,6 +27,44 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Agent runtime configuration in the `[agent]` TOML section.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AgentSection {
+    /// Agent operation mode. Default: Off.
+    #[serde(default)]
+    pub mode: crate::agent_runtime::AgentMode,
+    /// Maximum cost budget in USD. Default 1.0.
+    #[serde(default = "default_agent_max_budget_usd")]
+    pub max_budget_usd: f64,
+    /// Cooldown window in seconds between forwarded events. Default 30.
+    #[serde(default = "default_agent_cooldown_secs")]
+    pub cooldown_secs: u64,
+    /// Comma-separated list of allowed MCP tools.
+    #[serde(default = "default_agent_allowed_tools")]
+    pub allowed_tools: String,
+}
+
+fn default_agent_max_budget_usd() -> f64 {
+    1.0
+}
+fn default_agent_cooldown_secs() -> u64 {
+    30
+}
+fn default_agent_allowed_tools() -> String {
+    "glass_query,glass_context,Bash,Read".to_string()
+}
+
+impl Default for AgentSection {
+    fn default() -> Self {
+        Self {
+            mode: crate::agent_runtime::AgentMode::Off,
+            max_budget_usd: default_agent_max_budget_usd(),
+            cooldown_secs: default_agent_cooldown_secs(),
+            allowed_tools: default_agent_allowed_tools(),
+        }
+    }
+}
+
 /// Glass terminal configuration, loaded from `~/.glass/config.toml`.
 ///
 /// All fields have sensible defaults. Missing fields in the TOML file
@@ -50,6 +88,8 @@ pub struct GlassConfig {
     /// SOI configuration section. Optional in the TOML file;
     /// uses defaults when present without explicit field values.
     pub soi: Option<SoiSection>,
+    /// Agent runtime configuration section. Optional; defaults to Off mode.
+    pub agent: Option<AgentSection>,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -170,6 +210,7 @@ impl Default for GlassConfig {
             snapshot: None,
             pipes: None,
             soi: None,
+            agent: None,
         }
     }
 }

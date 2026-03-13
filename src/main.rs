@@ -197,6 +197,27 @@ impl WindowContext {
     }
 }
 
+/// Encapsulates the agent subprocess lifecycle.
+///
+/// Lives as `Option<AgentRuntime>` on Processor -- None when agent.mode == Off
+/// or when no claude binary is found on PATH.
+struct AgentRuntime {
+    /// The claude child process (taken after stdin/stdout extracted for threads).
+    child: Option<std::process::Child>,
+    /// Rate-limit gate: checked on Processor side for restart timing.
+    /// The writer thread manages its own inline cooldown to avoid shared-state complexity.
+    #[allow(dead_code)]
+    cooldown: glass_core::agent_runtime::CooldownTracker,
+    /// Accumulated cost gate: stops events when budget is exceeded.
+    budget: glass_core::agent_runtime::BudgetTracker,
+    /// Runtime configuration (mode, budget, cooldown, tools).
+    config: glass_core::agent_runtime::AgentRuntimeConfig,
+    /// Number of crash-restart attempts this session (max 3).
+    restart_count: u32,
+    /// Timestamp of last crash, used for exponential backoff.
+    last_crash: Option<std::time::Instant>,
+}
+
 /// Top-level application state. Holds all open windows.
 ///
 /// The proxy is created from `EventLoop<AppEvent>` before `run_app()` is called,
@@ -223,12 +244,41 @@ struct Processor {
     /// Use try_send() only -- never blocking send() on winit main thread.
     activity_stream_tx:
         Option<std::sync::mpsc::SyncSender<glass_core::activity_stream::ActivityEvent>>,
-    /// Receiver half stored for Phase 56 agent runtime to .take().
-    #[allow(dead_code)] // Phase 56: agent runtime will consume
+    /// Receiver half: consumed by agent runtime spawn logic (taken once).
     activity_stream_rx:
         Option<std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>>,
     /// Activity filter: dedup, rate limit, budget window.
     activity_filter: glass_core::activity_stream::ActivityFilter,
+    /// Agent subprocess lifecycle. None when mode is Off or binary not found.
+    agent_runtime: Option<AgentRuntime>,
+    /// Cumulative agent query cost this session in USD.
+    agent_cost_usd: f64,
+    /// True when budget has been exceeded -- gates further event forwarding.
+    agent_proposals_paused: bool,
+    /// Pending agent proposals awaiting user review (populated by reader thread).
+    agent_pending_proposals: Vec<glass_core::agent_runtime::AgentProposalData>,
+    /// Windows Job Object handle for orphan prevention (Windows only).
+    /// Must remain alive for the app lifetime -- dropping closes the handle,
+    /// which triggers kill-on-close for all processes in the job.
+    #[cfg(target_os = "windows")]
+    #[allow(dead_code)]
+    job_object_handle: Option<isize>,
+}
+
+impl Drop for AgentRuntime {
+    fn drop(&mut self) {
+        if let Some(ref mut child) = self.child {
+            // Dropping stdin (done in writer thread) causes EOF to claude.
+            // Give it a moment to exit cleanly, then kill.
+            match child.try_wait() {
+                Ok(Some(_)) => {} // already exited
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -516,6 +566,264 @@ fn cleanup_session(session: Session) {
     // Session is dropped here, releasing all resources
 }
 
+/// Create a Windows Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and assign
+/// the current process to it.  When Glass exits (handle dropped), the kernel kills
+/// any processes in the job (including the claude subprocess).
+///
+/// Returns None on failure (logged as a warning). The returned isize is the HANDLE
+/// value and must be kept alive for the app lifetime.
+#[cfg(target_os = "windows")]
+fn setup_windows_job_object() -> Option<isize> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            tracing::warn!("AgentRuntime: CreateJobObjectW failed, orphan prevention unavailable");
+            return None;
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
+            std::mem::zeroed::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &raw const info as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            tracing::warn!(
+                "AgentRuntime: SetInformationJobObject failed, orphan prevention unavailable"
+            );
+            return None;
+        }
+
+        // Assign current process to the job
+        let current_process = windows_sys::Win32::System::Threading::GetCurrentProcess();
+        let assigned = AssignProcessToJobObject(job, current_process as HANDLE);
+        if assigned == 0 {
+            tracing::warn!(
+                "AgentRuntime: AssignProcessToJobObject failed, orphan prevention may be limited"
+            );
+            // Still return the handle -- future child processes may still get assigned
+        }
+
+        tracing::info!("AgentRuntime: Windows Job Object created (kill-on-close enabled)");
+        Some(job as isize)
+    }
+}
+
+/// Attempt to spawn the claude agent subprocess and wire up reader/writer threads.
+///
+/// Returns Some(AgentRuntime) if spawn succeeded, None if claude was not found or
+/// spawn failed (graceful degradation per AGTR-04).
+fn try_spawn_agent(
+    config: glass_core::agent_runtime::AgentRuntimeConfig,
+    activity_rx: std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>,
+    proxy: winit::event_loop::EventLoopProxy<glass_core::event::AppEvent>,
+    restart_count: u32,
+    last_crash: Option<std::time::Instant>,
+) -> Option<AgentRuntime> {
+    use std::io::{BufRead, BufReader, BufWriter, Write};
+    use std::process::{Command, Stdio};
+
+    // Check if claude binary is available
+    let claude_available = Command::new("claude")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok();
+
+    if !claude_available {
+        tracing::warn!(
+            "AgentRuntime: 'claude' binary not found on PATH -- agent runtime disabled (AGTR-04)"
+        );
+        return None;
+    }
+
+    // Write system prompt
+    let glass_dir = dirs::home_dir()
+        .map(|h| h.join(".glass"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".glass"));
+    let _ = std::fs::create_dir_all(&glass_dir);
+
+    let prompt_path = glass_dir.join("agent-system-prompt.txt");
+    let system_prompt = r#"You are Glass Agent, an AI assistant integrated into the Glass terminal emulator.
+
+Your role is to monitor terminal activity and propose helpful fixes when commands fail or produce errors.
+
+When you identify an issue worth addressing, emit a structured proposal using this exact format:
+GLASS_PROPOSAL: {"description": "Brief description", "action": "shell command or fix", "severity": "error|warning|info"}
+
+Guidelines:
+- Only propose when you have high confidence the fix is correct
+- Keep descriptions concise (under 80 chars)
+- Prefer non-destructive actions
+- For file modifications, prefer showing the diff rather than executing directly
+- Available tools: glass_query (search command history), glass_context (get terminal context)
+- Budget-aware: you are operating under a cost budget, so be concise in responses
+"#;
+
+    if let Err(e) = std::fs::write(&prompt_path, system_prompt) {
+        tracing::warn!("AgentRuntime: failed to write system prompt: {}", e);
+        return None;
+    }
+
+    // Build command args (no MCP config for Phase 56 -- skip --mcp-config)
+    let args = glass_core::agent_runtime::build_agent_command_args(
+        &config,
+        &prompt_path.to_string_lossy(),
+        "", // empty = no mcp config
+    );
+
+    // Build the command
+    let mut cmd = Command::new("claude");
+    for arg in &args {
+        if !arg.is_empty() {
+            cmd.arg(arg);
+        }
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    // Unix: set PR_SET_PDEATHSIG so child is killed when parent dies
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("AgentRuntime: failed to spawn claude process: {}", e);
+            return None;
+        }
+    };
+
+    // Extract stdin/stdout before storing child
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stdin = child.stdin.take().expect("stdin was piped");
+
+    let proxy_reader = proxy.clone();
+    let mode = config.mode;
+
+    // Reader thread: parses claude stdout JSON lines and routes AppEvents
+    std::thread::Builder::new()
+        .name("glass-agent-reader".into())
+        .spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                match val.get("type").and_then(|t| t.as_str()) {
+                    Some("result") => {
+                        let cost_usd = glass_core::agent_runtime::parse_cost_from_result(&line)
+                            .unwrap_or(0.0);
+                        let _ = proxy_reader
+                            .send_event(glass_core::event::AppEvent::AgentQueryResult { cost_usd });
+                    }
+                    Some("assistant") => {
+                        // Concatenate all text content blocks
+                        let mut full_text = String::new();
+                        if let Some(content) = val.get("message").and_then(|m| m.get("content")) {
+                            if let Some(arr) = content.as_array() {
+                                for block in arr {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        if let Some(text) =
+                                            block.get("text").and_then(|t| t.as_str())
+                                        {
+                                            full_text.push_str(text);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(proposal) =
+                            glass_core::agent_runtime::extract_proposal(&full_text)
+                        {
+                            let _ = proxy_reader.send_event(
+                                glass_core::event::AppEvent::AgentProposal(proposal),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // EOF or error -- signal crash
+            let _ = proxy_reader.send_event(glass_core::event::AppEvent::AgentCrashed);
+        })
+        .ok();
+
+    // Writer thread: drains activity_stream_rx and writes JSON lines to claude stdin
+    let cooldown_secs = config.cooldown_secs;
+    std::thread::Builder::new()
+        .name("glass-agent-writer".into())
+        .spawn(move || {
+            let mut writer = BufWriter::new(stdin);
+            let mut last_sent: Option<std::time::Instant> = None;
+            let cooldown = std::time::Duration::from_secs(cooldown_secs);
+
+            for event in activity_rx.iter() {
+                // Mode gate: skip events that don't pass the severity filter
+                if !glass_core::agent_runtime::should_send_in_mode(mode, &event.severity) {
+                    continue;
+                }
+
+                // Cooldown gate: skip if within cooldown window
+                if let Some(last) = last_sent {
+                    if last.elapsed() < cooldown {
+                        continue;
+                    }
+                }
+
+                let msg = glass_core::agent_runtime::format_activity_as_user_message(&event);
+                if writeln!(writer, "{msg}").is_err() || writer.flush().is_err() {
+                    // BrokenPipe: child process died
+                    break;
+                }
+                last_sent = Some(std::time::Instant::now());
+            }
+        })
+        .ok();
+
+    tracing::info!(
+        "AgentRuntime: claude subprocess spawned (mode={:?}, restart_count={})",
+        config.mode,
+        restart_count
+    );
+
+    Some(AgentRuntime {
+        child: Some(child),
+        cooldown: glass_core::agent_runtime::CooldownTracker::new(config.cooldown_secs),
+        budget: glass_core::agent_runtime::BudgetTracker::new(config.max_budget_usd),
+        config,
+        restart_count,
+        last_crash,
+    })
+}
+
 /// Resolve a tab by either tab_index or session_id from IPC params.
 /// Returns the tab index or an error string.
 fn resolve_tab_index(mux: &SessionMux, params: &serde_json::Value) -> Result<usize, String> {
@@ -734,7 +1042,33 @@ impl ApplicationHandler<AppEvent> for Processor {
             let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
             let (tx, rx) = glass_core::activity_stream::create_channel(&activity_config);
             self.activity_stream_tx = Some(tx);
-            self.activity_stream_rx = Some(rx);
+
+            // Spawn agent runtime if mode is not Off (AGTR-01, AGTR-04)
+            let agent_config = self
+                .config
+                .agent
+                .clone()
+                .map(|a| glass_core::agent_runtime::AgentRuntimeConfig {
+                    mode: a.mode,
+                    max_budget_usd: a.max_budget_usd,
+                    cooldown_secs: a.cooldown_secs,
+                    allowed_tools: a.allowed_tools,
+                })
+                .unwrap_or_default();
+
+            if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
+                self.agent_runtime = try_spawn_agent(
+                    agent_config,
+                    rx,
+                    self.proxy.clone(),
+                    0,
+                    None,
+                );
+            } else {
+                // Store rx so it isn't dropped -- activity events are silently discarded
+                // when agent is Off (channel fills up and try_send returns Err, which is ignored)
+                self.activity_stream_rx = Some(rx);
+            }
         }
     }
 
@@ -3185,6 +3519,86 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
             }
+            AppEvent::AgentProposal(proposal) => {
+                tracing::info!(
+                    "Agent proposal: {} (action={})",
+                    proposal.description,
+                    proposal.action
+                );
+                self.agent_pending_proposals.push(proposal);
+                // TODO Phase 58: surface proposal in UI
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::AgentQueryResult { cost_usd } => {
+                if let Some(ref mut runtime) = self.agent_runtime {
+                    runtime.budget.add_cost(cost_usd);
+                    self.agent_cost_usd += cost_usd;
+                    if runtime.budget.is_exceeded() && !self.agent_proposals_paused {
+                        self.agent_proposals_paused = true;
+                        tracing::warn!(
+                            "AgentRuntime: budget exceeded (${:.4} / ${:.2}) -- pausing proposals",
+                            self.agent_cost_usd,
+                            runtime.config.max_budget_usd
+                        );
+                    }
+                }
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::AgentCrashed => {
+                tracing::error!("AgentRuntime: agent subprocess crashed or exited");
+                let should_restart = if let Some(ref mut runtime) = self.agent_runtime {
+                    let backoff_secs: u64 = match runtime.restart_count {
+                        0 => 5,
+                        1 => 15,
+                        _ => 45,
+                    };
+                    let elapsed = runtime
+                        .last_crash
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(u64::MAX);
+                    runtime.restart_count < 3 && elapsed >= backoff_secs
+                } else {
+                    false
+                };
+
+                if should_restart {
+                    let (restart_count, config) =
+                        if let Some(ref mut runtime) = self.agent_runtime {
+                            runtime.last_crash = Some(std::time::Instant::now());
+                            (runtime.restart_count + 1, runtime.config.clone())
+                        } else {
+                            return;
+                        };
+
+                    tracing::info!(
+                        "AgentRuntime: attempting restart #{} with backoff",
+                        restart_count
+                    );
+
+                    // Create a new activity channel for the restarted agent
+                    let activity_config =
+                        glass_core::activity_stream::ActivityStreamConfig::default();
+                    let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
+                    self.activity_stream_tx = Some(new_tx);
+
+                    self.agent_runtime = try_spawn_agent(
+                        config,
+                        new_rx,
+                        self.proxy.clone(),
+                        restart_count,
+                        Some(std::time::Instant::now()),
+                    );
+                } else {
+                    tracing::error!(
+                        "AgentRuntime: restart limit reached or backoff not elapsed -- agent disabled"
+                    );
+                    self.agent_runtime = None;
+                }
+            }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
@@ -3820,6 +4234,10 @@ fn main() {
             // so the PTY EventProxy stores a clone of this.
             let proxy = event_loop.create_proxy();
 
+            // Windows: create Job Object early so child processes inherit it
+            #[cfg(target_os = "windows")]
+            let job_object_handle = setup_windows_job_object();
+
             let mut processor = Processor {
                 windows: HashMap::new(),
                 proxy,
@@ -3835,6 +4253,12 @@ fn main() {
                 activity_filter: glass_core::activity_stream::ActivityFilter::new(
                     glass_core::activity_stream::ActivityStreamConfig::default(),
                 ),
+                agent_runtime: None,
+                agent_cost_usd: 0.0,
+                agent_proposals_paused: false,
+                agent_pending_proposals: Vec::new(),
+                #[cfg(target_os = "windows")]
+                job_object_handle,
             };
 
             event_loop
