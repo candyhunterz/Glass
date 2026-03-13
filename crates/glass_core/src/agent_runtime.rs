@@ -54,6 +54,9 @@ pub struct AgentProposalData {
     pub command_id: i64,
     /// The full raw text of the agent's response message.
     pub raw_response: String,
+    /// File changes proposed by the agent: (relative_path, new_content).
+    /// Empty if the proposal has no file edits (backward compatible).
+    pub file_changes: Vec<(String, String)>,
 }
 
 /// Prevents the agent from receiving events faster than the configured window.
@@ -222,12 +225,28 @@ pub fn extract_proposal(assistant_text: &str) -> Option<AgentProposalData> {
     let json_str = &json_slice[..end?];
     let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
 
+    // Parse optional files array: [{"path": "...", "content": "..."}]
+    let file_changes = v
+        .get("files")
+        .and_then(|f| f.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let path = item.get("path")?.as_str()?.to_string();
+                    let content = item.get("content")?.as_str()?.to_string();
+                    Some((path, content))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
     Some(AgentProposalData {
         action: v.get("action")?.as_str()?.to_string(),
         description: v.get("description")?.as_str()?.to_string(),
         severity: v.get("severity")?.as_str()?.to_string(),
         command_id: v.get("command_id")?.as_i64()?,
         raw_response: assistant_text.to_string(),
+        file_changes,
     })
 }
 
@@ -372,6 +391,31 @@ Let me know if you agree."#;
         assert_eq!(proposal.severity, "Warning");
         assert_eq!(proposal.command_id, 7);
         assert!(proposal.raw_response.contains("GLASS_PROPOSAL:"));
+        // No files key: file_changes should be empty (backward compatible).
+        assert!(proposal.file_changes.is_empty());
+    }
+
+    #[test]
+    fn extract_proposal_without_files_key_returns_empty_file_changes() {
+        let text = r#"GLASS_PROPOSAL: {"action":"run","description":"No files","severity":"Info","command_id":2}"#;
+        let p = extract_proposal(text).unwrap();
+        assert!(p.file_changes.is_empty());
+    }
+
+    #[test]
+    fn extract_proposal_with_empty_files_array_returns_empty_file_changes() {
+        let text = r#"GLASS_PROPOSAL: {"action":"run","description":"Empty files","severity":"Info","command_id":3,"files":[]}"#;
+        let p = extract_proposal(text).unwrap();
+        assert!(p.file_changes.is_empty());
+    }
+
+    #[test]
+    fn extract_proposal_with_file_changes() {
+        let text = r#"GLASS_PROPOSAL: {"action":"fix","description":"Fix bug","severity":"Error","command_id":1,"files":[{"path":"src/main.rs","content":"fn main() {}"}]}"#;
+        let p = extract_proposal(text).unwrap();
+        assert_eq!(p.file_changes.len(), 1);
+        assert_eq!(p.file_changes[0].0, "src/main.rs");
+        assert_eq!(p.file_changes[0].1, "fn main() {}");
     }
 
     #[test]
