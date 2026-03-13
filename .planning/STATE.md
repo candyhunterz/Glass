@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 60-01-PLAN.md
-last_updated: "2026-03-13T18:30:10.033Z"
-last_activity: 2026-03-13 -- completed Phase 59 Agent Session Continuity (plan 02)
+stopped_at: Completed 60-02-PLAN.md
+last_updated: "2026-03-13T18:38:05.212Z"
+last_activity: 2026-03-13 -- completed Phase 60 Agent Configuration and Polish (plan 02)
 progress:
   total_phases: 13
-  completed_phases: 12
+  completed_phases: 13
   total_plans: 27
-  completed_plans: 26
+  completed_plans: 27
   percent: 100
 ---
 
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 
 ## Current Position
 
-Phase: 59 of 60 (Agent Session Continuity) -- Complete
+Phase: 60 of 60 (Agent Configuration and Polish) -- Complete
 Plan: 2 of 2 -- Complete
-Status: Phase complete
-Last activity: 2026-03-13 -- completed Phase 59 Agent Session Continuity (plan 02)
+Status: Milestone complete (v3.0 SOI & Agent Mode)
+Last activity: 2026-03-13 -- completed Phase 60 Agent Configuration and Polish (plan 02)
 
-Progress: [████████████████████] 26/26 plans (100%) (v3.0: 13/13 phases)
+Progress: [████████████████████] 27/27 plans (100%) (v3.0: 13/13 phases)
 
 ## Performance Metrics
 
@@ -123,6 +123,9 @@ Recent decisions relevant to v3.0:
 - [Phase 60-01]: AgentSection permissions/quiet_rules are Option<T> -- absent TOML section yields None for backward compat
 - [Phase 60-01]: classify_proposal checks file_changes first, then action prefix -- file changes are higher specificity
 - [Phase 60-01]: should_quiet ignore_exit_zero maps to severity==Success string match -- consistent with SOI severity convention
+- [Phase 60]: coordination soft errors use if let Ok() wrapping -- never block agent lifecycle on DB availability
+- [Phase 60]: Auto permission: create worktree + immediately apply, toast shows but no overlay entry -- no user interaction needed
+- [Phase 60]: Config hot-reload resets activity_filter with fresh ActivityStreamConfig to avoid stale dedup window state
 
 ### Pending Todos
 
@@ -138,6 +141,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T18:30:04.407Z
-Stopped at: Completed 60-01-PLAN.md
+Last session: 2026-03-13T18:38:05.209Z
+Stopped at: Completed 60-02-PLAN.md
 Resume file: None
