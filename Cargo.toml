@@ -56,6 +56,12 @@ windows-sys   = { version = "0.59", features = ["Win32_System_Console", "Win32_S
 # Unix process control (prctl for orphan prevention)
 libc          = "0.2"
 
+# Agent worktree isolation
+git2          = "0.20"
+diffy         = "0.4"
+uuid          = { version = "1", features = ["v4"] }
+serde_json    = "1.0"
+
 [package]
 name = "glass"
 version = "2.5.0"
@@ -100,7 +106,7 @@ glass_coordination = { path = "crates/glass_coordination" }
 glass_soi = { path = "crates/glass_soi" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-chrome = { version = "0.7", optional = true }
-serde_json = "1.0"
+serde_json = { workspace = true }
 regex = "1"
 
 [target.'cfg(windows)'.dependencies]
@@ -113,7 +119,7 @@ libc = "0.2"
 winresource = "0.1"
 
 [dev-dependencies]
-serde_json = "1.0"
+serde_json = { workspace = true }
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 

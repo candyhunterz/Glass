@@ -1,0 +1,17 @@
+[package]
+name = "glass_agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+git2       = { workspace = true }
+diffy      = { workspace = true }
+rusqlite   = { workspace = true }
+uuid       = { workspace = true }
+dirs       = { workspace = true }
+anyhow     = { workspace = true }
+tracing    = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
