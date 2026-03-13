@@ -47,6 +47,9 @@ pub struct GlassConfig {
     /// Pipe visualization configuration section. Optional in the TOML file;
     /// uses defaults when present without explicit field values.
     pub pipes: Option<PipesSection>,
+    /// SOI configuration section. Optional in the TOML file;
+    /// uses defaults when present without explicit field values.
+    pub soi: Option<SoiSection>,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -89,6 +92,33 @@ fn default_max_size_mb() -> u32 {
 }
 fn default_retention_days() -> u32 {
     30
+}
+
+/// SOI (Structured Output Intelligence) configuration in the `[soi]` TOML section.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SoiSection {
+    /// Whether SOI parsing and display is enabled. Default true.
+    #[serde(default = "default_soi_enabled")]
+    pub enabled: bool,
+    /// Whether to use the shell's summary command for SOI. Default false.
+    #[serde(default = "default_soi_shell_summary")]
+    pub shell_summary: bool,
+    /// Display format for SOI labels. Default "oneline".
+    #[serde(default = "default_soi_format")]
+    pub format: String,
+    /// Minimum number of output lines before SOI label is shown. Default 0.
+    #[serde(default)]
+    pub min_lines: u32,
+}
+
+fn default_soi_enabled() -> bool {
+    true
+}
+fn default_soi_shell_summary() -> bool {
+    false
+}
+fn default_soi_format() -> String {
+    "oneline".to_string()
 }
 
 /// Pipe visualization configuration in the `[pipes]` TOML section.
@@ -139,6 +169,7 @@ impl Default for GlassConfig {
             history: None,
             snapshot: None,
             pipes: None,
+            soi: None,
         }
     }
 }
@@ -462,5 +493,33 @@ mod tests {
         assert!(!pipes.enabled);
         assert_eq!(pipes.max_capture_mb, 5);
         assert!(!pipes.auto_expand);
+    }
+
+    #[test]
+    fn test_soi_section_defaults() {
+        let toml = "[soi]";
+        let config = GlassConfig::load_from_str(toml);
+        let soi = config.soi.expect("soi section should be Some");
+        assert!(soi.enabled);
+        assert!(!soi.shell_summary);
+        assert_eq!(soi.format, "oneline");
+        assert_eq!(soi.min_lines, 0);
+    }
+
+    #[test]
+    fn test_soi_section_roundtrip() {
+        let toml = "[soi]\nenabled = false\nshell_summary = true";
+        let config = GlassConfig::load_from_str(toml);
+        let soi = config.soi.expect("soi section should be Some");
+        assert!(!soi.enabled);
+        assert!(soi.shell_summary);
+        assert_eq!(soi.format, "oneline"); // default
+        assert_eq!(soi.min_lines, 0); // default
+    }
+
+    #[test]
+    fn test_soi_section_absent_uses_defaults() {
+        let config = GlassConfig::load_from_str("");
+        assert!(config.soi.is_none());
     }
 }

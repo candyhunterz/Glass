@@ -54,6 +54,10 @@ pub struct Block {
     pub pipeline_stage_commands: Vec<String>,
     /// Which single stage is showing full captured output (None = all collapsed).
     pub expanded_stage_index: Option<usize>,
+    /// SOI one-line summary for this block (set after SOI parse completes).
+    pub soi_summary: Option<String>,
+    /// SOI severity string: "Error" | "Warning" | "Info" | "Success" (None until set).
+    pub soi_severity: Option<String>,
 }
 
 impl Block {
@@ -74,6 +78,8 @@ impl Block {
             pipeline_expanded: false,
             pipeline_stage_commands: Vec::new(),
             expanded_stage_index: None,
+            soi_summary: None,
+            soi_severity: None,
         }
     }
 

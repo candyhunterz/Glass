@@ -113,6 +113,8 @@ pub enum AppEvent {
         summary: String,
         /// Highest severity: "Error" | "Warning" | "Info" | "Success"
         severity: String,
+        /// Raw line count of the command output (for min_lines threshold).
+        raw_line_count: i64,
     },
 }
 
@@ -173,17 +175,20 @@ mod tests {
             command_id: 42,
             summary: "3 errors in src/main.rs".to_string(),
             severity: "Error".to_string(),
+            raw_line_count: 15,
         };
         match event {
             AppEvent::SoiReady {
                 command_id,
                 summary,
                 severity,
+                raw_line_count,
                 ..
             } => {
                 assert_eq!(command_id, 42);
                 assert_eq!(summary, "3 errors in src/main.rs");
                 assert_eq!(severity, "Error");
+                assert_eq!(raw_line_count, 15);
             }
             _ => panic!("Expected SoiReady"),
         }

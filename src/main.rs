@@ -2923,11 +2923,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .flatten()
                                     .unwrap_or_default();
 
-                                let (summary, severity) = match output_text {
-                                    None => ("no output captured".to_string(), "Info".to_string()),
-                                    Some(ref text) if text.is_empty() => {
-                                        ("no output captured".to_string(), "Info".to_string())
-                                    }
+                                let (summary, severity, raw_line_count) = match output_text {
+                                    None => (
+                                        "no output captured".to_string(),
+                                        "Info".to_string(),
+                                        0i64,
+                                    ),
+                                    Some(ref text) if text.is_empty() => (
+                                        "no output captured".to_string(),
+                                        "Info".to_string(),
+                                        0i64,
+                                    ),
                                     Some(text) => {
                                         let output_type =
                                             glass_soi::classify(&text, Some(&command_text));
@@ -2949,7 +2955,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             glass_soi::Severity::Info => "Info",
                                             glass_soi::Severity::Success => "Success",
                                         };
-                                        (parsed.summary.one_line, sev_str.to_string())
+                                        let rlc = parsed.raw_line_count as i64;
+                                        (parsed.summary.one_line, sev_str.to_string(), rlc)
                                     }
                                 };
 
@@ -2959,6 +2966,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     command_id: cmd_id,
                                     summary,
                                     severity,
+                                    raw_line_count,
                                 });
                             })
                             .ok();
@@ -3100,6 +3108,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 command_id,
                 summary,
                 severity,
+                raw_line_count: _,
             } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     if let Some(session) = ctx.session_mux.session_mut(session_id) {

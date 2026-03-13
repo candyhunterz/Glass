@@ -577,6 +577,8 @@ mod tests {
             pipeline_expanded: expanded,
             pipeline_stage_commands: commands.iter().map(|s| s.to_string()).collect(),
             expanded_stage_index: expanded_stage,
+            soi_summary: None,
+            soi_severity: None,
         };
         block
     }
