@@ -219,6 +219,14 @@ struct Processor {
     update_info: Option<glass_core::updater::UpdateInfo>,
     /// Current coordination state from background poller.
     coordination_state: glass_core::coordination_poller::CoordinationState,
+    /// Sender half of the agent activity stream channel.
+    /// Use try_send() only -- never blocking send() on winit main thread.
+    activity_stream_tx: Option<std::sync::mpsc::SyncSender<glass_core::activity_stream::ActivityEvent>>,
+    /// Receiver half stored for Phase 56 agent runtime to .take().
+    #[allow(dead_code)] // Phase 56: agent runtime will consume
+    activity_stream_rx: Option<std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>>,
+    /// Activity filter: dedup, rate limit, budget window.
+    activity_filter: glass_core::activity_stream::ActivityFilter,
 }
 
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
@@ -719,6 +727,12 @@ impl ApplicationHandler<AppEvent> for Processor {
 
             // Start IPC listener for MCP command channel
             glass_core::ipc::start_ipc_listener(self.proxy.clone());
+
+            // Create bounded activity stream channel (AGTA-01)
+            let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
+            let (tx, rx) = glass_core::activity_stream::create_channel(&activity_config);
+            self.activity_stream_tx = Some(tx);
+            self.activity_stream_rx = Some(rx);
         }
     }
 
@@ -3154,6 +3168,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     ctx.window.request_redraw();
                 }
+
+                // AGTA-01: Feed activity stream (after all UI updates, using owned values)
+                if let Some(event) = self.activity_filter.process(
+                    command_id,
+                    session_id,
+                    summary,
+                    severity,
+                ) {
+                    if let Some(tx) = &self.activity_stream_tx {
+                        if tx.try_send(event).is_err() {
+                            tracing::debug!(
+                                "Activity stream channel full or disconnected, dropping event"
+                            );
+                        }
+                    }
+                }
             }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
@@ -3800,6 +3830,11 @@ fn main() {
                 watcher_spawned: false,
                 update_info: None,
                 coordination_state: Default::default(),
+                activity_stream_tx: None,
+                activity_stream_rx: None,
+                activity_filter: glass_core::activity_stream::ActivityFilter::new(
+                    glass_core::activity_stream::ActivityStreamConfig::default(),
+                ),
             };
 
             event_loop
