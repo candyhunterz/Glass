@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: planning
-stopped_at: Completed 48-02-PLAN.md
-last_updated: "2026-03-13T05:30:31.094Z"
+stopped_at: Completed 48-03-PLAN.md
+last_updated: "2026-03-13T05:32:59.153Z"
 last_activity: 2026-03-12 -- v3.0 roadmap created (phases 48-60)
 progress:
   total_phases: 13
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -67,6 +67,8 @@ Recent decisions relevant to v3.0:
 - [Phase 48]: cargo_build::parse delegates to glass_errors::extract_errors with Note/Help -> Info severity mapping
 - [Phase 48]: cargo_test::parse chains to cargo_build::parse on compilation failure (no 'running N tests' line)
 - [Phase 48]: Duration in cargo test is on summary line not separate line -- extracted from same regex match
+- [Phase 48]: npm multi-match-per-line: do NOT use continue after first match since single lines can contain both added and audited counts
+- [Phase 48]: jest test fixtures use concat!() macro not Rust line-continuation to preserve leading whitespace required by indented test line regex
 
 ### Pending Todos
 
@@ -82,6 +84,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T05:30:31.092Z
-Stopped at: Completed 48-02-PLAN.md
+Last session: 2026-03-13T05:32:59.151Z
+Stopped at: Completed 48-03-PLAN.md
 Resume file: None
