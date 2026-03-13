@@ -19,7 +19,7 @@ created: 2026-03-13
 |----------|-------|
 | **Framework** | Rust built-in (`#[test]`) |
 | **Config file** | None — tests inline per project convention |
-| **Quick run command** | `cargo test -p glass_renderer -- block_renderer && cargo test -p glass_core -- config` |
+| **Quick run command** | `cargo test -p glass_renderer -- block_renderer && cargo test -p glass_core -- config && cargo test -p glass_terminal -- test_soi_hint_line` |
 | **Full suite command** | `cargo test --workspace` |
 | **Estimated runtime** | ~60 seconds |
 
@@ -27,7 +27,7 @@ created: 2026-03-13
 
 ## Sampling Rate
 
-- **After every task commit:** Run `cargo test -p glass_renderer -- block_renderer && cargo test -p glass_core -- config`
+- **After every task commit:** Run `cargo test -p glass_renderer -- block_renderer && cargo test -p glass_core -- config && cargo test -p glass_terminal -- test_soi_hint_line`
 - **After every plan wave:** Run `cargo test --workspace && cargo clippy --workspace -- -D warnings`
 - **Before `/gsd:verify-work`:** Full suite must be green
 - **Max feedback latency:** 60 seconds
@@ -38,23 +38,25 @@ created: 2026-03-13
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 52-01-01 | 01 | 1 | SOID-03 | unit | `cargo test -p glass_core -- config::test_soi_section_defaults` | ❌ W0 | ⬜ pending |
-| 52-01-02 | 01 | 1 | SOID-03 | unit | `cargo test -p glass_core -- config::test_soi_section_roundtrip` | ❌ W0 | ⬜ pending |
-| 52-01-03 | 01 | 1 | SOID-03 | unit | `cargo test -p glass_core -- config::test_soi_section_absent_uses_defaults` | ❌ W0 | ⬜ pending |
-| 52-01-04 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_emitted_for_complete_block` | ❌ W0 | ⬜ pending |
-| 52-01-05 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_absent_when_no_summary` | ❌ W0 | ⬜ pending |
-| 52-01-06 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_color_error` | ❌ W0 | ⬜ pending |
-| 52-01-07 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_left_anchored` | ❌ W0 | ⬜ pending |
-| 52-02-01 | 02 | 2 | SOID-02 | unit | `cargo test -p glass_terminal -- hint_line_format` | ❌ W0 | ⬜ pending |
+| 52-01-01 | 01 | 1 | SOID-03 | unit | `cargo test -p glass_core -- config::test_soi_section_defaults` | W0 | pending |
+| 52-01-02 | 01 | 1 | SOID-03 | unit | `cargo test -p glass_core -- config::test_soi_section_roundtrip` | W0 | pending |
+| 52-01-03 | 01 | 1 | SOID-03 | unit | `cargo test -p glass_core -- config::test_soi_section_absent_uses_defaults` | W0 | pending |
+| 52-01-04 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_emitted_for_complete_block` | W0 | pending |
+| 52-01-05 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_absent_when_no_summary` | W0 | pending |
+| 52-01-06 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_color_error` | W0 | pending |
+| 52-01-07 | 01 | 1 | SOID-01 | unit | `cargo test -p glass_renderer -- block_renderer::test_soi_label_left_anchored` | W0 | pending |
+| 52-02-01 | 02 | 2 | SOID-02 | unit | `cargo test -p glass_terminal -- block_manager::tests::test_soi_hint_line_format` | W0 | pending |
+| 52-02-02 | 02 | 2 | SOID-02 | unit | `cargo test -p glass_terminal -- block_manager::tests::test_soi_hint_line_gating_disabled` | W0 | pending |
+| 52-02-03 | 02 | 2 | SOID-02 | unit | `cargo test -p glass_terminal -- block_manager::tests::test_soi_hint_line_min_lines_threshold` | W0 | pending |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*Status: pending / green / red / flaky*
 
 ---
 
 ## Wave 0 Requirements
 
 - [ ] `crates/glass_core/src/config.rs` — add `SoiSection` struct, defaults, field on `GlassConfig`, 3 unit tests
-- [ ] `crates/glass_terminal/src/block_manager.rs` — add `soi_summary: Option<String>`, `soi_severity: Option<String>` to `Block`
+- [ ] `crates/glass_terminal/src/block_manager.rs` — add `soi_summary: Option<String>`, `soi_severity: Option<String>` to `Block`; add `build_soi_hint_line()` pure function with 3 unit tests
 - [ ] `crates/glass_renderer/src/block_renderer.rs` — add `soi_color_for_severity()` helper and SOI label emission, 4 unit tests
 - [ ] `crates/glass_core/src/event.rs` — add `raw_line_count: i64` to `AppEvent::SoiReady`
 
