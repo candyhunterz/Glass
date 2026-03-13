@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 60-02-PLAN.md
-last_updated: "2026-03-13T18:41:26.261Z"
-last_activity: 2026-03-13 -- completed Phase 60 Agent Configuration and Polish (plan 02)
+stopped_at: Completed 61-01-PLAN.md
+last_updated: "2026-03-13T19:33:25.000Z"
+last_activity: 2026-03-13 -- completed Phase 61 Wire MCP Config to Agent (plan 01)
 progress:
   total_phases: 13
   completed_phases: 13
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 
 ## Current Position
 
-Phase: 60 of 60 (Agent Configuration and Polish) -- Complete
-Plan: 2 of 2 -- Complete
-Status: Milestone complete (v3.0 SOI & Agent Mode)
-Last activity: 2026-03-13 -- completed Phase 60 Agent Configuration and Polish (plan 02)
+Phase: 61 of 61 (Wire MCP Config to Agent) -- Complete
+Plan: 1 of 1 -- Complete
+Status: Post-milestone fix (v3.0 audit items)
+Last activity: 2026-03-13 -- completed Phase 61 Wire MCP Config to Agent (plan 01)
 
-Progress: [████████████████████] 27/27 plans (100%) (v3.0: 13/13 phases)
+Progress: [████████████████████] 28/28 plans (100%) (v3.0: 14/14 phases)
 
 ## Performance Metrics
 
@@ -45,7 +45,8 @@ Progress: [████████████████████] 27/27 p
 - v2.3: 9 plans in ~35 min (~4 min/plan)
 - v2.4: 7 plans in ~25 min (~4 min/plan)
 - v2.5: 6 plans in ~10 min (~2 min/plan)
-- Total: 101 plans across 47 phases in 8 days
+- v3.0-fix: 1 plan in ~3 min
+- Total: 102 plans across 48 phases in 8 days
 
 ## Accumulated Context
 
@@ -126,6 +127,8 @@ Recent decisions relevant to v3.0:
 - [Phase 60]: coordination soft errors use if let Ok() wrapping -- never block agent lifecycle on DB availability
 - [Phase 60]: Auto permission: create worktree + immediately apply, toast shows but no overlay entry -- no user interaction needed
 - [Phase 60]: Config hot-reload resets activity_filter with fresh ActivityStreamConfig to avoid stale dedup window state
+- [Phase 61]: MCP config uses closure returning Option<String> for graceful degradation -- unwrap_or_default yields empty string which build_agent_command_args now handles
+- [Phase 61]: flush_collapsed added at ConfigReloaded and AgentCrashed shutdown sites -- Drop impl cannot access Processor fields
 
 ### Pending Todos
 
@@ -141,6 +144,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T18:38:05.209Z
-Stopped at: Completed 60-02-PLAN.md
+Last session: 2026-03-13T19:33:25Z
+Stopped at: Completed 61-01-PLAN.md
 Resume file: None

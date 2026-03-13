@@ -140,7 +140,7 @@
 - [x] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals (completed 2026-03-13)
 - [x] **Phase 59: Agent Session Continuity** - Persist handoff summaries across context resets with chained session resumption (completed 2026-03-13)
 - [x] **Phase 60: Agent Configuration** - Complete [agent] and [soi] config sections with permission matrix and graceful degradation (completed 2026-03-13)
-- [ ] **Phase 61: Wire MCP Config to Agent Subprocess** - Fix --mcp-config wiring so agent can invoke MCP tools, call flush_collapsed on shutdown
+- [x] **Phase 61: Wire MCP Config to Agent Subprocess** - Fix --mcp-config wiring so agent can invoke MCP tools, call flush_collapsed on shutdown (completed 2026-03-13)
 - [ ] **Phase 62: v3.0 Tech Debt Cleanup** - Fix stale doc comments and backfill SUMMARY.md frontmatter gaps
 
 ## Phase Details
@@ -347,7 +347,7 @@ Plans:
   2. build_agent_command_args never emits a dangling --mcp-config flag with no path value
   3. flush_collapsed() is called during agent shutdown so the last collapsed activity event is not silently dropped
   4. E2E Flow 2 (MCP SOI Query from agent) completes: agent subprocess can call glass_query and receive structured output
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 61-01-PLAN.md -- Fix build_agent_command_args, write MCP config JSON, flush_collapsed at shutdown
 
@@ -424,5 +424,5 @@ Plans:
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
-| 61. Wire MCP Config to Agent Subprocess | v3.0 | 0/1 | Planned | - |
+| 61. Wire MCP Config to Agent Subprocess | 1/1 | Complete   | 2026-03-13 | - |
 | 62. v3.0 Tech Debt Cleanup | v3.0 | 0/0 | Planned | - |
