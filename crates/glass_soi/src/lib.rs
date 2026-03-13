@@ -19,15 +19,19 @@ mod ansi;
 mod classifier;
 mod types;
 
-// Stub parser modules — implemented in plans 48-02 and 48-03
+// Parser modules
 mod cargo_build;
 mod cargo_test;
 mod docker;
 mod git;
+mod go_build;
+mod go_test;
 mod jest;
+mod json_lines;
 mod kubectl;
 mod npm;
 mod pytest;
+mod tsc;
 
 pub use ansi::strip_ansi;
 pub use classifier::classify;
@@ -47,6 +51,10 @@ pub fn parse(output: &str, output_type: OutputType, command_hint: Option<&str>) 
         OutputType::Git => git::parse(output),
         OutputType::Docker => docker::parse(output),
         OutputType::Kubectl => kubectl::parse(output),
+        OutputType::TypeScript => tsc::parse(output),
+        OutputType::GoBuild => go_build::parse(output),
+        OutputType::GoTest => go_test::parse(output),
+        OutputType::JsonLines => json_lines::parse(output),
         other => freeform_parse(output, Some(other), command_hint),
     }
 }

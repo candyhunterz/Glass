@@ -154,6 +154,16 @@ fn classify_by_content(output: &str) -> OutputType {
         return OutputType::Git;
     }
 
+    // TypeScript compiler output: "file(line,col): error|warning TSxxxx:"
+    if has_tsc_marker(output) {
+        return OutputType::TypeScript;
+    }
+
+    // Go test output: verbose test markers
+    if has_go_test_marker(output) {
+        return OutputType::GoTest;
+    }
+
     OutputType::FreeformText
 }
 
@@ -200,6 +210,18 @@ fn has_git_marker(output: &str) -> bool {
         || output.contains("Changes not staged for commit")
         || output.contains("nothing to commit")
         || output.contains("Untracked files:")
+}
+
+fn has_tsc_marker(output: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"\(\d+,\d+\): (?:error|warning) TS\d+:").expect("tsc marker regex")
+    });
+    re.is_match(output)
+}
+
+fn has_go_test_marker(output: &str) -> bool {
+    output.contains("--- PASS:") || output.contains("--- FAIL:") || output.contains("=== RUN   ")
 }
 
 #[cfg(test)]
@@ -389,5 +411,36 @@ mod tests {
     fn sniff_git_changes_not_staged_detected() {
         let output = "Changes not staged for commit:\n\tmodified: src/main.rs\n";
         assert_eq!(classify(output, None), OutputType::Git);
+    }
+
+    #[test]
+    fn sniff_tsc_error_detected() {
+        let output = "src/main.ts(10,5): error TS2345: Argument of type 'string' is not assignable";
+        assert_eq!(classify(output, None), OutputType::TypeScript);
+    }
+
+    #[test]
+    fn sniff_tsc_warning_detected() {
+        let output =
+            "src/utils.ts(3,1): warning TS6133: 'x' is declared but its value is never read.";
+        assert_eq!(classify(output, None), OutputType::TypeScript);
+    }
+
+    #[test]
+    fn sniff_go_test_run_detected() {
+        let output = "=== RUN   TestFoo\n--- PASS: TestFoo (0.00s)";
+        assert_eq!(classify(output, None), OutputType::GoTest);
+    }
+
+    #[test]
+    fn sniff_go_test_pass_only_detected() {
+        let output = "--- PASS: TestBar (0.01s)";
+        assert_eq!(classify(output, None), OutputType::GoTest);
+    }
+
+    #[test]
+    fn sniff_go_test_fail_detected() {
+        let output = "--- FAIL: TestBaz (0.00s)";
+        assert_eq!(classify(output, None), OutputType::GoTest);
     }
 }
