@@ -136,7 +136,7 @@
 - [x] **Phase 54: SOI Extended Parsers** - Add git, docker, kubectl, tsc, Go, and generic JSON parsers to the parser registry (completed 2026-03-13)
 - [x] **Phase 55: Agent Activity Stream** - Create glass_agent crate with bounded activity channel, budget window, and noise filtering (completed 2026-03-13)
 - [x] **Phase 56: Agent Runtime** - Spawn background Claude CLI process with lifecycle management, autonomy modes, and cost cap (completed 2026-03-13)
-- [ ] **Phase 57: Agent Worktree** - Implement git worktree isolation with SQLite-backed crash recovery and diff/apply/cleanup
+- [x] **Phase 57: Agent Worktree** - Implement git worktree isolation with SQLite-backed crash recovery and diff/apply/cleanup (completed 2026-03-13)
 - [ ] **Phase 58: Agent Approval UI** - Add non-blocking toast notifications, status bar indicator, and review overlay for proposals
 - [ ] **Phase 59: Agent Session Continuity** - Persist handoff summaries across context resets with chained session resumption
 - [ ] **Phase 60: Agent Configuration** - Complete [agent] and [soi] config sections with permission matrix and graceful degradation
@@ -286,7 +286,7 @@ Plans:
   4. Dismissing a proposal removes the worktree without modifying any working tree files
   5. Starting Glass after a crash with a leftover pending_worktree entry prunes the orphaned worktree automatically on startup
   6. On a non-git directory, the agent falls back to a temp directory copy rather than failing with a git error
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 57-01-PLAN.md -- glass_agent crate with WorktreeManager, types, WorktreeDb, and full lifecycle tests
 - [ ] 57-02-PLAN.md -- Extend AgentProposalData with file_changes, wire WorktreeManager into Processor
@@ -395,7 +395,7 @@ Plans:
 | 54. SOI Extended Parsers | 2/2 | Complete    | 2026-03-13 | - |
 | 55. Agent Activity Stream | 2/2 | Complete    | 2026-03-13 | - |
 | 56. Agent Runtime | 2/2 | Complete    | 2026-03-13 | - |
-| 57. Agent Worktree | 1/2 | In Progress|  | - |
+| 57. Agent Worktree | 2/2 | Complete   | 2026-03-13 | - |
 | 58. Agent Approval UI | v3.0 | 0/TBD | Not started | - |
 | 59. Agent Session Continuity | v3.0 | 0/TBD | Not started | - |
 | 60. Agent Configuration and Polish | v3.0 | 0/TBD | Not started | - |
