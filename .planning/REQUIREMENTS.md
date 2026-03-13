@@ -145,13 +145,74 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated by roadmapper) | | |
+| SOIP-01 | Phase 48 | Pending |
+| SOIP-02 | Phase 48 | Pending |
+| SOIP-03 | Phase 48 | Pending |
+| SOIP-04 | Phase 48 | Pending |
+| SOIP-05 | Phase 48 | Pending |
+| SOIP-06 | Phase 48 | Pending |
+| SOIS-01 | Phase 49 | Pending |
+| SOIS-02 | Phase 49 | Pending |
+| SOIS-03 | Phase 49 | Pending |
+| SOIS-04 | Phase 49 | Pending |
+| SOIL-01 | Phase 50 | Pending |
+| SOIL-02 | Phase 50 | Pending |
+| SOIL-03 | Phase 50 | Pending |
+| SOIL-04 | Phase 50 | Pending |
+| SOIC-01 | Phase 51 | Pending |
+| SOIC-02 | Phase 51 | Pending |
+| SOIC-03 | Phase 51 | Pending |
+| SOIC-04 | Phase 51 | Pending |
+| SOID-01 | Phase 52 | Pending |
+| SOID-02 | Phase 52 | Pending |
+| SOID-03 | Phase 52 | Pending |
+| SOIM-01 | Phase 53 | Pending |
+| SOIM-02 | Phase 53 | Pending |
+| SOIM-03 | Phase 53 | Pending |
+| SOIM-04 | Phase 53 | Pending |
+| SOIX-01 | Phase 54 | Pending |
+| SOIX-02 | Phase 54 | Pending |
+| SOIX-03 | Phase 54 | Pending |
+| SOIX-04 | Phase 54 | Pending |
+| SOIX-05 | Phase 54 | Pending |
+| SOIX-06 | Phase 54 | Pending |
+| AGTA-01 | Phase 55 | Pending |
+| AGTA-02 | Phase 55 | Pending |
+| AGTA-03 | Phase 55 | Pending |
+| AGTA-04 | Phase 55 | Pending |
+| AGTR-01 | Phase 56 | Pending |
+| AGTR-02 | Phase 56 | Pending |
+| AGTR-03 | Phase 56 | Pending |
+| AGTR-04 | Phase 56 | Pending |
+| AGTR-05 | Phase 56 | Pending |
+| AGTR-06 | Phase 56 | Pending |
+| AGTR-07 | Phase 56 | Pending |
+| AGTW-01 | Phase 57 | Pending |
+| AGTW-02 | Phase 57 | Pending |
+| AGTW-03 | Phase 57 | Pending |
+| AGTW-04 | Phase 57 | Pending |
+| AGTW-05 | Phase 57 | Pending |
+| AGTW-06 | Phase 57 | Pending |
+| AGTU-01 | Phase 58 | Pending |
+| AGTU-02 | Phase 58 | Pending |
+| AGTU-03 | Phase 58 | Pending |
+| AGTU-04 | Phase 58 | Pending |
+| AGTU-05 | Phase 58 | Pending |
+| AGTS-01 | Phase 59 | Pending |
+| AGTS-02 | Phase 59 | Pending |
+| AGTS-03 | Phase 59 | Pending |
+| AGTS-04 | Phase 59 | Pending |
+| AGTC-01 | Phase 60 | Pending |
+| AGTC-02 | Phase 60 | Pending |
+| AGTC-03 | Phase 60 | Pending |
+| AGTC-04 | Phase 60 | Pending |
+| AGTC-05 | Phase 60 | Pending |
 
 **Coverage:**
-- v3.0 requirements: 52 total
-- Mapped to phases: 0
-- Unmapped: 52
+- v3.0 requirements: 62 total (note: REQUIREMENTS.md header said 52 -- actual count from requirement definitions is 62)
+- Mapped to phases: 62
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-12*
-*Last updated: 2026-03-12 after initial definition*
+*Last updated: 2026-03-12 after roadmap creation (phases 48-60)*
