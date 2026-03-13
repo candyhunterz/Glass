@@ -242,8 +242,8 @@ Plans:
   6. Commands emitting NDJSON (structured log lines) are parsed into individual JSON record entries rather than FreeformChunk
 **Plans:** 2 plans
 Plans:
-- [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
-- [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
+- [ ] 54-01-PLAN.md -- Git, docker, kubectl parsers with content sniffer and lib.rs wiring
+- [ ] 54-02-PLAN.md -- tsc, Go build/test, JSON lines parsers with content sniffers and lib.rs wiring
 
 ### Phase 55: Agent Activity Stream
 **Goal**: Compressed SOI events flow through a bounded, noise-filtered channel ready for the agent runtime to consume
@@ -392,7 +392,7 @@ Plans:
 | 51. SOI Compression Engine | 2/2 | Complete    | 2026-03-13 | - |
 | 52. SOI Display | 2/2 | Complete    | 2026-03-13 | - |
 | 53. SOI MCP Tools | 2/2 | Complete    | 2026-03-13 | - |
-| 54. SOI Extended Parsers | v3.0 | 0/TBD | Not started | - |
+| 54. SOI Extended Parsers | v3.0 | 0/2 | Not started | - |
 | 55. Agent Activity Stream | v3.0 | 0/TBD | Not started | - |
 | 56. Agent Runtime | v3.0 | 0/TBD | Not started | - |
 | 57. Agent Worktree | v3.0 | 0/TBD | Not started | - |
