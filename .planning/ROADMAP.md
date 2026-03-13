@@ -129,7 +129,7 @@
 
 - [x] **Phase 48: SOI Classifier and Parser Crate** - Create glass_soi crate with output classifier and parsers for cargo, test runners, and package managers (completed 2026-03-13)
 - [x] **Phase 49: SOI Storage Schema** - Add command_output_records and output_records tables to the history DB with schema v3 migration (completed 2026-03-13)
-- [ ] **Phase 50: SOI Pipeline Integration** - Wire auto-parse on CommandFinished via spawn_blocking with SoiReady event emission
+- [x] **Phase 50: SOI Pipeline Integration** - Wire auto-parse on CommandFinished via spawn_blocking with SoiReady event emission (completed 2026-03-13)
 - [ ] **Phase 51: SOI Compression Engine** - Build 4-level token-budgeted summary engine with diff-aware change detection
 - [ ] **Phase 52: SOI Display** - Render SOI summaries as block decorations and inject shell hint lines into PTY output
 - [ ] **Phase 53: SOI MCP Tools** - Add glass_query, glass_query_trend, glass_query_drill tools and update glass_context
@@ -182,7 +182,7 @@ Plans:
   2. Running the existing criterion input_latency benchmark shows no regression after SOI integration (parsing runs off main thread)
   3. Commands with no output, binary output, or alt-screen apps (vim, htop) complete without SOI parse errors or crashes
   4. Commands producing output larger than 50KB are handled (truncated or skipped) without memory spikes or hangs
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 50-01-PLAN.md -- HistoryDb path accessor, output fetch helpers, AppEvent::SoiReady variant, SoiSummary on Session
 - [ ] 50-02-PLAN.md -- SOI worker spawn on CommandFinished, SoiReady event handler
@@ -388,7 +388,7 @@ Plans:
 | 47. Tab Drag Reorder | v2.5 | 2/2 | Complete | 2026-03-11 |
 | 48. SOI Classifier and Parser Crate | 3/3 | Complete    | 2026-03-13 | - |
 | 49. SOI Storage Schema | 2/2 | Complete    | 2026-03-13 | - |
-| 50. SOI Pipeline Integration | 1/2 | In Progress|  | - |
+| 50. SOI Pipeline Integration | 2/2 | Complete   | 2026-03-13 | - |
 | 51. SOI Compression Engine | v3.0 | 0/TBD | Not started | - |
 | 52. SOI Display | v3.0 | 0/TBD | Not started | - |
 | 53. SOI MCP Tools | v3.0 | 0/TBD | Not started | - |
