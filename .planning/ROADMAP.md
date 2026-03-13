@@ -330,7 +330,7 @@ Plans:
   3. Adding a command pattern to quiet_rules suppresses activity events for matching commands without disabling agent mode globally
   4. Starting Glass with agent.enabled = true but without the claude binary installed shows a clear config hint and disables agent mode gracefully (no crash, no silent failure)
   5. On agent session start, Glass calls glass_agent_lock via glass_coordination on the files the agent intends to modify, releasing locks on session end
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 60-01-PLAN.md -- Config types: PermissionMatrix, QuietRules, PermissionLevel, classify_proposal, should_quiet helpers
 - [ ] 60-02-PLAN.md -- Wire config into main.rs: hot-reload restart, quiet filter, permission enforcement, coordination, degradation hint
@@ -398,4 +398,4 @@ Plans:
 | 57. Agent Worktree | 2/2 | Complete    | 2026-03-13 | - |
 | 58. Agent Approval UI | 2/2 | Complete    | 2026-03-13 | - |
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
-| 60. Agent Configuration and Polish | v3.0 | 0/2 | Not started | - |
+| 60. Agent Configuration and Polish | 1/2 | In Progress|  | - |

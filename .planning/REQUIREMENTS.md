@@ -102,9 +102,9 @@ Requirements for SOI & Agent Mode milestone. Each maps to roadmap phases.
 
 ### Agent Configuration
 
-- [ ] **AGTC-01**: Full [agent] config section in config.toml with hot-reload support
-- [ ] **AGTC-02**: Permission matrix: approve/auto/never per action type (edit_files, run_commands, git_operations)
-- [ ] **AGTC-03**: Quiet rules: ignore specific commands, ignore successful commands (exit 0)
+- [x] **AGTC-01**: Full [agent] config section in config.toml with hot-reload support
+- [x] **AGTC-02**: Permission matrix: approve/auto/never per action type (edit_files, run_commands, git_operations)
+- [x] **AGTC-03**: Quiet rules: ignore specific commands, ignore successful commands (exit 0)
 - [ ] **AGTC-04**: Graceful degradation when Claude CLI is unavailable (disable agent mode with config hint)
 - [ ] **AGTC-05**: Agent integrates with glass_coordination for advisory lock management on session start/stop
 
@@ -202,9 +202,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGTS-02 | Phase 59 | Complete |
 | AGTS-03 | Phase 59 | Complete |
 | AGTS-04 | Phase 59 | Complete |
-| AGTC-01 | Phase 60 | Pending |
-| AGTC-02 | Phase 60 | Pending |
-| AGTC-03 | Phase 60 | Pending |
+| AGTC-01 | Phase 60 | Complete |
+| AGTC-02 | Phase 60 | Complete |
+| AGTC-03 | Phase 60 | Complete |
 | AGTC-04 | Phase 60 | Pending |
 | AGTC-05 | Phase 60 | Pending |
 

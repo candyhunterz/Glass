@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: SOI & Agent Mode
 status: completed
-stopped_at: Completed 59-02-PLAN.md
-last_updated: "2026-03-13T18:08:15.654Z"
+stopped_at: Completed 60-01-PLAN.md
+last_updated: "2026-03-13T18:30:10.033Z"
 last_activity: 2026-03-13 -- completed Phase 59 Agent Session Continuity (plan 02)
 progress:
   total_phases: 13
   completed_phases: 12
-  total_plans: 25
-  completed_plans: 25
+  total_plans: 27
+  completed_plans: 26
   percent: 100
 ---
 
@@ -119,6 +119,10 @@ Recent decisions relevant to v3.0:
 - [Phase 59-02]: project_root param added to try_spawn_agent; both call sites pass current_dir().to_string_lossy()
 - [Phase 59-02]: Empty session_id in AgentHandoff generates UUID fallback (race condition mitigation)
 - [Phase 59-02]: Prior handoff canonicalized before AgentSessionDb lookup (Pitfall 4 mitigation)
+- [Phase 60-01]: PermissionLevel and QuietRules use #[derive(Default)] not manual impl -- clippy derivable_impls rule
+- [Phase 60-01]: AgentSection permissions/quiet_rules are Option<T> -- absent TOML section yields None for backward compat
+- [Phase 60-01]: classify_proposal checks file_changes first, then action prefix -- file changes are higher specificity
+- [Phase 60-01]: should_quiet ignore_exit_zero maps to severity==Success string match -- consistent with SOI severity convention
 
 ### Pending Todos
 
@@ -134,6 +138,6 @@ Recent decisions relevant to v3.0:
 
 ## Session Continuity
 
-Last session: 2026-03-13T18:03:30.000Z
-Stopped at: Completed 59-02-PLAN.md
+Last session: 2026-03-13T18:30:04.407Z
+Stopped at: Completed 60-01-PLAN.md
 Resume file: None
