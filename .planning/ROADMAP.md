@@ -360,6 +360,9 @@ Plans:
   1. glass_soi/src/lib.rs doc comment no longer references "Phase 48 stubs"
   2. SUMMARY.md frontmatter requirements_completed includes all 13 previously missing REQ-IDs across phases 48, 51, 56, 57, 59
 
+**Plans:** 1 plan
+Plans:
+- [ ] 62-01-PLAN.md -- Fix stale doc comment and backfill SUMMARY.md frontmatter
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -425,4 +428,4 @@ Plans:
 | 59. Agent Session Continuity | 2/2 | Complete    | 2026-03-13 | - |
 | 60. Agent Configuration and Polish | 2/2 | Complete    | 2026-03-13 | - |
 | 61. Wire MCP Config to Agent Subprocess | 1/1 | Complete    | 2026-03-13 | - |
-| 62. v3.0 Tech Debt Cleanup | v3.0 | 0/0 | Planned | - |
+| 62. v3.0 Tech Debt Cleanup | v3.0 | 0/1 | Planned | - |
