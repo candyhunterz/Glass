@@ -143,6 +143,12 @@ pub enum AppEvent {
         window_id: winit::window::WindowId,
         session_id: SessionId,
     },
+    /// Usage tracker: 5h utilization >= 80%, trigger graceful pause.
+    UsagePause,
+    /// Usage tracker: 5h utilization >= 95%, hard stop immediately.
+    UsageHardStop,
+    /// Usage tracker: 5h utilization dropped below 20%, safe to resume.
+    UsageResume,
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@
 mod history;
 #[allow(dead_code)]
 mod orchestrator;
+mod usage_tracker;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -282,6 +283,8 @@ struct Processor {
     agent_runtime: Option<AgentRuntime>,
     /// Orchestrator state for autonomous Claude Code collaboration.
     orchestrator: orchestrator::OrchestratorState,
+    /// Shared usage tracker state (polled from background thread).
+    usage_state: Option<std::sync::Arc<std::sync::Mutex<usage_tracker::UsageState>>>,
     /// Cumulative agent query cost this session in USD.
     agent_cost_usd: f64,
     /// True when budget has been exceeded -- gates further event forwarding.
@@ -1396,6 +1399,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .to_string_lossy()
                         .to_string(),
                 );
+                // Start usage polling if orchestrator is configured
+                if self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.orchestrator.as_ref())
+                    .is_some()
+                {
+                    self.usage_state =
+                        Some(usage_tracker::start_polling(self.proxy.clone()));
+                }
+
                 // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
                 if self.agent_runtime.is_none() {
                     self.config_error = Some(glass_core::config::ConfigError {
@@ -1621,11 +1636,25 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Agent mode and proposal count for status bar display.
                     let agent_mode_text = self.agent_runtime.as_ref().map(|_r| {
+                        let usage_prefix = self
+                            .usage_state
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|st| usage_tracker::format_status_bar(&st))
+                            .unwrap_or_default();
                         if self.orchestrator.active {
-                            format!(
-                                "[orchestrating | iter #{}]",
-                                self.orchestrator.iteration
-                            )
+                            if usage_prefix.is_empty() {
+                                format!(
+                                    "[orchestrating | iter #{}]",
+                                    self.orchestrator.iteration
+                                )
+                            } else {
+                                format!(
+                                    "{} | [orchestrating | iter #{}]",
+                                    usage_prefix,
+                                    self.orchestrator.iteration
+                                )
+                            }
                         } else {
                             let mode = self
                                 .config
@@ -1633,7 +1662,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .as_ref()
                                 .map(|a| format!("{:?}", a.mode).to_lowercase())
                                 .unwrap_or_else(|| "off".to_string());
-                            format!("[agent: {mode}]")
+                            if usage_prefix.is_empty() {
+                                format!("[agent: {mode}]")
+                            } else {
+                                format!("{usage_prefix} | [agent: {mode}]")
+                            }
                         }
                     });
                     let proposal_count_text = if !self.agent_proposal_worktrees.is_empty() {
@@ -1902,11 +1935,25 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Agent mode and proposal count for multi-pane status bar.
                     let agent_mode_text_mp = self.agent_runtime.as_ref().map(|_r| {
+                        let usage_prefix = self
+                            .usage_state
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|st| usage_tracker::format_status_bar(&st))
+                            .unwrap_or_default();
                         if self.orchestrator.active {
-                            format!(
-                                "[orchestrating | iter #{}]",
-                                self.orchestrator.iteration
-                            )
+                            if usage_prefix.is_empty() {
+                                format!(
+                                    "[orchestrating | iter #{}]",
+                                    self.orchestrator.iteration
+                                )
+                            } else {
+                                format!(
+                                    "{} | [orchestrating | iter #{}]",
+                                    usage_prefix,
+                                    self.orchestrator.iteration
+                                )
+                            }
                         } else {
                             let mode = self
                                 .config
@@ -1914,7 +1961,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .as_ref()
                                 .map(|a| format!("{:?}", a.mode).to_lowercase())
                                 .unwrap_or_else(|| "off".to_string());
-                            format!("[agent: {mode}]")
+                            if usage_prefix.is_empty() {
+                                format!("[agent: {mode}]")
+                            } else {
+                                format!("{usage_prefix} | [agent: {mode}]")
+                            }
                         }
                     });
                     let proposal_count_text_mp = if !self.agent_proposal_worktrees.is_empty() {
@@ -5152,6 +5203,54 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
             }
+            AppEvent::UsagePause => {
+                tracing::info!("Orchestrator: usage pause triggered (>=80%)");
+                self.orchestrator.active = false;
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::UsageHardStop => {
+                tracing::warn!("Orchestrator: usage hard stop (>=95%)");
+                self.orchestrator.active = false;
+
+                // Write emergency checkpoint from Rust (no AI)
+                if let Some(ctx) = self.windows.values().next() {
+                    if let Some(session) = ctx.session_mux.focused_session() {
+                        let lines = extract_term_lines(&session.term, 50);
+                        let cwd = session.status.cwd().to_string();
+                        let checkpoint = format!(
+                            "# Emergency Checkpoint (written by Glass, not AI)\n\
+                             Paused at: {}\n\
+                             Reason: OAuth usage at 95%+\n\
+                             Last terminal lines:\n{}\n\
+                             Working directory: {}\n\
+                             Resume: run `claude`, then read .glass/checkpoint.md and continue\n",
+                            chrono::Utc::now().to_rfc3339(),
+                            lines.join("\n"),
+                            cwd,
+                        );
+                        let checkpoint_dir =
+                            std::path::Path::new(&cwd).join(".glass");
+                        let _ = std::fs::create_dir_all(&checkpoint_dir);
+                        let _ = std::fs::write(
+                            checkpoint_dir.join("checkpoint.md"),
+                            &checkpoint,
+                        );
+                    }
+                }
+
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::UsageResume => {
+                tracing::info!("Orchestrator: usage resume triggered (<20%)");
+                // Don't auto-enable orchestrator — user must toggle with Ctrl+Shift+O
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
@@ -5861,6 +5960,7 @@ fn main() {
                 ),
                 agent_runtime: None,
                 orchestrator: orchestrator::OrchestratorState::new(orch_max_retries),
+                usage_state: None,
                 agent_cost_usd: 0.0,
                 agent_proposals_paused: false,
                 worktree_manager: {

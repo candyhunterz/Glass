@@ -56,6 +56,9 @@ windows-sys   = { version = "0.59", features = ["Win32_System_Console", "Win32_S
 # Unix process control (prctl for orphan prevention)
 libc          = "0.2"
 
+# HTTP client (usage API polling)
+ureq          = "3"
+
 # Agent worktree isolation
 git2          = "0.20"
 diffy         = "0.4"
@@ -110,6 +113,7 @@ tracing-chrome = { version = "0.7", optional = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 regex = "1"
+ureq = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
