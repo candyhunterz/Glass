@@ -471,14 +471,12 @@ pub fn update_config_field(
             let entry = current
                 .entry(part.to_string())
                 .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-            current = entry
-                .as_table_mut()
-                .ok_or_else(|| ConfigError {
-                    message: format!("Config section '{part}' is not a table"),
-                    line: None,
-                    column: None,
-                    snippet: None,
-                })?;
+            current = entry.as_table_mut().ok_or_else(|| ConfigError {
+                message: format!("Config section '{part}' is not a table"),
+                line: None,
+                column: None,
+                snippet: None,
+            })?;
         }
         current.insert(key.to_string(), parsed_value);
     } else {
@@ -940,7 +938,13 @@ max_iterations = 25"#;
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[agent.orchestrator]\nenabled = true\n").unwrap();
 
-        update_config_field(&path, Some("agent.orchestrator"), "silence_timeout_secs", "15").unwrap();
+        update_config_field(
+            &path,
+            Some("agent.orchestrator"),
+            "silence_timeout_secs",
+            "15",
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let config = GlassConfig::load_from_str(&content);

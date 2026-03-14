@@ -20,7 +20,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Term, TermMode};
 use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
-use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
+use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent, VerifyEventResult};
 use glass_history::{
     db::{CommandRecord, HistoryDb},
     resolve_db_path,
@@ -1312,6 +1312,44 @@ fn fetch_latest_soi_context(
             .collect();
 
     (exit_code, soi_summary, soi_errors)
+}
+
+/// Extract test pass/fail counts from command output using common patterns.
+fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
+    // Rust: "test result: ok. 45 passed; 2 failed; 0 ignored"
+    if let Some(caps) = regex::Regex::new(r"(\d+) passed; (\d+) failed")
+        .ok()
+        .and_then(|re| re.captures(output))
+    {
+        let passed = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let failed = caps.get(2).and_then(|m| m.as_str().parse().ok());
+        return (passed, failed);
+    }
+    // Jest/Node: "Tests: 2 failed, 45 passed, 47 total"
+    if let Some(caps) = regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed")
+        .ok()
+        .and_then(|re| re.captures(output))
+    {
+        let failed = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let passed = caps.get(2).and_then(|m| m.as_str().parse().ok());
+        return (passed, failed.or(Some(0)));
+    }
+    // Pytest: "5 passed, 2 failed" or "5 passed"
+    if let Some(caps) = regex::Regex::new(r"(\d+) passed")
+        .ok()
+        .and_then(|re| re.captures(output))
+    {
+        let passed = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let failed = regex::Regex::new(r"(\d+) failed")
+            .ok()
+            .and_then(|re| re.captures(output))
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse().ok())
+            .or(Some(0));
+        return (passed, failed);
+    }
+    // Go: "ok" or "FAIL" — no counts, exit code only
+    (None, None)
 }
 
 /// Spawn a notify file watcher that sends `OrchestratorSilence` when the
@@ -3299,6 +3337,43 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         let _ = std::fs::remove_file(&handoff_path);
                                     }
 
+                                    // Initialize metric guard
+                                    let verify_mode = self
+                                        .config
+                                        .agent
+                                        .as_ref()
+                                        .and_then(|a| a.orchestrator.as_ref())
+                                        .map(|o| o.verify_mode.as_str())
+                                        .unwrap_or("floor");
+
+                                    if verify_mode == "floor" {
+                                        let user_cmd = self
+                                            .config
+                                            .agent
+                                            .as_ref()
+                                            .and_then(|a| a.orchestrator.as_ref())
+                                            .and_then(|o| o.verify_command.clone());
+
+                                        let commands = if let Some(cmd) = user_cmd {
+                                            vec![orchestrator::VerifyCommand {
+                                                name: cmd.clone(),
+                                                cmd,
+                                            }]
+                                        } else {
+                                            orchestrator::auto_detect_verify_commands(&current_cwd)
+                                        };
+
+                                        if !commands.is_empty() {
+                                            let cmd_count = commands.len();
+                                            let mut baseline = orchestrator::MetricBaseline::new();
+                                            baseline.commands = commands;
+                                            self.orchestrator.metric_baseline = Some(baseline);
+                                            tracing::info!(
+                                                "Metric guard initialized with {cmd_count} commands"
+                                            );
+                                        }
+                                    }
+
                                     // Start artifact watcher
                                     let artifact_path = self
                                         .config
@@ -5194,11 +5269,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|o| o.completion_artifact.clone())
                             .unwrap_or_else(|| ".glass/done".to_string());
                         let cwd = self.get_focused_cwd();
-                        if let Some((wid, sid)) = self
-                            .windows
-                            .iter()
-                            .next()
-                            .and_then(|(wid, ctx)| {
+                        if let Some((wid, sid)) =
+                            self.windows.iter().next().and_then(|(wid, ctx)| {
                                 ctx.session_mux.focused_session().map(|s| (*wid, s.id))
                             })
                         {
@@ -5802,7 +5874,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .orchestrator
                             .metric_baseline
                             .get_or_insert_with(orchestrator::MetricBaseline::new);
-                        baseline.commands = commands;
+                        baseline.commands.extend(commands);
                     }
                 }
 
@@ -5980,6 +6052,106 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
+                        // Record current commit for metric guard revert (only when proceeding with iteration)
+                        if self.orchestrator.metric_baseline.is_some() {
+                            self.orchestrator.last_good_commit = std::process::Command::new("git")
+                                .args(["rev-parse", "HEAD"])
+                                .current_dir(&cwd)
+                                .output()
+                                .ok()
+                                .and_then(|o| {
+                                    if o.status.success() {
+                                        String::from_utf8(o.stdout)
+                                            .ok()
+                                            .map(|s| s.trim().to_string())
+                                    } else {
+                                        None
+                                    }
+                                });
+                        }
+
+                        // Metric guard: run verification on background thread
+                        let verify_mode = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.verify_mode.as_str())
+                            .unwrap_or("floor");
+
+                        if verify_mode == "floor" {
+                            if let Some(ref baseline) = self.orchestrator.metric_baseline {
+                                if !baseline.commands.is_empty() {
+                                    let commands = baseline.commands.clone();
+                                    let verify_cwd = cwd.clone();
+                                    let proxy = self.proxy.clone();
+                                    std::thread::Builder::new()
+                                        .name("Glass verify".into())
+                                        .spawn(move || {
+                                            let results: Vec<VerifyEventResult> = commands
+                                                .iter()
+                                                .map(|cmd| {
+                                                    let output = if cfg!(target_os = "windows") {
+                                                        std::process::Command::new("cmd")
+                                                            .args(["/C", &cmd.cmd])
+                                                            .current_dir(&verify_cwd)
+                                                            .output()
+                                                    } else {
+                                                        std::process::Command::new("sh")
+                                                            .args(["-c", &cmd.cmd])
+                                                            .current_dir(&verify_cwd)
+                                                            .output()
+                                                    };
+                                                    match output {
+                                                        Ok(o) => {
+                                                            let stdout =
+                                                                String::from_utf8_lossy(&o.stdout)
+                                                                    .to_string();
+                                                            let stderr =
+                                                                String::from_utf8_lossy(&o.stderr)
+                                                                    .to_string();
+                                                            let combined =
+                                                                format!("{stdout}\n{stderr}");
+                                                            let (passed, failed) =
+                                                                parse_test_counts_from_output(
+                                                                    &combined,
+                                                                );
+                                                            VerifyEventResult {
+                                                                command_name: cmd.name.clone(),
+                                                                exit_code: o
+                                                                    .status
+                                                                    .code()
+                                                                    .unwrap_or(-1),
+                                                                tests_passed: passed,
+                                                                tests_failed: failed,
+                                                                output: combined,
+                                                            }
+                                                        }
+                                                        Err(e) => VerifyEventResult {
+                                                            command_name: cmd.name.clone(),
+                                                            exit_code: -1,
+                                                            tests_passed: None,
+                                                            tests_failed: None,
+                                                            output: format!("Failed to run: {e}"),
+                                                        },
+                                                    }
+                                                })
+                                                .collect();
+                                            let _ = proxy.send_event(AppEvent::VerifyComplete {
+                                                window_id,
+                                                session_id,
+                                                results,
+                                            });
+                                        })
+                                        .ok();
+                                    // Block sending context until verification completes
+                                    self.orchestrator.response_pending = true;
+                                    return;
+                                }
+                            }
+                        }
+
+                        // If no verification needed, proceed with normal context send
                         let mut content = String::from("[TERMINAL_CONTEXT]\n");
                         if let Some(nudge_text) = nudge {
                             content.push_str(&format!(
@@ -6015,6 +6187,158 @@ impl ApplicationHandler<AppEvent> for Processor {
                             lines.len()
                         );
                     }
+                }
+            }
+            AppEvent::VerifyComplete {
+                window_id,
+                session_id,
+                results,
+            } => {
+                if !self.orchestrator.active {
+                    self.orchestrator.response_pending = false;
+                    return;
+                }
+
+                // Convert VerifyEventResult to VerifyResult
+                let verify_results: Vec<orchestrator::VerifyResult> = results
+                    .into_iter()
+                    .map(|r| orchestrator::VerifyResult {
+                        command_name: r.command_name,
+                        exit_code: r.exit_code,
+                        tests_passed: r.tests_passed,
+                        tests_failed: r.tests_failed,
+                        errors: if r.exit_code != 0 {
+                            vec![r.output.lines().take(10).collect::<Vec<_>>().join("\n")]
+                        } else {
+                            vec![]
+                        },
+                    })
+                    .collect();
+
+                let mut guard_msg: Option<String> = None;
+
+                // Get CWD and commit before mutable borrow of orchestrator
+                let revert_cwd = self.get_focused_cwd();
+                let revert_commit = self.orchestrator.last_good_commit.clone();
+
+                if let Some(ref mut baseline) = self.orchestrator.metric_baseline {
+                    // If baseline_results is empty, this is the first run — establish baseline
+                    if baseline.baseline_results.is_empty() {
+                        baseline.baseline_results = verify_results.clone();
+                        baseline.last_results = verify_results.clone();
+                        tracing::info!(
+                            "Metric guard: baseline established with {} command(s)",
+                            baseline.commands.len()
+                        );
+                    } else {
+                        let regressed = orchestrator::MetricBaseline::check_regression(
+                            &baseline.baseline_results,
+                            &verify_results,
+                        );
+
+                        if regressed {
+                            // Revert via git
+                            if let Some(ref commit) = revert_commit {
+                                let _ = std::process::Command::new("git")
+                                    .args(["reset", "--hard", commit])
+                                    .current_dir(&revert_cwd)
+                                    .output();
+                                tracing::info!("Metric guard: reverted to {commit}");
+                            }
+                            baseline.revert_count += 1;
+                            baseline.last_results = verify_results.clone();
+
+                            // Build METRIC_GUARD message for agent context
+                            guard_msg = Some(format!(
+                                "[METRIC_GUARD] Your changes caused regression:\n{}\nChanges have been reverted. Try a different approach.",
+                                verify_results
+                                    .iter()
+                                    .map(|r| {
+                                        let mut s = format!(
+                                            "  {}: exit_code={}",
+                                            r.command_name, r.exit_code
+                                        );
+                                        if let (Some(p), Some(f)) =
+                                            (r.tests_passed, r.tests_failed)
+                                        {
+                                            s.push_str(&format!(
+                                                ", {} passed, {} failed",
+                                                p, f
+                                            ));
+                                        }
+                                        for e in &r.errors {
+                                            s.push_str(&format!(
+                                                "\n    {}",
+                                                e.lines()
+                                                    .take(5)
+                                                    .collect::<Vec<_>>()
+                                                    .join("\n    ")
+                                            ));
+                                        }
+                                        s
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            ));
+
+                            tracing::info!(
+                                "Metric guard: regression detected, context updated with METRIC_GUARD"
+                            );
+                        } else {
+                            baseline.update_baseline_if_improved(&verify_results);
+                            baseline.keep_count += 1;
+                            baseline.last_results = verify_results;
+                        }
+                    }
+                }
+
+                // Now send context to agent (with or without METRIC_GUARD prefix)
+                if let Some(ctx) = self.windows.get(&window_id) {
+                    if let Some(session) = ctx.session_mux.session(session_id) {
+                        let lines = extract_term_lines(&session.term, 80);
+                        let (exit_code, soi_summary, soi_errors) =
+                            fetch_latest_soi_context(session);
+                        let context = orchestrator::build_orchestrator_context(
+                            &lines,
+                            exit_code,
+                            soi_summary.as_deref(),
+                            &soi_errors,
+                        );
+
+                        let mut content = String::from("[TERMINAL_CONTEXT]\n");
+                        if let Some(guard) = guard_msg {
+                            content.push_str(&guard);
+                            content.push('\n');
+                        }
+                        content.push_str(&context);
+
+                        let msg = serde_json::json!({
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": content
+                            }
+                        })
+                        .to_string();
+
+                        if let Some(ref runtime) = self.agent_runtime {
+                            if let Some(ref writer) = runtime.orchestrator_writer {
+                                if let Ok(mut w) = writer.lock() {
+                                    let _ = writeln!(w, "{msg}");
+                                    let _ = w.flush();
+                                }
+                            }
+                        }
+
+                        tracing::debug!("Orchestrator: sent context to agent after verification");
+                    }
+                }
+
+                self.orchestrator.response_pending = false;
+
+                // Request redraw for status bar update
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
                 }
             }
             AppEvent::UsagePause => {

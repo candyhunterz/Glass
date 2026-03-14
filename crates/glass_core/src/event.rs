@@ -18,6 +18,16 @@ impl std::fmt::Display for SessionId {
     }
 }
 
+/// Lightweight verification result for cross-crate event passing.
+#[derive(Debug, Clone)]
+pub struct VerifyEventResult {
+    pub command_name: String,
+    pub exit_code: i32,
+    pub tests_passed: Option<u32>,
+    pub tests_failed: Option<u32>,
+    pub output: String,
+}
+
 /// Events produced by shell integration OSC sequences.
 ///
 /// Mirrors `OscEvent` from glass_terminal but lives in glass_core
@@ -142,6 +152,12 @@ pub enum AppEvent {
     OrchestratorSilence {
         window_id: winit::window::WindowId,
         session_id: SessionId,
+    },
+    /// Metric guard verification completed on background thread.
+    VerifyComplete {
+        window_id: winit::window::WindowId,
+        session_id: SessionId,
+        results: Vec<VerifyEventResult>,
     },
     /// Usage tracker: 5h utilization >= 80%, trigger graceful pause.
     UsagePause,

@@ -231,9 +231,7 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
                 }
             }
             if let Some(end_idx) = end {
-                if let Ok(val) =
-                    serde_json::from_str::<serde_json::Value>(&json_slice[..end_idx])
-                {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_slice[..end_idx]) {
                     if let Some(cmds) = val.get("commands").and_then(|c| c.as_array()) {
                         let commands: Vec<VerifyCommand> = cmds
                             .iter()
