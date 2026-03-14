@@ -2468,6 +2468,34 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.max_retries_before_stuck)
                                 .unwrap_or(3),
+                            orchestrator_verify_mode: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.verify_mode.clone())
+                                .unwrap_or_else(|| "floor".to_string()),
+                            orchestrator_verify_command: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .and_then(|o| o.verify_command.clone())
+                                .unwrap_or_default(),
+                            orchestrator_completion_artifact: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.completion_artifact.clone())
+                                .unwrap_or_else(|| ".glass/done".to_string()),
+                            orchestrator_max_iterations: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .and_then(|o| o.max_iterations)
+                                .unwrap_or(0),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
@@ -6781,6 +6809,25 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
+        // Orchestrator: verify_mode (toggle floor <-> disabled)
+        (6, 6) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.verify_mode.as_str())
+                .unwrap_or("floor");
+            let new_mode = if current == "floor" {
+                "\"disabled\""
+            } else {
+                "\"floor\""
+            };
+            Some((
+                Some("agent.orchestrator"),
+                "verify_mode",
+                new_mode.to_string(),
+            ))
+        }
         _ => None,
     }
 }
@@ -6911,6 +6958,30 @@ fn handle_settings_increment(
                 "max_retries_before_stuck",
                 new_val.to_string(),
             ))
+        }
+        // Orchestrator max_iterations: step 5
+        (6, 9) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .and_then(|o| o.max_iterations)
+                .unwrap_or(0) as i64;
+            let new_val = (current + delta * 5).max(0);
+            if new_val == 0 {
+                // 0 means unlimited — write 0, which should_stop_bounded treats as unlimited
+                Some((
+                    Some("agent.orchestrator"),
+                    "max_iterations",
+                    "0".to_string(),
+                ))
+            } else {
+                Some((
+                    Some("agent.orchestrator"),
+                    "max_iterations",
+                    new_val.to_string(),
+                ))
+            }
         }
         _ => None,
     }
