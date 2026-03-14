@@ -71,20 +71,28 @@ fn poll_usage(token: &str) -> Result<UsageData, String> {
         .get("seven_day")
         .ok_or("Missing seven_day field")?;
 
+    // Normalize utilization: API may return 0-1 (fraction) or 0-100 (percentage).
+    // If >1.0, treat as percentage and convert to fraction.
+    let normalize = |v: f64| if v > 1.0 { v / 100.0 } else { v };
+
     Ok(UsageData {
-        five_hour_utilization: five_hour
-            .get("utilization")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0),
+        five_hour_utilization: normalize(
+            five_hour
+                .get("utilization")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+        ),
         five_hour_resets_at: five_hour
             .get("resets_at")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        seven_day_utilization: seven_day
-            .get("utilization")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0),
+        seven_day_utilization: normalize(
+            seven_day
+                .get("utilization")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+        ),
         seven_day_resets_at: seven_day
             .get("resets_at")
             .and_then(|v| v.as_str())

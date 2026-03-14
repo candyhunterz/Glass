@@ -2143,6 +2143,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                         filter: self.activity_view_filter,
                         scroll_offset: self.activity_scroll_offset,
                         verbose: self.activity_verbose,
+                        orchestrator_active: self.orchestrator.active,
+                        orchestrator_iteration: self.orchestrator.iteration,
+                        orchestrator_paused_reason: if self.usage_state.as_ref().and_then(|s| s.lock().ok()).map(|s| s.paused).unwrap_or(false) {
+                            Some("Usage limit".to_string())
+                        } else {
+                            None
+                        },
+                        usage_text: self.usage_state.as_ref().and_then(|s| s.lock().ok()).map(|st| crate::usage_tracker::format_status_bar(&st)),
                     };
 
                     ctx.frame_renderer.draw_activity_overlay(
@@ -2245,6 +2253,34 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .as_ref()
                                 .map(|h| h.max_output_capture_kb)
                                 .unwrap_or(50),
+                            orchestrator_enabled: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.enabled)
+                                .unwrap_or(false),
+                            orchestrator_silence_secs: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.silence_timeout_secs)
+                                .unwrap_or(30),
+                            orchestrator_prd_path: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.prd_path.clone())
+                                .unwrap_or_else(|| "PRD.md".to_string()),
+                            orchestrator_max_retries: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.max_retries_before_stuck)
+                                .unwrap_or(3),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
@@ -6198,6 +6234,16 @@ fn handle_settings_activate(
             let current = config.pipes.as_ref().map(|p| p.auto_expand).unwrap_or(true);
             Some((Some("pipes"), "auto_expand", (!current).to_string()))
         }
+        // Orchestrator: enabled
+        (6, 0) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.enabled)
+                .unwrap_or(false);
+            Some((Some("agent.orchestrator"), "enabled", (!current).to_string()))
+        }
         _ => None,
     }
 }
@@ -6283,6 +6329,28 @@ fn handle_settings_increment(
                 "max_output_capture_kb",
                 new_val.to_string(),
             ))
+        }
+        // Orchestrator silence_timeout_secs: step 5
+        (6, 1) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.silence_timeout_secs)
+                .unwrap_or(30) as i64;
+            let new_val = (current + delta * 5).max(5);
+            Some((Some("agent.orchestrator"), "silence_timeout_secs", new_val.to_string()))
+        }
+        // Orchestrator max_retries: step 1
+        (6, 3) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_retries_before_stuck)
+                .unwrap_or(3) as i64;
+            let new_val = (current + delta).max(1);
+            Some((Some("agent.orchestrator"), "max_retries_before_stuck", new_val.to_string()))
         }
         _ => None,
     }

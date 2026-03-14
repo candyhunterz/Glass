@@ -73,6 +73,12 @@ pub struct ActivityOverlayRenderData {
     pub filter: ActivityViewFilter,
     pub scroll_offset: usize,
     pub verbose: bool,
+    /// Orchestrator state for display.
+    pub orchestrator_active: bool,
+    pub orchestrator_iteration: u32,
+    pub orchestrator_paused_reason: Option<String>,
+    /// Usage tracker info.
+    pub usage_text: Option<String>,
 }
 
 /// Agent card data for the left column.
@@ -275,9 +281,80 @@ impl ActivityOverlayRenderer {
             },
         });
 
-        // Left column: Agent cards
+        // Left column
         let left_width = 280.0_f32.min(viewport_width * 0.35);
         let mut card_y = self.cell_height * 3.0;
+
+        // Orchestrator status section
+        {
+            let (orch_label, orch_color) = if data.orchestrator_active {
+                (
+                    format!("ORCHESTRATOR: ACTIVE (iter #{})", data.orchestrator_iteration),
+                    Rgb {
+                        r: 0,
+                        g: 200,
+                        b: 100,
+                    },
+                )
+            } else if data.orchestrator_paused_reason.is_some() {
+                (
+                    "ORCHESTRATOR: PAUSED".to_string(),
+                    Rgb {
+                        r: 230,
+                        g: 180,
+                        b: 50,
+                    },
+                )
+            } else {
+                (
+                    "ORCHESTRATOR: INACTIVE".to_string(),
+                    Rgb {
+                        r: 120,
+                        g: 120,
+                        b: 120,
+                    },
+                )
+            };
+            labels.push(ActivityOverlayTextLabel {
+                text: orch_label,
+                x: padding,
+                y: card_y,
+                color: orch_color,
+            });
+            card_y += self.cell_height;
+
+            // Paused reason (if any)
+            if let Some(ref reason) = data.orchestrator_paused_reason {
+                labels.push(ActivityOverlayTextLabel {
+                    text: format!("Paused: {}", reason),
+                    x: padding + self.cell_width,
+                    y: card_y,
+                    color: Rgb {
+                        r: 230,
+                        g: 180,
+                        b: 50,
+                    },
+                });
+                card_y += self.cell_height;
+            }
+
+            // Usage text
+            if let Some(ref usage) = data.usage_text {
+                labels.push(ActivityOverlayTextLabel {
+                    text: usage.clone(),
+                    x: padding + self.cell_width,
+                    y: card_y,
+                    color: Rgb {
+                        r: 170,
+                        g: 170,
+                        b: 170,
+                    },
+                });
+                card_y += self.cell_height;
+            }
+
+            card_y += self.cell_height * 0.5; // gap before agent cards
+        }
 
         // "Active Agents (N)" header
         labels.push(ActivityOverlayTextLabel {

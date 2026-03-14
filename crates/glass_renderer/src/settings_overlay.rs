@@ -92,6 +92,11 @@ pub struct SettingsConfigSnapshot {
     pub pipes_max_capture_mb: u32,
     // History
     pub history_max_output_kb: u32,
+    // Orchestrator
+    pub orchestrator_enabled: bool,
+    pub orchestrator_silence_secs: u64,
+    pub orchestrator_prd_path: String,
+    pub orchestrator_max_retries: u32,
 }
 
 impl Default for SettingsConfigSnapshot {
@@ -113,13 +118,17 @@ impl Default for SettingsConfigSnapshot {
             pipes_auto_expand: true,
             pipes_max_capture_mb: 10,
             history_max_output_kb: 50,
+            orchestrator_enabled: false,
+            orchestrator_silence_secs: 30,
+            orchestrator_prd_path: "PRD.md".to_string(),
+            orchestrator_max_retries: 3,
         }
     }
 }
 
 /// Section names for the settings sidebar.
 pub const SETTINGS_SECTIONS: &[&str] =
-    &["Font", "Agent Mode", "SOI", "Snapshots", "Pipes", "History"];
+    &["Font", "Agent Mode", "SOI", "Snapshots", "Pipes", "History", "Orchestrator"];
 
 /// A single shortcut entry for display.
 struct ShortcutEntry {
@@ -859,6 +868,33 @@ impl SettingsOverlayRenderer {
                 (
                     "Max Output (KB)",
                     format!("{}", config.history_max_output_kb),
+                    false,
+                ),
+            ],
+            6 => vec![
+                // Orchestrator
+                (
+                    "Enabled",
+                    if config.orchestrator_enabled {
+                        "ON".to_string()
+                    } else {
+                        "OFF".to_string()
+                    },
+                    true,
+                ),
+                (
+                    "Silence Timeout (sec)",
+                    format!("{}", config.orchestrator_silence_secs),
+                    false,
+                ),
+                (
+                    "PRD Path",
+                    config.orchestrator_prd_path.clone(),
+                    false,
+                ),
+                (
+                    "Max Retries",
+                    format!("{}", config.orchestrator_max_retries),
                     false,
                 ),
             ],
