@@ -2390,6 +2390,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.silence_timeout_secs)
                                 .unwrap_or(30),
+                            orchestrator_fast_trigger_secs: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.fast_trigger_secs)
+                                .unwrap_or(5),
+                            orchestrator_prompt_pattern: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .and_then(|o| o.agent_prompt_pattern.clone())
+                                .unwrap_or_default(),
                             orchestrator_prd_path: self
                                 .config
                                 .agent
@@ -6758,8 +6772,23 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
+        // Orchestrator fast_trigger_secs: step 1
+        (6, 2) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.fast_trigger_secs)
+                .unwrap_or(5) as i64;
+            let new_val = (current + delta).max(1);
+            Some((
+                Some("agent.orchestrator"),
+                "fast_trigger_secs",
+                new_val.to_string(),
+            ))
+        }
         // Orchestrator max_retries: step 1
-        (6, 3) => {
+        (6, 5) => {
             let current = config
                 .agent
                 .as_ref()

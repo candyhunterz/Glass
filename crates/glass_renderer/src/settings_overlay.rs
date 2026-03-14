@@ -95,6 +95,8 @@ pub struct SettingsConfigSnapshot {
     // Orchestrator
     pub orchestrator_enabled: bool,
     pub orchestrator_silence_secs: u64,
+    pub orchestrator_fast_trigger_secs: u64,
+    pub orchestrator_prompt_pattern: String,
     pub orchestrator_prd_path: String,
     pub orchestrator_max_retries: u32,
 }
@@ -120,6 +122,8 @@ impl Default for SettingsConfigSnapshot {
             history_max_output_kb: 50,
             orchestrator_enabled: false,
             orchestrator_silence_secs: 30,
+            orchestrator_fast_trigger_secs: 5,
+            orchestrator_prompt_pattern: String::new(),
             orchestrator_prd_path: "PRD.md".to_string(),
             orchestrator_max_retries: 3,
         }
@@ -896,6 +900,20 @@ impl SettingsOverlayRenderer {
                 (
                     "Silence Timeout (sec)",
                     format!("{}", config.orchestrator_silence_secs),
+                    false,
+                ),
+                (
+                    "Fast Trigger (sec)",
+                    format!("{}", config.orchestrator_fast_trigger_secs),
+                    false,
+                ),
+                (
+                    "Prompt Pattern",
+                    if config.orchestrator_prompt_pattern.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        config.orchestrator_prompt_pattern.clone()
+                    },
                     false,
                 ),
                 ("PRD Path", config.orchestrator_prd_path.clone(), false),
