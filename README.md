@@ -32,7 +32,7 @@ A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal ter
 | AI context | Compressed structured output, diff-aware, token-budgeted | Raw scrollback dump |
 | Agent terminal control | glass_tab_create/send/output -- full tab orchestration | None |
 | Token efficiency | glass_cache_check, glass_command_diff, glass_compressed_context | None |
-| Multi-agent coordination | Shared SQLite, advisory locks (atomic all-or-nothing), messaging | None |
+| Multi-agent coordination | Shared SQLite, advisory locks (atomic all-or-nothing), messaging, activity stream | None |
 | Structured output | 12 format parsers (cargo, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines, ...) | None |
 | Agent mode | Background Claude CLI runtime, approval UI, budget cap, worktree isolation | None |
 
@@ -109,12 +109,21 @@ Code changes are isolated in git worktrees with SQLite crash recovery. A non-blo
 - Full [agent] config: permission matrix, quiet rules, hot-reload, graceful degradation when Claude CLI is absent
 - Coordination lock integration
 
+**Activity Stream -- new in v3.1**
+- Real-time coordination event log (agent registrations, lock acquisitions, conflicts, messages)
+- Two-line contextual status bar with agent activity summary and ticker
+- Fullscreen overlay (Ctrl+Shift+G) with agent cards, event timeline, and category filters
+- Agent Mode observation events (command_seen, output_parsed, error_noticed, proposing, dismissed)
+- Command context events from OSC 133 boundaries (started, finished with exit code and duration)
+- Scroll, filter by category (All/Agents/Locks/Observations/Messages), toggle verbose mode
+
 **Multi-agent coordination**
 - Shared SQLite database (~/.glass/agents.db) in WAL mode
 - Agent registry scoped by project root
 - Advisory file locks (atomic all-or-nothing)
 - Inter-agent messaging (directed and broadcast)
 - Agent status tracking
+- Coordination event log for activity stream UI
 
 **MCP server**
 - 31 tools covering history, context, undo, diffs, pipes, tab orchestration, token saving, error extraction, live awareness, SOI query, coordination, and health
@@ -220,6 +229,7 @@ Glass auto-injects shell integration into your running shell. Command blocks app
 | Action | Windows / Linux | macOS |
 |---|---|---|
 | Open review overlay | Ctrl+Shift+A | Cmd+Shift+A |
+| Open activity stream | Ctrl+Shift+G | Cmd+Shift+G |
 
 ---
 

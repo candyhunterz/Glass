@@ -19,6 +19,7 @@
 - [Command Blocks](./features/blocks.md)
 - [Structured Output Intelligence](./features/soi.md)
 - [Agent Mode](./features/agent-mode.md)
+- [Activity Stream](./features/activity-stream.md)
 - [Search](./features/search.md)
 - [Undo](./features/undo.md)
 - [Pipe Inspection](./features/pipes.md)

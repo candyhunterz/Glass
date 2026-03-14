@@ -96,5 +96,13 @@ The Glass status bar displays live coordination state when agents are active:
 
 - **Agent count**: shows the number of agents currently registered on the project.
 - **Lock count**: shows the total number of advisory file locks currently held across all agents.
+- **Two-line status bar**: when agents are active, the status bar expands to show a compact agent activity summary with names, statuses, tasks, and lock counts. A ticker briefly surfaces the most recent coordination event.
 - **Tab lock indicators**: tabs that have agents holding locks display a lock indicator in the tab bar.
 - **Conflict warning overlay**: when an agent fails to acquire a lock due to a conflict, Glass surfaces a brief overlay in the terminal identifying the conflicting agent and the files involved, so the human operator is aware of coordination activity.
+- **Activity stream overlay**: press Ctrl+Shift+G to open a fullscreen overlay showing agent cards (left column) and a scrollable event timeline (right column). See [Activity Stream](./features/activity-stream.md) for details.
+
+## Coordination Event Log
+
+Every coordination action — agent registration, lock acquisition, conflict, message send, status update — is recorded as a `CoordinationEvent` in the `coordination_events` table of `~/.glass/agents.db`. These events power the activity stream UI and are automatically pruned to the most recent 1000 entries per project.
+
+Lock conflicts are stored as pinned events so they remain visible in the activity stream until explicitly dismissed.
