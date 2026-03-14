@@ -136,6 +136,18 @@ pub struct OrchestratorSection {
     /// Optional regex pattern to detect the agent's prompt for instant triggering.
     #[serde(default)]
     pub agent_prompt_pattern: Option<String>,
+    /// Verification mode: "floor" (default) or "disabled".
+    #[serde(default = "default_orch_verify_mode")]
+    pub verify_mode: String,
+    /// Optional user-override verification command. Overrides auto-detect + agent discovery.
+    #[serde(default)]
+    pub verify_command: Option<String>,
+    /// File path (relative to CWD) that triggers orchestrator when created. Default ".glass/done".
+    #[serde(default = "default_orch_completion_artifact")]
+    pub completion_artifact: String,
+    /// Maximum iterations before checkpoint-stop. None = unlimited.
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
 }
 
 fn default_orch_silence_timeout() -> u64 {
@@ -152,6 +164,12 @@ fn default_orch_max_retries() -> u32 {
 }
 fn default_orch_fast_trigger() -> u64 {
     5
+}
+fn default_orch_verify_mode() -> String {
+    "floor".to_string()
+}
+fn default_orch_completion_artifact() -> String {
+    ".glass/done".to_string()
 }
 
 fn default_agent_max_budget_usd() -> f64 {
@@ -887,6 +905,33 @@ agent_prompt_pattern = "^❯""#;
         let orch = config.agent.unwrap().orchestrator.unwrap();
         assert_eq!(orch.fast_trigger_secs, 3);
         assert_eq!(orch.agent_prompt_pattern.as_deref(), Some("^❯"));
+    }
+
+    #[test]
+    fn test_orchestrator_v2_fields_defaults() {
+        let toml = "[agent.orchestrator]\nenabled = true";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.verify_mode, "floor");
+        assert!(orch.verify_command.is_none());
+        assert_eq!(orch.completion_artifact, ".glass/done");
+        assert!(orch.max_iterations.is_none());
+    }
+
+    #[test]
+    fn test_orchestrator_v2_fields_custom() {
+        let toml = r#"[agent.orchestrator]
+enabled = true
+verify_mode = "disabled"
+verify_command = "cargo test"
+completion_artifact = ".build/complete"
+max_iterations = 25"#;
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.verify_mode, "disabled");
+        assert_eq!(orch.verify_command.as_deref(), Some("cargo test"));
+        assert_eq!(orch.completion_artifact, ".build/complete");
+        assert_eq!(orch.max_iterations, Some(25));
     }
 
     #[test]
