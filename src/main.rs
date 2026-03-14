@@ -3253,7 +3253,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     tracing::info!("Orchestrator: enabled by user");
                                     self.orchestrator.reset_stuck();
                                     self.orchestrator.iterations_since_checkpoint = 0;
-                                    self.orchestrator.iteration = 0;
+                                    self.orchestrator.bounded_stop_pending = false;
+                                    self.orchestrator.max_iterations = self
+                                        .config
+                                        .agent
+                                        .as_ref()
+                                        .and_then(|a| a.orchestrator.as_ref())
+                                        .and_then(|o| o.max_iterations);
 
                                     // Fix #1: Respawn agent with fresh system prompt
                                     // using the terminal's current CWD (not Glass's CWD)
@@ -5698,6 +5704,45 @@ impl ApplicationHandler<AppEvent> for Processor {
                 self.orchestrator.iteration += 1;
                 self.orchestrator.iterations_since_checkpoint += 1;
 
+                // Check bounded iteration limit
+                if self.orchestrator.should_stop_bounded()
+                    && !self.orchestrator.bounded_stop_pending
+                {
+                    self.orchestrator.bounded_stop_pending = true;
+                    tracing::info!(
+                        "Orchestrator: bounded limit reached at iteration {}",
+                        self.orchestrator.iteration
+                    );
+                    let cwd = self.get_focused_cwd();
+                    let cp_path = orchestrator::checkpoint_path(
+                        &cwd,
+                        self.config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.checkpoint_path.as_str()),
+                    );
+                    let cp_mtime = orchestrator::file_mtime(&cp_path);
+                    self.orchestrator
+                        .begin_checkpoint("bounded limit reached", "N/A", cp_mtime);
+
+                    // Send checkpoint request to agent
+                    if let Some(ctx) = self.windows.values().next() {
+                        if let Some(session) = ctx.session_mux.focused_session() {
+                            let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
+                            let bytes = msg.as_bytes().to_vec();
+                            let _ = session
+                                .pty_sender
+                                .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            self.orchestrator.mark_pty_write();
+                        }
+                    }
+                    for ctx in self.windows.values() {
+                        ctx.window.request_redraw();
+                    }
+                    return;
+                }
+
                 // Fix #2: Auto-checkpoint after N iterations to prevent context exhaustion
                 if self.orchestrator.should_auto_checkpoint()
                     && !matches!(parsed, orchestrator::AgentResponse::Checkpoint { .. })
@@ -5978,6 +6023,69 @@ impl ApplicationHandler<AppEvent> for Processor {
                             content.push_str(&format!("\nRECENT GIT HISTORY:\n{}\n", log.trim()));
                         }
                         content.push_str(&format!("\nTERMINAL_CONTEXT:\n{}\n", terminal_context));
+
+                        // Handle bounded stop BEFORE respawning the agent
+                        if self.orchestrator.bounded_stop_pending {
+                            self.orchestrator.checkpoint_phase =
+                                orchestrator::CheckpointPhase::Idle;
+                            self.orchestrator.reset_stuck();
+
+                            let cp_path_resolved = orchestrator::checkpoint_path(
+                                &cwd,
+                                self.config
+                                    .agent
+                                    .as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.checkpoint_path.as_str()),
+                            );
+                            let summary = orchestrator::build_bounded_summary(
+                                self.orchestrator.iteration,
+                                self.orchestrator.metric_baseline.as_ref(),
+                                &cp_path_resolved.to_string_lossy(),
+                            );
+
+                            // Write summary to terminal
+                            if let Some(ctx) = self.windows.values().next() {
+                                if let Some(session) = ctx.session_mux.focused_session() {
+                                    let bytes = format!("\r\n{summary}\r\n").into_bytes();
+                                    let _ = session
+                                        .pty_sender
+                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                }
+                            }
+
+                            // Log to iterations.tsv
+                            let log_cwd = self.get_focused_cwd();
+                            orchestrator::append_iteration_log(
+                                &log_cwd,
+                                self.orchestrator.iteration,
+                                "bounded-stop",
+                                "complete",
+                                &format!(
+                                    "Bounded run complete ({} iterations)",
+                                    self.orchestrator.iteration
+                                ),
+                            );
+
+                            // Deactivate orchestrator
+                            self.orchestrator.active = false;
+                            self.orchestrator.bounded_stop_pending = false;
+
+                            // Stop artifact watcher
+                            if let Some(handle) = self.artifact_watcher_thread.take() {
+                                handle.thread().unpark();
+                                let _ = handle.join();
+                            }
+
+                            tracing::info!(
+                                "Orchestrator: bounded run complete after {} iterations",
+                                self.orchestrator.iteration
+                            );
+                            for ctx in self.windows.values() {
+                                ctx.window.request_redraw();
+                            }
+                            return;
+                        }
 
                         self.respawn_orchestrator_agent(&cwd, content);
                         self.orchestrator.checkpoint_phase = orchestrator::CheckpointPhase::Idle;
