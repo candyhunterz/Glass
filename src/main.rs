@@ -2960,6 +2960,63 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if self.orchestrator.active {
                                     tracing::info!("Orchestrator: enabled by user");
                                     self.orchestrator.reset_stuck();
+
+                                    // Immediately capture context and send to agent
+                                    // so it picks up where the user left off
+                                    if let Some(ref runtime) = self.agent_runtime {
+                                        if let Some(ref writer) = runtime.orchestrator_writer {
+                                            if let Some(session) = ctx.session_mux.focused_session() {
+                                                let lines = extract_term_lines(&session.term, 100);
+                                                let terminal_context = lines.join("\n");
+
+                                                // Check for handoff note
+                                                let cwd = session.status.cwd();
+                                                let handoff_path = std::path::Path::new(cwd)
+                                                    .join(".glass")
+                                                    .join("handoff.md");
+                                                let handoff_note = std::fs::read_to_string(&handoff_path).ok();
+                                                if handoff_note.is_some() {
+                                                    // Delete after reading (one-shot)
+                                                    let _ = std::fs::remove_file(&handoff_path);
+                                                }
+
+                                                // Also include recent git log for context
+                                                let git_log = std::process::Command::new("git")
+                                                    .args(["log", "--oneline", "-10"])
+                                                    .current_dir(cwd)
+                                                    .output()
+                                                    .ok()
+                                                    .and_then(|o| if o.status.success() {
+                                                        String::from_utf8(o.stdout).ok()
+                                                    } else {
+                                                        None
+                                                    });
+
+                                                let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
+                                                if let Some(note) = handoff_note {
+                                                    content.push_str(&format!("\nUSER INSTRUCTIONS:\n{}\n", note));
+                                                }
+                                                if let Some(log) = git_log {
+                                                    content.push_str(&format!("\nRECENT GIT HISTORY:\n{}\n", log.trim()));
+                                                }
+                                                content.push_str(&format!("\nTERMINAL CONTEXT (last 100 lines):\n{}\n", terminal_context));
+
+                                                let msg = serde_json::json!({
+                                                    "type": "user",
+                                                    "message": {
+                                                        "role": "user",
+                                                        "content": content
+                                                    }
+                                                }).to_string();
+
+                                                if let Ok(mut w) = writer.lock() {
+                                                    let _ = writeln!(w, "{msg}");
+                                                    let _ = w.flush();
+                                                }
+                                                tracing::info!("Orchestrator: sent handoff context to agent");
+                                            }
+                                        }
+                                    }
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
                                 }
