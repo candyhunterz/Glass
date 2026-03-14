@@ -709,12 +709,17 @@ fn try_spawn_agent(
     use std::process::{Command, Stdio};
 
     // Check if claude binary is available
-    let claude_available = Command::new("claude")
+    let mut version_cmd = Command::new("claude");
+    version_cmd
         .arg("--version")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok();
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        version_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let claude_available = version_cmd.status().is_ok();
 
     if !claude_available {
         tracing::warn!(
