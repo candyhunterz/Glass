@@ -11,6 +11,7 @@ pub mod input;
 pub mod osc_scanner;
 pub mod output_capture;
 pub mod pty;
+pub mod silence;
 pub mod status;
 
 pub use block_manager::{

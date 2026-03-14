@@ -282,14 +282,12 @@ fn glass_pty_loop(
     let mut interest = PollingEvent::readable(0);
     let mut output_buffer = OutputBuffer::new((max_output_capture_kb as usize) * 1024);
 
-    // Orchestrator silence detection
-    let mut last_output_at = Instant::now();
-    let silence_threshold = if orchestrator_silence_secs > 0 {
-        Some(std::time::Duration::from_secs(orchestrator_silence_secs))
+    // Orchestrator silence detection (periodic, not one-shot)
+    let mut silence_tracker = if orchestrator_silence_secs > 0 {
+        Some(crate::silence::SilenceTracker::new(orchestrator_silence_secs))
     } else {
         None
     };
-    let mut silence_fired = false;
 
     'event_loop: loop {
         // Handle synchronized update timeout.
@@ -298,11 +296,9 @@ fn glass_pty_loop(
             .sync_timeout()
             .map(|st| st.saturating_duration_since(Instant::now()));
 
-        // Cap poll timeout to silence threshold for periodic checks.
-        if let Some(threshold) = silence_threshold {
-            let remaining = threshold.saturating_sub(last_output_at.elapsed());
-            // Use at least 1 second to avoid busy-looping
-            let silence_timeout = remaining.max(std::time::Duration::from_secs(1));
+        // Cap poll timeout to silence tracker's next check time.
+        if let Some(ref mut tracker) = silence_tracker {
+            let silence_timeout = tracker.poll_timeout();
             timeout = Some(match timeout {
                 Some(t) => t.min(silence_timeout),
                 None => silence_timeout,
@@ -390,8 +386,9 @@ fn glass_pty_loop(
                             break 'event_loop;
                         }
                         // Reset silence timer on new output
-                        last_output_at = Instant::now();
-                        silence_fired = false;
+                        if let Some(ref mut tracker) = silence_tracker {
+                            tracker.on_output();
+                        }
                     }
 
                     if event.writable {
@@ -405,10 +402,9 @@ fn glass_pty_loop(
             }
         }
 
-        // Orchestrator silence detection
-        if let Some(threshold) = silence_threshold {
-            if !silence_fired && last_output_at.elapsed() >= threshold {
-                silence_fired = true;
+        // Orchestrator silence detection (fires periodically while quiet)
+        if let Some(ref mut tracker) = silence_tracker {
+            if tracker.should_fire() {
                 let _ = app_proxy.send_event(AppEvent::OrchestratorSilence {
                     window_id,
                     session_id: event_proxy.session_id(),
