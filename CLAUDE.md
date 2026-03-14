@@ -20,6 +20,7 @@ crates/glass_coordination/ - Multi-agent coordination: agent registry, advisory 
 ```
 
 ## Key Design Decisions
+- **Orchestrator**: Silence-triggered feedback loop between Glass Agent (reviewer) and Claude Code (implementer). State machine in `src/orchestrator.rs`, event handling in `src/main.rs`, silence detection via `SilenceTracker` in `crates/glass_terminal/src/silence.rs`. Checkpoint cycle kills/respawns agent with fresh context.
 - **VTE layer**: Embeds `alacritty_terminal` crate (pinned =0.25.1) — we don't rewrite terminal emulation
 - **Shell integration**: OSC 133 sequences injected into bash/zsh/fish/PowerShell for command boundary detection
 - **Rendering**: wgpu + glyphon for GPU text rendering, custom block-based UI on top of terminal grid
@@ -37,6 +38,9 @@ crates/glass_coordination/ - Multi-agent coordination: agent registry, advisory 
 - `crates/glass_snapshot/src/undo.rs` - File restoration from snapshots
 - `crates/glass_mux/src/session_mux.rs` - Tab/pane management
 - `crates/glass_mux/src/split_tree.rs` - Binary tree pane layout
+- `src/orchestrator.rs` - Orchestrator state machine, response parsing, checkpoint cycle, stuck detection, iteration logging
+- `src/usage_tracker.rs` - OAuth usage polling, auto-pause/hard-stop thresholds
+- `crates/glass_terminal/src/silence.rs` - Periodic silence detection for orchestrator polling
 
 ## Tech Stack
 - Rust 2021 edition, Tokio async runtime

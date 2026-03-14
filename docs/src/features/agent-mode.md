@@ -121,3 +121,9 @@ agent mode disabled: claude CLI not found — install from https://claude.ai/dow
 ```
 
 No other configuration is required. Glass manages the subprocess lifecycle, worktree cleanup, and session storage automatically.
+
+---
+
+## See Also
+
+- [Orchestrator Mode](./orchestrator.md) — autonomous project execution using Agent Mode as the foundation

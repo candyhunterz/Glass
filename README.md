@@ -14,6 +14,7 @@ A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal ter
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
+- [Orchestrator Mode](#orchestrator-mode)
 - [Multi-Agent Coordination](#multi-agent-coordination)
 - [MCP Tools](#mcp-tools)
 - [Architecture](#architecture)
@@ -35,6 +36,7 @@ A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal ter
 | Multi-agent coordination | Shared SQLite, advisory locks (atomic all-or-nothing), messaging, activity stream | None |
 | Structured output | 12 format parsers (cargo, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines, ...) | None |
 | Agent mode | Background Claude CLI runtime, approval UI, budget cap, worktree isolation | None |
+| Orchestrator | Autonomous project builder from PRD, overnight runs, checkpoint/resume | None |
 
 ---
 
@@ -57,6 +59,16 @@ Structured Output Intelligence (SOI) auto-parses every completed command using 1
 An optional background Claude CLI runtime that watches the activity stream and can propose or execute actions. Three modes: Watch (observe only), Assist (propose with approval), Autonomous (execute within permission matrix). Actions are gated by a configurable permission matrix -- edit_files, run_commands, and git_operations each set to `approve`, `auto`, or `never`. A $1.00 default budget cap and 30-second cooldown between proposals prevent runaway spend.
 
 Code changes are isolated in git worktrees with SQLite crash recovery. A non-blocking approval UI (toast notifications + Ctrl+Shift+A review overlay) keeps humans in the loop. Session continuity is maintained via structured handoff summaries across context resets. The activity stream feeds compressed SOI data to the agent runtime with noise filtering and rate limiting.
+
+### Orchestrator Mode
+
+An autonomous project execution engine that pairs a Glass Agent (reviewer/guide) with Claude Code (implementer) to build entire projects from a PRD or continue work you've started. Press Ctrl+Shift+O to enable.
+
+**Two primary workflows:**
+- **Fresh project**: Write a PRD.md, open Glass, press Ctrl+Shift+O. The orchestrator drives Claude Code through the plan, checkpointing progress and refreshing context automatically.
+- **Mid-work handoff**: Write `.glass/handoff.md` describing what needs finishing, press Ctrl+Shift+O, walk away. The orchestrator picks up from your terminal context and git history.
+
+The orchestrator monitors PTY silence to detect when Claude Code finishes working, sends terminal context to the Glass Agent for review, and types the agent's instructions back into the terminal. A checkpoint cycle kills and respawns the agent with fresh context every few features (or every 15 iterations). Stuck detection, crash recovery, and OAuth usage tracking with auto-pause keep overnight runs safe.
 
 ---
 
@@ -108,6 +120,18 @@ Code changes are isolated in git worktrees with SQLite crash recovery. A non-blo
 - Session continuity with structured handoff summaries across context resets
 - Full [agent] config: permission matrix, quiet rules, hot-reload, graceful degradation when Claude CLI is absent
 - Coordination lock integration
+
+**Orchestrator Mode -- new in v3.2**
+- Autonomous project execution from PRD.md (Ctrl+Shift+O)
+- Mid-work handoff via .glass/handoff.md
+- Silence-triggered feedback loop between Glass Agent (reviewer) and Claude Code (implementer)
+- Periodic checkpoint cycle with agent respawn for context refresh
+- Stuck detection (3 identical responses triggers recovery)
+- Crash recovery with automatic Claude Code restart and context injection
+- OAuth usage tracking with auto-pause at 80% and hard stop at 95%
+- Course correction via .glass/nudge.md while running
+- Iteration logging to .glass/iterations.tsv
+- Emergency checkpoint on usage hard stop
 
 **Activity Stream -- new in v3.1**
 - Real-time coordination event log (agent registrations, lock acquisitions, conflicts, messages)
@@ -239,6 +263,7 @@ Glass auto-injects shell integration into your running shell. Command blocks app
 | Settings | Ctrl+Shift+, | Cmd+Shift+, |
 | Review proposals | Ctrl+Shift+A | Cmd+Shift+A |
 | Activity stream | Ctrl+Shift+G | Cmd+Shift+G |
+| Toggle orchestrator | Ctrl+Shift+O | Cmd+Shift+O |
 
 ---
 
@@ -301,6 +326,18 @@ git_operations = "approve"
 ignore_patterns = ["*.log", "node_modules/**"]
 # Do not surface commands that exit zero and produce no output
 ignore_exit_zero = false
+
+[agent.orchestrator]
+# Enable orchestrator mode (toggled at runtime with Ctrl+Shift+O)
+enabled = false
+# Seconds of PTY silence before sending context to the agent
+silence_timeout_secs = 30
+# Path to the project requirements document
+prd_path = "PRD.md"
+# Path to the checkpoint file (for context refresh)
+checkpoint_path = ".glass/checkpoint.md"
+# Identical responses before stuck detection triggers
+max_retries_before_stuck = 3
 ```
 
 Default fonts: Consolas (Windows), Menlo (macOS), Monospace (Linux).
@@ -329,6 +366,69 @@ glass history list --exit 1
 glass history list
 glass undo 42
 ```
+
+---
+
+## Orchestrator Mode
+
+The orchestrator drives autonomous project development by pairing two AI agents: Claude Code (the implementer, running in the PTY) and the Glass Agent (the reviewer/guide, running as a background subprocess). Glass manages the feedback loop between them.
+
+### How It Works
+
+1. **Silence detection**: Glass monitors the PTY for periods of inactivity (default 30 seconds). When Claude Code finishes working and the terminal goes quiet, Glass captures the last 100 lines of output.
+2. **Agent review**: The captured context is sent to the Glass Agent, which reviews what happened and decides the next step.
+3. **Agent response**: The Glass Agent responds with one of four actions:
+   - **Text** — typed into the terminal as instructions for Claude Code
+   - **GLASS_WAIT** — Claude Code is still working, check again later
+   - **GLASS_CHECKPOINT** — feature complete, trigger a context refresh cycle
+   - **GLASS_DONE** — all PRD items are complete, stop orchestration
+4. **Loop**: Steps 1-3 repeat until the project is complete or the orchestrator is paused.
+
+### Workflows
+
+**Fresh project from PRD:**
+1. Write `PRD.md` in your project root with the full project plan
+2. Open Glass in the project directory
+3. Start Claude Code: `claude --dangerously-skip-permissions`
+4. Press Ctrl+Shift+O to enable orchestration
+5. The orchestrator reads the PRD, builds a system prompt for the Glass Agent, and starts the feedback loop
+
+**Mid-work handoff:**
+1. Write `.glass/handoff.md` with instructions for what to finish
+2. Press Ctrl+Shift+O
+3. The orchestrator captures your terminal context, git history, and handoff note, then starts driving Claude Code
+
+**Course correction while running:**
+- Write `.glass/nudge.md` with new instructions. The orchestrator picks it up on the next silence cycle and injects it as a `[USER_NUDGE]`.
+
+### Checkpoint Cycle
+
+Context refresh prevents the Glass Agent from hitting its context limit during long runs:
+
+- After a `GLASS_CHECKPOINT` signal (or every 15 iterations automatically), Glass tells Claude Code to commit and write `.glass/checkpoint.md`
+- Glass polls the checkpoint file for updates. Once written (or after a 180-second timeout), the Glass Agent subprocess is killed and respawned with a fresh system prompt containing the updated checkpoint
+- The new agent picks up exactly where the previous one left off
+
+### Safety Features
+
+| Feature | Description |
+|---|---|
+| Stuck detection | After 3 identical responses, the orchestrator tells Claude Code to stash changes and try a different approach |
+| Crash recovery | If Claude Code exits unexpectedly, Glass restarts it with `-p "Read .glass/checkpoint.md and continue"` |
+| Usage tracking | Polls Anthropic OAuth usage API every 60 seconds. Auto-pause at 80%, hard stop at 95% with emergency checkpoint |
+| User typing | Any keyboard input while orchestrating auto-disables the orchestrator |
+| Grace period | 10-second window after orchestrator PTY writes prevents false crash recovery triggers |
+| Backpressure | Context sends are gated on pending response to prevent overlapping messages |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `PRD.md` | Project requirements document (configurable path) |
+| `.glass/checkpoint.md` | Current progress checkpoint (written by Claude Code, read by orchestrator) |
+| `.glass/handoff.md` | User instructions for mid-work handoff (read on enable, deleted after) |
+| `.glass/nudge.md` | Course correction while running (read on next silence, deleted after) |
+| `.glass/iterations.tsv` | Iteration log (TSV: iteration, commit, feature, metric, status, description) |
 
 ---
 
