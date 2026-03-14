@@ -377,6 +377,7 @@ pub fn build_agent_command_args(
 ) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
+        "--verbose".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--input-format".to_string(),
