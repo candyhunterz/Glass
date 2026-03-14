@@ -358,6 +358,10 @@ pub struct OrchestratorState {
     pub metric_baseline: Option<MetricBaseline>,
     /// Git commit SHA at the start of the current iteration (for revert).
     pub last_good_commit: Option<String>,
+    /// Maximum iterations before checkpoint-stop. None or Some(0) = unlimited.
+    pub max_iterations: Option<u32>,
+    /// Whether bounded stop has been triggered (deactivate after checkpoint completes).
+    pub bounded_stop_pending: bool,
 }
 
 impl OrchestratorState {
@@ -377,6 +381,8 @@ impl OrchestratorState {
             fingerprint_stuck: false,
             metric_baseline: None,
             last_good_commit: None,
+            max_iterations: None,
+            bounded_stop_pending: false,
         }
     }
 
@@ -453,6 +459,15 @@ impl OrchestratorState {
             started_at: std::time::Instant::now(),
             last_mtime: checkpoint_mtime,
         };
+    }
+
+    /// Check if the bounded iteration limit has been reached.
+    /// Returns false when max_iterations is None or Some(0) (unlimited).
+    pub fn should_stop_bounded(&self) -> bool {
+        self.max_iterations
+            .filter(|&max| max > 0)
+            .map(|max| self.iteration >= max)
+            .unwrap_or(false)
     }
 }
 
@@ -642,6 +657,42 @@ pub fn checkpoint_changed(path: &std::path::Path, baseline: Option<std::time::Sy
         (Some(old), Some(new)) => new > old,
         _ => false,
     }
+}
+
+/// Build the summary string for a bounded run completion.
+pub fn build_bounded_summary(
+    iterations: u32,
+    metric_baseline: Option<&MetricBaseline>,
+    checkpoint_path: &str,
+) -> String {
+    let mut summary = format!(
+        "[GLASS_ORCHESTRATOR] Bounded run complete ({iterations}/{iterations} iterations)\n"
+    );
+
+    if let Some(baseline) = metric_baseline {
+        if !baseline.commands.is_empty() {
+            summary.push_str(&format!(
+                "  Metric guard: {} kept, {} reverted\n",
+                baseline.keep_count, baseline.revert_count
+            ));
+            // Show test counts from first command if available
+            if let (Some(b), Some(c)) = (
+                baseline.baseline_results.first(),
+                baseline.last_results.first(),
+            ) {
+                if let (Some(bp), Some(cp)) = (b.tests_passed, c.tests_passed) {
+                    summary.push_str(&format!(
+                        "  Baseline: {} tests \u{2192} Current: {} tests\n",
+                        bp, cp
+                    ));
+                }
+            }
+        }
+    }
+
+    summary.push_str(&format!("  Last checkpoint: {checkpoint_path}\n"));
+    summary.push_str("  To resume: enable orchestrator (Ctrl+Shift+O)\n");
+    summary
 }
 
 #[cfg(test)]
@@ -1010,5 +1061,69 @@ mod tests {
             }
             other => panic!("Expected Verify, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn bounded_stop_when_limit_reached() {
+        let mut state = OrchestratorState::new(3);
+        state.max_iterations = Some(10);
+        state.iteration = 9;
+        assert!(!state.should_stop_bounded());
+        state.iteration = 10;
+        assert!(state.should_stop_bounded());
+    }
+
+    #[test]
+    fn bounded_stop_unlimited() {
+        let mut state = OrchestratorState::new(3);
+        state.max_iterations = None;
+        state.iteration = 1000;
+        assert!(!state.should_stop_bounded());
+    }
+
+    #[test]
+    fn bounded_stop_zero_means_unlimited() {
+        let mut state = OrchestratorState::new(3);
+        state.max_iterations = Some(0);
+        assert!(!state.should_stop_bounded());
+    }
+
+    #[test]
+    fn summary_with_metric_guard() {
+        let mut baseline = MetricBaseline::new();
+        baseline.commands = vec![VerifyCommand {
+            name: "cargo test".to_string(),
+            cmd: "cargo test".to_string(),
+        }];
+        baseline.keep_count = 12;
+        baseline.revert_count = 3;
+        baseline.baseline_results = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(45),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        baseline.last_results = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(52),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let summary = build_bounded_summary(25, Some(&baseline), ".glass/checkpoint.md");
+        assert!(summary.contains("25/25"));
+        assert!(summary.contains("12 kept"));
+        assert!(summary.contains("3 reverted"));
+        assert!(summary.contains("45"));
+        assert!(summary.contains("52"));
+    }
+
+    #[test]
+    fn summary_without_metric_guard() {
+        let summary = build_bounded_summary(10, None, ".glass/checkpoint.md");
+        assert!(summary.contains("10/10"));
+        assert!(!summary.contains("Metric guard"));
+        assert!(summary.contains("checkpoint"));
     }
 }
