@@ -446,12 +446,23 @@ pub fn update_config_field(
         .unwrap_or(toml::Value::String(value.to_string()));
 
     if let Some(section_name) = section {
-        let section_table = table
-            .entry(section_name)
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-        if let Some(t) = section_table.as_table_mut() {
-            t.insert(key.to_string(), parsed_value);
+        // Traverse dotted section names (e.g., "agent.orchestrator" -> agent -> orchestrator)
+        let parts: Vec<&str> = section_name.split('.').collect();
+        let mut current = table as &mut toml::map::Map<String, toml::Value>;
+        for part in &parts {
+            let entry = current
+                .entry(part.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            current = entry
+                .as_table_mut()
+                .ok_or_else(|| ConfigError {
+                    message: format!("Config section '{part}' is not a table"),
+                    line: None,
+                    column: None,
+                    snippet: None,
+                })?;
         }
+        current.insert(key.to_string(), parsed_value);
     } else {
         table.insert(key.to_string(), parsed_value);
     }
@@ -876,5 +887,19 @@ agent_prompt_pattern = "^❯""#;
         let orch = config.agent.unwrap().orchestrator.unwrap();
         assert_eq!(orch.fast_trigger_secs, 3);
         assert_eq!(orch.agent_prompt_pattern.as_deref(), Some("^❯"));
+    }
+
+    #[test]
+    fn test_update_config_field_dotted_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[agent.orchestrator]\nenabled = true\n").unwrap();
+
+        update_config_field(&path, Some("agent.orchestrator"), "silence_timeout_secs", "15").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.silence_timeout_secs, 15);
     }
 }
