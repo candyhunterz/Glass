@@ -134,6 +134,21 @@ impl BlockRenderer {
             if let Some(exit_code) = block.exit_code {
                 let badge_width = self.cell_width * 3.0;
                 let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH;
+
+                // Dark background behind entire right-side decoration cluster
+                // so labels are readable over terminal content.
+                let cluster_width = self.decoration_cluster_width(block);
+                let cluster_x = viewport_width - cluster_width - SCROLLBAR_WIDTH;
+                rects.push(RectInstance {
+                    pos: [
+                        cluster_x,
+                        y,
+                        cluster_width + SCROLLBAR_WIDTH,
+                        self.cell_height,
+                    ],
+                    color: [0.05, 0.05, 0.08, 0.85],
+                });
+
                 let badge_color = if exit_code == 0 {
                     // Green for success
                     [40.0 / 255.0, 160.0 / 255.0, 40.0 / 255.0, 1.0]
@@ -254,13 +269,23 @@ impl BlockRenderer {
                 });
             }
 
-            // SOI summary label — left-anchored, severity-colored
+            // SOI summary label — left-anchored, severity-colored, truncated to avoid decorations
             if block.state == BlockState::Complete {
                 if let Some(ref soi_text) = block.soi_summary {
+                    let soi_x = self.cell_width * 1.0;
+                    let cluster_width = self.decoration_cluster_width(block);
+                    let max_soi_width =
+                        viewport_width - SCROLLBAR_WIDTH - cluster_width - soi_x - self.cell_width;
+                    let max_chars = (max_soi_width / self.cell_width).floor() as usize;
+                    let truncated = if soi_text.len() > max_chars && max_chars > 3 {
+                        format!("{}...", &soi_text[..max_chars - 3])
+                    } else {
+                        soi_text.clone()
+                    };
                     labels.push(BlockLabel {
-                        x: self.cell_width * 1.0,
+                        x: soi_x,
                         y,
-                        text: soi_text.clone(),
+                        text: truncated,
                         color: soi_color_for_severity(block.soi_severity.as_deref()),
                     });
                 }
@@ -268,6 +293,26 @@ impl BlockRenderer {
         }
 
         labels
+    }
+
+    /// Calculate the total width of the right-side decoration cluster for a block.
+    /// Includes badge (3 cells) + optional duration + optional [undo] + gaps.
+    fn decoration_cluster_width(&self, block: &Block) -> f32 {
+        let badge_width = self.cell_width * 3.0;
+        let mut width = badge_width;
+
+        if let Some(duration) = block.duration() {
+            let duration_text = glass_terminal::format_duration(duration);
+            let duration_width = duration_text.len() as f32 * self.cell_width;
+            width += duration_width + self.cell_width; // duration + gap
+        }
+
+        if block.has_snapshot && block.state == BlockState::Complete {
+            let undo_width = "[undo]".len() as f32 * self.cell_width;
+            width += undo_width + self.cell_width; // [undo] + gap
+        }
+
+        width
     }
 
     /// Build colored rectangles for pipeline stage panel at the bottom of viewport.
