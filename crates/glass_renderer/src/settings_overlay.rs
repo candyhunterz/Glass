@@ -266,6 +266,10 @@ const SHORTCUT_DATA: &[ShortcutCategory] = &[
                 action: "Reject proposal",
                 keys: "Ctrl+Shift+N",
             },
+            ShortcutEntry {
+                action: "Toggle orchestrator",
+                keys: "Ctrl+Shift+O",
+            },
         ],
     },
 ];
