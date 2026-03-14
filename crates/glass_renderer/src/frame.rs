@@ -193,6 +193,7 @@ impl FrameRenderer {
         proposal_toast: Option<&ProposalToastRenderData>,
         proposal_overlay: Option<&ProposalOverlayRenderData>,
         agent_activity_line: Option<&str>,
+        orchestrating: bool,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -243,9 +244,9 @@ impl FrameRenderer {
         // 1c. Append status bar background rect
         if status.is_some() {
             let status_rects = if two_line_status {
-                self.status_bar.build_status_rects_two_line(w, h)
+                self.status_bar.build_status_rects_two_line(w, h, orchestrating)
             } else {
-                self.status_bar.build_status_rects(w, h)
+                self.status_bar.build_status_rects(w, h, orchestrating)
             };
             rect_instances.extend(status_rects);
         }
@@ -1251,6 +1252,7 @@ impl FrameRenderer {
         proposal_toast: Option<&ProposalToastRenderData>,
         proposal_overlay: Option<&ProposalOverlayRenderData>,
         agent_activity_line: Option<&str>,
+        orchestrating: bool,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -1356,9 +1358,9 @@ impl FrameRenderer {
         // Status bar background rect
         if status.is_some() {
             let status_rects = if two_line_status {
-                self.status_bar.build_status_rects_two_line(w, h)
+                self.status_bar.build_status_rects_two_line(w, h, orchestrating)
             } else {
-                self.status_bar.build_status_rects(w, h)
+                self.status_bar.build_status_rects(w, h, orchestrating)
             };
             rect_instances.extend(status_rects);
         }

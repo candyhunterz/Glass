@@ -1765,6 +1765,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         proposal_toast_data.as_ref(),
                         proposal_overlay_data.as_ref(),
                         agent_activity_line.as_deref(),
+                        self.orchestrator.active,
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -2062,6 +2063,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         proposal_toast_data_mp.as_ref(),
                         proposal_overlay_data_mp.as_ref(),
                         agent_activity_line_mp.as_deref(),
+                        self.orchestrator.active,
                     );
                 }
 

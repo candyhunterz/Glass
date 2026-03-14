@@ -101,33 +101,60 @@ impl StatusBarRenderer {
     ///
     /// Returns a single full-width rect at the bottom of the viewport,
     /// 1 cell_height tall, slightly lighter than terminal background.
+    /// When `orchestrating` is true, adds a colored accent line at the top.
     pub fn build_status_rects(
         &self,
         viewport_width: f32,
         viewport_height: f32,
+        orchestrating: bool,
     ) -> Vec<RectInstance> {
         let y = viewport_height - self.cell_height;
-        vec![RectInstance {
+        let mut rects = vec![RectInstance {
             pos: [0.0, y, viewport_width, self.cell_height],
-            // Slightly lighter than terminal bg (26,26,26) -> (38,38,38)
-            color: [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0],
-        }]
+            color: if orchestrating {
+                // Dark teal tint when orchestrating
+                [15.0 / 255.0, 45.0 / 255.0, 40.0 / 255.0, 1.0]
+            } else {
+                [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0]
+            },
+        }];
+        if orchestrating {
+            // 2px accent line at top of status bar
+            rects.push(RectInstance {
+                pos: [0.0, y, viewport_width, 2.0],
+                color: [0.0, 200.0 / 255.0, 120.0 / 255.0, 1.0], // green accent
+            });
+        }
+        rects
     }
 
     /// Build status bar background rectangles for two-line mode.
     ///
     /// Returns a rect that is 2 * cell_height tall when agents are active.
+    /// When `orchestrating` is true, adds a colored accent line at the top.
     pub fn build_status_rects_two_line(
         &self,
         viewport_width: f32,
         viewport_height: f32,
+        orchestrating: bool,
     ) -> Vec<RectInstance> {
         let height = self.cell_height * 2.0;
         let y = viewport_height - height;
-        vec![RectInstance {
+        let mut rects = vec![RectInstance {
             pos: [0.0, y, viewport_width, height],
-            color: [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0],
-        }]
+            color: if orchestrating {
+                [15.0 / 255.0, 45.0 / 255.0, 40.0 / 255.0, 1.0]
+            } else {
+                [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0]
+            },
+        }];
+        if orchestrating {
+            rects.push(RectInstance {
+                pos: [0.0, y, viewport_width, 2.0],
+                color: [0.0, 200.0 / 255.0, 120.0 / 255.0, 1.0],
+            });
+        }
+        rects
     }
 
     /// Get the status bar height in pixels (1 or 2 lines).
