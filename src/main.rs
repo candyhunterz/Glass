@@ -1030,6 +1030,14 @@ Session Continuity:
                                 },
                             );
                         }
+                        // Route all assistant responses to the orchestrator
+                        if !full_text.is_empty() {
+                            let _ = proxy_reader.send_event(
+                                glass_core::event::AppEvent::OrchestratorResponse {
+                                    response: full_text.clone(),
+                                },
+                            );
+                        }
                     }
                     _ => {}
                 }
