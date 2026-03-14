@@ -4262,9 +4262,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::info!(
                                 "Orchestrator: shell prompt detected — Claude Code may have exited, restarting"
                             );
-                            let restart_msg =
-                                "claude --dangerously-skip-permissions\n";
-                            let bytes = restart_msg.as_bytes().to_vec();
+                            let cp_rel = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.checkpoint_path.as_str())
+                                .unwrap_or(".glass/checkpoint.md");
+                            let restart_msg = format!(
+                                "claude --dangerously-skip-permissions -p \"Read {} and continue the project from where you left off. Follow the iteration protocol: plan, implement, commit, verify, decide.\"\n",
+                                cp_rel,
+                            );
+                            let bytes = restart_msg.into_bytes();
                             let _ = session
                                 .pty_sender
                                 .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
@@ -5404,6 +5413,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                             // Log stuck iteration
                             orchestrator::append_iteration_log(
+                                &self.get_focused_cwd(),
                                 self.orchestrator.iteration,
                                 "stuck",
                                 "stuck",
@@ -5413,7 +5423,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             // Tell Claude Code to revert
                             if let Some(ctx) = self.windows.values().next() {
                                 if let Some(session) = ctx.session_mux.focused_session() {
-                                    let msg = "You've tried this approach multiple times without success. Revert to the last good commit with 'git revert HEAD' and try a different approach.\n";
+                                    let msg = "You've tried this same approach multiple times without making progress. STOP and take a different approach:\n1. If you have uncommitted changes, stash them: git stash\n2. Think about WHY the current approach isn't working\n3. Try a fundamentally different strategy, not a minor variation\n";
                                     let bytes = msg.as_bytes().to_vec();
                                     let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
                                 }
@@ -5443,6 +5453,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Log the checkpoint iteration
                         orchestrator::append_iteration_log(
+                            &self.get_focused_cwd(),
                             self.orchestrator.iteration,
                             &completed,
                             "checkpoint",
@@ -5464,6 +5475,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let _ = session
                                     .pty_sender
                                     .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                self.orchestrator.mark_pty_write();
                             }
                         }
                     }
@@ -5471,6 +5483,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         tracing::info!("Orchestrator: project complete — {}", summary);
 
                         orchestrator::append_iteration_log(
+                            &self.get_focused_cwd(),
                             self.orchestrator.iteration,
                             "done",
                             "complete",
@@ -5494,6 +5507,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let _ = session
                                     .pty_sender
                                     .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                self.orchestrator.mark_pty_write();
                             }
                         }
                     }

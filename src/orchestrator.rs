@@ -207,13 +207,14 @@ impl OrchestratorState {
 ///
 /// Format: iteration\tcommit\tfeature\tmetric\tstatus\tdescription
 pub fn append_iteration_log(
+    project_root: &str,
     iteration: u32,
     feature: &str,
     status: &str,
     description: &str,
 ) {
-    let glass_dir = std::path::Path::new(".glass");
-    let _ = std::fs::create_dir_all(glass_dir);
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    let _ = std::fs::create_dir_all(&glass_dir);
     let path = glass_dir.join("iterations.tsv");
 
     let needs_header = !path.exists();
@@ -259,9 +260,11 @@ pub fn append_iteration_log(
 }
 
 /// Read the iterations.tsv file content for inclusion in the system prompt.
-pub fn read_iterations_log() -> String {
-    let path = std::path::Path::new(".glass").join("iterations.tsv");
-    std::fs::read_to_string(&path).unwrap_or_default()
+pub fn read_iterations_log(project_root: &str) -> String {
+    let path = std::path::Path::new(project_root)
+        .join(".glass")
+        .join("iterations.tsv");
+    std::fs::read_to_string(path).unwrap_or_default()
 }
 
 /// Resolve the checkpoint file path for a given project root.
