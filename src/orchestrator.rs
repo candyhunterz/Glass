@@ -364,6 +364,83 @@ pub fn read_iterations_log_truncated(project_root: &str, max_entries: usize) -> 
     result
 }
 
+/// Line counts for SOI-driven context windowing.
+const CONTEXT_LINES_ON_ERROR: usize = 30;
+const CONTEXT_LINES_ON_SUCCESS: usize = 20;
+const CONTEXT_LINES_FALLBACK: usize = 80;
+
+/// Build context string for the Glass Agent based on command outcome and SOI data.
+///
+/// Uses severity-based selection:
+/// - Failed command + SOI: structured errors + 30 terminal lines
+/// - Succeeded command + SOI: one-line summary + 20 terminal lines
+/// - No SOI: 80 terminal lines (generous fallback)
+pub fn build_orchestrator_context(
+    terminal_lines: &[String],
+    last_exit_code: Option<i32>,
+    soi_summary: Option<&str>,
+    soi_error_records: &[String],
+) -> String {
+    let mut context = String::new();
+
+    let has_soi = soi_summary.is_some();
+    let failed = last_exit_code.is_some_and(|c| c != 0);
+
+    if failed && has_soi {
+        // Branch 1: Command failed with SOI data
+        context.push_str(&format!(
+            "[COMMAND_FAILED] exit code: {}\n",
+            last_exit_code.unwrap_or(-1)
+        ));
+        if let Some(summary) = soi_summary {
+            context.push_str(&format!("[SOI_SUMMARY] {summary}\n"));
+        }
+        if !soi_error_records.is_empty() {
+            context.push_str("[SOI_ERRORS]\n");
+            for record in soi_error_records {
+                context.push_str(&format!("  {record}\n"));
+            }
+        }
+        let n = CONTEXT_LINES_ON_ERROR;
+        let start = terminal_lines.len().saturating_sub(n);
+        context.push_str(&format!("[RECENT_OUTPUT] (last {n} lines)\n"));
+        for line in &terminal_lines[start..] {
+            context.push_str(line);
+            context.push('\n');
+        }
+    } else if !failed && has_soi {
+        // Branch 2: Command succeeded with SOI data
+        context.push_str("[COMMAND_OK]\n");
+        if let Some(summary) = soi_summary {
+            context.push_str(&format!("[SOI_SUMMARY] {summary}\n"));
+        }
+        let n = CONTEXT_LINES_ON_SUCCESS;
+        let start = terminal_lines.len().saturating_sub(n);
+        context.push_str(&format!("[RECENT_OUTPUT] (last {n} lines)\n"));
+        for line in &terminal_lines[start..] {
+            context.push_str(line);
+            context.push('\n');
+        }
+    } else {
+        // Branch 3: No SOI data
+        if failed {
+            context.push_str(&format!(
+                "[COMMAND_FAILED] exit code: {}\n",
+                last_exit_code.unwrap_or(-1)
+            ));
+        }
+        let n = CONTEXT_LINES_FALLBACK;
+        let start = terminal_lines.len().saturating_sub(n);
+        context.push_str(&format!("[RECENT_OUTPUT] (last {n} lines)\n"));
+        for line in &terminal_lines[start..] {
+            context.push_str(line);
+            context.push('\n');
+        }
+    }
+
+    context
+}
+
 /// Resolve the checkpoint file path for a given project root.
 pub fn checkpoint_path(project_root: &str, config: Option<&str>) -> std::path::PathBuf {
     let rel = config.unwrap_or(".glass/checkpoint.md");
@@ -591,5 +668,63 @@ mod tests {
         let fp = StateFingerprint::compute(&lines, Some(&soi), Some(git));
         assert!(fp.soi_error_hash.is_some());
         assert!(fp.git_diff_hash.is_some());
+    }
+
+    #[test]
+    fn context_failed_with_soi() {
+        let lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        let context = build_orchestrator_context(
+            &lines,
+            Some(1),
+            Some("cargo test: 3 failed"),
+            &["src/main.rs:10 Error[E0277]: trait bound".to_string()],
+        );
+        assert!(context.contains("[COMMAND_FAILED]"));
+        assert!(context.contains("exit code: 1"));
+        assert!(context.contains("[SOI_SUMMARY]"));
+        assert!(context.contains("cargo test: 3 failed"));
+        assert!(context.contains("[SOI_ERRORS]"));
+        assert!(context.contains("Error[E0277]"));
+        assert!(context.contains("[RECENT_OUTPUT]"));
+        // Should include last CONTEXT_LINES_ON_ERROR lines, not all 50
+        assert!(!context.contains("line 0\n"));
+        assert!(context.contains("line 49"));
+    }
+
+    #[test]
+    fn context_success_with_soi() {
+        let lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        let context = build_orchestrator_context(
+            &lines,
+            Some(0),
+            Some("cargo test: 45 passed"),
+            &[],
+        );
+        assert!(context.contains("[COMMAND_OK]"));
+        assert!(context.contains("[SOI_SUMMARY]"));
+        assert!(context.contains("45 passed"));
+        assert!(context.contains("[RECENT_OUTPUT]"));
+        // Should include fewer lines on success
+        assert!(!context.contains("line 0\n"));
+    }
+
+    #[test]
+    fn context_no_soi() {
+        let lines: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+        let context = build_orchestrator_context(&lines, None, None, &[]);
+        assert!(!context.contains("[COMMAND_FAILED]"));
+        assert!(!context.contains("[COMMAND_OK]"));
+        assert!(!context.contains("[SOI_SUMMARY]"));
+        assert!(context.contains("[RECENT_OUTPUT]"));
+        // Should include CONTEXT_LINES_FALLBACK lines
+        assert!(context.contains("line 99"));
+        assert!(context.contains("line 20"));
+    }
+
+    #[test]
+    fn context_empty_terminal() {
+        let context = build_orchestrator_context(&[], Some(1), None, &[]);
+        assert!(context.contains("[COMMAND_FAILED]"));
+        assert!(context.contains("[RECENT_OUTPUT]"));
     }
 }
