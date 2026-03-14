@@ -2960,9 +2960,52 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if self.orchestrator.active {
                                     tracing::info!("Orchestrator: enabled by user");
                                     self.orchestrator.reset_stuck();
+                                    self.orchestrator.iterations_since_checkpoint = 0;
+
+                                    // Fix #1: Respawn agent with fresh system prompt
+                                    // using the terminal's current CWD (not Glass's CWD)
+                                    let current_cwd = ctx
+                                        .session_mux
+                                        .focused_session()
+                                        .map(|s| s.status.cwd().to_string())
+                                        .unwrap_or_else(|| {
+                                            std::env::current_dir()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .to_string()
+                                        });
+
+                                    // Kill old agent and respawn with correct project root
+                                    self.agent_runtime = None;
+                                    let activity_config =
+                                        glass_core::activity_stream::ActivityStreamConfig::default();
+                                    let (new_tx, new_rx) =
+                                        glass_core::activity_stream::create_channel(&activity_config);
+                                    self.activity_stream_tx = Some(new_tx);
+
+                                    let agent_config = self
+                                        .config
+                                        .agent
+                                        .clone()
+                                        .map(|a| glass_core::agent_runtime::AgentRuntimeConfig {
+                                            mode: a.mode,
+                                            max_budget_usd: a.max_budget_usd,
+                                            cooldown_secs: a.cooldown_secs,
+                                            allowed_tools: a.allowed_tools,
+                                            orchestrator: a.orchestrator,
+                                        })
+                                        .unwrap_or_default();
+
+                                    self.agent_runtime = try_spawn_agent(
+                                        agent_config,
+                                        new_rx,
+                                        self.proxy.clone(),
+                                        0,
+                                        None,
+                                        current_cwd.clone(),
+                                    );
 
                                     // Immediately capture context and send to agent
-                                    // so it picks up where the user left off
                                     if let Some(ref runtime) = self.agent_runtime {
                                         if let Some(ref writer) = runtime.orchestrator_writer {
                                             if let Some(session) = ctx.session_mux.focused_session() {
@@ -2970,20 +3013,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 let terminal_context = lines.join("\n");
 
                                                 // Check for handoff note
-                                                let cwd = session.status.cwd();
-                                                let handoff_path = std::path::Path::new(cwd)
+                                                let handoff_path = std::path::Path::new(&current_cwd)
                                                     .join(".glass")
                                                     .join("handoff.md");
                                                 let handoff_note = std::fs::read_to_string(&handoff_path).ok();
                                                 if handoff_note.is_some() {
-                                                    // Delete after reading (one-shot)
                                                     let _ = std::fs::remove_file(&handoff_path);
                                                 }
 
-                                                // Also include recent git log for context
                                                 let git_log = std::process::Command::new("git")
                                                     .args(["log", "--oneline", "-10"])
-                                                    .current_dir(cwd)
+                                                    .current_dir(&current_cwd)
                                                     .output()
                                                     .ok()
                                                     .and_then(|o| if o.status.success() {
@@ -3013,7 +3053,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                     let _ = writeln!(w, "{msg}");
                                                     let _ = w.flush();
                                                 }
-                                                tracing::info!("Orchestrator: sent handoff context to agent");
+                                                tracing::info!("Orchestrator: respawned agent for {} and sent handoff", current_cwd);
                                             }
                                         }
                                     }
@@ -4160,22 +4200,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let osc_event = shell_event_to_osc(&shell_event);
                         session.block_manager.handle_event(&osc_event, line);
 
-                        // Orchestrator crash recovery: detect shell prompt while orchestrating.
-                        // Only trigger if we've had at least one iteration (Claude Code was running).
+                        // Fix #3: Orchestrator crash recovery with grace period.
+                        // Only trigger if orchestrating, had iterations, AND not within
+                        // the grace period after the orchestrator itself typed something.
                         if matches!(shell_event, ShellEvent::PromptStart)
                             && self.orchestrator.active
                             && self.orchestrator.iteration > 0
+                            && !self.orchestrator.in_grace_period()
                         {
                             tracing::info!(
                                 "Orchestrator: shell prompt detected — Claude Code may have exited, restarting"
                             );
-                            // Type command to restart Claude Code
                             let restart_msg =
                                 "claude --dangerously-skip-permissions\n";
                             let bytes = restart_msg.as_bytes().to_vec();
                             let _ = session
                                 .pty_sender
                                 .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            self.orchestrator.mark_pty_write();
                         }
 
                         // Override auto-expand if config disables it (after handle_event sets pipeline_expanded)
@@ -5265,6 +5307,31 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
+                self.orchestrator.iterations_since_checkpoint += 1;
+
+                // Fix #2: Auto-checkpoint after N iterations to prevent context exhaustion
+                if self.orchestrator.should_auto_checkpoint()
+                    && !matches!(parsed, orchestrator::AgentResponse::Checkpoint { .. })
+                    && !matches!(parsed, orchestrator::AgentResponse::Done { .. })
+                {
+                    tracing::info!(
+                        "Orchestrator: auto-checkpoint triggered after {} iterations",
+                        self.orchestrator.iterations_since_checkpoint
+                    );
+                    self.orchestrator.begin_checkpoint("auto-refresh", "continue from PRD");
+                    if let Some(ctx) = self.windows.values().next() {
+                        if let Some(session) = ctx.session_mux.focused_session() {
+                            let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
+                            let bytes = msg.as_bytes().to_vec();
+                            let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            self.orchestrator.mark_pty_write();
+                        }
+                    }
+                    for ctx in self.windows.values() {
+                        ctx.window.request_redraw();
+                    }
+                    return;
+                }
 
                 match parsed {
                     orchestrator::AgentResponse::Wait => {
@@ -5305,6 +5372,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let _ = session
                                     .pty_sender
                                     .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                self.orchestrator.mark_pty_write();
                             }
                         }
                     }
@@ -5390,7 +5458,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let lines = extract_term_lines(&session.term, 100);
                         let context = lines.join("\n");
 
-                        let content = format!("[TERMINAL_CONTEXT]\n{}", context);
+                        // Fix #4/#5: Check for nudge.md (course correction while running)
+                        let cwd = session.status.cwd();
+                        let nudge_path = std::path::Path::new(cwd)
+                            .join(".glass")
+                            .join("nudge.md");
+                        let nudge = std::fs::read_to_string(&nudge_path).ok();
+                        if nudge.is_some() {
+                            let _ = std::fs::remove_file(&nudge_path);
+                        }
+
+                        let mut content = String::from("[TERMINAL_CONTEXT]\n");
+                        if let Some(nudge_text) = nudge {
+                            content.push_str(&format!(
+                                "[USER_NUDGE] The user left this course correction:\n{}\n\n",
+                                nudge_text.trim()
+                            ));
+                            tracing::info!("Orchestrator: including nudge.md in context");
+                        }
+                        content.push_str(&context);
+
                         let msg = serde_json::json!({
                             "type": "user",
                             "message": {

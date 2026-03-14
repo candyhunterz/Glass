@@ -96,12 +96,21 @@ pub enum CheckpointPhase {
     ClearingSent,
 }
 
+/// How many iterations before forcing an automatic context refresh.
+pub const AUTO_CHECKPOINT_INTERVAL: u32 = 15;
+
+/// Grace period after the orchestrator types into the PTY.
+/// PromptStart events within this window are ignored for crash recovery.
+pub const CRASH_RECOVERY_GRACE_SECS: u64 = 10;
+
 /// Orchestrator state, lives on Processor in main.rs.
 pub struct OrchestratorState {
     /// Whether orchestration is active (toggled by Ctrl+Shift+O).
     pub active: bool,
     /// Iteration counter (for status bar display and logging).
     pub iteration: u32,
+    /// Iteration count since the last checkpoint (resets on refresh).
+    pub iterations_since_checkpoint: u32,
     /// Last N responses for stuck detection (ring buffer).
     pub recent_responses: Vec<String>,
     /// Max identical responses before stuck triggers.
@@ -112,6 +121,8 @@ pub struct OrchestratorState {
     pub last_checkpoint_completed: String,
     /// Next item to work on (from GLASS_CHECKPOINT).
     pub last_checkpoint_next: String,
+    /// Timestamp of last PTY write by the orchestrator (for crash recovery grace period).
+    pub last_pty_write: Option<std::time::Instant>,
 }
 
 impl OrchestratorState {
@@ -119,12 +130,31 @@ impl OrchestratorState {
         Self {
             active: false,
             iteration: 0,
+            iterations_since_checkpoint: 0,
             max_retries,
             recent_responses: Vec::new(),
             checkpoint_phase: CheckpointPhase::Idle,
             last_checkpoint_completed: String::new(),
             last_checkpoint_next: String::new(),
+            last_pty_write: None,
         }
+    }
+
+    /// Check if we're within the crash recovery grace period.
+    pub fn in_grace_period(&self) -> bool {
+        self.last_pty_write
+            .map(|t| t.elapsed().as_secs() < CRASH_RECOVERY_GRACE_SECS)
+            .unwrap_or(false)
+    }
+
+    /// Record that the orchestrator just typed into the PTY.
+    pub fn mark_pty_write(&mut self) {
+        self.last_pty_write = Some(std::time::Instant::now());
+    }
+
+    /// Check if automatic checkpoint should trigger.
+    pub fn should_auto_checkpoint(&self) -> bool {
+        self.iterations_since_checkpoint >= AUTO_CHECKPOINT_INTERVAL
     }
 
     /// Record a response and check if we're stuck (N identical consecutive responses).
@@ -153,6 +183,7 @@ impl OrchestratorState {
     pub fn begin_checkpoint(&mut self, completed: &str, next: &str) {
         self.last_checkpoint_completed = completed.to_string();
         self.last_checkpoint_next = next.to_string();
+        self.iterations_since_checkpoint = 0;
         self.checkpoint_phase = CheckpointPhase::WaitingForCheckpoint {
             started_at: std::time::Instant::now(),
             last_mtime: None,
