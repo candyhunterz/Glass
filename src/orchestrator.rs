@@ -3,6 +3,8 @@
 //! Owns the silence-triggered loop that captures terminal context, sends it
 //! to the Glass Agent, and routes the response (type into PTY, wait, or checkpoint).
 
+use std::hash::{Hash, Hasher};
+
 /// Parsed response from the Glass Agent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentResponse {
@@ -101,6 +103,54 @@ pub const CRASH_RECOVERY_GRACE_SECS: u64 = 10;
 /// Maximum time to wait for Claude Code to write checkpoint.md before respawning anyway.
 pub const CHECKPOINT_TIMEOUT_SECS: u64 = 180;
 
+/// Composite environment state fingerprint for semantic stuck detection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateFingerprint {
+    /// Hash of recent terminal lines.
+    pub terminal_hash: u64,
+    /// Hash of SOI error records (if a command failed with SOI data).
+    pub soi_error_hash: Option<u64>,
+    /// Hash of `git diff --stat` output (if in a git repo).
+    pub git_diff_hash: Option<u64>,
+}
+
+impl StateFingerprint {
+    /// Compute a fingerprint from available signals.
+    pub fn compute(
+        terminal_lines: &[String],
+        soi_errors: Option<&[String]>,
+        git_diff_stat: Option<&str>,
+    ) -> Self {
+        let terminal_hash = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for line in terminal_lines {
+                line.hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+
+        let soi_error_hash = soi_errors.map(|errors| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for error in errors {
+                error.hash(&mut hasher);
+            }
+            hasher.finish()
+        });
+
+        let git_diff_hash = git_diff_stat.map(|diff| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            diff.hash(&mut hasher);
+            hasher.finish()
+        });
+
+        Self {
+            terminal_hash,
+            soi_error_hash,
+            git_diff_hash,
+        }
+    }
+}
+
 /// Orchestrator state, lives on Processor in main.rs.
 pub struct OrchestratorState {
     /// Whether orchestration is active (toggled by Ctrl+Shift+O).
@@ -123,6 +173,10 @@ pub struct OrchestratorState {
     pub last_pty_write: Option<std::time::Instant>,
     /// Whether we're waiting for the agent to respond to a context send.
     pub response_pending: bool,
+    /// Last N environment fingerprints for semantic stuck detection.
+    pub recent_fingerprints: Vec<StateFingerprint>,
+    /// Whether the last fingerprint check detected stuck (consumed by response handler).
+    pub fingerprint_stuck: bool,
 }
 
 impl OrchestratorState {
@@ -138,6 +192,8 @@ impl OrchestratorState {
             last_checkpoint_next: String::new(),
             last_pty_write: None,
             response_pending: false,
+            recent_fingerprints: Vec::new(),
+            fingerprint_stuck: false,
         }
     }
 
@@ -175,9 +231,28 @@ impl OrchestratorState {
         }
     }
 
+    /// Record an environment fingerprint and check if stuck (N identical consecutive).
+    /// Returns true if stuck.
+    pub fn record_fingerprint(&mut self, fp: StateFingerprint) -> bool {
+        self.recent_fingerprints.push(fp);
+        if self.recent_fingerprints.len() > self.max_retries as usize {
+            self.recent_fingerprints
+                .drain(..self.recent_fingerprints.len() - self.max_retries as usize);
+        }
+        if self.recent_fingerprints.len() >= self.max_retries as usize {
+            self.recent_fingerprints
+                .iter()
+                .all(|f| f == &self.recent_fingerprints[0])
+        } else {
+            false
+        }
+    }
+
     /// Reset stuck detection (e.g., after a successful verification).
     pub fn reset_stuck(&mut self) {
         self.recent_responses.clear();
+        self.recent_fingerprints.clear();
+        self.fingerprint_stuck = false;
     }
 
     /// Start a checkpoint refresh cycle.
@@ -449,5 +524,72 @@ mod tests {
         assert!(state.response_pending);
         state.response_pending = false;
         assert!(!state.response_pending);
+    }
+
+    #[test]
+    fn fingerprint_stuck_after_n_identical() {
+        let mut state = OrchestratorState::new(3);
+        let fp = StateFingerprint {
+            terminal_hash: 12345,
+            soi_error_hash: Some(67890),
+            git_diff_hash: None,
+        };
+        assert!(!state.record_fingerprint(fp.clone()));
+        assert!(!state.record_fingerprint(fp.clone()));
+        assert!(state.record_fingerprint(fp)); // 3rd identical
+    }
+
+    #[test]
+    fn fingerprint_not_stuck_when_different() {
+        let mut state = OrchestratorState::new(3);
+        let fp1 = StateFingerprint {
+            terminal_hash: 111,
+            soi_error_hash: None,
+            git_diff_hash: None,
+        };
+        let fp2 = StateFingerprint {
+            terminal_hash: 222,
+            soi_error_hash: None,
+            git_diff_hash: None,
+        };
+        assert!(!state.record_fingerprint(fp1.clone()));
+        assert!(!state.record_fingerprint(fp1));
+        assert!(!state.record_fingerprint(fp2)); // different
+    }
+
+    #[test]
+    fn fingerprint_reset_clears() {
+        let mut state = OrchestratorState::new(3);
+        let fp = StateFingerprint {
+            terminal_hash: 111,
+            soi_error_hash: None,
+            git_diff_hash: None,
+        };
+        state.record_fingerprint(fp.clone());
+        state.record_fingerprint(fp.clone());
+        state.reset_stuck();
+        assert!(!state.record_fingerprint(fp)); // reset, only 1
+    }
+
+    #[test]
+    fn compute_fingerprint_hashes_lines() {
+        let lines1 = vec!["hello".to_string(), "world".to_string()];
+        let lines2 = vec!["hello".to_string(), "world".to_string()];
+        let lines3 = vec!["different".to_string()];
+        let fp1 = StateFingerprint::compute(&lines1, None, None);
+        let fp2 = StateFingerprint::compute(&lines2, None, None);
+        let fp3 = StateFingerprint::compute(&lines3, None, None);
+        assert_eq!(fp1.terminal_hash, fp2.terminal_hash);
+        assert_ne!(fp1.terminal_hash, fp3.terminal_hash);
+    }
+
+    #[test]
+    fn compute_fingerprint_with_soi_and_git() {
+        let lines = vec!["output".to_string()];
+        let soi = vec!["Error[E0277]".to_string()];
+        let git = "1 file changed";
+        let fp = StateFingerprint::compute(&lines, Some(&soi), Some(git));
+        assert!(fp.soi_error_hash.is_some());
+        assert!(fp.git_diff_hash.is_some());
     }
 }
