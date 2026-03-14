@@ -133,6 +133,16 @@ pub enum AppEvent {
     AgentQueryResult { cost_usd: f64 },
     /// The agent subprocess terminated unexpectedly.
     AgentCrashed,
+    /// Orchestrator: the Glass Agent produced a response to route.
+    OrchestratorResponse {
+        /// The raw text from the Glass Agent.
+        response: String,
+    },
+    /// Orchestrator: PTY silence threshold reached.
+    OrchestratorSilence {
+        window_id: winit::window::WindowId,
+        session_id: SessionId,
+    },
 }
 
 #[cfg(test)]

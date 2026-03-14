@@ -29,6 +29,8 @@ pub struct AgentRuntimeConfig {
     /// Comma-separated list of MCP tools the agent is allowed to call.
     /// Default: "glass_query,glass_context,Bash,Read".
     pub allowed_tools: String,
+    /// Orchestrator sub-config. None when orchestrator is not configured.
+    pub orchestrator: Option<crate::config::OrchestratorSection>,
 }
 
 impl Default for AgentRuntimeConfig {
@@ -40,6 +42,7 @@ impl Default for AgentRuntimeConfig {
             allowed_tools:
                 "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
                     .to_string(),
+            orchestrator: None,
         }
     }
 }

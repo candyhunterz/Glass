@@ -3,9 +3,12 @@
 #![windows_subsystem = "windows"]
 
 mod history;
+#[allow(dead_code)]
+mod orchestrator;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
@@ -235,6 +238,9 @@ struct AgentRuntime {
     /// Project root path used for coordination lock, if registration succeeded.
     #[allow(dead_code)]
     project_root: Option<String>,
+    /// Shared writer for sending orchestrator messages to the agent's stdin.
+    orchestrator_writer:
+        Option<std::sync::Arc<std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -274,6 +280,8 @@ struct Processor {
     activity_filter: glass_core::activity_stream::ActivityFilter,
     /// Agent subprocess lifecycle. None when mode is Off or binary not found.
     agent_runtime: Option<AgentRuntime>,
+    /// Orchestrator state for autonomous Claude Code collaboration.
+    orchestrator: orchestrator::OrchestratorState,
     /// Cumulative agent query cost this session in USD.
     agent_cost_usd: f64,
     /// True when budget has been exceeded -- gates further event forwarding.
@@ -527,6 +535,13 @@ fn create_session(
         .map(|h| h.max_output_capture_kb)
         .unwrap_or(50);
     let pipes_enabled = config.pipes.as_ref().map(|p| p.enabled).unwrap_or(true);
+    let orchestrator_silence_secs = config
+        .agent
+        .as_ref()
+        .and_then(|a| a.orchestrator.as_ref())
+        .filter(|o| o.enabled)
+        .map(|o| o.silence_timeout_secs)
+        .unwrap_or(0);
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
         proxy.clone(),
@@ -535,6 +550,7 @@ fn create_session(
         working_directory,
         max_output_kb,
         pipes_enabled,
+        orchestrator_silence_secs,
     );
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
@@ -735,7 +751,64 @@ fn try_spawn_agent(
     let _ = std::fs::create_dir_all(&glass_dir);
 
     let prompt_path = glass_dir.join("agent-system-prompt.txt");
-    let system_prompt = r#"You are Glass Agent, an AI assistant integrated into the Glass terminal emulator.
+
+    let orchestrator_config = config.orchestrator.as_ref();
+    let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
+
+    let system_prompt = if orchestrator_enabled {
+        let prd_path = orchestrator_config
+            .map(|o| o.prd_path.clone())
+            .unwrap_or_else(|| "PRD.md".to_string());
+        let prd_content = std::fs::read_to_string(&prd_path)
+            .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path));
+        // Truncate to ~4000 words
+        let prd_truncated: String = prd_content
+            .split_whitespace()
+            .take(4000)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let checkpoint_path = orchestrator_config
+            .map(|o| o.checkpoint_path.clone())
+            .unwrap_or_else(|| ".glass/checkpoint.md".to_string());
+        let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
+            .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());
+
+        format!(
+            r#"You are the Glass Agent, collaborating with Claude Code to build a project.
+Claude Code is the implementer — it writes code, runs commands, builds features.
+You are the reviewer and guide — you make product decisions, ensure quality,
+and keep the project moving against the plan.
+
+PROJECT PLAN:
+{prd_truncated}
+
+CURRENT STATUS:
+{checkpoint_content}
+
+ITERATION PROTOCOL:
+For each feature, guide Claude Code through this cycle:
+1. PLAN: Tell Claude Code what to build next and define acceptance criteria
+2. IMPLEMENT: Let Claude Code work. Answer its questions with clear decisions.
+3. COMMIT: Tell Claude Code to commit before verification
+4. VERIFY: Tell Claude Code to write tests and run them
+5. DECIDE: Tests pass → move to next feature. Tests fail → tell Claude Code to fix.
+   Stuck after 3 attempts → tell Claude Code to revert and try different approach.
+
+CONTEXT REFRESH:
+When you've completed 2-3 features and context is getting heavy, emit:
+GLASS_CHECKPOINT: {{"completed": "<summary>", "next": "<next PRD item>"}}
+
+RESPONSE FORMAT:
+Respond with ONLY one of:
+1. Text to type into the terminal (sent as-is to Claude Code)
+2. GLASS_WAIT (Claude Code is still working, check again later)
+3. GLASS_CHECKPOINT: {{"completed": "...", "next": "..."}}
+
+No explanations, no meta-commentary. Just the response."#
+        )
+    } else {
+        r#"You are Glass Agent, an AI assistant integrated into the Glass terminal emulator.
 
 Your role is to monitor terminal activity and propose helpful fixes when commands fail or produce errors.
 
@@ -755,7 +828,9 @@ Session Continuity:
   GLASS_HANDOFF: {"work_completed":"what you did","work_remaining":"what is left","key_decisions":"important decisions made"}
 - When you receive [CONTEXT_LIMIT_WARNING], emit GLASS_HANDOFF immediately before stopping
 - The next agent session will receive your handoff as context
-"#;
+"#
+        .to_string()
+    };
 
     if let Err(e) = std::fs::write(&prompt_path, system_prompt) {
         tracing::warn!("AgentRuntime: failed to write system prompt: {}", e);
@@ -951,19 +1026,24 @@ Session Continuity:
         })
         .ok();
 
+    // Shared stdin writer for both activity thread and orchestrator
+    let shared_writer = std::sync::Arc::new(std::sync::Mutex::new(BufWriter::new(stdin)));
+    let writer_clone = std::sync::Arc::clone(&shared_writer);
+
     // Writer thread: drains activity_stream_rx and writes JSON lines to claude stdin
     let cooldown_secs = config.cooldown_secs;
     std::thread::Builder::new()
         .name("glass-agent-writer".into())
         .spawn(move || {
-            let mut writer = BufWriter::new(stdin);
             let mut last_sent: Option<std::time::Instant> = None;
             let cooldown = std::time::Duration::from_secs(cooldown_secs);
 
             // Inject prior session handoff as first message before processing new events
             if let Some(ref msg) = prior_handoff_msg {
-                let _ = writeln!(writer, "{msg}");
-                let _ = writer.flush();
+                if let Ok(mut w) = writer_clone.lock() {
+                    let _ = writeln!(w, "{msg}");
+                    let _ = w.flush();
+                }
             }
 
             for event in activity_rx.iter() {
@@ -980,8 +1060,12 @@ Session Continuity:
                 }
 
                 let msg = glass_core::agent_runtime::format_activity_as_user_message(&event);
-                if writeln!(writer, "{msg}").is_err() || writer.flush().is_err() {
-                    // BrokenPipe: child process died
+                if let Ok(mut w) = writer_clone.lock() {
+                    if writeln!(w, "{msg}").is_err() || w.flush().is_err() {
+                        // BrokenPipe: child process died
+                        break;
+                    }
+                } else {
                     break;
                 }
                 last_sent = Some(std::time::Instant::now());
@@ -1063,6 +1147,7 @@ Session Continuity:
         last_crash,
         agent_id: coord_agent_id,
         project_root: coord_project_root,
+        orchestrator_writer: Some(shared_writer),
     })
 }
 
@@ -1295,6 +1380,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     max_budget_usd: a.max_budget_usd,
                     cooldown_secs: a.cooldown_secs,
                     allowed_tools: a.allowed_tools,
+                    orchestrator: a.orchestrator,
                 })
                 .unwrap_or_default();
 
@@ -1535,13 +1621,20 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Agent mode and proposal count for status bar display.
                     let agent_mode_text = self.agent_runtime.as_ref().map(|_r| {
-                        let mode = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .map(|a| format!("{:?}", a.mode).to_lowercase())
-                            .unwrap_or_else(|| "off".to_string());
-                        format!("[agent: {mode}]")
+                        if self.orchestrator.active {
+                            format!(
+                                "[orchestrating | iter #{}]",
+                                self.orchestrator.iteration
+                            )
+                        } else {
+                            let mode = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| format!("{:?}", a.mode).to_lowercase())
+                                .unwrap_or_else(|| "off".to_string());
+                            format!("[agent: {mode}]")
+                        }
                     });
                     let proposal_count_text = if !self.agent_proposal_worktrees.is_empty() {
                         let n = self.agent_proposal_worktrees.len();
@@ -1809,13 +1902,20 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Agent mode and proposal count for multi-pane status bar.
                     let agent_mode_text_mp = self.agent_runtime.as_ref().map(|_r| {
-                        let mode = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .map(|a| format!("{:?}", a.mode).to_lowercase())
-                            .unwrap_or_else(|| "off".to_string());
-                        format!("[agent: {mode}]")
+                        if self.orchestrator.active {
+                            format!(
+                                "[orchestrating | iter #{}]",
+                                self.orchestrator.iteration
+                            )
+                        } else {
+                            let mode = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| format!("{:?}", a.mode).to_lowercase())
+                                .unwrap_or_else(|| "off".to_string());
+                            format!("[agent: {mode}]")
+                        }
                     });
                     let proposal_count_text_mp = if !self.agent_proposal_worktrees.is_empty() {
                         let n = self.agent_proposal_worktrees.len();
@@ -2732,6 +2832,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                                 return;
                             }
+                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("o") => {
+                                // Ctrl+Shift+O: Toggle orchestrator on/off
+                                self.orchestrator.active = !self.orchestrator.active;
+                                if self.orchestrator.active {
+                                    tracing::info!("Orchestrator: enabled by user");
+                                    self.orchestrator.reset_stuck();
+                                } else {
+                                    tracing::info!("Orchestrator: disabled by user");
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
                             _ => {}
                         }
                     }
@@ -3087,6 +3199,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
                         }
+                    }
+
+                    // Auto-pause orchestrator if user types while it's active
+                    if self.orchestrator.active {
+                        self.orchestrator.active = false;
+                        tracing::info!("Orchestrator: auto-paused (user typing detected)");
                     }
 
                     // Forward to PTY via encoder
@@ -4498,6 +4616,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 max_budget_usd: a.max_budget_usd,
                                 cooldown_secs: a.cooldown_secs,
                                 allowed_tools: a.allowed_tools,
+                                orchestrator: a.orchestrator,
                             })
                             .unwrap_or_default();
 
@@ -4938,6 +5057,97 @@ impl ApplicationHandler<AppEvent> for Processor {
                         tracing::warn!(
                             "AgentRuntime: failed to open session db for handoff: {}",
                             e
+                        );
+                    }
+                }
+            }
+            AppEvent::OrchestratorResponse { response } => {
+                if !self.orchestrator.active {
+                    return;
+                }
+
+                let parsed = orchestrator::parse_agent_response(&response);
+                self.orchestrator.iteration += 1;
+
+                match parsed {
+                    orchestrator::AgentResponse::Wait => {
+                        tracing::debug!("Orchestrator: agent says WAIT");
+                    }
+                    orchestrator::AgentResponse::TypeText(text) => {
+                        if self.orchestrator.record_response(&text) {
+                            tracing::warn!(
+                                "Orchestrator: stuck detected after {} identical responses",
+                                self.orchestrator.max_retries
+                            );
+                            // TODO: handle stuck (Plan 3)
+                            return;
+                        }
+
+                        // Type the text into the active PTY
+                        if let Some(ctx) = self.windows.values().next() {
+                            if let Some(session) = ctx.session_mux.focused_session() {
+                                let bytes = format!("{}\n", text).into_bytes();
+                                let _ = session
+                                    .pty_sender
+                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            }
+                        }
+                    }
+                    orchestrator::AgentResponse::Checkpoint { completed, next } => {
+                        tracing::info!(
+                            "Orchestrator: checkpoint — completed={}, next={}",
+                            completed,
+                            next
+                        );
+                        // TODO: handle checkpoint cycle (Plan 3)
+                    }
+                }
+
+                // Request redraw for status bar update
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::OrchestratorSilence {
+                window_id,
+                session_id,
+            } => {
+                if !self.orchestrator.active {
+                    return;
+                }
+                if self.agent_runtime.is_none() {
+                    return;
+                }
+
+                // Capture terminal context
+                if let Some(ctx) = self.windows.get(&window_id) {
+                    if let Some(session) = ctx.session_mux.session(session_id) {
+                        let lines = extract_term_lines(&session.term, 100);
+                        let context = lines.join("\n");
+
+                        let content = format!("[TERMINAL_CONTEXT]\n{}", context);
+                        let msg = serde_json::json!({
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": content
+                            }
+                        })
+                        .to_string();
+
+                        // Send to agent via shared stdin writer
+                        if let Some(ref runtime) = self.agent_runtime {
+                            if let Some(ref writer) = runtime.orchestrator_writer {
+                                if let Ok(mut w) = writer.lock() {
+                                    let _ = writeln!(w, "{msg}");
+                                    let _ = w.flush();
+                                }
+                            }
+                        }
+
+                        tracing::debug!(
+                            "Orchestrator: sent {} lines of terminal context to agent",
+                            lines.len()
                         );
                     }
                 }
@@ -5625,6 +5835,13 @@ fn main() {
             #[cfg(target_os = "windows")]
             let job_object_handle = setup_windows_job_object();
 
+            let orch_max_retries = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_retries_before_stuck)
+                .unwrap_or(3);
+
             let mut processor = Processor {
                 windows: HashMap::new(),
                 proxy,
@@ -5643,6 +5860,7 @@ fn main() {
                     glass_core::activity_stream::ActivityStreamConfig::default(),
                 ),
                 agent_runtime: None,
+                orchestrator: orchestrator::OrchestratorState::new(orch_max_retries),
                 agent_cost_usd: 0.0,
                 agent_proposals_paused: false,
                 worktree_manager: {

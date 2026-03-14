@@ -154,6 +154,7 @@ fn default_shell_program() -> String {
 /// If `shell_override` is `Some`, that shell program is used directly (e.g. "powershell",
 /// "bash"). If `None`, the default detection logic runs: on Windows, pwsh 7 if available
 /// else PowerShell 5.1; on Unix, `$SHELL` or `/bin/sh`.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_pty(
     event_proxy: EventProxy,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
@@ -162,6 +163,7 @@ pub fn spawn_pty(
     working_directory: Option<&std::path::Path>,
     max_output_capture_kb: u32,
     pipes_enabled: bool,
+    orchestrator_silence_secs: u64,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
     // Use configured shell if provided, otherwise detect platform default
     let shell_program = if let Some(shell) = shell_override {
@@ -246,6 +248,7 @@ pub fn spawn_pty(
                 rx,
                 poll,
                 max_output_capture_kb,
+                orchestrator_silence_secs,
             );
         })
         .expect("Failed to spawn PTY reader thread");
@@ -269,6 +272,7 @@ fn glass_pty_loop(
     rx: Receiver<PtyMsg>,
     poll: Arc<polling::Poller>,
     max_output_capture_kb: u32,
+    orchestrator_silence_secs: u64,
 ) {
     let mut scanner = OscScanner::new();
     let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
@@ -278,12 +282,32 @@ fn glass_pty_loop(
     let mut interest = PollingEvent::readable(0);
     let mut output_buffer = OutputBuffer::new((max_output_capture_kb as usize) * 1024);
 
+    // Orchestrator silence detection
+    let mut last_output_at = Instant::now();
+    let silence_threshold = if orchestrator_silence_secs > 0 {
+        Some(std::time::Duration::from_secs(orchestrator_silence_secs))
+    } else {
+        None
+    };
+    let mut silence_fired = false;
+
     'event_loop: loop {
         // Handle synchronized update timeout.
-        let timeout = parser
+        let mut timeout = parser
             .sync_timeout()
             .sync_timeout()
             .map(|st| st.saturating_duration_since(Instant::now()));
+
+        // Cap poll timeout to silence threshold for periodic checks.
+        if let Some(threshold) = silence_threshold {
+            let remaining = threshold.saturating_sub(last_output_at.elapsed());
+            // Use at least 1 second to avoid busy-looping
+            let silence_timeout = remaining.max(std::time::Duration::from_secs(1));
+            timeout = Some(match timeout {
+                Some(t) => t.min(silence_timeout),
+                None => silence_timeout,
+            });
+        }
 
         events.clear();
         if let Err(err) = poll.wait(&mut events, timeout) {
@@ -365,6 +389,9 @@ fn glass_pty_loop(
                             tracing::error!("Error reading from PTY: {err}");
                             break 'event_loop;
                         }
+                        // Reset silence timer on new output
+                        last_output_at = Instant::now();
+                        silence_fired = false;
                     }
 
                     if event.writable {
@@ -375,6 +402,17 @@ fn glass_pty_loop(
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Orchestrator silence detection
+        if let Some(threshold) = silence_threshold {
+            if !silence_fired && last_output_at.elapsed() >= threshold {
+                silence_fired = true;
+                let _ = app_proxy.send_event(AppEvent::OrchestratorSilence {
+                    window_id,
+                    session_id: event_proxy.session_id(),
+                });
             }
         }
 

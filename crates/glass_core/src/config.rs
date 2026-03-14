@@ -107,6 +107,42 @@ pub struct AgentSection {
     /// Rules for suppressing low-signal notifications. None when section is absent.
     #[serde(default)]
     pub quiet_rules: Option<QuietRules>,
+    /// Orchestrator sub-section. Optional; None when absent.
+    #[serde(default)]
+    pub orchestrator: Option<OrchestratorSection>,
+}
+
+/// Orchestrator configuration in the `[agent.orchestrator]` TOML section.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct OrchestratorSection {
+    /// Whether the orchestrator loop is active. Default false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Seconds of PTY silence before triggering the orchestrator. Default 30.
+    #[serde(default = "default_orch_silence_timeout")]
+    pub silence_timeout_secs: u64,
+    /// Path to the project plan file (relative to CWD). Default "PRD.md".
+    #[serde(default = "default_orch_prd_path")]
+    pub prd_path: String,
+    /// Path to the checkpoint file (relative to CWD). Default ".glass/checkpoint.md".
+    #[serde(default = "default_orch_checkpoint_path")]
+    pub checkpoint_path: String,
+    /// Max identical responses before stuck detection triggers. Default 3.
+    #[serde(default = "default_orch_max_retries")]
+    pub max_retries_before_stuck: u32,
+}
+
+fn default_orch_silence_timeout() -> u64 {
+    30
+}
+fn default_orch_prd_path() -> String {
+    "PRD.md".to_string()
+}
+fn default_orch_checkpoint_path() -> String {
+    ".glass/checkpoint.md".to_string()
+}
+fn default_orch_max_retries() -> u32 {
+    3
 }
 
 fn default_agent_max_budget_usd() -> f64 {
@@ -128,6 +164,7 @@ impl Default for AgentSection {
             allowed_tools: default_agent_allowed_tools(),
             permissions: None,
             quiet_rules: None,
+            orchestrator: None,
         }
     }
 }
@@ -777,5 +814,37 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("enabled = false"));
+    }
+
+    #[test]
+    fn test_orchestrator_section_defaults() {
+        let toml = "[agent]\nmode = \"Autonomous\"\n[agent.orchestrator]\nenabled = true";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config
+            .agent
+            .expect("agent section")
+            .orchestrator
+            .expect("orchestrator section");
+        assert!(orch.enabled);
+        assert_eq!(orch.silence_timeout_secs, 30);
+        assert_eq!(orch.prd_path, "PRD.md");
+        assert_eq!(orch.checkpoint_path, ".glass/checkpoint.md");
+        assert_eq!(orch.max_retries_before_stuck, 3);
+    }
+
+    #[test]
+    fn test_orchestrator_section_absent_is_none() {
+        let toml = "[agent]\nmode = \"Autonomous\"";
+        let config = GlassConfig::load_from_str(toml);
+        assert!(config.agent.unwrap().orchestrator.is_none());
+    }
+
+    #[test]
+    fn test_orchestrator_section_custom_values() {
+        let toml = "[agent.orchestrator]\nenabled = true\nsilence_timeout_secs = 15\nprd_path = \"docs/plan.md\"";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.silence_timeout_secs, 15);
+        assert_eq!(orch.prd_path, "docs/plan.md");
     }
 }
