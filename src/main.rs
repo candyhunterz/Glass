@@ -815,6 +815,10 @@ fn try_spawn_agent(
             iterations_content
         };
 
+        let artifact_path = orchestrator_config
+            .map(|o| o.completion_artifact.as_str())
+            .unwrap_or(".glass/done");
+
         format!(
             r#"You are the Glass Agent, collaborating with Claude Code to build a project.
 Claude Code is the implementer — it writes code, runs commands, builds features.
@@ -841,6 +845,16 @@ For each feature, guide Claude Code through this cycle:
 5. DECIDE: Tests pass → move to next feature. Tests fail → tell Claude Code to fix.
    Stuck after 3 attempts → tell Claude Code to revert and try different approach.
 
+TASK COMPLETION SIGNAL:
+When the implementer is done with a task, have it create the file `{artifact_path}` to signal completion.
+
+ADDITIONAL VERIFICATION DISCOVERY:
+If you discover additional verification commands for this project (custom test scripts, integration tests, etc.), report them:
+GLASS_VERIFY: {{"commands": [{{"name": "description", "cmd": "command to run"}}]}}
+
+AUTOMATIC METRIC GUARD:
+After each iteration, Glass will run verification commands automatically. If changes cause test regressions or build failures, they will be automatically reverted and you will be notified.
+
 CONTEXT REFRESH:
 When you've completed 2-3 features and context is getting heavy, emit:
 GLASS_CHECKPOINT: {{"completed": "<summary>", "next": "<next PRD item>"}}
@@ -856,6 +870,7 @@ Respond with ONLY one of:
 2. GLASS_WAIT (Claude Code is still working, check again later)
 3. GLASS_CHECKPOINT: {{"completed": "...", "next": "..."}}
 4. GLASS_DONE: <summary> (all PRD items complete)
+5. GLASS_VERIFY: {{"commands": [{{"name": "...", "cmd": "..."}}]}}
 
 No explanations, no meta-commentary. Just the response."#
         )
