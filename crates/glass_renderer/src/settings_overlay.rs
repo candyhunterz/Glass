@@ -319,7 +319,8 @@ impl SettingsOverlayRenderer {
         let tab_y = self.cell_height * 2.5;
         let mut tab_x = padding;
         for tab in &tabs {
-            let color = if *tab == active_tab {
+            let is_active = *tab == active_tab;
+            let color = if is_active {
                 Rgb {
                     r: 180,
                     g: 140,
@@ -327,19 +328,37 @@ impl SettingsOverlayRenderer {
                 }
             } else {
                 Rgb {
-                    r: 136,
-                    g: 136,
-                    b: 136,
+                    r: 102,
+                    g: 102,
+                    b: 102,
                 }
             };
+            // Show brackets around active tab: [ Settings ]
+            let text = if is_active {
+                format!("[ {} ]", tab.label())
+            } else {
+                format!("  {}  ", tab.label())
+            };
             labels.push(SettingsOverlayTextLabel {
-                text: tab.label().to_string(),
+                text,
                 x: tab_x,
                 y: tab_y,
                 color,
             });
-            tab_x += tab.label().len() as f32 * self.cell_width + self.cell_width * 3.0;
+            tab_x += (tab.label().len() + 4) as f32 * self.cell_width + self.cell_width * 2.0;
         }
+
+        // Tab switch hint
+        labels.push(SettingsOverlayTextLabel {
+            text: "Tab / Shift+Tab to switch".to_string(),
+            x: tab_x + self.cell_width * 2.0,
+            y: tab_y,
+            color: Rgb {
+                r: 68,
+                g: 68,
+                b: 68,
+            },
+        });
 
         labels
     }
@@ -348,7 +367,7 @@ impl SettingsOverlayRenderer {
     pub fn build_shortcuts_text(
         &self,
         viewport_width: f32,
-        _viewport_height: f32,
+        viewport_height: f32,
         _scroll_offset: usize,
     ) -> Vec<SettingsOverlayTextLabel> {
         let mut labels = Vec::new();
@@ -416,6 +435,18 @@ impl SettingsOverlayRenderer {
             *col_y += self.cell_height * 0.5; // gap between categories
         }
 
+        // Footer hint
+        labels.push(SettingsOverlayTextLabel {
+            text: "Esc  close    Tab  switch tab".to_string(),
+            x: self.cell_width,
+            y: viewport_height - self.cell_height * 2.0,
+            color: Rgb {
+                r: 68,
+                g: 68,
+                b: 68,
+            },
+        });
+
         labels
     }
 
@@ -423,7 +454,7 @@ impl SettingsOverlayRenderer {
     pub fn build_about_text(
         &self,
         viewport_width: f32,
-        _viewport_height: f32,
+        viewport_height: f32,
     ) -> Vec<SettingsOverlayTextLabel> {
         let mut labels = Vec::new();
         let center_x = viewport_width * 0.3;
@@ -523,6 +554,18 @@ impl SettingsOverlayRenderer {
             },
         });
 
+        // Footer hint
+        labels.push(SettingsOverlayTextLabel {
+            text: "Esc  close    Tab  switch tab".to_string(),
+            x: self.cell_width,
+            y: viewport_height - self.cell_height * 2.0,
+            color: Rgb {
+                r: 68,
+                g: 68,
+                b: 68,
+            },
+        });
+
         labels
     }
 
@@ -570,9 +613,10 @@ impl SettingsOverlayRenderer {
                     b: 136,
                 }
             };
+            let prefix = if i == section_index { "> " } else { "  " };
             labels.push(SettingsOverlayTextLabel {
-                text: section.to_string(),
-                x: padding + self.cell_width,
+                text: format!("{}{}", prefix, section),
+                x: padding,
                 y: sidebar_y,
                 color,
             });
@@ -664,15 +708,28 @@ impl SettingsOverlayRenderer {
             field_y += self.cell_height * 1.3;
         }
 
-        // Footer
+        // Navigation footer
+        let footer_y = viewport_height - self.cell_height * 3.5;
         labels.push(SettingsOverlayTextLabel {
-            text: "Advanced: edit ~/.glass/config.toml (hot-reloads automatically)".to_string(),
-            x: panel_x,
-            y: viewport_height - self.cell_height * 3.0,
+            text:
+                "Left/Right  section    Up/Down  field    Enter/Space  toggle    +/-  adjust value"
+                    .to_string(),
+            x: padding,
+            y: footer_y,
             color: Rgb {
-                r: 85,
-                g: 85,
-                b: 85,
+                r: 68,
+                g: 68,
+                b: 68,
+            },
+        });
+        labels.push(SettingsOverlayTextLabel {
+            text: "Esc  close    Tab  switch tab    Advanced: ~/.glass/config.toml".to_string(),
+            x: padding,
+            y: footer_y + self.cell_height * 1.2,
+            color: Rgb {
+                r: 68,
+                g: 68,
+                b: 68,
             },
         });
 
@@ -868,10 +925,12 @@ mod tests {
         let config = SettingsConfigSnapshot::default();
         let labels = renderer.build_settings_text(800.0, 600.0, &config, 0, 0, false, "");
         let text: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
-        // Sidebar sections present
-        assert!(text.contains(&"Font"));
-        assert!(text.contains(&"Agent Mode"));
-        assert!(text.contains(&"SOI"));
+        // Sidebar sections present (prefixed with "> " or "  ")
+        assert!(text
+            .iter()
+            .any(|t| t.contains("Font") && !t.contains("Font Family") && !t.contains("Font Size")));
+        assert!(text.iter().any(|t| t.contains("Agent Mode")));
+        assert!(text.iter().any(|t| t.contains("SOI")));
         // Font section fields present (section_index=0 is Font)
         assert!(text.iter().any(|t| t.contains("Font Family")));
         assert!(text.iter().any(|t| t.contains("Font Size")));
