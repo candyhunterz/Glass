@@ -793,6 +793,13 @@ Session Continuity:
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
+    // Windows: suppress the console window that would otherwise flash on screen
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
     // Linux: set PR_SET_PDEATHSIG so child is killed when parent dies
     // (prctl is Linux-specific; macOS does not have it)
     #[cfg(target_os = "linux")]
