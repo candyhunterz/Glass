@@ -3122,7 +3122,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Named(NamedKey::ArrowRight) => {
-                                if self.settings_section_index < 5 {
+                                if self.settings_section_index < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1 {
                                     self.settings_section_index += 1;
                                     self.settings_field_index = 0;
                                 }
