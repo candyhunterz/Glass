@@ -354,9 +354,9 @@ impl SettingsOverlayRenderer {
             x: tab_x + self.cell_width * 2.0,
             y: tab_y,
             color: Rgb {
-                r: 68,
-                g: 68,
-                b: 68,
+                r: 110,
+                g: 110,
+                b: 120,
             },
         });
 
@@ -441,9 +441,9 @@ impl SettingsOverlayRenderer {
             x: self.cell_width,
             y: viewport_height - self.cell_height * 2.0,
             color: Rgb {
-                r: 68,
-                g: 68,
-                b: 68,
+                r: 110,
+                g: 110,
+                b: 120,
             },
         });
 
@@ -560,9 +560,9 @@ impl SettingsOverlayRenderer {
             x: self.cell_width,
             y: viewport_height - self.cell_height * 2.0,
             color: Rgb {
-                r: 68,
-                g: 68,
-                b: 68,
+                r: 110,
+                g: 110,
+                b: 120,
             },
         });
 
@@ -717,9 +717,9 @@ impl SettingsOverlayRenderer {
             x: padding,
             y: footer_y,
             color: Rgb {
-                r: 68,
-                g: 68,
-                b: 68,
+                r: 110,
+                g: 110,
+                b: 120,
             },
         });
         labels.push(SettingsOverlayTextLabel {
@@ -727,9 +727,9 @@ impl SettingsOverlayRenderer {
             x: padding,
             y: footer_y + self.cell_height * 1.2,
             color: Rgb {
-                r: 68,
-                g: 68,
-                b: 68,
+                r: 110,
+                g: 110,
+                b: 120,
             },
         });
 
