@@ -769,11 +769,22 @@ fn try_spawn_agent(
         let prd_content = std::fs::read_to_string(&prd_path)
             .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path.display()));
         // Truncate to ~4000 words
+        let word_count = prd_content.split_whitespace().count();
         let prd_truncated: String = prd_content
             .split_whitespace()
             .take(4000)
             .collect::<Vec<_>>()
             .join(" ");
+        let prd_truncated = if word_count > 4000 {
+            format!(
+                "{}\n\n[PRD TRUNCATED — {} words omitted. Read the full file at {} for complete requirements.]",
+                prd_truncated,
+                word_count - 4000,
+                prd_rel,
+            )
+        } else {
+            prd_truncated
+        };
 
         let checkpoint_rel = orchestrator_config
             .map(|o| o.checkpoint_path.clone())
@@ -782,9 +793,7 @@ fn try_spawn_agent(
         let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
             .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());
 
-        let iterations_path = project_dir.join(".glass").join("iterations.tsv");
-        let iterations_content = std::fs::read_to_string(&iterations_path)
-            .unwrap_or_default();
+        let iterations_content = orchestrator::read_iterations_log_truncated(&project_root, 50);
         let iterations_content = if iterations_content.is_empty() {
             "No iterations yet.".to_string()
         } else {
@@ -3036,6 +3045,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     tracing::info!("Orchestrator: enabled by user");
                                     self.orchestrator.reset_stuck();
                                     self.orchestrator.iterations_since_checkpoint = 0;
+                                    self.orchestrator.iteration = 0;
 
                                     // Fix #1: Respawn agent with fresh system prompt
                                     // using the terminal's current CWD (not Glass's CWD)
@@ -3049,6 +3059,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .to_string_lossy()
                                                 .to_string()
                                         });
+
+                                    // Validate PRD exists
+                                    let prd_rel = self
+                                        .config
+                                        .agent
+                                        .as_ref()
+                                        .and_then(|a| a.orchestrator.as_ref())
+                                        .map(|o| o.prd_path.as_str())
+                                        .unwrap_or("PRD.md");
+                                    let prd_path = std::path::Path::new(&current_cwd).join(prd_rel);
+                                    if !prd_path.exists() {
+                                        tracing::warn!(
+                                            "Orchestrator: PRD not found at {} — orchestrating without project plan",
+                                            prd_path.display()
+                                        );
+                                    }
 
                                     // Capture context for handoff (gather from ctx before calling helper)
                                     let terminal_context = ctx

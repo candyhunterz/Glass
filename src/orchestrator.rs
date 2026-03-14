@@ -267,6 +267,31 @@ pub fn read_iterations_log(project_root: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+/// Read the last N lines of iterations.tsv (plus header) for the system prompt.
+pub fn read_iterations_log_truncated(project_root: &str, max_entries: usize) -> String {
+    let content = read_iterations_log(project_root);
+    if content.is_empty() {
+        return content;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= max_entries + 1 {
+        // +1 for header
+        return content;
+    }
+    // Keep header + last N entries
+    let header = lines[0];
+    let tail = &lines[lines.len() - max_entries..];
+    let skipped = lines.len() - max_entries - 1;
+    let mut result = String::from(header);
+    result.push('\n');
+    result.push_str(&format!("... ({skipped} earlier entries omitted)\n"));
+    for line in tail {
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
 /// Resolve the checkpoint file path for a given project root.
 pub fn checkpoint_path(project_root: &str, config: Option<&str>) -> std::path::PathBuf {
     let rel = config.unwrap_or(".glass/checkpoint.md");
@@ -407,6 +432,18 @@ mod tests {
         assert_eq!(state.last_checkpoint_completed, "feature-a");
         assert_eq!(state.last_checkpoint_next, "feature-b");
         assert_eq!(state.iterations_since_checkpoint, 0);
+    }
+
+    #[test]
+    fn iterations_truncation_keeps_header_and_tail() {
+        let input = "header\nline1\nline2\nline3\nline4\nline5\n";
+        let lines: Vec<&str> = input.lines().collect();
+        assert_eq!(lines.len(), 6); // header + 5 entries
+        let max = 3;
+        let header = lines[0];
+        let tail = &lines[lines.len() - max..];
+        assert_eq!(header, "header");
+        assert_eq!(tail, &["line3", "line4", "line5"]);
     }
 
     #[test]
