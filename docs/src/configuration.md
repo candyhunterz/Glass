@@ -2,6 +2,16 @@
 
 Glass is configured via a single TOML file. Changes are hot-reloaded at runtime — no restart required.
 
+## In-App Settings Overlay
+
+Press **Ctrl+Shift+,** (Cmd+Shift+, on macOS) to open the settings overlay. This provides a visual editor for common settings across three tabs:
+
+- **Settings** — Browse 6 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History) with a sidebar. Use arrow keys to navigate, Enter/Space to toggle booleans, and +/- to adjust numeric values. Changes are written directly to `~/.glass/config.toml` and hot-reloaded immediately.
+- **Shortcuts** — A two-column keyboard shortcut cheatsheet.
+- **About** — Version info, platform details, and license.
+
+Use Tab/Shift+Tab to switch between tabs, and Escape to close.
+
 ## Config File Location
 
 `~/.glass/config.toml` on all platforms (macOS, Linux, Windows).

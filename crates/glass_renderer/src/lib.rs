@@ -12,6 +12,7 @@ pub mod proposal_toast_renderer;
 pub mod rect_renderer;
 pub mod scrollbar;
 pub mod search_overlay_renderer;
+pub mod settings_overlay;
 pub mod status_bar;
 pub mod surface;
 pub mod tab_bar;
@@ -35,6 +36,7 @@ pub use proposal_toast_renderer::{
 pub use rect_renderer::{RectInstance, RectRenderer};
 pub use scrollbar::{ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
 pub use search_overlay_renderer::{SearchOverlayRenderer, SearchOverlayTextLabel};
+pub use settings_overlay::{SettingsOverlayRenderData, SettingsOverlayTextLabel, SettingsTab};
 pub use status_bar::{StatusBarRenderer, StatusLabel};
 pub use surface::GlassRenderer;
 pub use tab_bar::{TabBarRenderer, TabDisplayInfo, TabLabel};

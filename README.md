@@ -117,6 +117,14 @@ Code changes are isolated in git worktrees with SQLite crash recovery. A non-blo
 - Command context events from OSC 133 boundaries (started, finished with exit code and duration)
 - Scroll, filter by category (All/Agents/Locks/Observations/Messages), toggle verbose mode
 
+**Settings Overlay -- new in v3.1**
+- In-app settings editor (Ctrl+Shift+,) with three tabs: Settings, Shortcuts, About
+- Settings tab: sidebar with 6 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History)
+- Editable fields with Enter/Space to toggle booleans, +/- to adjust numeric values
+- Changes write back to ~/.glass/config.toml (hot-reload picks up changes immediately)
+- Shortcuts tab: two-column keyboard shortcut cheatsheet
+- About tab: version info, platform details, license
+
 **Multi-agent coordination**
 - Shared SQLite database (~/.glass/agents.db) in WAL mode
 - Agent registry scoped by project root
@@ -224,12 +232,13 @@ Glass auto-injects shell integration into your running shell. Command blocks app
 | Scroll down | Shift+PageDown | Shift+PageDown |
 | Select text | Mouse drag | Mouse drag |
 
-### Agent Mode
+### Overlays
 
 | Action | Windows / Linux | macOS |
 |---|---|---|
-| Open review overlay | Ctrl+Shift+A | Cmd+Shift+A |
-| Open activity stream | Ctrl+Shift+G | Cmd+Shift+G |
+| Settings | Ctrl+Shift+, | Cmd+Shift+, |
+| Review proposals | Ctrl+Shift+A | Cmd+Shift+A |
+| Activity stream | Ctrl+Shift+G | Cmd+Shift+G |
 
 ---
 
@@ -399,7 +408,7 @@ crates/
                            block manager (PromptActive -> InputActive -> Executing ->
                            Complete), OSC 133 scanner, shell integration injection
   glass_renderer/          wgpu GPU rendering: grid, blocks, tab bar, status bar,
-                           search overlay, pipeline visualization
+                           search overlay, pipeline visualization, settings overlay
   glass_mux/               Session multiplexer: tabs, split panes (binary tree layout)
   glass_history/           SQLite + FTS5 command history, query engine, pruning
   glass_snapshot/          Filesystem snapshots: FS watcher, blake3 blob store,

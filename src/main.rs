@@ -295,6 +295,20 @@ struct Processor {
     activity_scroll_offset: usize,
     /// Whether verbose mode is on (shows dismissed events).
     activity_verbose: bool,
+    /// Whether the settings overlay is visible.
+    settings_overlay_visible: bool,
+    /// Active tab in the settings overlay.
+    settings_overlay_tab: glass_renderer::SettingsTab,
+    /// Selected sidebar section index in the Settings tab.
+    settings_section_index: usize,
+    /// Selected field index within the current section.
+    settings_field_index: usize,
+    /// Whether a text field is in inline edit mode.
+    settings_editing: bool,
+    /// Buffer for inline text editing.
+    settings_edit_buffer: String,
+    /// Scroll offset for the Shortcuts tab.
+    settings_shortcuts_scroll: usize,
     /// Whether the proposal review overlay is open (Ctrl+Shift+A to toggle).
     agent_review_open: bool,
     /// Selected proposal index in the review overlay. Clamped to list bounds.
@@ -1951,6 +1965,118 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                 }
 
+                // Settings overlay (fullscreen, on top of everything)
+                if self.settings_overlay_visible {
+                    let config_snapshot =
+                        glass_renderer::settings_overlay::SettingsConfigSnapshot {
+                            font_family: self.config.font_family.clone(),
+                            font_size: self.config.font_size,
+                            agent_enabled: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| a.mode != glass_core::agent_runtime::AgentMode::Off)
+                                .unwrap_or(false),
+                            agent_mode: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| format!("{:?}", a.mode))
+                                .unwrap_or_else(|| "Off".to_string()),
+                            agent_budget: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| a.max_budget_usd)
+                                .unwrap_or(1.0),
+                            agent_cooldown: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| a.cooldown_secs)
+                                .unwrap_or(30),
+                            soi_enabled: self
+                                .config
+                                .soi
+                                .as_ref()
+                                .map(|s| s.enabled)
+                                .unwrap_or(true),
+                            soi_shell_summary: self
+                                .config
+                                .soi
+                                .as_ref()
+                                .map(|s| s.shell_summary)
+                                .unwrap_or(false),
+                            soi_min_lines: self
+                                .config
+                                .soi
+                                .as_ref()
+                                .map(|s| s.min_lines)
+                                .unwrap_or(0),
+                            snapshot_enabled: self
+                                .config
+                                .snapshot
+                                .as_ref()
+                                .map(|s| s.enabled)
+                                .unwrap_or(true),
+                            snapshot_max_mb: self
+                                .config
+                                .snapshot
+                                .as_ref()
+                                .map(|s| s.max_size_mb)
+                                .unwrap_or(500),
+                            snapshot_retention_days: self
+                                .config
+                                .snapshot
+                                .as_ref()
+                                .map(|s| s.retention_days)
+                                .unwrap_or(30),
+                            pipes_enabled: self
+                                .config
+                                .pipes
+                                .as_ref()
+                                .map(|p| p.enabled)
+                                .unwrap_or(true),
+                            pipes_auto_expand: self
+                                .config
+                                .pipes
+                                .as_ref()
+                                .map(|p| p.auto_expand)
+                                .unwrap_or(true),
+                            pipes_max_capture_mb: self
+                                .config
+                                .pipes
+                                .as_ref()
+                                .map(|p| p.max_capture_mb)
+                                .unwrap_or(10),
+                            history_max_output_kb: self
+                                .config
+                                .history
+                                .as_ref()
+                                .map(|h| h.max_output_capture_kb)
+                                .unwrap_or(50),
+                        };
+
+                    let render_data = glass_renderer::SettingsOverlayRenderData {
+                        tab: self.settings_overlay_tab,
+                        section_index: self.settings_section_index,
+                        field_index: self.settings_field_index,
+                        editing: self.settings_editing,
+                        edit_buffer: self.settings_edit_buffer.clone(),
+                        config: config_snapshot,
+                        shortcuts_scroll: self.settings_shortcuts_scroll,
+                    };
+
+                    ctx.frame_renderer.draw_settings_overlay(
+                        ctx.renderer.device(),
+                        ctx.renderer.queue(),
+                        &view,
+                        sc.width,
+                        sc.height,
+                        &render_data,
+                    );
+                }
+
                 frame.present();
 
                 if !ctx.first_frame_logged {
@@ -2373,6 +2499,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                                 return;
                             }
+                            // Ctrl+Shift+,: Toggle settings overlay.
+                            Key::Character(c) if c.as_str() == "<" || c.as_str() == "," => {
+                                self.settings_overlay_visible = !self.settings_overlay_visible;
+                                if !self.settings_overlay_visible {
+                                    self.settings_overlay_tab = Default::default();
+                                    self.settings_section_index = 0;
+                                    self.settings_field_index = 0;
+                                    self.settings_editing = false;
+                                    self.settings_edit_buffer.clear();
+                                    self.settings_shortcuts_scroll = 0;
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
                             // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
                             Key::Character(c)
                                 if c.as_str().eq_ignore_ascii_case("y")
@@ -2666,6 +2806,185 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // When the settings overlay is open, intercept all navigation keys.
+                    if self.settings_overlay_visible && event.state == ElementState::Pressed {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                if self.settings_editing {
+                                    // Cancel inline edit
+                                    self.settings_editing = false;
+                                    self.settings_edit_buffer.clear();
+                                } else {
+                                    self.settings_overlay_visible = false;
+                                    self.settings_overlay_tab = Default::default();
+                                    self.settings_section_index = 0;
+                                    self.settings_field_index = 0;
+                                    self.settings_shortcuts_scroll = 0;
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
+                                self.settings_overlay_tab = self.settings_overlay_tab.prev();
+                                self.settings_field_index = 0;
+                                self.settings_shortcuts_scroll = 0;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Tab) => {
+                                self.settings_overlay_tab = self.settings_overlay_tab.next();
+                                self.settings_field_index = 0;
+                                self.settings_shortcuts_scroll = 0;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                match self.settings_overlay_tab {
+                                    glass_renderer::SettingsTab::Settings => {
+                                        if self.settings_field_index > 0 {
+                                            self.settings_field_index -= 1;
+                                        } else if self.settings_section_index > 0 {
+                                            self.settings_section_index -= 1;
+                                            self.settings_field_index = 0;
+                                        }
+                                    }
+                                    glass_renderer::SettingsTab::Shortcuts => {
+                                        self.settings_shortcuts_scroll =
+                                            self.settings_shortcuts_scroll.saturating_sub(1);
+                                    }
+                                    _ => {}
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                match self.settings_overlay_tab {
+                                    glass_renderer::SettingsTab::Settings => {
+                                        self.settings_field_index += 1;
+                                        // Clamping happens in renderer (fields_for_section length)
+                                    }
+                                    glass_renderer::SettingsTab::Shortcuts => {
+                                        self.settings_shortcuts_scroll += 1;
+                                    }
+                                    _ => {}
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowLeft) => {
+                                if self.settings_section_index > 0 {
+                                    self.settings_section_index -= 1;
+                                    self.settings_field_index = 0;
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowRight) => {
+                                if self.settings_section_index < 5 {
+                                    self.settings_section_index += 1;
+                                    self.settings_field_index = 0;
+                                }
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                                if matches!(
+                                    self.settings_overlay_tab,
+                                    glass_renderer::SettingsTab::Settings
+                                ) {
+                                    if let Some((section, key, value)) = handle_settings_activate(
+                                        &self.config,
+                                        self.settings_section_index,
+                                        self.settings_field_index,
+                                    ) {
+                                        if let Some(config_path) =
+                                            glass_core::config::GlassConfig::config_path()
+                                        {
+                                            if let Err(e) = glass_core::config::update_config_field(
+                                                &config_path,
+                                                section,
+                                                key,
+                                                &value,
+                                            ) {
+                                                tracing::warn!(
+                                                    "Settings: failed to write config: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    ctx.window.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
+                                if matches!(
+                                    self.settings_overlay_tab,
+                                    glass_renderer::SettingsTab::Settings
+                                ) {
+                                    if let Some((section, key, value)) = handle_settings_increment(
+                                        &self.config,
+                                        self.settings_section_index,
+                                        self.settings_field_index,
+                                        true,
+                                    ) {
+                                        if let Some(config_path) =
+                                            glass_core::config::GlassConfig::config_path()
+                                        {
+                                            if let Err(e) = glass_core::config::update_config_field(
+                                                &config_path,
+                                                section,
+                                                key,
+                                                &value,
+                                            ) {
+                                                tracing::warn!(
+                                                    "Settings: failed to write config: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    ctx.window.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Character(c) if c.as_str() == "-" => {
+                                if matches!(
+                                    self.settings_overlay_tab,
+                                    glass_renderer::SettingsTab::Settings
+                                ) {
+                                    if let Some((section, key, value)) = handle_settings_increment(
+                                        &self.config,
+                                        self.settings_section_index,
+                                        self.settings_field_index,
+                                        false,
+                                    ) {
+                                        if let Some(config_path) =
+                                            glass_core::config::GlassConfig::config_path()
+                                        {
+                                            if let Err(e) = glass_core::config::update_config_field(
+                                                &config_path,
+                                                section,
+                                                key,
+                                                &value,
+                                            ) {
+                                                tracing::warn!(
+                                                    "Settings: failed to write config: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    ctx.window.request_redraw();
+                                }
+                                return;
+                            }
+                            _ => {
+                                return; // Consume all other keys
                             }
                         }
                     }
@@ -5321,6 +5640,13 @@ fn main() {
                 activity_view_filter: Default::default(),
                 activity_scroll_offset: 0,
                 activity_verbose: false,
+                settings_overlay_visible: false,
+                settings_overlay_tab: Default::default(),
+                settings_section_index: 0,
+                settings_field_index: 0,
+                settings_editing: false,
+                settings_edit_buffer: String::new(),
+                settings_shortcuts_scroll: 0,
                 agent_review_open: false,
                 proposal_review_selected: 0,
                 proposal_diff_cache: None,
@@ -5402,6 +5728,154 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+}
+
+/// Handle Enter/Space on a settings field: toggles booleans, cycles enums.
+/// Returns (section, key, new_value) if a config write is needed.
+fn handle_settings_activate(
+    config: &glass_core::config::GlassConfig,
+    section_index: usize,
+    field_index: usize,
+) -> Option<(Option<&'static str>, &'static str, String)> {
+    match (section_index, field_index) {
+        // Agent Mode: enabled (toggle mode Off <-> Watch)
+        (1, 0) => {
+            let current = config.agent.as_ref().map(|a| a.mode).unwrap_or_default();
+            let new_mode = if current == glass_core::agent_runtime::AgentMode::Off {
+                "\"Watch\""
+            } else {
+                "\"Off\""
+            };
+            Some((Some("agent"), "mode", new_mode.to_string()))
+        }
+        // Agent Mode: mode (cycle Watch -> Assist -> Autonomous -> Off)
+        (1, 1) => {
+            let current = config.agent.as_ref().map(|a| a.mode).unwrap_or_default();
+            let new_mode = match current {
+                glass_core::agent_runtime::AgentMode::Off => "\"Watch\"",
+                glass_core::agent_runtime::AgentMode::Watch => "\"Assist\"",
+                glass_core::agent_runtime::AgentMode::Assist => "\"Autonomous\"",
+                glass_core::agent_runtime::AgentMode::Autonomous => "\"Off\"",
+            };
+            Some((Some("agent"), "mode", new_mode.to_string()))
+        }
+        // SOI: enabled
+        (2, 0) => {
+            let current = config.soi.as_ref().map(|s| s.enabled).unwrap_or(true);
+            Some((Some("soi"), "enabled", (!current).to_string()))
+        }
+        // SOI: shell_summary
+        (2, 1) => {
+            let current = config
+                .soi
+                .as_ref()
+                .map(|s| s.shell_summary)
+                .unwrap_or(false);
+            Some((Some("soi"), "shell_summary", (!current).to_string()))
+        }
+        // Snapshots: enabled
+        (3, 0) => {
+            let current = config.snapshot.as_ref().map(|s| s.enabled).unwrap_or(true);
+            Some((Some("snapshot"), "enabled", (!current).to_string()))
+        }
+        // Pipes: enabled
+        (4, 0) => {
+            let current = config.pipes.as_ref().map(|p| p.enabled).unwrap_or(true);
+            Some((Some("pipes"), "enabled", (!current).to_string()))
+        }
+        // Pipes: auto_expand
+        (4, 1) => {
+            let current = config.pipes.as_ref().map(|p| p.auto_expand).unwrap_or(true);
+            Some((Some("pipes"), "auto_expand", (!current).to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Handle +/- on a settings number field.
+/// Returns (section, key, new_value) if a config write is needed.
+fn handle_settings_increment(
+    config: &glass_core::config::GlassConfig,
+    section_index: usize,
+    field_index: usize,
+    increment: bool,
+) -> Option<(Option<&'static str>, &'static str, String)> {
+    let delta: i64 = if increment { 1 } else { -1 };
+    match (section_index, field_index) {
+        // Font size: step 0.5
+        (0, 1) => {
+            let current = config.font_size;
+            let new_val = (current + delta as f32 * 0.5).clamp(6.0, 72.0);
+            Some((None, "font_size", format!("{:.1}", new_val)))
+        }
+        // Agent budget: step 0.50
+        (1, 2) => {
+            let current = config
+                .agent
+                .as_ref()
+                .map(|a| a.max_budget_usd)
+                .unwrap_or(1.0);
+            let new_val = (current + delta as f64 * 0.5).max(0.0);
+            Some((Some("agent"), "max_budget_usd", format!("{:.2}", new_val)))
+        }
+        // Agent cooldown: step 5
+        (1, 3) => {
+            let current = config.agent.as_ref().map(|a| a.cooldown_secs).unwrap_or(30) as i64;
+            let new_val = (current + delta * 5).max(0);
+            Some((Some("agent"), "cooldown_secs", new_val.to_string()))
+        }
+        // SOI min_lines: step 1
+        (2, 2) => {
+            let current = config.soi.as_ref().map(|s| s.min_lines).unwrap_or(0) as i64;
+            let new_val = (current + delta).max(0);
+            Some((Some("soi"), "min_lines", new_val.to_string()))
+        }
+        // Snapshot max_mb: step 100
+        (3, 1) => {
+            let current = config
+                .snapshot
+                .as_ref()
+                .map(|s| s.max_size_mb)
+                .unwrap_or(500) as i64;
+            let new_val = (current + delta * 100).max(100);
+            Some((Some("snapshot"), "max_size_mb", new_val.to_string()))
+        }
+        // Snapshot retention_days: step 1
+        (3, 2) => {
+            let current = config
+                .snapshot
+                .as_ref()
+                .map(|s| s.retention_days)
+                .unwrap_or(30) as i64;
+            let new_val = (current + delta).max(1);
+            Some((Some("snapshot"), "retention_days", new_val.to_string()))
+        }
+        // Pipes max_capture_mb: step 1
+        (4, 2) => {
+            let current = config
+                .pipes
+                .as_ref()
+                .map(|p| p.max_capture_mb)
+                .unwrap_or(10) as i64;
+            let new_val = (current + delta).max(1);
+            Some((Some("pipes"), "max_capture_mb", new_val.to_string()))
+        }
+        // History max_output_kb: step 10
+        (5, 0) => {
+            let current = config
+                .history
+                .as_ref()
+                .map(|h| h.max_output_capture_kb)
+                .unwrap_or(50) as i64;
+            let new_val = (current + delta * 10).max(10);
+            Some((
+                Some("history"),
+                "max_output_capture_kb",
+                new_val.to_string(),
+            ))
+        }
+        _ => None,
     }
 }
 

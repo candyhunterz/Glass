@@ -2443,6 +2443,148 @@ impl FrameRenderer {
         queue.submit([encoder.finish()]);
     }
 
+    /// Draw the settings overlay (fullscreen, on top of everything).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_settings_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        data: &crate::settings_overlay::SettingsOverlayRenderData,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        let overlay =
+            crate::settings_overlay::SettingsOverlayRenderer::new(cell_width, cell_height);
+
+        // 1. Backdrop rect
+        let backdrop = overlay.build_backdrop_rect(width as f32, height as f32);
+        self.rect_renderer
+            .prepare(device, queue, &[backdrop], width, height);
+
+        // 2. Build text labels: header + active tab content
+        let mut all_labels = overlay.build_header_text(data.tab, width as f32);
+        match data.tab {
+            crate::settings_overlay::SettingsTab::Settings => {
+                all_labels.extend(overlay.build_settings_text(
+                    width as f32,
+                    height as f32,
+                    &data.config,
+                    data.section_index,
+                    data.field_index,
+                    data.editing,
+                    &data.edit_buffer,
+                ));
+            }
+            crate::settings_overlay::SettingsTab::Shortcuts => {
+                all_labels.extend(overlay.build_shortcuts_text(
+                    width as f32,
+                    height as f32,
+                    data.shortcuts_scroll,
+                ));
+            }
+            crate::settings_overlay::SettingsTab::About => {
+                all_labels.extend(overlay.build_about_text(width as f32, height as f32));
+            }
+        }
+
+        // 3-6. Build buffers, prepare, render (identical to draw_activity_overlay)
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut settings_buffers: Vec<Buffer> = Vec::with_capacity(all_labels.len());
+        for label in &all_labels {
+            let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+            buffer.set_size(
+                &mut self.glyph_cache.font_system,
+                Some(width as f32 - label.x),
+                Some(cell_height),
+            );
+            buffer.set_text(
+                &mut self.glyph_cache.font_system,
+                &label.text,
+                &Attrs::new()
+                    .family(Family::Name(font_family))
+                    .color(GlyphonColor::rgba(
+                        label.color.r,
+                        label.color.g,
+                        label.color.b,
+                        255,
+                    )),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+            settings_buffers.push(buffer);
+        }
+
+        let text_areas: Vec<TextArea<'_>> = all_labels
+            .iter()
+            .zip(settings_buffers.iter())
+            .map(|(label, buffer)| TextArea {
+                buffer,
+                left: label.x,
+                top: label.y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                custom_glyphs: &[],
+            })
+            .collect();
+
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Settings overlay text prepare error: {:?}", e);
+        }
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("settings_overlay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer.render(&mut pass, 1);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Settings overlay text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Free unused glyph atlas space between frames.
     pub fn trim(&mut self) {
         self.glyph_cache.trim();

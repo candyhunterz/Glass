@@ -371,6 +371,62 @@ impl GlassConfig {
     }
 }
 
+/// Update a single field in a TOML config file.
+///
+/// If `section` is None, updates a top-level key. If `section` is Some,
+/// updates a key within that `[section]`. Creates the section if it doesn't
+/// exist. The hot-reload watcher will detect the file change.
+pub fn update_config_field(
+    path: &std::path::Path,
+    section: Option<&str>,
+    key: &str,
+    value: &str,
+) -> Result<(), ConfigError> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml::Value = content
+        .parse()
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+
+    let table = doc.as_table_mut().ok_or_else(|| ConfigError {
+        message: "Config file is not a TOML table".to_string(),
+        line: None,
+        column: None,
+        snippet: None,
+    })?;
+
+    // Parse the value string into a TOML value
+    let parsed_value: toml::Value = value
+        .parse()
+        .unwrap_or(toml::Value::String(value.to_string()));
+
+    if let Some(section_name) = section {
+        let section_table = table
+            .entry(section_name)
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if let Some(t) = section_table.as_table_mut() {
+            t.insert(key.to_string(), parsed_value);
+        }
+    } else {
+        table.insert(key.to_string(), parsed_value);
+    }
+
+    let output = toml::to_string_pretty(&doc).map_err(|e| ConfigError {
+        message: format!("Failed to serialize config: {}", e),
+        line: None,
+        column: None,
+        snippet: None,
+    })?;
+
+    std::fs::write(path, output).map_err(|e| ConfigError {
+        message: format!("Failed to write config: {}", e),
+        line: None,
+        column: None,
+        snippet: None,
+    })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,5 +751,31 @@ mod tests {
         assert_eq!(perms.edit_files, PermissionLevel::Approve);
         assert_eq!(perms.run_commands, PermissionLevel::Auto);
         assert_eq!(perms.git_operations, PermissionLevel::Never);
+    }
+
+    // === update_config_field tests ===
+
+    #[test]
+    fn test_update_config_field_creates_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "font_size = 14.0\n").unwrap();
+
+        update_config_field(&path, None, "font_size", "16.0").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("16.0"));
+    }
+
+    #[test]
+    fn test_update_config_field_nested_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[soi]\nenabled = true\n").unwrap();
+
+        update_config_field(&path, Some("soi"), "enabled", "false").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("enabled = false"));
     }
 }
