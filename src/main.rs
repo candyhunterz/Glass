@@ -821,11 +821,17 @@ CONTEXT REFRESH:
 When you've completed 2-3 features and context is getting heavy, emit:
 GLASS_CHECKPOINT: {{"completed": "<summary>", "next": "<next PRD item>"}}
 
+PROJECT COMPLETE:
+When ALL items in the project plan are implemented, tested, and committed, emit:
+GLASS_DONE: <brief summary of what was built>
+This stops orchestration and tells Claude Code to do a final commit.
+
 RESPONSE FORMAT:
 Respond with ONLY one of:
 1. Text to type into the terminal (sent as-is to Claude Code)
 2. GLASS_WAIT (Claude Code is still working, check again later)
 3. GLASS_CHECKPOINT: {{"completed": "...", "next": "..."}}
+4. GLASS_DONE: <summary> (all PRD items complete)
 
 No explanations, no meta-commentary. Just the response."#
         )
@@ -5267,6 +5273,36 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(session) = ctx.session_mux.focused_session() {
                                 let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
                                 let bytes = msg.as_bytes().to_vec();
+                                let _ = session
+                                    .pty_sender
+                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            }
+                        }
+                    }
+                    orchestrator::AgentResponse::Done { summary } => {
+                        tracing::info!("Orchestrator: project complete — {}", summary);
+
+                        orchestrator::append_iteration_log(
+                            self.orchestrator.iteration,
+                            "done",
+                            "complete",
+                            &if summary.is_empty() {
+                                "Project complete".to_string()
+                            } else {
+                                summary.clone()
+                            },
+                        );
+
+                        self.orchestrator.active = false;
+
+                        // Tell Claude Code to do a final commit
+                        if let Some(ctx) = self.windows.values().next() {
+                            if let Some(session) = ctx.session_mux.focused_session() {
+                                let msg = format!(
+                                    "All PRD items are complete. Commit any remaining changes with a summary commit message.{}\n",
+                                    if summary.is_empty() { String::new() } else { format!(" Summary: {}", summary) }
+                                );
+                                let bytes = msg.into_bytes();
                                 let _ = session
                                     .pty_sender
                                     .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));

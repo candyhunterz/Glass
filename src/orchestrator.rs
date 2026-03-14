@@ -15,6 +15,10 @@ pub enum AgentResponse {
         completed: String,
         next: String,
     },
+    /// All PRD items are complete; stop orchestration.
+    Done {
+        summary: String,
+    },
 }
 
 /// Parse a raw Glass Agent response into a structured action.
@@ -23,6 +27,16 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
 
     if trimmed == "GLASS_WAIT" {
         return AgentResponse::Wait;
+    }
+
+    if trimmed.starts_with("GLASS_DONE") {
+        let summary = trimmed
+            .strip_prefix("GLASS_DONE:")
+            .or_else(|| trimmed.strip_prefix("GLASS_DONE"))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return AgentResponse::Done { summary };
     }
 
     let checkpoint_marker = "GLASS_CHECKPOINT:";
@@ -282,5 +296,25 @@ mod tests {
         state.record_response("fix the test");
         state.reset_stuck();
         assert!(!state.record_response("fix the test")); // reset, only 1 now
+    }
+
+    #[test]
+    fn parse_done() {
+        assert_eq!(
+            parse_agent_response("GLASS_DONE: Built all 5 pages of DevPulse"),
+            AgentResponse::Done {
+                summary: "Built all 5 pages of DevPulse".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_done_no_summary() {
+        assert_eq!(
+            parse_agent_response("GLASS_DONE"),
+            AgentResponse::Done {
+                summary: String::new()
+            }
+        );
     }
 }
