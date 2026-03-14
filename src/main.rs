@@ -5633,6 +5633,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
                     }
+                    orchestrator::AgentResponse::Verify { commands } => {
+                        tracing::info!(
+                            "Orchestrator: agent registered {} verify command(s)",
+                            commands.len()
+                        );
+                        let baseline = self
+                            .orchestrator
+                            .metric_baseline
+                            .get_or_insert_with(orchestrator::MetricBaseline::new);
+                        baseline.commands = commands;
+                    }
                 }
 
                 // Request redraw for status bar update

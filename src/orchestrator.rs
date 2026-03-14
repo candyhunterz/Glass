@@ -5,6 +5,139 @@
 
 use std::hash::{Hash, Hasher};
 
+/// A verification command with its name and command string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifyCommand {
+    pub name: String,
+    pub cmd: String,
+}
+
+/// Result of running a verification command.
+#[derive(Debug, Clone)]
+pub struct VerifyResult {
+    pub command_name: String,
+    pub exit_code: i32,
+    pub tests_passed: Option<u32>,
+    pub tests_failed: Option<u32>,
+    pub errors: Vec<String>,
+}
+
+/// Tracks verification baseline and results across iterations.
+#[derive(Debug, Clone)]
+pub struct MetricBaseline {
+    pub commands: Vec<VerifyCommand>,
+    pub baseline_results: Vec<VerifyResult>,
+    pub last_results: Vec<VerifyResult>,
+    pub keep_count: u32,
+    pub revert_count: u32,
+}
+
+impl MetricBaseline {
+    pub fn new() -> Self {
+        Self {
+            commands: Vec::new(),
+            baseline_results: Vec::new(),
+            last_results: Vec::new(),
+            keep_count: 0,
+            revert_count: 0,
+        }
+    }
+
+    /// Check if current results represent a regression from baseline.
+    /// Regression = pass count dropped, fail count increased, or exit code went from 0 to non-zero.
+    pub fn check_regression(baseline: &[VerifyResult], current: &[VerifyResult]) -> bool {
+        for (b, c) in baseline.iter().zip(current.iter()) {
+            // Build broke (exit code regressed)
+            if b.exit_code == 0 && c.exit_code != 0 {
+                return true;
+            }
+            // Test pass count dropped
+            if let (Some(bp), Some(cp)) = (b.tests_passed, c.tests_passed) {
+                if cp < bp {
+                    return true;
+                }
+            }
+            // Test fail count increased
+            if let (Some(bf), Some(cf)) = (b.tests_failed, c.tests_failed) {
+                if cf > bf {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Update baseline when tests are added (floor rises).
+    pub fn update_baseline_if_improved(&mut self, current: &[VerifyResult]) {
+        for (b, c) in self.baseline_results.iter_mut().zip(current.iter()) {
+            if let (Some(bp), Some(cp)) = (b.tests_passed, c.tests_passed) {
+                if let (Some(bf), Some(cf)) = (b.tests_failed, c.tests_failed) {
+                    if cp > bp && cf <= bf {
+                        b.tests_passed = Some(cp);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Auto-detect verification commands based on project marker files.
+pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
+    let root = std::path::Path::new(project_root);
+
+    if root.join("Cargo.toml").exists() {
+        return vec![VerifyCommand {
+            name: "cargo test".to_string(),
+            cmd: "cargo test".to_string(),
+        }];
+    }
+
+    if root.join("package.json").exists() {
+        if let Ok(content) = std::fs::read_to_string(root.join("package.json")) {
+            if content.contains("\"test\"") {
+                return vec![VerifyCommand {
+                    name: "npm test".to_string(),
+                    cmd: "npm test".to_string(),
+                }];
+            }
+        }
+    }
+
+    if root.join("pyproject.toml").exists() || root.join("setup.py").exists() {
+        return vec![VerifyCommand {
+            name: "pytest".to_string(),
+            cmd: "pytest".to_string(),
+        }];
+    }
+
+    if root.join("go.mod").exists() {
+        return vec![VerifyCommand {
+            name: "go test".to_string(),
+            cmd: "go test ./...".to_string(),
+        }];
+    }
+
+    if root.join("tsconfig.json").exists() {
+        return vec![VerifyCommand {
+            name: "tsc".to_string(),
+            cmd: "npx tsc --noEmit".to_string(),
+        }];
+    }
+
+    if root.join("Makefile").exists() {
+        if let Ok(content) = std::fs::read_to_string(root.join("Makefile")) {
+            if content.contains("test:") {
+                return vec![VerifyCommand {
+                    name: "make test".to_string(),
+                    cmd: "make test".to_string(),
+                }];
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 /// Parsed response from the Glass Agent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentResponse {
@@ -16,6 +149,8 @@ pub enum AgentResponse {
     Checkpoint { completed: String, next: String },
     /// All PRD items are complete; stop orchestration.
     Done { summary: String },
+    /// Agent discovered additional verification commands.
+    Verify { commands: Vec<VerifyCommand> },
 }
 
 /// Parse a raw Glass Agent response into a structured action.
@@ -70,6 +205,48 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
                         .unwrap_or("")
                         .to_string();
                     return AgentResponse::Checkpoint { completed, next };
+                }
+            }
+        }
+    }
+
+    let verify_marker = "GLASS_VERIFY:";
+    if let Some(start) = trimmed.find(verify_marker) {
+        let after = trimmed[start + verify_marker.len()..].trim();
+        if let Some(json_start) = after.find('{') {
+            let json_slice = &after[json_start..];
+            let mut depth = 0usize;
+            let mut end = None;
+            for (i, ch) in json_slice.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            end = Some(i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(end_idx) = end {
+                if let Ok(val) =
+                    serde_json::from_str::<serde_json::Value>(&json_slice[..end_idx])
+                {
+                    if let Some(cmds) = val.get("commands").and_then(|c| c.as_array()) {
+                        let commands: Vec<VerifyCommand> = cmds
+                            .iter()
+                            .filter_map(|c| {
+                                let name = c.get("name")?.as_str()?.to_string();
+                                let cmd = c.get("cmd")?.as_str()?.to_string();
+                                Some(VerifyCommand { name, cmd })
+                            })
+                            .collect();
+                        if !commands.is_empty() {
+                            return AgentResponse::Verify { commands };
+                        }
+                    }
                 }
             }
         }
@@ -177,6 +354,10 @@ pub struct OrchestratorState {
     pub recent_fingerprints: Vec<StateFingerprint>,
     /// Whether the last fingerprint check detected stuck (consumed by response handler).
     pub fingerprint_stuck: bool,
+    /// Metric guard: verification baseline and results tracking.
+    pub metric_baseline: Option<MetricBaseline>,
+    /// Git commit SHA at the start of the current iteration (for revert).
+    pub last_good_commit: Option<String>,
 }
 
 impl OrchestratorState {
@@ -194,6 +375,8 @@ impl OrchestratorState {
             response_pending: false,
             recent_fingerprints: Vec::new(),
             fingerprint_stuck: false,
+            metric_baseline: None,
+            last_good_commit: None,
         }
     }
 
@@ -722,5 +905,110 @@ mod tests {
         let context = build_orchestrator_context(&[], Some(1), None, &[]);
         assert!(context.contains("[COMMAND_FAILED]"));
         assert!(context.contains("[RECENT_OUTPUT]"));
+    }
+
+    #[test]
+    fn verify_result_no_regression_same_counts() {
+        let baseline = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        assert!(!MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn verify_result_regression_on_fail_increase() {
+        let baseline = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 1,
+            tests_passed: Some(8),
+            tests_failed: Some(2),
+            errors: vec!["error".to_string()],
+        }];
+        assert!(MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn verify_result_no_regression_on_added_tests() {
+        let baseline = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(15),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        assert!(!MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn verify_result_regression_on_build_failure() {
+        let baseline = vec![VerifyResult {
+            command_name: "build".to_string(),
+            exit_code: 0,
+            tests_passed: None,
+            tests_failed: None,
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "build".to_string(),
+            exit_code: 1,
+            tests_passed: None,
+            tests_failed: None,
+            errors: vec!["compile error".to_string()],
+        }];
+        assert!(MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn auto_detect_rust_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "cargo test");
+    }
+
+    #[test]
+    fn auto_detect_no_project_returns_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn parse_verify_commands() {
+        let raw = r#"GLASS_VERIFY: {"commands": [{"name": "integration", "cmd": "./test.sh"}]}"#;
+        match parse_agent_response(raw) {
+            AgentResponse::Verify { commands } => {
+                assert_eq!(commands.len(), 1);
+                assert_eq!(commands[0].name, "integration");
+                assert_eq!(commands[0].cmd, "./test.sh");
+            }
+            other => panic!("Expected Verify, got {:?}", other),
+        }
     }
 }
