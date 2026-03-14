@@ -1397,16 +1397,21 @@ fn start_artifact_watcher(
             let target = target_filename;
             let mut watcher = match recommended_watcher(move |res: Result<notify::Event, _>| {
                 if let Ok(ev) = res {
-                    let is_target_file = ev.paths.iter().any(|p| {
-                        p.file_name()
-                            .map(|n| n == target.as_os_str())
-                            .unwrap_or(false)
-                    });
-                    if is_target_file {
-                        let _ = proxy_clone.send_event(AppEvent::OrchestratorSilence {
-                            window_id,
-                            session_id,
+                    if matches!(
+                        ev.kind,
+                        notify::EventKind::Create(_) | notify::EventKind::Modify(_)
+                    ) {
+                        let is_target_file = ev.paths.iter().any(|p| {
+                            p.file_name()
+                                .map(|n| n == target.as_os_str())
+                                .unwrap_or(false)
                         });
+                        if is_target_file {
+                            let _ = proxy_clone.send_event(AppEvent::OrchestratorSilence {
+                                window_id,
+                                session_id,
+                            });
+                        }
                     }
                 }
             }) {
@@ -1420,9 +1425,7 @@ fn start_artifact_watcher(
                 tracing::warn!("Failed to watch artifact dir: {e}");
                 return;
             }
-            loop {
-                std::thread::park(); // Keep alive until unparked; loop guards against spurious wakeups
-            }
+            std::thread::park(); // Keep watcher alive; unpark to shut down
         })
         .ok()?;
 
@@ -3392,6 +3395,73 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             tracing::info!(
                                                 "Metric guard initialized with {cmd_count} commands"
                                             );
+                                        }
+                                    }
+
+                                    // Run initial baseline verification on background thread
+                                    if let Some(ref baseline) = self.orchestrator.metric_baseline {
+                                        if !baseline.commands.is_empty() {
+                                            let commands = baseline.commands.clone();
+                                            let verify_cwd = current_cwd.clone();
+                                            let proxy = self.proxy.clone();
+                                            let bl_session_id = self
+                                                .windows
+                                                .get(&window_id)
+                                                .and_then(|ctx| ctx.session_mux.focused_session())
+                                                .map(|s| s.id);
+                                            if let Some(sid) = bl_session_id {
+                                                std::thread::Builder::new()
+                                                    .name("Glass verify baseline".into())
+                                                    .spawn(move || {
+                                                        use glass_core::event::VerifyEventResult;
+                                                        let results: Vec<VerifyEventResult> = commands
+                                                            .iter()
+                                                            .map(|cmd| {
+                                                                let output = if cfg!(target_os = "windows") {
+                                                                    std::process::Command::new("cmd")
+                                                                        .args(["/C", &cmd.cmd])
+                                                                        .current_dir(&verify_cwd)
+                                                                        .output()
+                                                                } else {
+                                                                    std::process::Command::new("sh")
+                                                                        .args(["-c", &cmd.cmd])
+                                                                        .current_dir(&verify_cwd)
+                                                                        .output()
+                                                                };
+                                                                match output {
+                                                                    Ok(o) => {
+                                                                        let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                                                                        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                                                                        let combined = format!("{stdout}\n{stderr}");
+                                                                        let (passed, failed) = parse_test_counts_from_output(&combined);
+                                                                        VerifyEventResult {
+                                                                            command_name: cmd.name.clone(),
+                                                                            exit_code: o.status.code().unwrap_or(-1),
+                                                                            tests_passed: passed,
+                                                                            tests_failed: failed,
+                                                                            output: combined,
+                                                                        }
+                                                                    }
+                                                                    Err(e) => VerifyEventResult {
+                                                                        command_name: cmd.name.clone(),
+                                                                        exit_code: -1,
+                                                                        tests_passed: None,
+                                                                        tests_failed: None,
+                                                                        output: format!("Failed to run: {e}"),
+                                                                    },
+                                                                }
+                                                            })
+                                                            .collect();
+                                                        let _ = proxy.send_event(AppEvent::VerifyComplete {
+                                                            window_id,
+                                                            session_id: sid,
+                                                            results,
+                                                        });
+                                                    })
+                                                    .ok();
+                                                // Block context sends until baseline is established
+                                                self.orchestrator.response_pending = true;
+                                            }
                                         }
                                     }
 
