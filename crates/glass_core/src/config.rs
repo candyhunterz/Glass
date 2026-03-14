@@ -130,6 +130,12 @@ pub struct OrchestratorSection {
     /// Max identical responses before stuck detection triggers. Default 3.
     #[serde(default = "default_orch_max_retries")]
     pub max_retries_before_stuck: u32,
+    /// Seconds after output stops before fast-triggering the orchestrator. Default 5.
+    #[serde(default = "default_orch_fast_trigger")]
+    pub fast_trigger_secs: u64,
+    /// Optional regex pattern to detect the agent's prompt for instant triggering.
+    #[serde(default)]
+    pub agent_prompt_pattern: Option<String>,
 }
 
 fn default_orch_silence_timeout() -> u64 {
@@ -143,6 +149,9 @@ fn default_orch_checkpoint_path() -> String {
 }
 fn default_orch_max_retries() -> u32 {
     3
+}
+fn default_orch_fast_trigger() -> u64 {
+    5
 }
 
 fn default_agent_max_budget_usd() -> f64 {
@@ -846,5 +855,26 @@ mod tests {
         let orch = config.agent.unwrap().orchestrator.unwrap();
         assert_eq!(orch.silence_timeout_secs, 15);
         assert_eq!(orch.prd_path, "docs/plan.md");
+    }
+
+    #[test]
+    fn test_orchestrator_section_new_fields_defaults() {
+        let toml = "[agent.orchestrator]\nenabled = true";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.fast_trigger_secs, 5);
+        assert!(orch.agent_prompt_pattern.is_none());
+    }
+
+    #[test]
+    fn test_orchestrator_section_new_fields_custom() {
+        let toml = r#"[agent.orchestrator]
+enabled = true
+fast_trigger_secs = 3
+agent_prompt_pattern = "^❯""#;
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.fast_trigger_secs, 3);
+        assert_eq!(orch.agent_prompt_pattern.as_deref(), Some("^❯"));
     }
 }
