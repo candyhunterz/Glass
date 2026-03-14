@@ -1262,6 +1262,56 @@ fn extract_term_lines(term: &Arc<FairMutex<Term<EventProxy>>>, n: usize) -> Vec<
     lines[start..].to_vec()
 }
 
+/// Fetch SOI context for the most recent command in a session.
+/// Returns (exit_code, soi_summary, soi_error_strings).
+fn fetch_latest_soi_context(
+    session: &glass_mux::session::Session,
+) -> (Option<i32>, Option<String>, Vec<String>) {
+    // Get exit code from most recent completed block
+    let exit_code = session
+        .block_manager
+        .blocks()
+        .iter()
+        .rev()
+        .find(|b| b.state == glass_terminal::BlockState::Complete)
+        .and_then(|b| b.exit_code);
+
+    let command_id = match session.last_command_id {
+        Some(id) => id,
+        None => return (exit_code, None, Vec::new()),
+    };
+
+    let db = match session.history_db.as_ref() {
+        Some(db) => db,
+        None => return (exit_code, None, Vec::new()),
+    };
+
+    let conn = db.conn();
+
+    let soi_summary = glass_history::soi::get_output_summary(conn, command_id)
+        .ok()
+        .flatten()
+        .map(|s| s.one_line);
+
+    let soi_errors =
+        glass_history::soi::get_output_records(conn, command_id, Some("Error"), None, None, 100)
+            .ok()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| {
+                let file = r.file_path.as_deref().unwrap_or("");
+                let data_preview = r.data.chars().take(200).collect::<String>();
+                if file.is_empty() {
+                    data_preview
+                } else {
+                    format!("{file} {data_preview}")
+                }
+            })
+            .collect();
+
+    (exit_code, soi_summary, soi_errors)
+}
+
 impl Processor {
     /// Get the CWD of the focused session, falling back to the process CWD.
     fn get_focused_cwd(&self) -> String {
@@ -5461,9 +5511,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         tracing::debug!("Orchestrator: agent says WAIT");
                     }
                     orchestrator::AgentResponse::TypeText(text) => {
-                        if self.orchestrator.record_response(&text) {
+                        let text_stuck = self.orchestrator.record_response(&text);
+                        let stuck = text_stuck || self.orchestrator.fingerprint_stuck;
+                        if stuck {
+                            self.orchestrator.fingerprint_stuck = false;
+
                             tracing::warn!(
-                                "Orchestrator: stuck detected after {} identical responses",
+                                "Orchestrator: stuck detected (text_stuck={}, fingerprint_stuck={}) after {} identical",
+                                text_stuck,
+                                !text_stuck, // fingerprint was the trigger if text wasn't
                                 self.orchestrator.max_retries
                             );
 
@@ -5637,7 +5693,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let terminal_context = if let Some(ctx) = self.windows.get(&window_id) {
                             ctx.session_mux
                                 .session(session_id)
-                                .map(|s| extract_term_lines(&s.term, 100).join("\n"))
+                                .map(|s| {
+                                    let lines = extract_term_lines(&s.term, 80);
+                                    let (exit_code, soi_summary, soi_errors) =
+                                        fetch_latest_soi_context(s);
+                                    orchestrator::build_orchestrator_context(
+                                        &lines,
+                                        exit_code,
+                                        soi_summary.as_deref(),
+                                        &soi_errors,
+                                    )
+                                })
                                 .unwrap_or_default()
                         } else {
                             String::new()
@@ -5668,10 +5734,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if let Some(log) = git_log {
                             content.push_str(&format!("\nRECENT GIT HISTORY:\n{}\n", log.trim()));
                         }
-                        content.push_str(&format!(
-                            "\nTERMINAL CONTEXT (last 100 lines):\n{}\n",
-                            terminal_context
-                        ));
+                        content.push_str(&format!("\nTERMINAL_CONTEXT:\n{}\n", terminal_context));
 
                         self.respawn_orchestrator_agent(&cwd, content);
                         self.orchestrator.checkpoint_phase = orchestrator::CheckpointPhase::Idle;
@@ -5684,12 +5747,47 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Capture terminal context
                 if let Some(ctx) = self.windows.get(&window_id) {
                     if let Some(session) = ctx.session_mux.session(session_id) {
-                        let lines = extract_term_lines(&session.term, 100);
-                        let context = lines.join("\n");
+                        let lines = extract_term_lines(&session.term, 80);
+                        let (exit_code, soi_summary, soi_errors) =
+                            fetch_latest_soi_context(session);
+                        let context = orchestrator::build_orchestrator_context(
+                            &lines,
+                            exit_code,
+                            soi_summary.as_deref(),
+                            &soi_errors,
+                        );
+
+                        // Build environment fingerprint for stuck detection
+                        let cwd = session.status.cwd().to_string();
+                        let git_diff = std::process::Command::new("git")
+                            .args(["diff", "--stat"])
+                            .current_dir(&cwd)
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    String::from_utf8(o.stdout).ok()
+                                } else {
+                                    None
+                                }
+                            });
+
+                        let fp_lines = extract_term_lines(&session.term, 50);
+                        let soi_for_fp = if exit_code.is_some_and(|c| c != 0) {
+                            Some(soi_errors.as_slice())
+                        } else {
+                            None
+                        };
+                        let fingerprint = orchestrator::StateFingerprint::compute(
+                            &fp_lines,
+                            soi_for_fp,
+                            git_diff.as_deref(),
+                        );
+                        self.orchestrator.fingerprint_stuck =
+                            self.orchestrator.record_fingerprint(fingerprint);
 
                         // Fix #4/#5: Check for nudge.md (course correction while running)
-                        let cwd = session.status.cwd();
-                        let nudge_path = std::path::Path::new(cwd).join(".glass").join("nudge.md");
+                        let nudge_path = std::path::Path::new(&cwd).join(".glass").join("nudge.md");
                         let nudge = std::fs::read_to_string(&nudge_path).ok();
                         if nudge.is_some() {
                             let _ = std::fs::remove_file(&nudge_path);

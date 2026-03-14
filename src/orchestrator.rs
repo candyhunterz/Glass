@@ -694,12 +694,8 @@ mod tests {
     #[test]
     fn context_success_with_soi() {
         let lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
-        let context = build_orchestrator_context(
-            &lines,
-            Some(0),
-            Some("cargo test: 45 passed"),
-            &[],
-        );
+        let context =
+            build_orchestrator_context(&lines, Some(0), Some("cargo test: 45 passed"), &[]);
         assert!(context.contains("[COMMAND_OK]"));
         assert!(context.contains("[SOI_SUMMARY]"));
         assert!(context.contains("45 passed"));
