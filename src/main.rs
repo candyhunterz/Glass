@@ -1255,6 +1255,64 @@ impl Processor {
                     .to_string()
             })
     }
+
+    /// Kill the current agent and respawn with a fresh system prompt.
+    /// `handoff_content` is the initial message sent to the new agent.
+    fn respawn_orchestrator_agent(&mut self, cwd: &str, handoff_content: String) {
+        // Kill old agent
+        self.agent_runtime = None;
+
+        // Create new activity channel
+        let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
+        let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
+        self.activity_stream_tx = Some(new_tx);
+
+        // Build agent config
+        let agent_config = self
+            .config
+            .agent
+            .clone()
+            .map(|a| glass_core::agent_runtime::AgentRuntimeConfig {
+                mode: a.mode,
+                max_budget_usd: a.max_budget_usd,
+                cooldown_secs: a.cooldown_secs,
+                allowed_tools: a.allowed_tools,
+                orchestrator: a.orchestrator,
+            })
+            .unwrap_or_default();
+
+        // Spawn new agent with fresh system prompt (reads updated checkpoint.md)
+        self.agent_runtime = try_spawn_agent(
+            agent_config,
+            new_rx,
+            self.proxy.clone(),
+            0,
+            None,
+            cwd.to_string(),
+        );
+
+        // Send handoff to new agent
+        if let Some(ref runtime) = self.agent_runtime {
+            if let Some(ref writer) = runtime.orchestrator_writer {
+                let msg = serde_json::json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": handoff_content
+                    }
+                })
+                .to_string();
+
+                if let Ok(mut w) = writer.lock() {
+                    use std::io::Write;
+                    let _ = writeln!(w, "{msg}");
+                    let _ = w.flush();
+                }
+            }
+        }
+
+        tracing::info!("Orchestrator: respawned agent for {}", cwd);
+    }
 }
 
 impl ApplicationHandler<AppEvent> for Processor {
@@ -2992,92 +3050,68 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .to_string()
                                         });
 
-                                    // Kill old agent and respawn with correct project root
-                                    self.agent_runtime = None;
-                                    let activity_config =
-                                        glass_core::activity_stream::ActivityStreamConfig::default();
-                                    let (new_tx, new_rx) =
-                                        glass_core::activity_stream::create_channel(&activity_config);
-                                    self.activity_stream_tx = Some(new_tx);
-
-                                    let agent_config = self
-                                        .config
-                                        .agent
-                                        .clone()
-                                        .map(|a| glass_core::agent_runtime::AgentRuntimeConfig {
-                                            mode: a.mode,
-                                            max_budget_usd: a.max_budget_usd,
-                                            cooldown_secs: a.cooldown_secs,
-                                            allowed_tools: a.allowed_tools,
-                                            orchestrator: a.orchestrator,
+                                    // Capture context for handoff (gather from ctx before calling helper)
+                                    let terminal_context = ctx
+                                        .session_mux
+                                        .focused_session()
+                                        .map(|session| {
+                                            extract_term_lines(&session.term, 100).join("\n")
                                         })
                                         .unwrap_or_default();
 
-                                    self.agent_runtime = try_spawn_agent(
-                                        agent_config,
-                                        new_rx,
-                                        self.proxy.clone(),
-                                        0,
-                                        None,
-                                        current_cwd.clone(),
-                                    );
+                                    // Check for handoff note
+                                    let handoff_path = std::path::Path::new(&current_cwd)
+                                        .join(".glass")
+                                        .join("handoff.md");
+                                    let handoff_note =
+                                        std::fs::read_to_string(&handoff_path).ok();
 
-                                    // Immediately capture context and send to agent
-                                    if let Some(ref runtime) = self.agent_runtime {
-                                        if let Some(ref writer) = runtime.orchestrator_writer {
-                                            if let Some(session) = ctx.session_mux.focused_session() {
-                                                let lines = extract_term_lines(&session.term, 100);
-                                                let terminal_context = lines.join("\n");
-
-                                                // Check for handoff note
-                                                let handoff_path = std::path::Path::new(&current_cwd)
-                                                    .join(".glass")
-                                                    .join("handoff.md");
-                                                let handoff_note = std::fs::read_to_string(&handoff_path).ok();
-                                                if handoff_note.is_some() {
-                                                    let _ = std::fs::remove_file(&handoff_path);
-                                                }
-
-                                                let git_log = std::process::Command::new("git")
-                                                    .args(["log", "--oneline", "-10"])
-                                                    .current_dir(&current_cwd)
-                                                    .output()
-                                                    .ok()
-                                                    .and_then(|o| if o.status.success() {
-                                                        String::from_utf8(o.stdout).ok()
-                                                    } else {
-                                                        None
-                                                    });
-
-                                                let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
-                                                if let Some(note) = handoff_note {
-                                                    content.push_str(&format!("\nUSER INSTRUCTIONS:\n{}\n", note));
-                                                }
-                                                if let Some(log) = git_log {
-                                                    content.push_str(&format!("\nRECENT GIT HISTORY:\n{}\n", log.trim()));
-                                                }
-                                                content.push_str(&format!("\nTERMINAL CONTEXT (last 100 lines):\n{}\n", terminal_context));
-
-                                                let msg = serde_json::json!({
-                                                    "type": "user",
-                                                    "message": {
-                                                        "role": "user",
-                                                        "content": content
-                                                    }
-                                                }).to_string();
-
-                                                if let Ok(mut w) = writer.lock() {
-                                                    let _ = writeln!(w, "{msg}");
-                                                    let _ = w.flush();
-                                                }
-                                                tracing::info!("Orchestrator: respawned agent for {} and sent handoff", current_cwd);
+                                    let git_log = std::process::Command::new("git")
+                                        .args(["log", "--oneline", "-10"])
+                                        .current_dir(&current_cwd)
+                                        .output()
+                                        .ok()
+                                        .and_then(|o| {
+                                            if o.status.success() {
+                                                String::from_utf8(o.stdout).ok()
+                                            } else {
+                                                None
                                             }
-                                        }
+                                        });
+
+                                    let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
+                                    if let Some(ref note) = handoff_note {
+                                        content.push_str(&format!(
+                                            "\nUSER INSTRUCTIONS:\n{}\n",
+                                            note
+                                        ));
+                                    }
+                                    if let Some(log) = git_log {
+                                        content.push_str(&format!(
+                                            "\nRECENT GIT HISTORY:\n{}\n",
+                                            log.trim()
+                                        ));
+                                    }
+                                    content.push_str(&format!(
+                                        "\nTERMINAL CONTEXT (last 100 lines):\n{}\n",
+                                        terminal_context
+                                    ));
+
+                                    // Drop ctx borrow, then respawn (needs &mut self)
+                                    let _ = ctx;
+                                    self.respawn_orchestrator_agent(&current_cwd, content);
+
+                                    // Delete handoff.md only after agent starts successfully
+                                    if handoff_note.is_some() && self.agent_runtime.is_some() {
+                                        let _ = std::fs::remove_file(&handoff_path);
                                     }
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
+                                    let _ = ctx;
                                 }
-                                ctx.window.request_redraw();
+                                if let Some(ctx) = self.windows.get(&window_id) {
+                                    ctx.window.request_redraw();
+                                }
                                 return;
                             }
                             _ => {}
@@ -5322,6 +5356,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return;
                 }
 
+                self.orchestrator.response_pending = false;
+
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
                 self.orchestrator.iterations_since_checkpoint += 1;
@@ -5479,6 +5515,96 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return;
                 }
 
+                // Backpressure: skip if waiting for agent response
+                if self.orchestrator.response_pending {
+                    tracing::debug!("Orchestrator: skipping context send (response pending)");
+                    return;
+                }
+
+                // Check if we're in a checkpoint cycle
+                if let orchestrator::CheckpointPhase::WaitingForCheckpoint {
+                    started_at,
+                    last_mtime,
+                } = &self.orchestrator.checkpoint_phase
+                {
+                    let cwd = self.get_focused_cwd();
+                    let cp_path = orchestrator::checkpoint_path(
+                        &cwd,
+                        self.config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.checkpoint_path.as_str()),
+                    );
+
+                    let changed = orchestrator::checkpoint_changed(&cp_path, *last_mtime);
+                    let timed_out =
+                        started_at.elapsed().as_secs() >= orchestrator::CHECKPOINT_TIMEOUT_SECS;
+
+                    if changed || timed_out {
+                        if timed_out && !changed {
+                            tracing::warn!(
+                                "Orchestrator: checkpoint timeout after {}s — respawning anyway",
+                                started_at.elapsed().as_secs()
+                            );
+                        } else {
+                            tracing::info!(
+                                "Orchestrator: checkpoint.md updated — respawning agent"
+                            );
+                        }
+
+                        // Capture terminal context for the new agent
+                        let terminal_context = if let Some(ctx) = self.windows.get(&window_id) {
+                            ctx.session_mux
+                                .session(session_id)
+                                .map(|s| extract_term_lines(&s.term, 100).join("\n"))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+
+                        let git_log = std::process::Command::new("git")
+                            .args(["log", "--oneline", "-10"])
+                            .current_dir(&cwd)
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    String::from_utf8(o.stdout).ok()
+                                } else {
+                                    None
+                                }
+                            });
+
+                        let mut content = format!(
+                            "[ORCHESTRATOR_CHECKPOINT_REFRESH]\n\
+                             Context has been refreshed. Your system prompt now contains the updated checkpoint.\n\
+                             Completed so far: {}\n\
+                             Next up: {}\n\
+                             Continue from where you left off.\n",
+                            self.orchestrator.last_checkpoint_completed,
+                            self.orchestrator.last_checkpoint_next,
+                        );
+                        if let Some(log) = git_log {
+                            content.push_str(&format!(
+                                "\nRECENT GIT HISTORY:\n{}\n",
+                                log.trim()
+                            ));
+                        }
+                        content.push_str(&format!(
+                            "\nTERMINAL CONTEXT (last 100 lines):\n{}\n",
+                            terminal_context
+                        ));
+
+                        self.respawn_orchestrator_agent(&cwd, content);
+                        self.orchestrator.checkpoint_phase =
+                            orchestrator::CheckpointPhase::Idle;
+                        self.orchestrator.reset_stuck();
+                    }
+                    // Don't send normal context while waiting for checkpoint
+                    return;
+                }
+
                 // Capture terminal context
                 if let Some(ctx) = self.windows.get(&window_id) {
                     if let Some(session) = ctx.session_mux.session(session_id) {
@@ -5520,6 +5646,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Ok(mut w) = writer.lock() {
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
+                                    self.orchestrator.response_pending = true;
                                 }
                             }
                         }
