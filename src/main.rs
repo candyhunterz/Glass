@@ -759,11 +759,15 @@ fn try_spawn_agent(
     let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
 
     let system_prompt = if orchestrator_enabled {
-        let prd_path = orchestrator_config
+        // Resolve paths relative to the terminal's project root, not Glass's CWD
+        let project_dir = std::path::Path::new(&project_root);
+
+        let prd_rel = orchestrator_config
             .map(|o| o.prd_path.clone())
             .unwrap_or_else(|| "PRD.md".to_string());
+        let prd_path = project_dir.join(&prd_rel);
         let prd_content = std::fs::read_to_string(&prd_path)
-            .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path));
+            .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path.display()));
         // Truncate to ~4000 words
         let prd_truncated: String = prd_content
             .split_whitespace()
@@ -771,13 +775,16 @@ fn try_spawn_agent(
             .collect::<Vec<_>>()
             .join(" ");
 
-        let checkpoint_path = orchestrator_config
+        let checkpoint_rel = orchestrator_config
             .map(|o| o.checkpoint_path.clone())
             .unwrap_or_else(|| ".glass/checkpoint.md".to_string());
+        let checkpoint_path = project_dir.join(&checkpoint_rel);
         let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
             .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());
 
-        let iterations_content = orchestrator::read_iterations_log();
+        let iterations_path = project_dir.join(".glass").join("iterations.tsv");
+        let iterations_content = std::fs::read_to_string(&iterations_path)
+            .unwrap_or_default();
         let iterations_content = if iterations_content.is_empty() {
             "No iterations yet.".to_string()
         } else {
@@ -789,6 +796,8 @@ fn try_spawn_agent(
 Claude Code is the implementer — it writes code, runs commands, builds features.
 You are the reviewer and guide — you make product decisions, ensure quality,
 and keep the project moving against the plan.
+
+PROJECT DIRECTORY: {project_root}
 
 PROJECT PLAN:
 {prd_truncated}
