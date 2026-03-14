@@ -1,49 +1,165 @@
+use regex::Regex;
 use std::time::{Duration, Instant};
 
-/// Tracks PTY silence for orchestrator polling.
-/// Fires periodically (every `threshold`) while PTY is quiet,
-/// instead of the old one-shot approach.
-pub struct SilenceTracker {
-    threshold: Duration,
-    last_output_at: Instant,
-    last_fired_at: Option<Instant>,
-}
+/// Backward-compat shim so pty.rs compiles until Task 3 wires SmartTrigger in.
+/// Delegates to SmartTrigger with defaults (no fast trigger, no prompt regex).
+/// TODO(Task 3): remove this struct and update pty.rs to use SmartTrigger directly.
+pub struct SilenceTracker(SmartTrigger);
 
 impl SilenceTracker {
     pub fn new(threshold_secs: u64) -> Self {
+        // fast_threshold == threshold so the fast path never fires ahead of slow path
+        SilenceTracker(SmartTrigger::new(threshold_secs, threshold_secs, None))
+    }
+
+    pub fn on_output(&mut self) {
+        // Reset timers but don't set was_output_flowing (avoids fast trigger)
+        self.0.last_output_at = Instant::now();
+        self.0.last_fired_at = None;
+    }
+
+    pub fn should_fire(&mut self) -> bool {
+        self.0.should_fire()
+    }
+
+    pub fn poll_timeout(&self) -> Duration {
+        self.0.poll_timeout()
+    }
+}
+
+/// Smart orchestrator trigger that fires on the fastest available signal.
+///
+/// Priority order:
+/// 1. Prompt regex match (instant)
+/// 2. Shell prompt returned / OSC 133;A (instant)
+/// 3. Output velocity drop (fast_threshold seconds after output stops)
+/// 4. Fixed silence threshold (slow fallback, periodic)
+pub struct SmartTrigger {
+    /// Slow fallback threshold (existing behavior).
+    threshold: Duration,
+    /// Fast trigger threshold (after output stops).
+    fast_threshold: Duration,
+    /// Last time PTY produced output.
+    last_output_at: Instant,
+    /// Last time should_fire() returned true (for periodic slow fallback).
+    last_fired_at: Option<Instant>,
+    /// Compiled prompt regex (None if not configured or invalid).
+    prompt_regex: Option<Regex>,
+    /// Latch: set on output, cleared when fast trigger fires.
+    was_output_flowing: bool,
+    /// Set when prompt regex matches end of output.
+    prompt_detected: bool,
+    /// Set when OSC 133;A (shell prompt) received.
+    shell_prompt_returned: bool,
+}
+
+impl SmartTrigger {
+    pub fn new(
+        threshold_secs: u64,
+        fast_trigger_secs: u64,
+        prompt_pattern: Option<String>,
+    ) -> Self {
+        let prompt_regex = prompt_pattern.and_then(|p| {
+            Regex::new(&p)
+                .map_err(|e| tracing::warn!("Invalid orchestrator prompt regex '{p}': {e}"))
+                .ok()
+        });
         Self {
             threshold: Duration::from_secs(threshold_secs),
+            fast_threshold: Duration::from_secs(fast_trigger_secs),
             last_output_at: Instant::now(),
             last_fired_at: None,
+            prompt_regex,
+            was_output_flowing: false,
+            prompt_detected: false,
+            shell_prompt_returned: false,
         }
     }
 
-    /// Call when PTY produces output. Resets all timers.
-    pub fn on_output(&mut self) {
+    /// Call when PTY produces output bytes. Resets timers, checks prompt regex.
+    pub fn on_output_bytes(&mut self, bytes: &[u8]) {
         self.last_output_at = Instant::now();
         self.last_fired_at = None;
+        self.was_output_flowing = true;
+
+        // Check prompt regex against the last line of output
+        if let Some(ref regex) = self.prompt_regex {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                // Check the last non-empty line
+                if let Some(last_line) = text.lines().rev().find(|l| !l.is_empty()) {
+                    if regex.is_match(last_line) {
+                        self.prompt_detected = true;
+                    }
+                }
+            }
+        }
     }
 
-    /// Check if silence event should fire. Returns true at most once
-    /// per `threshold` interval while the PTY remains quiet.
+    /// Call when OSC 133;A (shell prompt start) is detected on the PTY thread.
+    pub fn on_shell_prompt(&mut self) {
+        self.shell_prompt_returned = true;
+    }
+
+    /// Check if the orchestrator should be triggered. Returns true at most once
+    /// per signal, then clears the signal.
     pub fn should_fire(&mut self) -> bool {
-        if self.last_output_at.elapsed() < self.threshold {
-            return false;
-        }
-        let should = self
-            .last_fired_at
-            .map(|t| t.elapsed() >= self.threshold)
-            .unwrap_or(true);
-        if should {
+        // Priority 1: Prompt regex matched
+        if self.prompt_detected {
+            self.prompt_detected = false;
             self.last_fired_at = Some(Instant::now());
+            return true;
         }
-        should
+
+        // Priority 2: Shell prompt returned (agent exited)
+        if self.shell_prompt_returned {
+            self.shell_prompt_returned = false;
+            self.last_fired_at = Some(Instant::now());
+            return true;
+        }
+
+        let silence = self.last_output_at.elapsed();
+
+        // Priority 3: Output was flowing and stopped for fast_threshold
+        if self.was_output_flowing && silence >= self.fast_threshold {
+            self.was_output_flowing = false;
+            self.last_fired_at = Some(Instant::now());
+            return true;
+        }
+
+        // Priority 4: Slow fallback (periodic fire after threshold)
+        if silence >= self.threshold {
+            let should = self
+                .last_fired_at
+                .map(|t| t.elapsed() >= self.threshold)
+                .unwrap_or(true);
+            if should {
+                self.last_fired_at = Some(Instant::now());
+            }
+            return should;
+        }
+
+        false
     }
 
-    /// Returns the maximum poll timeout to use, ensuring we wake up
-    /// in time to check silence.
+    /// Returns the maximum poll timeout, ensuring we wake in time for the next check.
     pub fn poll_timeout(&self) -> Duration {
         let since_output = self.last_output_at.elapsed();
+
+        // If instant signals are pending, wake immediately
+        if self.prompt_detected || self.shell_prompt_returned {
+            return Duration::from_millis(50);
+        }
+
+        // If output was flowing, use fast threshold
+        if self.was_output_flowing {
+            let fast_remaining = self.fast_threshold.saturating_sub(since_output);
+            let slow_remaining = self.threshold.saturating_sub(since_output);
+            return fast_remaining
+                .min(slow_remaining)
+                .max(Duration::from_secs(1));
+        }
+
+        // Otherwise use slow threshold
         if since_output >= self.threshold {
             let since_fired = self
                 .last_fired_at
@@ -66,43 +182,85 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn fires_after_threshold() {
-        let mut tracker = SilenceTracker::new(1);
-        assert!(!tracker.should_fire());
-        thread::sleep(Duration::from_millis(1100));
-        assert!(tracker.should_fire());
+    fn fires_on_prompt_detected() {
+        let mut trigger = SmartTrigger::new(30, 5, Some("^❯".to_string()));
+        assert!(!trigger.should_fire());
+        trigger.on_output_bytes(b"some output\n\xe2\x9d\xaf ");
+        assert!(trigger.should_fire());
+        // Clears after firing
+        assert!(!trigger.should_fire());
     }
 
     #[test]
-    fn does_not_double_fire_immediately() {
-        let mut tracker = SilenceTracker::new(1);
-        thread::sleep(Duration::from_millis(1100));
-        assert!(tracker.should_fire());
-        assert!(!tracker.should_fire());
+    fn fires_on_shell_prompt() {
+        let mut trigger = SmartTrigger::new(30, 5, None);
+        trigger.on_shell_prompt();
+        assert!(trigger.should_fire());
+        assert!(!trigger.should_fire());
     }
 
     #[test]
-    fn re_fires_after_cooldown() {
-        let mut tracker = SilenceTracker::new(1);
+    fn fires_on_fast_trigger_after_output_stops() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.on_output_bytes(b"output");
+        assert!(!trigger.should_fire());
         thread::sleep(Duration::from_millis(1100));
-        assert!(tracker.should_fire());
+        assert!(trigger.should_fire());
+        // was_output_flowing cleared — fast trigger won't fire again
+        assert!(!trigger.should_fire());
+    }
+
+    #[test]
+    fn fires_on_slow_fallback() {
+        let mut trigger = SmartTrigger::new(1, 5, None);
+        assert!(!trigger.should_fire());
         thread::sleep(Duration::from_millis(1100));
-        assert!(tracker.should_fire());
+        assert!(trigger.should_fire());
     }
 
     #[test]
     fn output_resets_timers() {
-        let mut tracker = SilenceTracker::new(1);
+        let mut trigger = SmartTrigger::new(1, 1, None);
         thread::sleep(Duration::from_millis(1100));
-        tracker.on_output();
-        assert!(!tracker.should_fire());
+        trigger.on_output_bytes(b"output");
+        assert!(!trigger.should_fire());
     }
 
     #[test]
-    fn poll_timeout_respects_threshold() {
-        let tracker = SilenceTracker::new(30);
-        let timeout = tracker.poll_timeout();
-        assert!(timeout <= Duration::from_secs(30));
+    fn no_prompt_regex_means_no_prompt_detection() {
+        let mut trigger = SmartTrigger::new(30, 5, None);
+        trigger.on_output_bytes(b"\xe2\x9d\xaf ");
+        // No regex configured, so prompt detection doesn't fire
+        assert!(!trigger.should_fire());
+    }
+
+    #[test]
+    fn poll_timeout_respects_fast_threshold() {
+        let mut trigger = SmartTrigger::new(30, 5, None);
+        trigger.on_output_bytes(b"output");
+        let timeout = trigger.poll_timeout();
+        // Should be <= fast_threshold (5s), not the slow 30s
+        assert!(timeout <= Duration::from_secs(5));
         assert!(timeout >= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn slow_fallback_fires_periodically() {
+        let mut trigger = SmartTrigger::new(1, 5, None);
+        thread::sleep(Duration::from_millis(1100));
+        assert!(trigger.should_fire());
+        // Shouldn't double-fire immediately
+        assert!(!trigger.should_fire());
+        // Should fire again after another threshold
+        thread::sleep(Duration::from_millis(1100));
+        assert!(trigger.should_fire());
+    }
+
+    #[test]
+    fn invalid_regex_is_ignored() {
+        // Invalid regex pattern should not panic, just disable prompt detection
+        let mut trigger = SmartTrigger::new(30, 5, Some("[invalid".to_string()));
+        trigger.on_output_bytes(b"some output");
+        assert!(!trigger.should_fire());
     }
 }
