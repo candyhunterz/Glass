@@ -4042,6 +4042,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let osc_event = shell_event_to_osc(&shell_event);
                         session.block_manager.handle_event(&osc_event, line);
 
+                        // Orchestrator crash recovery: detect shell prompt while orchestrating.
+                        // Only trigger if we've had at least one iteration (Claude Code was running).
+                        if matches!(shell_event, ShellEvent::PromptStart)
+                            && self.orchestrator.active
+                            && self.orchestrator.iteration > 0
+                        {
+                            tracing::info!(
+                                "Orchestrator: shell prompt detected — Claude Code may have exited, restarting"
+                            );
+                            // Type command to restart Claude Code
+                            let restart_msg =
+                                "claude --dangerously-skip-permissions\n";
+                            let bytes = restart_msg.as_bytes().to_vec();
+                            let _ = session
+                                .pty_sender
+                                .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                        }
+
                         // Override auto-expand if config disables it (after handle_event sets pipeline_expanded)
                         if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
                             let auto_expand = self
