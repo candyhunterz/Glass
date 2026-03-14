@@ -244,7 +244,8 @@ impl FrameRenderer {
         // 1c. Append status bar background rect
         if status.is_some() {
             let status_rects = if two_line_status {
-                self.status_bar.build_status_rects_two_line(w, h, orchestrating)
+                self.status_bar
+                    .build_status_rects_two_line(w, h, orchestrating)
             } else {
                 self.status_bar.build_status_rects(w, h, orchestrating)
             };
@@ -1358,7 +1359,8 @@ impl FrameRenderer {
         // Status bar background rect
         if status.is_some() {
             let status_rects = if two_line_status {
-                self.status_bar.build_status_rects_two_line(w, h, orchestrating)
+                self.status_bar
+                    .build_status_rects_two_line(w, h, orchestrating)
             } else {
                 self.status_bar.build_status_rects(w, h, orchestrating)
             };

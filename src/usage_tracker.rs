@@ -33,7 +33,6 @@ pub struct UsageState {
     pub consecutive_failures: u32,
 }
 
-
 /// Read the OAuth access token from `~/.claude/.credentials.json`.
 fn read_oauth_token() -> Option<String> {
     let home = dirs::home_dir()?;
@@ -64,12 +63,8 @@ fn poll_usage(token: &str) -> Result<UsageData, String> {
     let parsed: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("Failed to parse usage JSON: {e}"))?;
 
-    let five_hour = parsed
-        .get("five_hour")
-        .ok_or("Missing five_hour field")?;
-    let seven_day = parsed
-        .get("seven_day")
-        .ok_or("Missing seven_day field")?;
+    let five_hour = parsed.get("five_hour").ok_or("Missing five_hour field")?;
+    let seven_day = parsed.get("seven_day").ok_or("Missing seven_day field")?;
 
     // Normalize utilization: API may return 0-1 (fraction) or 0-100 (percentage).
     // If >1.0, treat as percentage and convert to fraction.
@@ -143,9 +138,8 @@ pub fn start_polling(
                                     "Usage tracker: HARD STOP at {:.0}% — pausing orchestrator",
                                     five_hour * 100.0
                                 );
-                                let _ = proxy.send_event(
-                                    glass_core::event::AppEvent::UsageHardStop,
-                                );
+                                let _ =
+                                    proxy.send_event(glass_core::event::AppEvent::UsageHardStop);
                             }
                         } else if five_hour >= 0.80 {
                             if !st.paused {
@@ -154,9 +148,7 @@ pub fn start_polling(
                                     "Usage tracker: auto-pause at {:.0}%",
                                     five_hour * 100.0
                                 );
-                                let _ = proxy.send_event(
-                                    glass_core::event::AppEvent::UsagePause,
-                                );
+                                let _ = proxy.send_event(glass_core::event::AppEvent::UsagePause);
                             }
                         } else if five_hour < 0.20 && st.paused {
                             st.paused = false;
@@ -164,19 +156,22 @@ pub fn start_polling(
                                 "Usage tracker: auto-resume at {:.0}%",
                                 five_hour * 100.0
                             );
-                            let _ = proxy.send_event(
-                                glass_core::event::AppEvent::UsageResume,
-                            );
+                            let _ = proxy.send_event(glass_core::event::AppEvent::UsageResume);
                         }
                     }
                     Err(e) => {
                         let mut st = state_clone.lock().unwrap();
                         st.consecutive_failures += 1;
                         if st.consecutive_failures <= 3 {
-                            tracing::warn!("Usage tracker: {e} (failure #{})", st.consecutive_failures);
+                            tracing::warn!(
+                                "Usage tracker: {e} (failure #{})",
+                                st.consecutive_failures
+                            );
                         }
                         if st.consecutive_failures == 3 {
-                            tracing::warn!("Usage tracker: 3 consecutive failures — disabling usage display");
+                            tracing::warn!(
+                                "Usage tracker: 3 consecutive failures — disabling usage display"
+                            );
                         }
                     }
                 }

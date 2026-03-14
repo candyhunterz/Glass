@@ -289,7 +289,10 @@ impl ActivityOverlayRenderer {
         {
             let (orch_label, orch_color) = if data.orchestrator_active {
                 (
-                    format!("ORCHESTRATOR: ACTIVE (iter #{})", data.orchestrator_iteration),
+                    format!(
+                        "ORCHESTRATOR: ACTIVE (iter #{})",
+                        data.orchestrator_iteration
+                    ),
                     Rgb {
                         r: 0,
                         g: 200,

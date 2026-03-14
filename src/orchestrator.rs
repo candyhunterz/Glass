@@ -11,14 +11,9 @@ pub enum AgentResponse {
     /// Claude Code is still working; reset silence timer and check again later.
     Wait,
     /// Feature complete; trigger context refresh cycle.
-    Checkpoint {
-        completed: String,
-        next: String,
-    },
+    Checkpoint { completed: String, next: String },
     /// All PRD items are complete; stop orchestration.
-    Done {
-        summary: String,
-    },
+    Done { summary: String },
 }
 
 /// Parse a raw Glass Agent response into a structured action.
@@ -246,7 +241,9 @@ pub fn append_iteration_log(
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -304,10 +301,7 @@ pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
 }
 
 /// Check if a checkpoint file has been updated since a baseline mtime.
-pub fn checkpoint_changed(
-    path: &std::path::Path,
-    baseline: Option<std::time::SystemTime>,
-) -> bool {
+pub fn checkpoint_changed(path: &std::path::Path, baseline: Option<std::time::SystemTime>) -> bool {
     match (baseline, file_mtime(path)) {
         (None, Some(_)) => true,
         (Some(old), Some(new)) => new > old,

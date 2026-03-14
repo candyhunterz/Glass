@@ -127,8 +127,15 @@ impl Default for SettingsConfigSnapshot {
 }
 
 /// Section names for the settings sidebar.
-pub const SETTINGS_SECTIONS: &[&str] =
-    &["Font", "Agent Mode", "SOI", "Snapshots", "Pipes", "History", "Orchestrator"];
+pub const SETTINGS_SECTIONS: &[&str] = &[
+    "Font",
+    "Agent Mode",
+    "SOI",
+    "Snapshots",
+    "Pipes",
+    "History",
+    "Orchestrator",
+];
 
 /// A single shortcut entry for display.
 struct ShortcutEntry {
@@ -887,11 +894,7 @@ impl SettingsOverlayRenderer {
                     format!("{}", config.orchestrator_silence_secs),
                     false,
                 ),
-                (
-                    "PRD Path",
-                    config.orchestrator_prd_path.clone(),
-                    false,
-                ),
+                ("PRD Path", config.orchestrator_prd_path.clone(), false),
                 (
                     "Max Retries",
                     format!("{}", config.orchestrator_max_retries),

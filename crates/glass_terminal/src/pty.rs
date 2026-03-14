@@ -284,7 +284,9 @@ fn glass_pty_loop(
 
     // Orchestrator silence detection (periodic, not one-shot)
     let mut silence_tracker = if orchestrator_silence_secs > 0 {
-        Some(crate::silence::SilenceTracker::new(orchestrator_silence_secs))
+        Some(crate::silence::SilenceTracker::new(
+            orchestrator_silence_secs,
+        ))
     } else {
         None
     };

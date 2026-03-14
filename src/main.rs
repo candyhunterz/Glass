@@ -1524,8 +1524,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .and_then(|a| a.orchestrator.as_ref())
                     .is_some()
                 {
-                    self.usage_state =
-                        Some(usage_tracker::start_polling(self.proxy.clone()));
+                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
                 }
 
                 // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
@@ -1761,15 +1760,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .unwrap_or_default();
                         if self.orchestrator.active {
                             if usage_prefix.is_empty() {
-                                format!(
-                                    "[orchestrating | iter #{}]",
-                                    self.orchestrator.iteration
-                                )
+                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
                             } else {
                                 format!(
                                     "{} | [orchestrating | iter #{}]",
-                                    usage_prefix,
-                                    self.orchestrator.iteration
+                                    usage_prefix, self.orchestrator.iteration
                                 )
                             }
                         } else {
@@ -2061,15 +2056,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .unwrap_or_default();
                         if self.orchestrator.active {
                             if usage_prefix.is_empty() {
-                                format!(
-                                    "[orchestrating | iter #{}]",
-                                    self.orchestrator.iteration
-                                )
+                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
                             } else {
                                 format!(
                                     "{} | [orchestrating | iter #{}]",
-                                    usage_prefix,
-                                    self.orchestrator.iteration
+                                    usage_prefix, self.orchestrator.iteration
                                 )
                             }
                         } else {
@@ -2254,12 +2245,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                         verbose: self.activity_verbose,
                         orchestrator_active: self.orchestrator.active,
                         orchestrator_iteration: self.orchestrator.iteration,
-                        orchestrator_paused_reason: if self.usage_state.as_ref().and_then(|s| s.lock().ok()).map(|s| s.paused).unwrap_or(false) {
+                        orchestrator_paused_reason: if self
+                            .usage_state
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|s| s.paused)
+                            .unwrap_or(false)
+                        {
                             Some("Usage limit".to_string())
                         } else {
                             None
                         },
-                        usage_text: self.usage_state.as_ref().and_then(|s| s.lock().ok()).map(|st| crate::usage_tracker::format_status_bar(&st)),
+                        usage_text: self
+                            .usage_state
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|st| crate::usage_tracker::format_status_bar(&st)),
                     };
 
                     ctx.frame_renderer.draw_activity_overlay(
@@ -3089,8 +3090,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let handoff_path = std::path::Path::new(&current_cwd)
                                         .join(".glass")
                                         .join("handoff.md");
-                                    let handoff_note =
-                                        std::fs::read_to_string(&handoff_path).ok();
+                                    let handoff_note = std::fs::read_to_string(&handoff_path).ok();
 
                                     let git_log = std::process::Command::new("git")
                                         .args(["log", "--oneline", "-10"])
@@ -3107,10 +3107,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                                     let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
                                     if let Some(ref note) = handoff_note {
-                                        content.push_str(&format!(
-                                            "\nUSER INSTRUCTIONS:\n{}\n",
-                                            note
-                                        ));
+                                        content
+                                            .push_str(&format!("\nUSER INSTRUCTIONS:\n{}\n", note));
                                     }
                                     if let Some(log) = git_log {
                                         content.push_str(&format!(
@@ -3321,7 +3319,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Named(NamedKey::ArrowRight) => {
-                                if self.settings_section_index < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1 {
+                                if self.settings_section_index
+                                    < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1
+                                {
                                     self.settings_section_index += 1;
                                     self.settings_field_index = 0;
                                 }
@@ -4784,8 +4784,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             output.len(),
                                         );
                                         // Output is now in the DB — safe to spawn SOI parse
-                                        soi_spawn_data =
-                                            Some((db.path().to_path_buf(), cmd_id));
+                                        soi_spawn_data = Some((db.path().to_path_buf(), cmd_id));
                                     }
                                     Err(e) => {
                                         tracing::warn!("Failed to update command output: {}", e);
@@ -4840,11 +4839,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 Some(text) => {
                                     let output_type =
                                         glass_soi::classify(&text, Some(&command_text));
-                                    let parsed = glass_soi::parse(
-                                        &text,
-                                        output_type,
-                                        Some(&command_text),
-                                    );
+                                    let parsed =
+                                        glass_soi::parse(&text, output_type, Some(&command_text));
                                     if let Err(e) = db.insert_parsed_output(cmd_id, &parsed) {
                                         tracing::warn!(
                                             "SOI: insert_parsed_output failed cmd={}: {}",
@@ -5408,15 +5404,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                     let cp_path = orchestrator::checkpoint_path(
                         &self.get_focused_cwd(),
-                        self.config.agent.as_ref().and_then(|a| a.orchestrator.as_ref()).map(|o| o.checkpoint_path.as_str()),
+                        self.config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.checkpoint_path.as_str()),
                     );
                     let mtime = orchestrator::file_mtime(&cp_path);
-                    self.orchestrator.begin_checkpoint("auto-refresh", "continue from PRD", mtime);
+                    self.orchestrator
+                        .begin_checkpoint("auto-refresh", "continue from PRD", mtime);
                     if let Some(ctx) = self.windows.values().next() {
                         if let Some(session) = ctx.session_mux.focused_session() {
                             let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
                             let bytes = msg.as_bytes().to_vec();
-                            let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            let _ = session
+                                .pty_sender
+                                .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
                             self.orchestrator.mark_pty_write();
                         }
                     }
@@ -5443,7 +5446,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.orchestrator.iteration,
                                 "stuck",
                                 "stuck",
-                                &format!("Stuck after {} identical responses: {}", self.orchestrator.max_retries, &text[..text.len().min(80)]),
+                                &format!(
+                                    "Stuck after {} identical responses: {}",
+                                    self.orchestrator.max_retries,
+                                    &text[..text.len().min(80)]
+                                ),
                             );
 
                             // Tell Claude Code to revert
@@ -5451,7 +5458,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(session) = ctx.session_mux.focused_session() {
                                     let msg = "You've tried this same approach multiple times without making progress. STOP and take a different approach:\n1. If you have uncommitted changes, stash them: git stash\n2. Think about WHY the current approach isn't working\n3. Try a fundamentally different strategy, not a minor variation\n";
                                     let bytes = msg.as_bytes().to_vec();
-                                    let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                    let _ = session
+                                        .pty_sender
+                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
                                 }
                             }
 
@@ -5489,7 +5498,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Start the refresh cycle: tell Claude Code to commit and write checkpoint
                         let cp_path = orchestrator::checkpoint_path(
                             &self.get_focused_cwd(),
-                            self.config.agent.as_ref().and_then(|a| a.orchestrator.as_ref()).map(|o| o.checkpoint_path.as_str()),
+                            self.config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.checkpoint_path.as_str()),
                         );
                         let mtime = orchestrator::file_mtime(&cp_path);
                         self.orchestrator.begin_checkpoint(&completed, &next, mtime);
@@ -5626,10 +5639,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             self.orchestrator.last_checkpoint_next,
                         );
                         if let Some(log) = git_log {
-                            content.push_str(&format!(
-                                "\nRECENT GIT HISTORY:\n{}\n",
-                                log.trim()
-                            ));
+                            content.push_str(&format!("\nRECENT GIT HISTORY:\n{}\n", log.trim()));
                         }
                         content.push_str(&format!(
                             "\nTERMINAL CONTEXT (last 100 lines):\n{}\n",
@@ -5637,8 +5647,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         ));
 
                         self.respawn_orchestrator_agent(&cwd, content);
-                        self.orchestrator.checkpoint_phase =
-                            orchestrator::CheckpointPhase::Idle;
+                        self.orchestrator.checkpoint_phase = orchestrator::CheckpointPhase::Idle;
                         self.orchestrator.reset_stuck();
                     }
                     // Don't send normal context while waiting for checkpoint
@@ -5653,9 +5662,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Fix #4/#5: Check for nudge.md (course correction while running)
                         let cwd = session.status.cwd();
-                        let nudge_path = std::path::Path::new(cwd)
-                            .join(".glass")
-                            .join("nudge.md");
+                        let nudge_path = std::path::Path::new(cwd).join(".glass").join("nudge.md");
                         let nudge = std::fs::read_to_string(&nudge_path).ok();
                         if nudge.is_some() {
                             let _ = std::fs::remove_file(&nudge_path);
@@ -5725,13 +5732,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             lines.join("\n"),
                             cwd,
                         );
-                        let checkpoint_dir =
-                            std::path::Path::new(&cwd).join(".glass");
+                        let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
                         let _ = std::fs::create_dir_all(&checkpoint_dir);
-                        let _ = std::fs::write(
-                            checkpoint_dir.join("checkpoint.md"),
-                            &checkpoint,
-                        );
+                        let _ = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint);
                     }
                 }
 
@@ -6635,7 +6638,11 @@ fn handle_settings_activate(
                 .and_then(|a| a.orchestrator.as_ref())
                 .map(|o| o.enabled)
                 .unwrap_or(false);
-            Some((Some("agent.orchestrator"), "enabled", (!current).to_string()))
+            Some((
+                Some("agent.orchestrator"),
+                "enabled",
+                (!current).to_string(),
+            ))
         }
         _ => None,
     }
@@ -6732,7 +6739,11 @@ fn handle_settings_increment(
                 .map(|o| o.silence_timeout_secs)
                 .unwrap_or(30) as i64;
             let new_val = (current + delta * 5).max(5);
-            Some((Some("agent.orchestrator"), "silence_timeout_secs", new_val.to_string()))
+            Some((
+                Some("agent.orchestrator"),
+                "silence_timeout_secs",
+                new_val.to_string(),
+            ))
         }
         // Orchestrator max_retries: step 1
         (6, 3) => {
@@ -6743,7 +6754,11 @@ fn handle_settings_increment(
                 .map(|o| o.max_retries_before_stuck)
                 .unwrap_or(3) as i64;
             let new_val = (current + delta).max(1);
-            Some((Some("agent.orchestrator"), "max_retries_before_stuck", new_val.to_string()))
+            Some((
+                Some("agent.orchestrator"),
+                "max_retries_before_stuck",
+                new_val.to_string(),
+            ))
         }
         _ => None,
     }
