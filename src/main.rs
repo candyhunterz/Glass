@@ -5772,14 +5772,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             });
 
-                        let fp_lines = extract_term_lines(&session.term, 50);
+                        // Reuse the 80-line extraction for fingerprint (last 50 of 80)
+                        let fp_start = lines.len().saturating_sub(50);
                         let soi_for_fp = if exit_code.is_some_and(|c| c != 0) {
                             Some(soi_errors.as_slice())
                         } else {
                             None
                         };
                         let fingerprint = orchestrator::StateFingerprint::compute(
-                            &fp_lines,
+                            &lines[fp_start..],
                             soi_for_fp,
                             git_diff.as_deref(),
                         );
