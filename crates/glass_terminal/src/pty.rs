@@ -470,6 +470,9 @@ fn pty_read_with_scan(
             match osc_event {
                 crate::osc_scanner::OscEvent::CommandExecuted => {
                     output_buffer.start_capture();
+                    // Re-append current chunk so output in the same PTY read
+                    // (fast commands) is captured after start_capture activates.
+                    output_buffer.append(data);
                 }
                 crate::osc_scanner::OscEvent::CommandFinished { .. } => {
                     if let Some(raw_bytes) = output_buffer.finish() {

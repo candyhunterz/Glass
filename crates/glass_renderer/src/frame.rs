@@ -240,26 +240,6 @@ impl FrameRenderer {
             rect_instances.extend(deco_rects);
         }
 
-        // 1b. Append block decoration rects (separators, badges)
-        // Block lines are absolute; convert viewport start to absolute coords.
-        if !blocks.is_empty() {
-            let viewport_abs_start = snapshot
-                .history_size
-                .saturating_sub(snapshot.display_offset);
-            let mut block_rects = self.block_renderer.build_block_rects(
-                blocks,
-                viewport_abs_start,
-                snapshot.screen_lines,
-                w,
-            );
-            if grid_y_offset > 0.0 {
-                for rect in &mut block_rects {
-                    rect.pos[1] += grid_y_offset;
-                }
-            }
-            rect_instances.extend(block_rects);
-        }
-
         // 1c. Append status bar background rect
         if status.is_some() {
             let status_rects = if two_line_status {
@@ -325,8 +305,28 @@ impl FrameRenderer {
             rect_instances.extend(toast_rects);
         }
 
-        // Record where background rects end (pipeline overlay rects come after)
+        // Record where background rects end (overlay rects rendered after text come next)
         let bg_rect_count = rect_instances.len() as u32;
+
+        // 1b. Block decoration rects (separators, badges) — rendered AFTER grid text
+        // so the dark background covers terminal text and labels are always readable.
+        if !blocks.is_empty() {
+            let viewport_abs_start = snapshot
+                .history_size
+                .saturating_sub(snapshot.display_offset);
+            let mut block_rects = self.block_renderer.build_block_rects(
+                blocks,
+                viewport_abs_start,
+                snapshot.screen_lines,
+                w,
+            );
+            if grid_y_offset > 0.0 {
+                for rect in &mut block_rects {
+                    rect.pos[1] += grid_y_offset;
+                }
+            }
+            rect_instances.extend(block_rects);
+        }
 
         // 1e. Pipeline panel rects (bottom of viewport, above status bar)
         let status_bar_h = if status.is_some() {
@@ -383,48 +383,7 @@ impl FrameRenderer {
         }
         let mut overlay_metas: Vec<OverlayMeta> = Vec::new();
 
-        // Phase A: Build all overlay buffers
-        // Block label buffers
-        if !blocks.is_empty() {
-            let viewport_abs_start = snapshot
-                .history_size
-                .saturating_sub(snapshot.display_offset);
-            let block_labels = self.block_renderer.build_block_text(
-                blocks,
-                viewport_abs_start,
-                snapshot.screen_lines,
-                w,
-            );
-            for label in &block_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
-                );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y + grid_y_offset,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
-            }
-        }
+        // Phase A: Build all overlay buffers (status bar, tabs, search, proposals)
 
         // Status bar text buffers
         if let Some(status_state) = status {
@@ -1026,10 +985,54 @@ impl FrameRenderer {
             }
         }
 
-        // Build pipeline label buffers separately (rendered in second pass)
+        // Build block decoration + pipeline label buffers (rendered in second pass,
+        // after grid text, so decorations are always readable over terminal content)
         self.pipeline_buffers.clear();
         let mut pipeline_metas: Vec<OverlayMeta> = Vec::new();
 
+        // Block label text (duration, [undo], OK/X badge, SOI summary)
+        if !blocks.is_empty() {
+            let viewport_abs_start = snapshot
+                .history_size
+                .saturating_sub(snapshot.display_offset);
+            let block_labels = self.block_renderer.build_block_text(
+                blocks,
+                viewport_abs_start,
+                snapshot.screen_lines,
+                w,
+            );
+            for label in &block_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.pipeline_buffers.push(buffer);
+                pipeline_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y + grid_y_offset,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Pipeline panel text
         if !blocks.is_empty() {
             let pipeline_labels =
                 self.block_renderer
@@ -1090,7 +1093,7 @@ impl FrameRenderer {
             .viewport
             .update(queue, Resolution { width, height });
 
-        // 5. Prepare text renderer (grid + block labels + status bar — NO pipeline labels)
+        // 5. Prepare text renderer (grid + status bar — NO block labels or pipeline labels)
         if let Err(e) = self.glyph_cache.text_renderer.prepare(
             device,
             queue,
@@ -1132,10 +1135,10 @@ impl FrameRenderer {
                 multiview_mask: None,
             });
 
-            // 7. Draw background rects (grid + block decorations + status bar)
+            // 7. Draw background rects (grid bg + status bar + tab bar + overlays)
             self.rect_renderer.render(&mut pass, bg_rect_count);
 
-            // 8. Draw text (grid + block labels + status bar)
+            // 8. Draw text (grid + status bar — no block labels)
             if let Err(e) = self.glyph_cache.text_renderer.render(
                 &self.glyph_cache.atlas,
                 &self.glyph_cache.viewport,
@@ -1144,7 +1147,7 @@ impl FrameRenderer {
                 tracing::warn!("Text render error: {:?}", e);
             }
 
-            // 9. Draw pipeline overlay rects on top of text
+            // 9. Draw block decoration + pipeline overlay rects ON TOP of grid text
             self.rect_renderer
                 .render_range(&mut pass, bg_rect_count, total_rect_count);
         }
@@ -1152,7 +1155,7 @@ impl FrameRenderer {
         // Submit pass 1
         queue.submit([encoder.finish()]);
 
-        // 10. Second pass for pipeline label text (on top of overlay rects)
+        // 10. Second pass for block decoration + pipeline label text (on top of overlay rects)
         if has_pipeline_overlay {
             let pipeline_text_areas: Vec<TextArea<'_>> = pipeline_metas
                 .iter()

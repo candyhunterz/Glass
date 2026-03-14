@@ -11,37 +11,6 @@ use glass_terminal::{Block, BlockState};
 use crate::rect_renderer::RectInstance;
 use crate::scrollbar::SCROLLBAR_WIDTH;
 
-/// Map an SOI severity string to a display color.
-fn soi_color_for_severity(severity: Option<&str>) -> Rgb {
-    match severity {
-        Some("Error") => Rgb {
-            r: 200,
-            g: 80,
-            b: 80,
-        },
-        Some("Warning") => Rgb {
-            r: 200,
-            g: 160,
-            b: 60,
-        },
-        Some("Info") => Rgb {
-            r: 100,
-            g: 160,
-            b: 200,
-        },
-        Some("Success") => Rgb {
-            r: 80,
-            g: 160,
-            b: 80,
-        },
-        _ => Rgb {
-            r: 140,
-            g: 140,
-            b: 140,
-        },
-    }
-}
-
 /// Count lines in a FinalizedBuffer.
 fn line_count(data: &FinalizedBuffer) -> usize {
     match data {
@@ -135,18 +104,20 @@ impl BlockRenderer {
                 let badge_width = self.cell_width * 3.0;
                 let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH;
 
-                // Dark background behind entire right-side decoration cluster
-                // so labels are readable over terminal content.
+                // Opaque background behind entire right-side decoration cluster
+                // so labels are readable over terminal content. Matches the
+                // terminal default background (rgb 26,26,26) for seamless blending.
                 let cluster_width = self.decoration_cluster_width(block);
-                let cluster_x = viewport_width - cluster_width - SCROLLBAR_WIDTH;
+                let padding = self.cell_width; // extra left padding for visual spacing
+                let cluster_x = viewport_width - cluster_width - SCROLLBAR_WIDTH - padding;
                 rects.push(RectInstance {
                     pos: [
                         cluster_x,
                         y,
-                        cluster_width + SCROLLBAR_WIDTH,
+                        cluster_width + SCROLLBAR_WIDTH + padding,
                         self.cell_height,
                     ],
-                    color: [0.05, 0.05, 0.08, 0.85],
+                    color: [0.102, 0.102, 0.102, 1.0],
                 });
 
                 let badge_color = if exit_code == 0 {
@@ -269,27 +240,8 @@ impl BlockRenderer {
                 });
             }
 
-            // SOI summary label — left-anchored, severity-colored, truncated to avoid decorations
-            if block.state == BlockState::Complete {
-                if let Some(ref soi_text) = block.soi_summary {
-                    let soi_x = self.cell_width * 1.0;
-                    let cluster_width = self.decoration_cluster_width(block);
-                    let max_soi_width =
-                        viewport_width - SCROLLBAR_WIDTH - cluster_width - soi_x - self.cell_width;
-                    let max_chars = (max_soi_width / self.cell_width).floor() as usize;
-                    let truncated = if soi_text.len() > max_chars && max_chars > 3 {
-                        format!("{}...", &soi_text[..max_chars - 3])
-                    } else {
-                        soi_text.clone()
-                    };
-                    labels.push(BlockLabel {
-                        x: soi_x,
-                        y,
-                        text: truncated,
-                        color: soi_color_for_severity(block.soi_severity.as_deref()),
-                    });
-                }
-            }
+            // SOI summary is displayed via PTY-injected hint line (build_soi_hint_line),
+            // not as an overlay label, to avoid overlapping with prompt/command text.
         }
 
         labels
@@ -642,6 +594,37 @@ mod tests {
     use super::*;
     use glass_pipes::CapturedStage;
 
+    /// Map an SOI severity string to a display color (test-only, kept for coverage).
+    fn soi_color_for_severity(severity: Option<&str>) -> Rgb {
+        match severity {
+            Some("Error") => Rgb {
+                r: 200,
+                g: 80,
+                b: 80,
+            },
+            Some("Warning") => Rgb {
+                r: 200,
+                g: 160,
+                b: 60,
+            },
+            Some("Info") => Rgb {
+                r: 100,
+                g: 160,
+                b: 200,
+            },
+            Some("Success") => Rgb {
+                r: 80,
+                g: 160,
+                b: 80,
+            },
+            _ => Rgb {
+                r: 140,
+                g: 140,
+                b: 140,
+            },
+        }
+    }
+
     /// Helper: create a minimal complete Block with optional SOI fields.
     fn make_soi_block(soi_summary: Option<&str>, soi_severity: Option<&str>) -> Block {
         Block {
@@ -665,32 +648,18 @@ mod tests {
         }
     }
 
-    // -- SOI label tests --
+    // -- SOI color tests (label rendering removed; hint shown via PTY injection) --
 
     #[test]
-    fn test_soi_label_emitted_for_complete_block() {
+    fn test_soi_label_not_emitted_as_overlay() {
         let renderer = BlockRenderer::new(8.0, 16.0);
         let block = make_soi_block(Some("3 errors"), Some("Error"));
         let blocks: Vec<&Block> = vec![&block];
         let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
-        let soi = labels.iter().find(|l| l.text == "3 errors");
+        let soi = labels.iter().find(|l| l.text.contains("errors"));
         assert!(
-            soi.is_some(),
-            "SOI label should be present for Complete block with soi_summary"
-        );
-    }
-
-    #[test]
-    fn test_soi_label_absent_when_no_summary() {
-        let renderer = BlockRenderer::new(8.0, 16.0);
-        let block = make_soi_block(None, None);
-        let blocks: Vec<&Block> = vec![&block];
-        let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
-        // Only exit code badge "OK" should be present, no SOI-specific text
-        let soi_labels: Vec<_> = labels.iter().filter(|l| l.text != "OK").collect();
-        assert!(
-            soi_labels.is_empty(),
-            "No SOI label when soi_summary is None"
+            soi.is_none(),
+            "SOI label should NOT be emitted as overlay (displayed via PTY hint)"
         );
     }
 
@@ -705,19 +674,6 @@ mod tests {
                 b: 80
             }
         );
-    }
-
-    #[test]
-    fn test_soi_label_left_anchored() {
-        let renderer = BlockRenderer::new(10.0, 16.0);
-        let block = make_soi_block(Some("2 warnings"), Some("Warning"));
-        let blocks: Vec<&Block> = vec![&block];
-        let labels = renderer.build_block_text(&blocks, 0, 25, 800.0);
-        let soi = labels
-            .iter()
-            .find(|l| l.text == "2 warnings")
-            .expect("SOI label should exist");
-        assert_eq!(soi.x, 10.0, "SOI label x should be cell_width * 1.0 = 10.0");
     }
 
     /// Helper: create a minimal Block for pipeline rendering tests.

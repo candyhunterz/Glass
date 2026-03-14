@@ -997,11 +997,28 @@ Session Continuity:
 
     // AGTC-05: Register with coordination DB (soft errors -- agent starts regardless).
     let (coord_agent_id, coord_project_root) = {
-        let canonical = std::fs::canonicalize(&project_root)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&project_root));
-        let canonical_str = canonical.to_string_lossy().to_string();
+        // Use dunce::canonicalize (via glass_coordination) to avoid \\?\ UNC prefix on Windows.
+        // This must match the path format used by the coordination poller.
+        let canonical_str =
+            glass_coordination::canonicalize_path(std::path::Path::new(&project_root))
+                .unwrap_or_else(|_| project_root.clone());
         match glass_coordination::CoordinationDb::open_default() {
             Ok(mut db) => {
+                // Prune stale agents (dead PIDs or expired heartbeats) before registering.
+                // Timeout of 120s: agents that haven't heartbeated in 2 minutes are stale.
+                match db.prune_stale(120) {
+                    Ok(pruned) if !pruned.is_empty() => {
+                        tracing::info!(
+                            "AgentRuntime: pruned {} stale agent(s): {:?}",
+                            pruned.len(),
+                            pruned
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("AgentRuntime: prune_stale failed (soft): {}", e);
+                    }
+                    _ => {}
+                }
                 let cwd = std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| canonical_str.clone());
@@ -3836,8 +3853,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                         return;
                     }
 
-                    // Holds (db_path, command_id) for SOI worker, extracted inside borrow.
-                    let mut soi_spawn_data: Option<(std::path::PathBuf, i64)> = None;
                     // Holds command event data for emit_command_event (extracted inside borrow).
                     let mut command_event_data: Option<(String, String)> = None;
 
@@ -4224,15 +4239,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
-                        // Capture SOI worker inputs for CommandFinished events.
-                        // db.path() is valid while session is borrowed; copy it out as PathBuf.
-                        if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
-                            soi_spawn_data = session.history_db.as_ref().and_then(|db| {
-                                session
-                                    .last_command_id
-                                    .map(|cmd_id| (db.path().to_path_buf(), cmd_id))
-                            });
-                        }
+                        // NOTE: SOI parse is now triggered from CommandOutput handler
+                        // (after output is stored in DB) to avoid a race condition where
+                        // the SOI worker queries the DB before output is written.
 
                         // On CurrentDirectory events, update status and query git info
                         // Track whether we need to spawn a git query (can't spawn inside session borrow)
@@ -4299,85 +4308,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    // Spawn SOI parse worker after CommandFinished (needs self.proxy, runs off-thread)
-                    if let Some((db_path, cmd_id)) = soi_spawn_data {
-                        let proxy = self.proxy.clone();
-                        let wid = window_id;
-                        let sid = session_id;
-                        std::thread::Builder::new()
-                            .name("Glass SOI parse".into())
-                            .spawn(move || {
-                                let db = match glass_history::db::HistoryDb::open(&db_path) {
-                                    Ok(db) => db,
-                                    Err(e) => {
-                                        tracing::warn!("SOI worker: failed to open DB: {}", e);
-                                        return;
-                                    }
-                                };
-
-                                let output_text = match db.get_output_for_command(cmd_id) {
-                                    Ok(text) => text,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "SOI worker: failed to fetch output for cmd {}: {}",
-                                            cmd_id,
-                                            e
-                                        );
-                                        None
-                                    }
-                                };
-
-                                let command_text = db
-                                    .get_command_text(cmd_id)
-                                    .ok()
-                                    .flatten()
-                                    .unwrap_or_default();
-
-                                let (summary, severity, raw_line_count) = match output_text {
-                                    None => {
-                                        ("no output captured".to_string(), "Info".to_string(), 0i64)
-                                    }
-                                    Some(ref text) if text.is_empty() => {
-                                        ("no output captured".to_string(), "Info".to_string(), 0i64)
-                                    }
-                                    Some(text) => {
-                                        let output_type =
-                                            glass_soi::classify(&text, Some(&command_text));
-                                        let parsed = glass_soi::parse(
-                                            &text,
-                                            output_type,
-                                            Some(&command_text),
-                                        );
-                                        if let Err(e) = db.insert_parsed_output(cmd_id, &parsed) {
-                                            tracing::warn!(
-                                                "SOI: insert_parsed_output failed cmd={}: {}",
-                                                cmd_id,
-                                                e
-                                            );
-                                        }
-                                        let sev_str = match parsed.summary.severity {
-                                            glass_soi::Severity::Error => "Error",
-                                            glass_soi::Severity::Warning => "Warning",
-                                            glass_soi::Severity::Info => "Info",
-                                            glass_soi::Severity::Success => "Success",
-                                        };
-                                        let rlc = parsed.raw_line_count as i64;
-                                        (parsed.summary.one_line, sev_str.to_string(), rlc)
-                                    }
-                                };
-
-                                let _ = proxy.send_event(AppEvent::SoiReady {
-                                    window_id: wid,
-                                    session_id: sid,
-                                    command_id: cmd_id,
-                                    summary,
-                                    severity,
-                                    raw_line_count,
-                                });
-                            })
-                            .ok();
-                    }
-
                     // Request redraw to reflect block state changes
                     ctx.window.request_redraw();
                 }
@@ -4387,6 +4317,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 session_id,
                 raw_output,
             } => {
+                let mut soi_spawn_data: Option<(std::path::PathBuf, i64)> = None;
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Process raw bytes: binary detection, ANSI stripping, truncation
                     let max_kb = self
@@ -4396,19 +4327,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .map(|h| h.max_output_capture_kb)
                         .unwrap_or(50);
                     let processed = glass_history::output::process_output(Some(raw_output), max_kb);
-                    if let Some(output) = processed {
+                    if let Some(ref output) = processed {
                         if let Some(session) = ctx.session_mux.session_mut(session_id) {
                             // Update the last command record with captured output
                             if let (Some(ref db), Some(cmd_id)) =
                                 (&session.history_db, session.last_command_id)
                             {
-                                match db.update_output(cmd_id, &output) {
+                                match db.update_output(cmd_id, output) {
                                     Ok(()) => {
                                         tracing::debug!(
                                             "Updated command {} with {} bytes of output",
                                             cmd_id,
                                             output.len(),
                                         );
+                                        // Output is now in the DB — safe to spawn SOI parse
+                                        soi_spawn_data =
+                                            Some((db.path().to_path_buf(), cmd_id));
                                     }
                                     Err(e) => {
                                         tracing::warn!("Failed to update command output: {}", e);
@@ -4417,6 +4351,85 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
                     }
+                }
+
+                // Spawn SOI parse worker AFTER output is stored in DB (avoids race condition)
+                if let Some((db_path, cmd_id)) = soi_spawn_data {
+                    let proxy = self.proxy.clone();
+                    let wid = window_id;
+                    let sid = session_id;
+                    std::thread::Builder::new()
+                        .name("Glass SOI parse".into())
+                        .spawn(move || {
+                            let db = match glass_history::db::HistoryDb::open(&db_path) {
+                                Ok(db) => db,
+                                Err(e) => {
+                                    tracing::warn!("SOI worker: failed to open DB: {}", e);
+                                    return;
+                                }
+                            };
+
+                            let output_text = match db.get_output_for_command(cmd_id) {
+                                Ok(text) => text,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "SOI worker: failed to fetch output for cmd {}: {}",
+                                        cmd_id,
+                                        e
+                                    );
+                                    None
+                                }
+                            };
+
+                            let command_text = db
+                                .get_command_text(cmd_id)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
+
+                            let (summary, severity, raw_line_count) = match output_text {
+                                None => {
+                                    ("no output captured".to_string(), "Info".to_string(), 0i64)
+                                }
+                                Some(ref text) if text.is_empty() => {
+                                    ("no output captured".to_string(), "Info".to_string(), 0i64)
+                                }
+                                Some(text) => {
+                                    let output_type =
+                                        glass_soi::classify(&text, Some(&command_text));
+                                    let parsed = glass_soi::parse(
+                                        &text,
+                                        output_type,
+                                        Some(&command_text),
+                                    );
+                                    if let Err(e) = db.insert_parsed_output(cmd_id, &parsed) {
+                                        tracing::warn!(
+                                            "SOI: insert_parsed_output failed cmd={}: {}",
+                                            cmd_id,
+                                            e
+                                        );
+                                    }
+                                    let sev_str = match parsed.summary.severity {
+                                        glass_soi::Severity::Error => "Error",
+                                        glass_soi::Severity::Warning => "Warning",
+                                        glass_soi::Severity::Info => "Info",
+                                        glass_soi::Severity::Success => "Success",
+                                    };
+                                    let rlc = parsed.raw_line_count as i64;
+                                    (parsed.summary.one_line, sev_str.to_string(), rlc)
+                                }
+                            };
+
+                            let _ = proxy.send_event(AppEvent::SoiReady {
+                                window_id: wid,
+                                session_id: sid,
+                                command_id: cmd_id,
+                                summary,
+                                severity,
+                                raw_line_count,
+                            });
+                        })
+                        .ok();
                 }
             }
             AppEvent::ConfigReloaded { config, error } => {
