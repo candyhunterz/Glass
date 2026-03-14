@@ -68,6 +68,20 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
     AgentResponse::TypeText(trimmed.to_string())
 }
 
+/// State of a checkpoint refresh cycle.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckpointPhase {
+    /// Not in a checkpoint cycle.
+    Idle,
+    /// Waiting for Claude Code to write checkpoint.md (polling mtime).
+    WaitingForCheckpoint {
+        started_at: std::time::Instant,
+        last_mtime: Option<std::time::SystemTime>,
+    },
+    /// Checkpoint written; waiting for /clear to complete.
+    ClearingSent,
+}
+
 /// Orchestrator state, lives on Processor in main.rs.
 pub struct OrchestratorState {
     /// Whether orchestration is active (toggled by Ctrl+Shift+O).
@@ -78,6 +92,12 @@ pub struct OrchestratorState {
     pub recent_responses: Vec<String>,
     /// Max identical responses before stuck triggers.
     pub max_retries: u32,
+    /// Current checkpoint refresh cycle state.
+    pub checkpoint_phase: CheckpointPhase,
+    /// Summary of what was completed (from GLASS_CHECKPOINT).
+    pub last_checkpoint_completed: String,
+    /// Next item to work on (from GLASS_CHECKPOINT).
+    pub last_checkpoint_next: String,
 }
 
 impl OrchestratorState {
@@ -87,6 +107,9 @@ impl OrchestratorState {
             iteration: 0,
             max_retries,
             recent_responses: Vec::new(),
+            checkpoint_phase: CheckpointPhase::Idle,
+            last_checkpoint_completed: String::new(),
+            last_checkpoint_next: String::new(),
         }
     }
 
@@ -111,6 +134,77 @@ impl OrchestratorState {
     pub fn reset_stuck(&mut self) {
         self.recent_responses.clear();
     }
+
+    /// Start a checkpoint refresh cycle.
+    pub fn begin_checkpoint(&mut self, completed: &str, next: &str) {
+        self.last_checkpoint_completed = completed.to_string();
+        self.last_checkpoint_next = next.to_string();
+        self.checkpoint_phase = CheckpointPhase::WaitingForCheckpoint {
+            started_at: std::time::Instant::now(),
+            last_mtime: None,
+        };
+    }
+}
+
+/// Append an iteration row to .glass/iterations.tsv.
+///
+/// Format: iteration\tcommit\tfeature\tmetric\tstatus\tdescription
+pub fn append_iteration_log(
+    iteration: u32,
+    feature: &str,
+    status: &str,
+    description: &str,
+) {
+    let glass_dir = std::path::Path::new(".glass");
+    let _ = std::fs::create_dir_all(glass_dir);
+    let path = glass_dir.join("iterations.tsv");
+
+    let needs_header = !path.exists();
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open iterations.tsv: {e}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+    if needs_header {
+        let _ = writeln!(
+            file,
+            "iteration\tcommit\tfeature\tmetric\tstatus\tdescription"
+        );
+    }
+
+    // Get current git commit hash (short)
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let _ = writeln!(
+        file,
+        "{iteration}\t{commit}\t{feature}\t\t{status}\t{description}"
+    );
+}
+
+/// Read the iterations.tsv file content for inclusion in the system prompt.
+pub fn read_iterations_log() -> String {
+    let path = std::path::Path::new(".glass").join("iterations.tsv");
+    std::fs::read_to_string(&path).unwrap_or_default()
 }
 
 #[cfg(test)]

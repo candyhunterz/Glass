@@ -777,6 +777,13 @@ fn try_spawn_agent(
         let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
             .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());
 
+        let iterations_content = orchestrator::read_iterations_log();
+        let iterations_content = if iterations_content.is_empty() {
+            "No iterations yet.".to_string()
+        } else {
+            iterations_content
+        };
+
         format!(
             r#"You are the Glass Agent, collaborating with Claude Code to build a project.
 Claude Code is the implementer — it writes code, runs commands, builds features.
@@ -788,6 +795,9 @@ PROJECT PLAN:
 
 CURRENT STATUS:
 {checkpoint_content}
+
+ITERATION HISTORY:
+{iterations_content}
 
 ITERATION PROTOCOL:
 For each feature, guide Claude Code through this cycle:
@@ -5130,7 +5140,25 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 "Orchestrator: stuck detected after {} identical responses",
                                 self.orchestrator.max_retries
                             );
-                            // TODO: handle stuck (Plan 3)
+
+                            // Log stuck iteration
+                            orchestrator::append_iteration_log(
+                                self.orchestrator.iteration,
+                                "stuck",
+                                "stuck",
+                                &format!("Stuck after {} identical responses: {}", self.orchestrator.max_retries, &text[..text.len().min(80)]),
+                            );
+
+                            // Tell Claude Code to revert
+                            if let Some(ctx) = self.windows.values().next() {
+                                if let Some(session) = ctx.session_mux.focused_session() {
+                                    let msg = "You've tried this approach multiple times without success. Revert to the last good commit with 'git revert HEAD' and try a different approach.\n";
+                                    let bytes = msg.as_bytes().to_vec();
+                                    let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                }
+                            }
+
+                            self.orchestrator.reset_stuck();
                             return;
                         }
 
@@ -5150,7 +5178,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                             completed,
                             next
                         );
-                        // TODO: handle checkpoint cycle (Plan 3)
+
+                        // Log the checkpoint iteration
+                        orchestrator::append_iteration_log(
+                            self.orchestrator.iteration,
+                            &completed,
+                            "checkpoint",
+                            &format!("Context refresh: completed {completed}, next {next}"),
+                        );
+
+                        // Start the refresh cycle: tell Claude Code to commit and write checkpoint
+                        self.orchestrator.begin_checkpoint(&completed, &next);
+
+                        if let Some(ctx) = self.windows.values().next() {
+                            if let Some(session) = ctx.session_mux.focused_session() {
+                                let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
+                                let bytes = msg.as_bytes().to_vec();
+                                let _ = session
+                                    .pty_sender
+                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            }
+                        }
                     }
                 }
 
