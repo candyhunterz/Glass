@@ -545,6 +545,17 @@ fn create_session(
         .filter(|o| o.enabled)
         .map(|o| o.silence_timeout_secs)
         .unwrap_or(0);
+    let fast_trigger = config
+        .agent
+        .as_ref()
+        .and_then(|a| a.orchestrator.as_ref())
+        .map(|o| o.fast_trigger_secs)
+        .unwrap_or(5);
+    let prompt_pattern = config
+        .agent
+        .as_ref()
+        .and_then(|a| a.orchestrator.as_ref())
+        .and_then(|o| o.agent_prompt_pattern.clone());
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
         proxy.clone(),
@@ -554,6 +565,8 @@ fn create_session(
         max_output_kb,
         pipes_enabled,
         orchestrator_silence_secs,
+        fast_trigger,
+        prompt_pattern,
     );
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines

@@ -164,6 +164,8 @@ pub fn spawn_pty(
     max_output_capture_kb: u32,
     pipes_enabled: bool,
     orchestrator_silence_secs: u64,
+    orchestrator_fast_trigger_secs: u64,
+    orchestrator_prompt_pattern: Option<String>,
 ) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
     // Use configured shell if provided, otherwise detect platform default
     let shell_program = if let Some(shell) = shell_override {
@@ -249,6 +251,8 @@ pub fn spawn_pty(
                 poll,
                 max_output_capture_kb,
                 orchestrator_silence_secs,
+                orchestrator_fast_trigger_secs,
+                orchestrator_prompt_pattern,
             );
         })
         .expect("Failed to spawn PTY reader thread");
@@ -273,6 +277,8 @@ fn glass_pty_loop(
     poll: Arc<polling::Poller>,
     max_output_capture_kb: u32,
     orchestrator_silence_secs: u64,
+    orchestrator_fast_trigger_secs: u64,
+    orchestrator_prompt_pattern: Option<String>,
 ) {
     let mut scanner = OscScanner::new();
     let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
@@ -283,9 +289,11 @@ fn glass_pty_loop(
     let mut output_buffer = OutputBuffer::new((max_output_capture_kb as usize) * 1024);
 
     // Orchestrator silence detection (periodic, not one-shot)
-    let mut silence_tracker = if orchestrator_silence_secs > 0 {
-        Some(crate::silence::SilenceTracker::new(
+    let mut smart_trigger = if orchestrator_silence_secs > 0 {
+        Some(crate::silence::SmartTrigger::new(
             orchestrator_silence_secs,
+            orchestrator_fast_trigger_secs,
+            orchestrator_prompt_pattern,
         ))
     } else {
         None
@@ -299,8 +307,8 @@ fn glass_pty_loop(
             .map(|st| st.saturating_duration_since(Instant::now()));
 
         // Cap poll timeout to silence tracker's next check time.
-        if let Some(ref mut tracker) = silence_tracker {
-            let silence_timeout = tracker.poll_timeout();
+        if let Some(ref mut trigger) = smart_trigger {
+            let silence_timeout = trigger.poll_timeout();
             timeout = Some(match timeout {
                 Some(t) => t.min(silence_timeout),
                 None => silence_timeout,
@@ -361,6 +369,7 @@ fn glass_pty_loop(
                             &mut parser,
                             &mut buf,
                             &mut output_buffer,
+                            smart_trigger.as_mut(),
                         );
                         terminal.lock().exit();
                         event_proxy.send_event(Event::Wakeup);
@@ -383,13 +392,10 @@ fn glass_pty_loop(
                             &mut parser,
                             &mut buf,
                             &mut output_buffer,
+                            smart_trigger.as_mut(),
                         ) {
                             tracing::error!("Error reading from PTY: {err}");
                             break 'event_loop;
-                        }
-                        // Reset silence timer on new output
-                        if let Some(ref mut tracker) = silence_tracker {
-                            tracker.on_output();
                         }
                     }
 
@@ -405,8 +411,8 @@ fn glass_pty_loop(
         }
 
         // Orchestrator silence detection (fires periodically while quiet)
-        if let Some(ref mut tracker) = silence_tracker {
-            if tracker.should_fire() {
+        if let Some(ref mut trigger) = smart_trigger {
+            if trigger.should_fire() {
                 let _ = app_proxy.send_event(AppEvent::OrchestratorSilence {
                     window_id,
                     session_id: event_proxy.session_id(),
@@ -444,6 +450,7 @@ fn pty_read_with_scan(
     parser: &mut ansi::Processor,
     buf: &mut [u8],
     output_buffer: &mut OutputBuffer,
+    mut smart_trigger: Option<&mut crate::silence::SmartTrigger>,
 ) -> io::Result<()> {
     let mut unprocessed = 0;
     let mut processed = 0;
@@ -494,12 +501,21 @@ fn pty_read_with_scan(
                 event: shell_event,
                 line,
             });
+            if matches!(osc_event, crate::osc_scanner::OscEvent::PromptStart) {
+                if let Some(ref mut trigger) = smart_trigger {
+                    trigger.on_shell_prompt();
+                }
+            }
         }
 
         // Output capture: accumulate bytes between CommandExecuted and CommandFinished.
         // Check alt-screen sequences in raw bytes (avoids locking terminal for TermMode).
         output_buffer.check_alt_screen(data);
         output_buffer.append(data);
+
+        if let Some(ref mut trigger) = smart_trigger {
+            trigger.on_output_bytes(data);
+        }
 
         // Handle capture lifecycle based on shell integration events.
         for osc_event in &osc_events {

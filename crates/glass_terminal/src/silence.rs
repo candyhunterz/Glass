@@ -1,32 +1,6 @@
 use regex::Regex;
 use std::time::{Duration, Instant};
 
-/// Backward-compat shim so pty.rs compiles until Task 3 wires SmartTrigger in.
-/// Delegates to SmartTrigger with defaults (no fast trigger, no prompt regex).
-/// TODO(Task 3): remove this struct and update pty.rs to use SmartTrigger directly.
-pub struct SilenceTracker(SmartTrigger);
-
-impl SilenceTracker {
-    pub fn new(threshold_secs: u64) -> Self {
-        // fast_threshold == threshold so the fast path never fires ahead of slow path
-        SilenceTracker(SmartTrigger::new(threshold_secs, threshold_secs, None))
-    }
-
-    pub fn on_output(&mut self) {
-        // Reset timers but don't set was_output_flowing (avoids fast trigger)
-        self.0.last_output_at = Instant::now();
-        self.0.last_fired_at = None;
-    }
-
-    pub fn should_fire(&mut self) -> bool {
-        self.0.should_fire()
-    }
-
-    pub fn poll_timeout(&self) -> Duration {
-        self.0.poll_timeout()
-    }
-}
-
 /// Smart orchestrator trigger that fires on the fastest available signal.
 ///
 /// Priority order:
