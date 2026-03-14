@@ -1240,6 +1240,23 @@ fn extract_term_lines(term: &Arc<FairMutex<Term<EventProxy>>>, n: usize) -> Vec<
     lines[start..].to_vec()
 }
 
+impl Processor {
+    /// Get the CWD of the focused session, falling back to the process CWD.
+    fn get_focused_cwd(&self) -> String {
+        self.windows
+            .values()
+            .next()
+            .and_then(|ctx| ctx.session_mux.focused_session())
+            .map(|s| s.status.cwd().to_string())
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            })
+    }
+}
+
 impl ApplicationHandler<AppEvent> for Processor {
     /// Called at startup on desktop (Windows) and on app resume on mobile/web.
     ///
@@ -5318,7 +5335,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                         "Orchestrator: auto-checkpoint triggered after {} iterations",
                         self.orchestrator.iterations_since_checkpoint
                     );
-                    self.orchestrator.begin_checkpoint("auto-refresh", "continue from PRD");
+                    let cp_path = orchestrator::checkpoint_path(
+                        &self.get_focused_cwd(),
+                        self.config.agent.as_ref().and_then(|a| a.orchestrator.as_ref()).map(|o| o.checkpoint_path.as_str()),
+                    );
+                    let mtime = orchestrator::file_mtime(&cp_path);
+                    self.orchestrator.begin_checkpoint("auto-refresh", "continue from PRD", mtime);
                     if let Some(ctx) = self.windows.values().next() {
                         if let Some(session) = ctx.session_mux.focused_session() {
                             let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
@@ -5392,7 +5414,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         // Start the refresh cycle: tell Claude Code to commit and write checkpoint
-                        self.orchestrator.begin_checkpoint(&completed, &next);
+                        let cp_path = orchestrator::checkpoint_path(
+                            &self.get_focused_cwd(),
+                            self.config.agent.as_ref().and_then(|a| a.orchestrator.as_ref()).map(|o| o.checkpoint_path.as_str()),
+                        );
+                        let mtime = orchestrator::file_mtime(&cp_path);
+                        self.orchestrator.begin_checkpoint(&completed, &next, mtime);
 
                         if let Some(ctx) = self.windows.values().next() {
                             if let Some(session) = ctx.session_mux.focused_session() {

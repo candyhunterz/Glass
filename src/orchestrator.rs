@@ -103,6 +103,9 @@ pub const AUTO_CHECKPOINT_INTERVAL: u32 = 15;
 /// PromptStart events within this window are ignored for crash recovery.
 pub const CRASH_RECOVERY_GRACE_SECS: u64 = 10;
 
+/// Maximum time to wait for Claude Code to write checkpoint.md before respawning anyway.
+pub const CHECKPOINT_TIMEOUT_SECS: u64 = 180;
+
 /// Orchestrator state, lives on Processor in main.rs.
 pub struct OrchestratorState {
     /// Whether orchestration is active (toggled by Ctrl+Shift+O).
@@ -123,6 +126,8 @@ pub struct OrchestratorState {
     pub last_checkpoint_next: String,
     /// Timestamp of last PTY write by the orchestrator (for crash recovery grace period).
     pub last_pty_write: Option<std::time::Instant>,
+    /// Whether we're waiting for the agent to respond to a context send.
+    pub response_pending: bool,
 }
 
 impl OrchestratorState {
@@ -137,6 +142,7 @@ impl OrchestratorState {
             last_checkpoint_completed: String::new(),
             last_checkpoint_next: String::new(),
             last_pty_write: None,
+            response_pending: false,
         }
     }
 
@@ -180,13 +186,19 @@ impl OrchestratorState {
     }
 
     /// Start a checkpoint refresh cycle.
-    pub fn begin_checkpoint(&mut self, completed: &str, next: &str) {
+    pub fn begin_checkpoint(
+        &mut self,
+        completed: &str,
+        next: &str,
+        checkpoint_mtime: Option<std::time::SystemTime>,
+    ) {
         self.last_checkpoint_completed = completed.to_string();
         self.last_checkpoint_next = next.to_string();
         self.iterations_since_checkpoint = 0;
+        self.response_pending = false;
         self.checkpoint_phase = CheckpointPhase::WaitingForCheckpoint {
             started_at: std::time::Instant::now(),
-            last_mtime: None,
+            last_mtime: checkpoint_mtime,
         };
     }
 }
@@ -250,6 +262,29 @@ pub fn append_iteration_log(
 pub fn read_iterations_log() -> String {
     let path = std::path::Path::new(".glass").join("iterations.tsv");
     std::fs::read_to_string(&path).unwrap_or_default()
+}
+
+/// Resolve the checkpoint file path for a given project root.
+pub fn checkpoint_path(project_root: &str, config: Option<&str>) -> std::path::PathBuf {
+    let rel = config.unwrap_or(".glass/checkpoint.md");
+    std::path::Path::new(project_root).join(rel)
+}
+
+/// Get the current mtime of a file, or None if it doesn't exist.
+pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
+}
+
+/// Check if a checkpoint file has been updated since a baseline mtime.
+pub fn checkpoint_changed(
+    path: &std::path::Path,
+    baseline: Option<std::time::SystemTime>,
+) -> bool {
+    match (baseline, file_mtime(path)) {
+        (None, Some(_)) => true,
+        (Some(old), Some(new)) => new > old,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -347,5 +382,38 @@ mod tests {
                 summary: String::new()
             }
         );
+    }
+
+    #[test]
+    fn checkpoint_changed_detects_creation() {
+        let path = std::path::Path::new("nonexistent_test_file_12345.md");
+        assert!(!checkpoint_changed(path, None));
+    }
+
+    #[test]
+    fn begin_checkpoint_stores_mtime() {
+        let mut state = OrchestratorState::new(3);
+        let fake_mtime = std::time::SystemTime::now();
+        state.begin_checkpoint("feature-a", "feature-b", Some(fake_mtime));
+        match state.checkpoint_phase {
+            CheckpointPhase::WaitingForCheckpoint { last_mtime, .. } => {
+                assert_eq!(last_mtime, Some(fake_mtime));
+            }
+            _ => panic!("Expected WaitingForCheckpoint"),
+        }
+        assert_eq!(state.last_checkpoint_completed, "feature-a");
+        assert_eq!(state.last_checkpoint_next, "feature-b");
+        assert_eq!(state.iterations_since_checkpoint, 0);
+    }
+
+    #[test]
+    fn response_pending_gates_context_sends() {
+        let mut state = OrchestratorState::new(3);
+        state.active = true;
+        assert!(!state.response_pending);
+        state.response_pending = true;
+        assert!(state.response_pending);
+        state.response_pending = false;
+        assert!(!state.response_pending);
     }
 }
