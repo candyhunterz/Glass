@@ -333,6 +333,8 @@ struct Processor {
     #[cfg(target_os = "windows")]
     #[allow(dead_code)]
     job_object_handle: Option<isize>,
+    /// Thread handle for the artifact completion watcher (if active).
+    artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for AgentRuntime {
@@ -1310,6 +1312,68 @@ fn fetch_latest_soi_context(
             .collect();
 
     (exit_code, soi_summary, soi_errors)
+}
+
+/// Spawn a notify file watcher that sends `OrchestratorSilence` when the
+/// artifact file at `artifact_path` (relative to `cwd`) is created or modified.
+///
+/// The thread parks itself after setting up the watcher and stays alive until
+/// explicitly unparked (when the orchestrator is disabled).
+fn start_artifact_watcher(
+    artifact_path: &str,
+    cwd: &str,
+    proxy: EventLoopProxy<AppEvent>,
+    window_id: WindowId,
+    session_id: SessionId,
+) -> Option<std::thread::JoinHandle<()>> {
+    if artifact_path.is_empty() {
+        return None;
+    }
+    let full_path = std::path::PathBuf::from(cwd).join(artifact_path);
+    let target_filename = full_path.file_name()?.to_owned();
+    let watch_dir = full_path.parent()?.to_path_buf();
+
+    // Ensure parent directory exists so the watcher can be created.
+    let _ = std::fs::create_dir_all(&watch_dir);
+
+    let handle = std::thread::Builder::new()
+        .name("Glass artifact watcher".into())
+        .spawn(move || {
+            use notify::{recommended_watcher, RecursiveMode, Watcher};
+            let proxy_clone = proxy;
+            let target = target_filename;
+            let mut watcher = match recommended_watcher(move |res: Result<notify::Event, _>| {
+                if let Ok(ev) = res {
+                    let is_target_file = ev.paths.iter().any(|p| {
+                        p.file_name()
+                            .map(|n| n == target.as_os_str())
+                            .unwrap_or(false)
+                    });
+                    if is_target_file {
+                        let _ = proxy_clone.send_event(AppEvent::OrchestratorSilence {
+                            window_id,
+                            session_id,
+                        });
+                    }
+                }
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::warn!("Failed to create artifact watcher: {e}");
+                    return;
+                }
+            };
+            if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+                tracing::warn!("Failed to watch artifact dir: {e}");
+                return;
+            }
+            loop {
+                std::thread::park(); // Keep alive until unparked; loop guards against spurious wakeups
+            }
+        })
+        .ok()?;
+
+    Some(handle)
 }
 
 impl Processor {
@@ -3234,9 +3298,37 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if handoff_note.is_some() && self.agent_runtime.is_some() {
                                         let _ = std::fs::remove_file(&handoff_path);
                                     }
+
+                                    // Start artifact watcher
+                                    let artifact_path = self
+                                        .config
+                                        .agent
+                                        .as_ref()
+                                        .and_then(|a| a.orchestrator.as_ref())
+                                        .map(|o| o.completion_artifact.clone())
+                                        .unwrap_or_else(|| ".glass/done".to_string());
+                                    if let Some(session) = self
+                                        .windows
+                                        .get(&window_id)
+                                        .and_then(|ctx| ctx.session_mux.focused_session())
+                                    {
+                                        let sid = session.id;
+                                        self.artifact_watcher_thread = start_artifact_watcher(
+                                            &artifact_path,
+                                            &current_cwd,
+                                            self.proxy.clone(),
+                                            window_id,
+                                            sid,
+                                        );
+                                    }
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
                                     let _ = ctx;
+                                    // Stop artifact watcher
+                                    if let Some(handle) = self.artifact_watcher_thread.take() {
+                                        handle.thread().unpark();
+                                        let _ = handle.join();
+                                    }
                                 }
                                 if let Some(ctx) = self.windows.get(&window_id) {
                                     ctx.window.request_redraw();
@@ -3606,6 +3698,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if self.orchestrator.active {
                         self.orchestrator.active = false;
                         tracing::info!("Orchestrator: auto-paused (user typing detected)");
+                        if let Some(handle) = self.artifact_watcher_thread.take() {
+                            handle.thread().unpark();
+                            let _ = handle.join();
+                        }
                     }
 
                     // Forward to PTY via encoder
@@ -5084,6 +5180,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                         tracing::info!("Agent config reloaded: mode={:?}", new_agent_config.mode);
                     }
 
+                    // Restart artifact watcher when orchestrator completion_artifact changes.
+                    if self.orchestrator.active {
+                        if let Some(handle) = self.artifact_watcher_thread.take() {
+                            handle.thread().unpark();
+                            let _ = handle.join();
+                        }
+                        let artifact_path = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.completion_artifact.clone())
+                            .unwrap_or_else(|| ".glass/done".to_string());
+                        let cwd = self.get_focused_cwd();
+                        if let Some((wid, sid)) = self
+                            .windows
+                            .iter()
+                            .next()
+                            .and_then(|(wid, ctx)| {
+                                ctx.session_mux.focused_session().map(|s| (*wid, s.id))
+                            })
+                        {
+                            self.artifact_watcher_thread = start_artifact_watcher(
+                                &artifact_path,
+                                &cwd,
+                                self.proxy.clone(),
+                                wid,
+                                sid,
+                            );
+                        }
+                    }
+
                     // Request redraw to clear error overlay even if font didn't change
                     if !font_changed {
                         for ctx in self.windows.values() {
@@ -5645,6 +5773,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         self.orchestrator.active = false;
+                        if let Some(handle) = self.artifact_watcher_thread.take() {
+                            handle.thread().unpark();
+                            let _ = handle.join();
+                        }
 
                         // Tell Claude Code to do a final commit
                         if let Some(ctx) = self.windows.values().next() {
@@ -5833,6 +5965,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                             let _ = std::fs::remove_file(&nudge_path);
                         }
 
+                        // Clean up artifact file if it exists (one-shot signal)
+                        let artifact_path_cfg = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.completion_artifact.clone())
+                            .unwrap_or_default();
+                        if !artifact_path_cfg.is_empty() {
+                            let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
+                            if full.exists() {
+                                let _ = std::fs::remove_file(&full);
+                            }
+                        }
+
                         let mut content = String::from("[TERMINAL_CONTEXT]\n");
                         if let Some(nudge_text) = nudge {
                             content.push_str(&format!(
@@ -5873,6 +6020,10 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::UsagePause => {
                 tracing::info!("Orchestrator: usage pause triggered (>=80%)");
                 self.orchestrator.active = false;
+                if let Some(handle) = self.artifact_watcher_thread.take() {
+                    handle.thread().unpark();
+                    let _ = handle.join();
+                }
                 for ctx in self.windows.values() {
                     ctx.window.request_redraw();
                 }
@@ -5880,6 +6031,10 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::UsageHardStop => {
                 tracing::warn!("Orchestrator: usage hard stop (>=95%)");
                 self.orchestrator.active = false;
+                if let Some(handle) = self.artifact_watcher_thread.take() {
+                    handle.thread().unpark();
+                    let _ = handle.join();
+                }
 
                 // Write emergency checkpoint from Rust (no AI)
                 if let Some(ctx) = self.windows.values().next() {
@@ -6658,6 +6813,7 @@ fn main() {
                 proposal_diff_cache: None,
                 #[cfg(target_os = "windows")]
                 job_object_handle,
+                artifact_watcher_thread: None,
             };
 
             event_loop

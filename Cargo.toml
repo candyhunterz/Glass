@@ -114,6 +114,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 regex = "1"
 ureq = { workspace = true }
+notify = "8.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
