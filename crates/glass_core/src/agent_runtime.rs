@@ -412,8 +412,10 @@ pub fn build_agent_command_args(
         .unwrap_or("build");
     let tools = if orchestrator_active {
         if orchestrator_mode == "audit" {
-            // All MCP tools for interactive testing — no Bash/Read/Write/Edit
+            // All MCP tools for interactive testing + Read for code inspection
+            // No Bash/Write/Edit — agent can read and test but not implement
             [
+                "Read",
                 "glass_history",
                 "glass_context",
                 "glass_undo",
