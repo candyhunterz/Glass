@@ -1,200 +1,236 @@
 # Architecture
 
-**Analysis Date:** 2026-03-08
+**Analysis Date:** 2026-03-15
 
 ## Pattern Overview
 
-**Overall:** Event-driven GUI application with a Rust workspace of 8 crates, using winit for windowing and wgpu for GPU-accelerated rendering. The architecture follows a layered crate separation where `src/main.rs` acts as the orchestrator, wiring together terminal emulation, rendering, session management, history, and snapshot subsystems.
+**Overall:** Modular Rust workspace with layered separation of concerns.
 
 **Key Characteristics:**
-- Monolithic `main.rs` (2537 lines) implements `winit::ApplicationHandler` and all event routing
-- Crate boundaries enforce dependency direction: `glass_core` at the bottom, `glass_mux` and `glass_renderer` in the middle, binary at the top
-- PTY I/O runs on dedicated threads; events flow back to the main thread via `EventLoopProxy<AppEvent>`
-- Terminal state is shared via `Arc<FairMutex<Term>>` with a snapshot-then-render pattern to minimize lock hold time
-- Shell integration via OSC escape sequences drives the command lifecycle (blocks, history, snapshots)
+- 13-crate workspace + main binary for isolated domain responsibilities
+- Silence-triggered feedback loop for autonomous agent orchestration
+- Command lifecycle tracking via shell integration (OSC 133 sequences)
+- Content-addressed file snapshots with SQLite metadata
+- GPU-accelerated rendering pipeline (wgpu + glyphon)
+- Session multiplexer for tabs and split panes
+- Multi-agent coordination via shared SQLite database
 
 ## Layers
 
-**Core (`glass_core`):**
-- Purpose: Shared types, configuration, and cross-cutting concerns
-- Location: `crates/glass_core/src/`
-- Contains: `GlassConfig` (TOML config), `AppEvent` enum (all inter-thread events), `SessionId`, `ShellEvent`, `ConfigError`, config file watcher, update checker
-- Depends on: `winit` (for `WindowId` in `AppEvent`), `serde`/`toml`, `notify` (file watcher), `dirs`
-- Used by: Every other crate
+**Terminal Emulation Layer:**
+- Purpose: PTY management, VT sequence parsing, shell integration event detection
+- Location: `crates/glass_terminal/`
+- Contains: PTY spawning (ConPTY on Windows, forkpty on Unix), alacritty_terminal embedding, OSC scanner, block manager
+- Depends on: alacritty_terminal (pinned 0.25.1), glass_core for events
+- Used by: Main event loop, snapshot system
 
-**Terminal (`glass_terminal`):**
-- Purpose: PTY management, terminal grid operations, shell integration parsing
-- Location: `crates/glass_terminal/src/`
-- Contains: `spawn_pty()` (PTY creation + reader thread), `EventProxy` (bridges PTY events to winit), `OscScanner` (parses OSC 133/7/9 sequences), `BlockManager` (command lifecycle tracking), `GridSnapshot` (lock-free rendering data), `OutputBuffer` (captures command output), `encode_key()` (keyboard input encoding)
-- Depends on: `glass_core`, `glass_pipes`, `alacritty_terminal`, `polling`, `vte`
-- Used by: `glass_renderer`, `glass_mux`, binary
+**Session & Multiplexing Layer:**
+- Purpose: Multi-session state management (tabs, split panes, search overlays)
+- Location: `crates/glass_mux/`
+- Contains: Session struct (owns PTY, terminal grid, block manager, history DB), SessionMux (tab/pane routing), SearchOverlay
+- Depends on: glass_terminal, glass_history
+- Used by: WindowContext in main.rs
 
-**Renderer (`glass_renderer`):**
-- Purpose: GPU rendering pipeline via wgpu + glyphon
-- Location: `crates/glass_renderer/src/`
-- Contains: `GlassRenderer` (wgpu surface/device/queue), `FrameRenderer` (orchestrates full render pipeline), `GlyphCache` (glyphon text rendering), `GridRenderer` (terminal cell metrics), `RectRenderer` (instanced quad pipeline for backgrounds), `BlockRenderer` (command block labels), `StatusBarRenderer`, `TabBarRenderer`, `SearchOverlayRenderer`, `ConfigErrorOverlay`
-- Depends on: `glass_core`, `glass_terminal`, `glass_pipes`, `wgpu`, `glyphon`, `bytemuck`
-- Used by: Binary
+**Rendering Layer:**
+- Purpose: GPU text rendering, UI overlays, frame composition
+- Location: `crates/glass_renderer/`
+- Contains: wgpu surface binding, glyphon glyph cache, frame rendering pipeline, block/search/status bar overlays, tab bar
+- Depends on: wgpu 28.0, glyphon 0.10, glass_terminal for grid snapshots
+- Used by: WindowContext for per-frame drawing
 
-**Multiplexer (`glass_mux`):**
-- Purpose: Session management for tabs and split panes
-- Location: `crates/glass_mux/src/`
-- Contains: `Session` (per-terminal state: PTY sender, term, block manager, history DB, snapshot store), `SessionMux` (manages sessions organized into tabs), `Tab` (holds `SplitNode` tree), `SplitNode` (binary tree layout engine), `ViewportLayout` (pixel rect computation), `SearchOverlay` (history search UI state), platform helpers (`default_shell`, `config_dir`, shortcut detection)
-- Depends on: `glass_core`, `glass_terminal`, `glass_history`, `glass_snapshot`, `alacritty_terminal`
-- Used by: Binary
+**History & Database Layer:**
+- Purpose: SQLite-backed command history with FTS5 search and SOI output classification
+- Location: `crates/glass_history/`
+- Contains: CommandRecord schema, HistoryDb CRUD, search/query filtering, output compression, SOI record storage
+- Depends on: rusqlite (bundled SQLite), glass_soi for output classification
+- Used by: Session, MCP tools, history CLI subcommands
 
-**History (`glass_history`):**
-- Purpose: SQLite-backed command history with FTS5 full-text search
-- Location: `crates/glass_history/src/`
-- Contains: `HistoryDb` (SQLite operations), `CommandRecord`, `QueryFilter`, `SearchResult`, `RetentionPolicy`, output processing (ANSI stripping, binary detection), `resolve_db_path()` (project-local `.glass/history.db` with global fallback)
-- Depends on: `rusqlite`, `dirs`, `chrono`
-- Used by: `glass_mux`, `glass_mcp`, binary
+**Snapshot & Undo Layer:**
+- Purpose: Pre-command file snapshots and destructive command detection
+- Location: `crates/glass_snapshot/`
+- Contains: Content-addressed blob store (blake3), SnapshotDb metadata, destructive command parser, undo engine
+- Depends on: blake3, rusqlite, notify for filesystem watching
+- Used by: Session for per-command file tracking
 
-**Snapshot (`glass_snapshot`):**
-- Purpose: Content-addressed file snapshots for command undo
-- Location: `crates/glass_snapshot/src/`
-- Contains: `SnapshotStore` (high-level API), `BlobStore` (content-addressed blob storage using blake3 hashes), `SnapshotDb` (SQLite metadata), `CommandParser` (predicts which files a command will modify), `IgnoreRules`, `Pruner` (retention enforcement), `UndoEngine` (restores pre-command state), `FsWatcher` (filesystem change tracking during command execution)
-- Depends on: `rusqlite`, `blake3`, `dirs`, `shlex`
-- Used by: `glass_mux`, `glass_mcp`, binary
+**Structured Output Intelligence (SOI):**
+- Purpose: Output classification and parsing into token-efficient summaries
+- Location: `crates/glass_soi/`
+- Contains: Output type classifiers (cargo, git, docker, etc.), severity extraction, one-line summary generation
+- Depends on: ANSI parser, language-specific parsers
+- Used by: glass_history, block manager for SOI hint lines
 
-**Pipes (`glass_pipes`):**
-- Purpose: Pipeline-aware command parsing
-- Location: `crates/glass_pipes/src/`
-- Contains: `parse_pipeline()`, `split_pipes()`, `CapturedStage` and related types
-- Depends on: `shlex`
-- Used by: `glass_terminal`, `glass_renderer`
+**Configuration & Events:**
+- Purpose: Config hot-reload, event type definitions, version checking
+- Location: `crates/glass_core/`
+- Contains: TOML config schema, AppEvent enum (terminal, shell, SOI, agent, orchestrator), config watcher, update checker
+- Depends on: serde, notify, semver
+- Used by: All layers for event passing and config access
 
-**MCP (`glass_mcp`):**
-- Purpose: Model Context Protocol server for AI assistant integration
-- Location: `crates/glass_mcp/src/`
-- Contains: `GlassServer` (MCP tool provider), `run_mcp_server()` (stdio JSON-RPC transport), tools: `GlassHistory`, `GlassContext`, `GlassUndo`, `GlassFileDiff`
-- Depends on: `glass_history`, `glass_snapshot`, `rmcp`, `tokio`
-- Used by: Binary (via `glass mcp serve` subcommand)
+**Coordination & Agent Integration:**
+- Purpose: Multi-agent file locking, agent registration, inter-agent messaging
+- Location: `crates/glass_coordination/`
+- Contains: CoordinationDb (global ~/.glass/agents.db), file locking, PID checking, agent registry
+- Depends on: rusqlite
+- Used by: MCP server, agent lifecycle management
 
-## Crate Dependency Graph
+**Worktree & Session Persistence:**
+- Purpose: Isolated worktrees for agent proposals, session handoff records
+- Location: `crates/glass_agent/`
+- Contains: WorktreeManager (git worktrees or plain copies), AgentSessionDb (session continuity across restarts)
+- Depends on: git2, glass_coordination
+- Used by: Agent approval flow, checkpoint cycles
 
-```
-binary (src/main.rs)
-├── glass_core
-├── glass_terminal ──> glass_core, glass_pipes
-├── glass_renderer ──> glass_core, glass_terminal, glass_pipes
-├── glass_mux ──────> glass_core, glass_terminal, glass_history, glass_snapshot
-├── glass_history
-├── glass_snapshot
-├── glass_pipes
-└── glass_mcp ──────> glass_history, glass_snapshot
+**Pipeline & Pipe Detection:**
+- Purpose: Command pipeline parsing, stage capture, pipe debugging
+- Location: `crates/glass_pipes/`
+- Contains: Pipeline parser, CapturedStage structs, stage split logic
+- Depends on: regex
+- Used by: OSC scanner, block manager, renderer
 
-Leaf crates (no glass_* deps): glass_core, glass_history, glass_snapshot, glass_pipes
-```
+**MCP Server:**
+- Purpose: Claude AI assistant integration via Model Context Protocol
+- Location: `crates/glass_mcp/`
+- Contains: MCP tools (history query, context summary, undo, file diff inspection), stdio transport
+- Depends on: rmcp, glass_history, glass_snapshot, glass_coordination
+- Used by: External AI assistants via stdio
+
+**Error Extraction:**
+- Purpose: Structured error parsing from compiler output
+- Location: `crates/glass_errors/`
+- Contains: Language-specific parsers (Rust JSON/human, C++ compiler, generic), error structs
+- Depends on: serde
+- Used by: SOI, proposal overlays
+
+**Main Event Loop & Orchestrator:**
+- Purpose: Window lifecycle, event routing, UI interaction, orchestrator state machine
+- Location: `src/main.rs`, `src/orchestrator.rs`, `src/usage_tracker.rs`
+- Contains: Processor impl of ApplicationHandler, session management, keyboard/mouse routing, orchestrator feedback loop
+- Depends on: winit 0.30, all crates above
+- Used by: Entry point only
 
 ## Data Flow
 
-**PTY Read -> Render Flow:**
+**Terminal Output Pipeline:**
 
-1. `spawn_pty()` in `crates/glass_terminal/src/pty.rs` creates a PTY and spawns a dedicated reader thread
-2. Reader thread polls PTY fd using `polling::Poller`, reads bytes into buffer
-3. `OscScanner` scans raw bytes for OSC sequences, emitting `ShellEvent` via `EventProxy`
-4. `OutputBuffer` accumulates command output bytes between `CommandExecuted` and `CommandFinished`
-5. Raw bytes are fed to `alacritty_terminal::Term` via `term.lock()` + `ansi::Processor`
-6. `EventProxy` sends `AppEvent::TerminalDirty` / `AppEvent::Shell` / `AppEvent::CommandOutput` to winit event loop
-7. `Processor::user_event()` in `src/main.rs` handles the `AppEvent`, routes to correct `Session` via `SessionMux`
-8. On `RedrawRequested`: `snapshot_term()` copies renderable data under brief lock, then `FrameRenderer::draw_frame()` renders without holding the lock
+1. PTY reader thread reads from ConPTY/forkpty
+2. alacritty_terminal parses VT sequences into grid updates
+3. OscScanner intercepts OSC 133 (shell events) and OSC 133;P (pipeline stages)
+4. Shell/Pipeline events fire AppEvent variants
+5. Main thread AppEvent handler routes to session block manager
+6. Block manager updates block state, fires snapshot trigger if needed
+7. Snapshot store creates pre-exec file snapshot on CommandExecuted
+8. Output captured between CommandExecuted and CommandFinished
+9. CommandFinished event + output → history DB insert
+10. SOI worker thread parses output → AppEvent::SoiReady
+11. SoiReady handler updates block's soi_summary field
+12. Frame renderer reads grid + blocks + overlays → renders next frame
 
-**Command Lifecycle (Shell Integration):**
+**Orchestrator Feedback Loop:**
 
-1. Shell emits OSC 133;A (PromptStart) -> `BlockManager` creates new `Block` in `PromptActive` state
-2. OSC 133;B (CommandStart) -> Block transitions to `InputActive`
-3. OSC 133;C (CommandExecuted) -> Block transitions to `Executing`, timer starts, `FsWatcher` starts, pre-exec snapshot taken
-4. OSC 133;D;{exit_code} (CommandFinished) -> Block transitions to `Complete`, duration recorded, output captured, history record inserted, post-exec snapshot comparison, `FsWatcher` stopped
-
-**Keyboard Input Flow:**
-
-1. `WindowEvent::KeyboardInput` in `Processor::window_event()`
-2. Glass shortcuts intercepted (Ctrl+Shift+T/W/Tab for tabs, Ctrl+Shift+D/arrows for splits, Ctrl+Shift+F for search, etc.)
-3. Non-shortcut keys: `encode_key()` converts to VT escape sequences
-4. Encoded bytes sent via `session.pty_sender.send(PtyMsg::Input(bytes))`
-5. PTY reader thread writes bytes to PTY fd
+1. SilenceTracker (in glass_terminal/silence.rs) detects silence > threshold
+2. OrchestratorSilence event fires to main thread
+3. Processor captures terminal context snapshot + shell history context
+4. Glass Agent (subprocess) receives context, generates proposal or response
+5. AgentResponse::TypeText → keyboard input to PTY
+6. AgentResponse::Checkpoint → checkpoint cycle (kill/respawn agent with fresh context)
+7. AgentResponse::Wait → reset silence timer, continue polling
+8. Usage tracker polls 5h utilization → triggers pause/hard-stop/resume events
 
 **State Management:**
-- Per-window: `WindowContext` holds `GlassRenderer`, `FrameRenderer`, `SessionMux`
-- Per-session: `Session` holds `PtySender`, `Arc<FairMutex<Term>>`, `BlockManager`, `StatusState`, `HistoryDb`, `SnapshotStore`
-- Application-wide: `Processor` holds `HashMap<WindowId, WindowContext>`, `GlassConfig`, `EventLoopProxy`
-- Terminal grid state: `Arc<FairMutex<Term>>` shared between PTY reader thread and main thread
+
+- **Terminal Grid:** Owned by alacritty_terminal::Term in Session, modified by PTY reader thread
+- **Block Lifecycle:** BlockManager in Session tracks PromptActive → InputActive → Executing → Complete
+- **Command History:** HistoryDb persists to `.glass/history.db` (or `~/.glass/global-history.db`)
+- **Snapshots:** SnapshotStore combines SnapshotDb metadata with BlobStore content-addressed blobs
+- **Search Overlay:** SearchOverlay state in Session, results queried from HistoryDb on every keystroke
+- **Session Focus:** SessionMux routes keyboard/mouse to focused session
 
 ## Key Abstractions
 
-**AppEvent (event bus):**
-- Purpose: All inter-thread communication funnels through `winit::EventLoop<AppEvent>`
-- Definition: `crates/glass_core/src/event.rs`
-- Variants: `TerminalDirty`, `SetTitle`, `TerminalExit`, `Shell`, `GitInfo`, `CommandOutput`, `ConfigReloaded`, `UpdateAvailable`
-- Pattern: PTY threads, git query threads, config watcher thread, and update checker thread all send `AppEvent` via `EventLoopProxy`; main thread handles in `Processor::user_event()`
+**Block:**
+- Purpose: Represents one prompt-command-output cycle
+- Examples: `crates/glass_terminal/src/block_manager.rs` lines 24-61
+- Pattern: Tracks state (PromptActive/InputActive/Executing/Complete), line ranges, exit code, timing, pipeline stages, SOI summary
 
 **Session:**
-- Purpose: Encapsulates all per-terminal state (PTY, grid, blocks, history, snapshots)
-- Definition: `crates/glass_mux/src/session.rs`
-- Pattern: Created by `create_session()` in `src/main.rs`, owned by `SessionMux`, identified by `SessionId`
+- Purpose: All state for one terminal session (tab or split pane)
+- Examples: `crates/glass_mux/src/session.rs` lines 25-67
+- Pattern: Owns PTY sender, Term<EventProxy>, BlockManager, StatusState, HistoryDb, SnapshotStore, SearchOverlay
 
-**Block:**
-- Purpose: Represents one prompt-command-output cycle with lifecycle state machine
-- Definition: `crates/glass_terminal/src/block_manager.rs`
-- States: `PromptActive` -> `InputActive` -> `Executing` -> `Complete`
-- Pattern: `BlockManager` tracks a `Vec<Block>`, updated by OSC events
+**AppEvent:**
+- Purpose: Cross-thread event routing from PTY reader, SOI worker, config watcher, agent subprocess
+- Examples: `crates/glass_core/src/event.rs` lines 67-168
+- Pattern: Enum variants for TerminalDirty, Shell, GitInfo, CommandOutput, ConfigReloaded, SoiReady, AgentProposal, OrchestratorResponse, VerifyComplete, Usage events
 
-**GridSnapshot:**
-- Purpose: Lock-free rendering data extracted from terminal grid
-- Definition: `crates/glass_terminal/src/grid_snapshot.rs`
-- Pattern: `snapshot_term()` copies all renderable cells under a brief `FairMutex` lock, then rendering proceeds without the lock
+**FrameRenderer:**
+- Purpose: Orchestrates GPU rendering pipeline
+- Examples: `crates/glass_renderer/src/frame.rs` lines 37-55
+- Pattern: Owns GlyphCache, GridRenderer, RectRenderer, BlockRenderer, SearchOverlayRenderer, StatusBar/TabBar renderers
 
-**SplitNode:**
-- Purpose: Binary tree representing pane layout within a tab
-- Definition: `crates/glass_mux/src/split_tree.rs`
-- Pattern: `Leaf(SessionId)` or `Split { direction, left, right, ratio }`. `compute_layout()` recursively computes pixel rects.
+**SnapshotStore:**
+- Purpose: Wraps SnapshotDb metadata + BlobStore blobs for atomic file snapshots
+- Examples: `crates/glass_snapshot/src/lib.rs` lines 28-80
+- Pattern: create_snapshot() → store_file() → update_command_id() handles pre-exec file capture
+
+**CoordinationDb:**
+- Purpose: Global agent registry and file locking
+- Examples: `crates/glass_coordination/src/lib.rs`
+- Pattern: All agents register in ~/.glass/agents.db, acquire/release file locks atomically, check for conflicts
 
 ## Entry Points
 
-**GUI Terminal (default):**
-- Location: `src/main.rs` -> `fn main()` (line 2384)
-- Triggers: Running `glass` with no subcommand
-- Responsibilities: Parse config, create winit event loop, create `Processor`, run event loop. `Processor::resumed()` creates window, GPU surface, PTY, initial session.
+**GUI Application:**
+- Location: `src/main.rs` line 7167
+- Triggers: Executable invocation with no arguments
+- Responsibilities: Create event loop, spawn first session, enter Processor event handler loop, dispatch winit/AppEvent variants
 
-**CLI History:**
-- Location: `src/main.rs` -> `Commands::History` branch, dispatches to `src/history.rs` -> `run_history()`
-- Triggers: `glass history [list|search]`
-- Responsibilities: Open history DB, query with filters, format output to stdout
-
-**CLI Undo:**
-- Location: `src/main.rs` -> `Commands::Undo` branch (line 2470)
-- Triggers: `glass undo <command_id>`
-- Responsibilities: Open snapshot store, execute undo via `UndoEngine`, print results
+**History CLI:**
+- Location: `src/main.rs` lines 50-123 (CLI structs), `src/history.rs` (handlers)
+- Triggers: `glass history search/list` subcommands
+- Responsibilities: Query HistoryDb with filters, format results, output to stdout
 
 **MCP Server:**
-- Location: `src/main.rs` -> `Commands::Mcp` branch -> `glass_mcp::run_mcp_server()`
-- Triggers: `glass mcp serve`
-- Responsibilities: Start tokio runtime, launch MCP server over stdio (JSON-RPC 2.0)
+- Location: `src/main.rs` lines 112-114, `crates/glass_mcp/src/lib.rs`
+- Triggers: `glass mcp serve` subcommand
+- Responsibilities: Start rmcp server over stdio, expose history/context/undo/diff tools
+
+**Undo CLI:**
+- Location: `src/main.rs` lines 69-73
+- Triggers: `glass undo <command_id>` subcommand
+- Responsibilities: Load UndoEngine from snapshot store, restore files from snapshot
 
 ## Error Handling
 
-**Strategy:** Graceful degradation. Optional subsystems (history, snapshots, git status) fail with warnings and disable themselves rather than crashing.
+**Strategy:** Result-based error propagation with contextual logging.
 
 **Patterns:**
-- PTY spawn failures: `expect()` (fatal, cannot run without a terminal)
-- GPU init failures: `expect()` (fatal, cannot render without GPU)
-- History DB open: `match` with `Ok/Err`, `None` disables history for that session
-- Snapshot store open: `match` with `Ok/Err`, `None` disables snapshots for that session
-- Config parse errors: Stored as `Option<ConfigError>`, displayed as red overlay banner, falls back to defaults
-- Surface errors (Lost/Outdated): Silently skip frame, request new surface next frame
-- Background thread panics: Caught at thread join boundaries
+- PTY spawn failures → log error, exit process
+- History DB schema mismatch → auto-migrate or recreate
+- Snapshot restore failures → log warning, return partial results
+- Config parse error → use GlassConfig::default(), emit ConfigReloaded event with error flag
+- SOI parse timeout → emit SoiReady with generic "parse timeout" message
+- Orchestrator stuck detection → checkpoint (kill/respawn agent)
+- File lock conflict → return LockConflict with lock holder info
 
 ## Cross-Cutting Concerns
 
-**Logging:** `tracing` crate with `tracing-subscriber` EnvFilter. `RUST_LOG` env var controls verbosity. Optional `perf` feature enables Chrome trace output (`glass-trace.json`). Performance metrics logged at startup (`PERF cold_start`, `PERF memory_physical`).
+**Logging:** tracing crate with stderr output, debug builds enable detailed terminal emulation logging
 
-**Configuration:** TOML file at `~/.glass/config.toml`, loaded via `GlassConfig::load()` in `crates/glass_core/src/config.rs`. Hot-reloaded via filesystem watcher (`crates/glass_core/src/config_watcher.rs`). Validation errors shown as overlay, defaults used on failure.
+**Validation:** CommandRecord schema validation in HistoryDb, shell integration OSC scanner validates sequence format
 
-**Shell Integration:** OSC escape sequences emitted by shell scripts in `shell-integration/` (bash, zsh, fish, PowerShell). Auto-injected at session startup by `find_shell_integration()` in `src/main.rs` (line 2324). Parsed by `OscScanner` in PTY reader thread.
+**Authentication:** Multi-agent coordination uses advisory file locks (sqlite WAL mode with PID checking), not cryptographic auth
 
-**Data Storage:** Project-local `.glass/` directory (walked up from CWD) with global `~/.glass/` fallback. Contains `history.db` (SQLite), `snapshots.db` (SQLite), `blobs/` (content-addressed files).
+**Concurrency:**
+- PTY reader thread: polling-based event loop, sends via mpsc channel to main thread
+- SOI worker thread: async Tokio task, sends via EventLoopProxy
+- Config watcher thread: notify-based filesystem events, sends AppEvent::ConfigReloaded
+- Coordination poller thread: background SQLite polling, sends AppEvent::CoordinationUpdate
+- Agent subprocess: managed via child process handle, communicates via stderr/stdout markers
+- Main thread: Tokio runtime with winit event loop, Mutex<Term> for grid mutations during rendering
 
----
+**Platform Abstraction:**
+- PTY layer: `crates/glass_terminal/src/pty.rs` abstracts ConPTY (Windows) vs forkpty (Unix)
+- Shell integration scripts: `shell-integration/` contains glass.bash/zsh/fish/ps1, auto-injected by PTY spawner
+- File watching: notify crate (cross-platform) for snapshot filesystem watcher
+- Config paths: glass_mux::platform::{config_dir, data_dir, default_shell} resolve platform-specific paths
 
-*Architecture analysis: 2026-03-08*

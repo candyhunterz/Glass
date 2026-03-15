@@ -1,159 +1,158 @@
 # Technology Stack
 
-**Analysis Date:** 2026-03-08
+**Analysis Date:** 2026-03-15
 
 ## Languages
 
 **Primary:**
-- Rust (Edition 2021) - All application code across 8 workspace crates and the main binary
+- Rust 2021 edition - All source code and workspaces
 
 **Secondary:**
-- TOML - Configuration (`~/.glass/config.toml`, all `Cargo.toml` manifests)
-- WGSL - Not used; rendering uses wgpu's built-in pipeline (no custom shaders detected)
+- Shell scripts - Shell integration for bash, zsh, fish, PowerShell (injected at runtime)
 
 ## Runtime
 
 **Environment:**
-- Native binary (no VM or interpreter)
-- GPU: wgpu with platform-specific backends (DX12 on Windows, Metal on macOS, Vulkan on Linux)
-- Async runtime: Tokio (full features) for MCP server; main event loop is synchronous via `winit` + `pollster`
+- Tokio async runtime 1.50.0 - Async task execution
 
 **Package Manager:**
-- Cargo (Rust standard)
-- Lockfile: `Cargo.lock` present (version 4)
+- Cargo - Rust package management
+- Lockfile: Cargo.lock present (locked dependencies)
 
 ## Frameworks
 
 **Core:**
-- `winit` 0.30.13 - Cross-platform windowing and event loop
-- `wgpu` 28.0.0 - GPU-accelerated rendering (WebGPU API)
-- `alacritty_terminal` =0.25.1 (exact pin) - Terminal emulation (VT100/xterm parsing, PTY management)
-- `glyphon` 0.10.0 - GPU text rendering / glyph rasterization
+- winit 0.30.13 - Window management and event loop
+- tokio 1.50.0 (full features) - Async runtime
+- alacritty_terminal 0.25.1 (pinned exact) - VTE parsing and terminal emulation
 
-**Testing:**
-- Built-in `#[test]` with `cargo test --workspace`
-- `criterion` 0.5 - Benchmarks (`benches/perf_benchmarks.rs`)
-- `tempfile` 3 - Temporary directories in tests
+**Rendering:**
+- wgpu 28.0.0 - GPU rendering via Direct3D/Vulkan/Metal
+- glyphon 0.10.0 - GPU-accelerated glyph rendering
+- bytemuck 1.25.0 (with derive) - GPU memory layout serialization
 
-**Build/Dev:**
-- `cargo clippy` - Linting (enforced in CI with `-D warnings`)
-- `cargo fmt` - Formatting (enforced in CI)
-- `cargo-wix` - Windows MSI installer builds
-- `cargo-deb` - Linux `.deb` package builds
+**Terminal/PTY:**
+- rustix (via alacritty_terminal) - PTY spawning and control
+- polling 3 - Cross-platform I/O readiness
 
-## Workspace Structure
+**Config & Data:**
+- serde 1.0.228 (with derive) - Serialization/deserialization
+- toml 1.0.4 - TOML config parsing
+- rusqlite 0.38.0 (bundled SQLite) - Local database with FTS5
 
-The project is a Cargo workspace with 8 internal crates:
+**History & Snapshots:**
+- blake3 1.8.3 - Content-addressed blob hashing
+- notify 8.0/8.2 - Filesystem event watching
+- ignore 0.4 - .gitignore-aware file traversal
 
-| Crate | Path | Purpose |
-|-------|------|---------|
-| `glass` (binary) | `src/main.rs` | Main application entry point, event loop, CLI |
-| `glass_core` | `crates/glass_core/` | Config, events, error types, update checker, config watcher |
-| `glass_terminal` | `crates/glass_terminal/` | PTY management, block detection, input handling, OSC parsing |
-| `glass_renderer` | `crates/glass_renderer/` | GPU rendering pipeline, glyph cache, block/grid/tab rendering |
-| `glass_history` | `crates/glass_history/` | SQLite command history database, search, retention |
-| `glass_snapshot` | `crates/glass_snapshot/` | File snapshot/undo system with content-addressed blob store |
-| `glass_mcp` | `crates/glass_mcp/` | Model Context Protocol server (stdio transport) |
-| `glass_mux` | `crates/glass_mux/` | Session multiplexing, tabs, splits, layout management |
-| `glass_pipes` | `crates/glass_pipes/` | Shell pipe tokenization and pipeline parsing |
+**UI & Interaction:**
+- arboard 3 - Clipboard access
+- url 2 - URL/URI parsing (OSC 7 file:// paths)
+
+**CLI & Utilities:**
+- clap 4.5 (with derive) - Command-line argument parsing
+- chrono 0.4 - Date/time handling
+- tracing 0.1.44 - Structured logging
+- tracing-subscriber 0.3 (with env-filter) - Log filtering
+- anyhow 1.0.102 - Error handling
+- uuid 1 (with v4 feature) - UUID generation
+
+**Development Tools:**
+- git2 0.20 - Git operations (worktree isolation)
+- diffy 0.4 - Diff calculation
+
+**Performance & Debugging:**
+- memory-stats 1.2 - Memory measurement
+- criterion 0.5 (dev-only) - Benchmarking with HTML reports
+- tracing-chrome 0.7 (optional, perf feature) - Chrome DevTools timeline export
 
 ## Key Dependencies
 
-**Critical (core functionality):**
-- `wgpu` 28.0.0 - All GPU rendering; without it, nothing displays
-- `winit` 0.30.13 - Window creation, input events, event loop
-- `alacritty_terminal` =0.25.1 - Terminal grid, PTY spawning, VT parsing (exact version pinned)
-- `glyphon` 0.10.0 - Text layout and glyph rasterization on GPU
-- `tokio` 1.50.0 (full) - Async runtime for MCP server subprocess
+**Critical:**
+- alacritty_terminal 0.25.1 - EXACT pinned version, no ^ or ~ substitution allowed. Handles all VT escape sequence parsing and PTY state machine.
+- rusqlite 0.38.0 - Bundled SQLite with FTS5 full-text search. Stores command history, pipe stages, and coordination data.
+- wgpu 28.0.0 - GPU rendering backend. Abstracts across Direct3D (Windows), Metal (macOS), Vulkan/OpenGL (Linux).
 
 **Infrastructure:**
-- `rusqlite` 0.38.0 (bundled SQLite) - History DB (`glass_history`) and snapshot DB (`glass_snapshot`)
-- `rmcp` 1 - Model Context Protocol SDK for AI assistant integration
-- `serde` 1.0.228 + `toml` 1.0.4 - Config file serialization/deserialization
-- `notify` 8.0/8.2 - Filesystem watching (config hot-reload in `glass_core`, file change detection in `glass_snapshot`)
-- `polling` 3 - Low-level PTY I/O polling in `glass_terminal`
-- `vte` 0.15 - VT escape sequence parsing in `glass_terminal`
-- `arboard` 3 - Clipboard read/write
-- `blake3` 1.8.3 - Content-addressed hashing for snapshot blob store
-- `ureq` 3 - HTTP client for GitHub Releases API (update checker)
-- `clap` 4.5 (derive) - CLI argument parsing
-- `anyhow` 1.0.102 - Error handling
-- `tracing` 0.1.44 + `tracing-subscriber` 0.3 - Structured logging
-- `dirs` 6 - Platform-specific directory paths (`~/.glass/`)
-- `url` 2 - URL parsing for OSC 7 `file://` paths
-- `semver` 1 - Version comparison for auto-updater
-- `chrono` 0.4 - Timestamps in history records
-- `ignore` 0.4 - Gitignore-aware file traversal in `glass_snapshot`
-- `shlex` 1.3.0 - Shell command tokenization
-- `strip-ansi-escapes` 0.2 - ANSI escape removal for stored command output
-- `memory-stats` 1.2 - Runtime memory usage reporting
+- blake3 - Content-addressed blob storage for file snapshots
+- notify - Platform-native filesystem watching (inotify/FSEvents/ReadDirectoryChangesW)
+- git2 - Agent worktree isolation and diff operations
 
-**Optional (feature-gated):**
-- `tracing-chrome` 0.7 - Chrome trace profiling output (behind `perf` feature flag)
+## Platform-Specific Dependencies
 
-**Platform-specific:**
-- `windows-sys` 0.59 (`Win32_System_Console`) - UTF-8 console code page on Windows
-- `tempfile` 3 - Temp directory for MSI download on Windows update flow
+**Windows:**
+- windows-sys 0.59 (features: Win32_System_Console, Win32_System_JobObjects, Win32_Foundation, Win32_System_Threading) - ConPTY API, UTF-8 console code page, Job Object orphan prevention
+- winresource 0.1 (build-only) - Embedding resources in executable
 
-## Feature Flags
+**Unix (macOS/Linux):**
+- libc 0.2 - POSIX process control (prctl for orphan prevention)
+- rustix (via alacritty_terminal) - forkpty and Unix PTY handling
 
-```toml
-[features]
-perf = ["glass_terminal/perf", "glass_renderer/perf", "dep:tracing-chrome"]
-```
+**macOS specific:**
+- FSEvents support (via notify) - Native filesystem watching
 
-The `perf` feature enables Chrome-trace-format profiling output. Both `glass_terminal` and `glass_renderer` have their own `perf` feature flags for instrumentation.
+**Linux specific:**
+- System dependencies (not in Cargo.toml): libxkbcommon-dev, libx11-dev, libxi-dev, libxtst-dev, libwayland-dev
+- inotify support (via notify) - Kernel filesystem watching
 
 ## Configuration
 
-**User Configuration:**
-- Location: `~/.glass/config.toml` (resolved via `dirs` crate)
-- Format: TOML with serde deserialization
-- Hot-reload: Config watcher monitors parent directory for atomic save support (`crates/glass_core/src/config_watcher.rs`)
-- Key settings: `font_family`, `font_size`, `shell`, `[history]`, `[snapshot]`, `[pipes]`
+**Environment:**
+- Config file: `~/.glass/config.toml` (TOML format, hot-reloaded via notify watcher)
+- Databases: `.glass/history.db` (project-local) or `~/.glass/global-history.db` (fallback)
+- Snapshots: `.glass/snapshots/` (blob store with blake3 content addressing)
+- Coordination: `~/.glass/agents.db` (SQLite WAL mode, shared by all agents)
+- OAuth token: `~/.claude/.credentials.json` (read by usage tracker)
 
-**Data Storage Locations:**
-- History DB: Project-local `.glass/history.db` (SQLite, WAL mode)
-- Snapshot DB: Project-local `.glass/snapshots.db` (SQLite, WAL mode)
-- Blob store: Project-local `.glass/blobs/` (content-addressed by BLAKE3 hash)
+**Build:**
+- Workspace resolver: version 2
+- Feature flags:
+  - `perf` - Enables tracing-chrome instrumentation for performance profiling
+- Release binary at: `target/release/glass`
+- Debian packaging config at: `[package.metadata.deb]`
 
-**Build Configuration:**
-- `Cargo.toml` workspace root with shared dependency versions via `[workspace.dependencies]`
-- No `rust-toolchain.toml`, `.rustfmt.toml`, or `clippy.toml` detected (uses defaults)
-- Benchmark harness disabled for `perf_benchmarks` (uses Criterion)
+## Workspace Structure
 
-## Platform Requirements
+Nine internal crates plus main binary:
 
-**Development:**
-- Rust stable toolchain (no nightly features used)
-- GPU with DX12 (Windows), Metal (macOS), or Vulkan (Linux) support
-- Linux: requires `libwayland-dev`, `libxkbcommon-dev`, `libx11-dev`, `libxi-dev`, `libxtst-dev`
+1. `crates/glass_core` - Config loading, event loop integration, update checker, agent runtime
+2. `crates/glass_terminal` - PTY spawning, shell integration, VT parsing, block manager, OSC scanner
+3. `crates/glass_renderer` - wgpu rendering, frame composition, grid/blocks/tabs/search UI
+4. `crates/glass_mux` - Session/tab/pane multiplexing, binary split tree layout
+5. `crates/glass_history` - SQLite command history DB with FTS5, output compression, query engine
+6. `crates/glass_snapshot` - File snapshotting, blob store, undo engine, command safety parsing
+7. `crates/glass_pipes` - Pipeline parsing and visualization
+8. `crates/glass_mcp` - MCP server exposing Glass tools over stdio/JSON-RPC 2.0
+9. `crates/glass_coordination` - Multi-agent registry, advisory locks, inter-agent messaging (SQLite)
+10. `crates/glass_agent` - Agent worktree isolation, git operations
+11. `crates/glass_soi` - Structured Output Intelligence: command output classification
+12. `crates/glass_errors` - Shared error types
 
-**Production:**
-- Native binary, no runtime dependencies beyond OS-provided GPU drivers
-- SQLite is bundled (no external database needed)
+## Build & Test
 
-**Supported Platforms:**
-- Windows (x86_64-pc-windows-msvc) - Primary development target
-- macOS (aarch64-apple-darwin) - Apple Silicon
-- Linux (x86_64-unknown-linux-gnu) - X11/Wayland
+```bash
+cargo build --release          # Release binary (~5-10 MB)
+cargo test --workspace         # ~420 tests (cross-platform gated)
+cargo fmt --all -- --check     # Formatting check (enforced)
+cargo clippy --workspace -- -D warnings  # Linting (all warnings = errors)
+cargo bench                    # Criterion benchmarks with HTML reports
+cargo build --features perf    # Build with tracing instrumentation for profiling
+```
+
+## Minimum Dependency Versions
+
+All dependencies locked in Cargo.lock. Key pinned:
+- `alacritty_terminal = "=0.25.1"` (exact, no range)
+- `rusqlite = "0.38.0"` (FTS5 bundled)
+- `wgpu = "28.0.0"` (API stability)
 
 ## CI/CD
 
-**GitHub Actions Workflows:**
-- `.github/workflows/ci.yml` - Build (3 platforms), test, clippy, rustfmt check
-- `.github/workflows/release.yml` - Tag-triggered builds producing MSI (Windows), DMG (macOS), DEB (Linux)
-- `.github/workflows/docs.yml` - Documentation deployment
-
-**Packaging:**
-- Windows: `cargo-wix` MSI installer (`packaging/winget/` manifests)
-- macOS: DMG via `packaging/macos/build-dmg.sh` with `Info.plist`
-- Linux: `cargo-deb` DEB package with `packaging/linux/glass.desktop`
-- Homebrew: `packaging/homebrew/glass.rb` formula
-
-**Documentation:**
-- mdBook (`docs/book.toml`) for user-facing documentation
+**GitHub Actions** (`.github/workflows/ci.yml`):
+- Runs on: Ubuntu (fmt), Windows (clippy), macOS + Linux + Windows (build+test matrix)
+- Passes all checks before merge to main
+- Artifact upload via release workflow
 
 ---
 
-*Stack analysis: 2026-03-08*
+*Stack analysis: 2026-03-15*

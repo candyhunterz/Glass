@@ -1,274 +1,432 @@
 # Codebase Structure
 
-**Analysis Date:** 2026-03-08
+**Analysis Date:** 2026-03-15
 
 ## Directory Layout
 
 ```
 Glass/
-├── src/
-│   ├── main.rs             # Binary entry point, winit event loop, all event handling (2537 lines)
-│   ├── history.rs           # CLI history subcommand dispatch and formatting
-│   └── tests.rs             # Integration tests for main binary
-├── crates/
-│   ├── glass_core/src/      # Shared types, config, events
-│   │   ├── lib.rs
-│   │   ├── config.rs        # GlassConfig (TOML deserialization)
-│   │   ├── config_watcher.rs# Filesystem watcher for config hot-reload
-│   │   ├── error.rs         # Error types
-│   │   ├── event.rs         # AppEvent enum, SessionId, ShellEvent, GitStatus
-│   │   └── updater.rs       # Background update checker
-│   ├── glass_terminal/src/  # PTY management, terminal grid, shell integration
-│   │   ├── lib.rs
-│   │   ├── pty.rs           # spawn_pty(), PtyMsg, PtySender, reader thread
-│   │   ├── event_proxy.rs   # EventProxy bridges PTY -> winit
-│   │   ├── osc_scanner.rs   # OscScanner parses OSC 133/7/9 sequences
-│   │   ├── block_manager.rs # Block lifecycle (PromptActive->Complete)
-│   │   ├── grid_snapshot.rs # GridSnapshot for lock-free rendering
-│   │   ├── input.rs         # encode_key() keyboard -> VT escape sequences
-│   │   ├── output_capture.rs# OutputBuffer for capturing command output
-│   │   ├── status.rs        # StatusState, query_git_status()
-│   │   └── tests.rs         # Unit tests
-│   ├── glass_renderer/src/  # GPU rendering pipeline
-│   │   ├── lib.rs
-│   │   ├── surface.rs       # GlassRenderer (wgpu surface/device/queue)
-│   │   ├── frame.rs         # FrameRenderer (orchestrates full render pipeline)
-│   │   ├── glyph_cache.rs   # GlyphCache (glyphon text rendering state)
-│   │   ├── grid_renderer.rs # GridRenderer (cell metrics, text layout)
-│   │   ├── rect_renderer.rs # RectRenderer (instanced quad pipeline)
-│   │   ├── block_renderer.rs# BlockRenderer (command block labels/decorations)
-│   │   ├── status_bar.rs    # StatusBarRenderer (bottom bar: CWD, git, memory)
-│   │   ├── tab_bar.rs       # TabBarRenderer (top bar: tab titles)
-│   │   ├── search_overlay_renderer.rs # Search overlay UI
-│   │   └── config_error_overlay.rs    # Red banner for config parse errors
-│   ├── glass_mux/src/       # Session multiplexer (tabs + split panes)
-│   │   ├── lib.rs
-│   │   ├── session.rs       # Session struct (per-terminal state)
-│   │   ├── session_mux.rs   # SessionMux (tab management, focus routing)
-│   │   ├── tab.rs           # Tab (holds SplitNode tree)
-│   │   ├── split_tree.rs    # SplitNode (binary tree layout engine)
-│   │   ├── layout.rs        # ViewportLayout (pixel rect computation)
-│   │   ├── search_overlay.rs# SearchOverlay state (history search UI)
-│   │   ├── platform.rs      # Cross-platform helpers (shell, dirs, shortcuts)
-│   │   └── types.rs         # SessionId, TabId, SplitDirection, FocusDirection
-│   ├── glass_history/src/   # SQLite command history with FTS5
-│   │   ├── lib.rs           # resolve_db_path() (project-local + global fallback)
-│   │   ├── db.rs            # HistoryDb (SQLite CRUD, schema migration)
-│   │   ├── config.rs        # HistoryConfig
-│   │   ├── query.rs         # QueryFilter, filtered_query(), parse_time()
-│   │   ├── search.rs        # SearchResult type
-│   │   ├── output.rs        # Output processing (ANSI stripping, binary detection)
-│   │   └── retention.rs     # Retention policy enforcement
-│   ├── glass_snapshot/src/  # Content-addressed file snapshots
-│   │   ├── lib.rs           # SnapshotStore (high-level API), resolve_glass_dir()
-│   │   ├── blob_store.rs    # BlobStore (blake3-hashed file storage)
-│   │   ├── db.rs            # SnapshotDb (SQLite metadata)
-│   │   ├── command_parser.rs# Predicts files a command will modify
-│   │   ├── ignore_rules.rs  # .gitignore-style exclusion rules
-│   │   ├── pruner.rs        # Pruner (retention: age, count, size limits)
-│   │   ├── types.rs         # SnapshotRecord, Confidence, FileOutcome, etc.
-│   │   ├── undo.rs          # UndoEngine (restore pre-command file state)
-│   │   └── watcher.rs       # FsWatcher (filesystem change tracking)
-│   ├── glass_pipes/src/     # Pipeline-aware command parsing
-│   │   ├── lib.rs
-│   │   ├── parser.rs        # parse_pipeline(), split_pipes()
-│   │   └── types.rs         # CapturedStage and related types
-│   └── glass_mcp/src/       # MCP server for AI assistants
-│       ├── lib.rs           # run_mcp_server() (stdio JSON-RPC)
-│       ├── tools.rs         # GlassServer, MCP tool implementations
-│       └── context.rs       # Context/summary generation
-├── shell-integration/       # Shell integration scripts (auto-injected)
-│   ├── glass.bash           # Bash OSC 133 hooks
-│   ├── glass.zsh            # Zsh OSC 133 hooks
-│   ├── glass.fish           # Fish OSC 133 hooks
-│   └── glass.ps1            # PowerShell OSC 133 hooks
-├── tests/
-│   └── mcp_integration.rs   # MCP server integration tests
-├── benches/
-│   └── perf_benchmarks.rs   # Criterion benchmarks
-├── packaging/               # Platform-specific packaging
-│   ├── homebrew/            # Homebrew formula
-│   ├── linux/               # .desktop file, deb packaging
-│   ├── macos/               # macOS bundle
-│   └── winget/              # Windows Package Manager manifest
-├── wix/                     # WiX MSI installer
-├── docs/                    # Documentation
-│   └── src/
-│       ├── features/
-│       └── installation/
-├── Cargo.toml               # Workspace root + binary package manifest
-└── .github/
-    └── workflows/           # CI/CD workflows
+├── src/                                    # Main binary crate
+│   ├── main.rs                            # GUI entry point, event loop, UI state (7655 lines)
+│   ├── orchestrator.rs                    # Orchestrator state machine, verify baseline tracking (1127 lines)
+│   ├── usage_tracker.rs                   # OAuth usage polling, pause/hard-stop thresholds
+│   ├── history.rs                         # CLI handlers for history/undo/mcp subcommands
+│   └── tests.rs                           # Integration tests
+│
+├── crates/                                 # Modular workspace crates
+│   ├── glass_terminal/                    # PTY & shell integration (11 modules)
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # Public exports
+│   │   │   ├── pty.rs                     # PTY spawning, reader thread loop (586 lines)
+│   │   │   ├── block_manager.rs           # Block lifecycle tracking (920 lines)
+│   │   │   ├── osc_scanner.rs             # OSC 133 parsing (shell events + pipeline)
+│   │   │   ├── event_proxy.rs             # Bridges PTY thread to winit event loop
+│   │   │   ├── grid_snapshot.rs           # Terminal grid capture for rendering
+│   │   │   ├── output_capture.rs          # CommandExecuted→CommandFinished output buffer
+│   │   │   ├── input.rs                   # Keyboard input encoding for PTY
+│   │   │   ├── silence.rs                 # SilenceTracker for orchestrator polling
+│   │   │   ├── status.rs                  # Status bar state (CWD, git branch)
+│   │   │   └── tests.rs                   # PTY and block manager tests
+│   │
+│   ├── glass_mux/                         # Session multiplexer (tabs, splits, search)
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # Public exports
+│   │   │   ├── session.rs                 # Single session struct
+│   │   │   ├── session_mux.rs             # Multiple sessions, tab/pane routing
+│   │   │   ├── split_tree.rs              # Binary tree pane layout
+│   │   │   ├── tab.rs                     # Tab metadata
+│   │   │   ├── search_overlay.rs          # Search history UI state
+│   │   │   ├── layout.rs                  # Viewport layout calculations
+│   │   │   ├── types.rs                   # SessionId, TabId, focus/split types
+│   │   │   └── platform.rs                # Cross-platform shell/config detection
+│   │
+│   ├── glass_renderer/                    # wgpu GPU rendering (17 modules)
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # Public exports
+│   │   │   ├── frame.rs                   # FrameRenderer orchestration (2615 lines)
+│   │   │   ├── surface.rs                 # wgpu surface lifecycle
+│   │   │   ├── grid_renderer.rs           # Render terminal grid cells
+│   │   │   ├── glyph_cache.rs             # glyphon font system + caching
+│   │   │   ├── block_renderer.rs          # Draw block labels/timing
+│   │   │   ├── rect_renderer.rs           # Draw cell background rects
+│   │   │   ├── search_overlay_renderer.rs # Draw search results UI
+│   │   │   ├── scrollbar.rs               # Scrollbar rendering + hit detection
+│   │   │   ├── status_bar.rs              # Status bar (CWD, git, command timing)
+│   │   │   ├── tab_bar.rs                 # Tab labels + close buttons
+│   │   │   ├── proposal_overlay_renderer.rs  # Agent proposal UI
+│   │   │   ├── proposal_toast_renderer.rs    # Toast notifications
+│   │   │   ├── activity_overlay.rs           # Activity/coordination overlay
+│   │   │   ├── config_error_overlay.rs       # Config parse error display
+│   │   │   └── conflict_overlay.rs           # File lock conflict display
+│   │
+│   ├── glass_history/                     # SQLite command history
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # Public exports
+│   │   │   ├── db.rs                      # CommandRecord, HistoryDb CRUD
+│   │   │   ├── query.rs                   # QueryFilter (exit code, time, cwd, limit)
+│   │   │   ├── search.rs                  # FTS5 full-text search
+│   │   │   ├── compress.rs                # Diff compression, token budget
+│   │   │   ├── output.rs                  # Output processing (ANSI strip, binary detect)
+│   │   │   ├── retention.rs               # Pruning old records
+│   │   │   ├── config.rs                  # HistoryConfig from TOML
+│   │   │   ├── soi.rs                     # SOI record storage + retrieval
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_snapshot/                    # File snapshot & undo system
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # SnapshotStore public API
+│   │   │   ├── db.rs                      # SnapshotDb schema + CRUD
+│   │   │   ├── blob_store.rs              # blake3 content-addressed blobs
+│   │   │   ├── command_parser.rs          # Destructive command detection (rm, sed -i, etc.)
+│   │   │   ├── undo.rs                    # UndoEngine file restoration
+│   │   │   ├── watcher.rs                 # FsWatcher (notify-based) for live tracking
+│   │   │   ├── ignore_rules.rs            # .glassignore pattern matching
+│   │   │   ├── types.rs                   # Confidence, FileOutcome enums
+│   │   │   ├── pruner.rs                  # Snapshot retention cleanup
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_soi/                         # Structured Output Intelligence
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # classify(), parse() entry points
+│   │   │   ├── classifier.rs              # Output type detection
+│   │   │   ├── types.rs                   # OutputType, ParsedOutput
+│   │   │   ├── ansi.rs                    # ANSI sequence stripping
+│   │   │   ├── cargo_*.rs                 # Cargo build/test/misc parsers
+│   │   │   ├── cpp_compiler.rs            # C++ compiler output parser
+│   │   │   ├── docker.rs                  # Docker output parser
+│   │   │   ├── generic_compiler.rs        # Generic compiler pattern matching
+│   │   │   ├── git.rs                     # Git output parser
+│   │   │   ├── csv_parser.rs              # CSV/structured data detection
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_core/                        # Config, events, background tasks
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # Public exports
+│   │   │   ├── event.rs                   # AppEvent enum (168 lines)
+│   │   │   ├── config.rs                  # GlassConfig TOML schema
+│   │   │   ├── config_watcher.rs          # Notify-based hot-reload
+│   │   │   ├── agent_runtime.rs           # AgentProposalData, AgentHandoffData
+│   │   │   ├── activity_stream.rs         # Activity log for coordination
+│   │   │   ├── updater.rs                 # Version check polling
+│   │   │   ├── coordination_poller.rs     # CoordinationUpdate events
+│   │   │   ├── ipc.rs                     # IPC channel setup
+│   │   │   ├── error.rs                   # ConfigError type
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_coordination/                # Multi-agent coordination
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # CoordinationDb public API
+│   │   │   ├── db.rs                      # SQLite global agents.db
+│   │   │   ├── types.rs                   # AgentInfo, FileLock, LockConflict
+│   │   │   ├── event_log.rs               # CoordinationEvent logging
+│   │   │   ├── pid.rs                     # PID alive check
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_agent/                       # Worktree isolation & session persistence
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # WorktreeManager, AgentSessionDb
+│   │   │   ├── worktree_manager.rs        # Git worktree/copy creation
+│   │   │   ├── worktree_db.rs             # Worktree metadata
+│   │   │   ├── session_db.rs              # Session handoff persistence
+│   │   │   ├── types.rs                   # PendingWorktree, WorktreeHandle
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_pipes/                       # Pipeline parsing & capture
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # Public exports
+│   │   │   ├── parser.rs                  # parse_pipeline(), split_pipes()
+│   │   │   ├── types.rs                   # CapturedStage, PipelineInfo
+│   │   │   └── tests.rs
+│   │
+│   ├── glass_mcp/                         # MCP server for AI assistants
+│   │   ├── src/
+│   │   │   ├── lib.rs                     # run_mcp_server() entry point
+│   │   │   ├── tools.rs                   # Tool implementations
+│   │   │   ├── context.rs                 # GlassContext builder
+│   │   │   ├── ipc_client.rs              # IPC client for queries
+│   │   │   └── tests.rs
+│   │
+│   └── glass_errors/                      # Structured error extraction
+│       ├── src/
+│       │   ├── lib.rs                     # extract_errors() entry point
+│       │   ├── detect.rs                  # Auto-detect compiler type
+│       │   ├── rust_human.rs              # Rust human-readable parser
+│       │   ├── rust_json.rs               # Rust JSON parser
+│       │   ├── generic.rs                 # Fallback pattern matcher
+│       │   └── tests.rs
+│
+├── shell-integration/                     # Shell integration scripts
+│   ├── glass.bash                        # Bash OSC 133 injection
+│   ├── glass.zsh                         # Zsh OSC 133 injection
+│   ├── glass.fish                        # Fish OSC 133 injection
+│   └── glass.ps1                         # PowerShell OSC 133 injection
+│
+├── assets/                                # Static resources
+│   └── icon.ico                           # Windows icon
+│
+├── benches/                               # Criterion benchmarks
+│
+├── tests/                                 # Integration tests
+│   └── tests/
+│       └── *.rs                           # E2E test suites
+│
+├── .planning/                             # GSD planning documents
+│   ├── codebase/                          # Codebase analysis (this directory)
+│   │   ├── ARCHITECTURE.md
+│   │   ├── STRUCTURE.md
+│   │   ├── CONVENTIONS.md
+│   │   ├── TESTING.md
+│   │   ├── STACK.md
+│   │   ├── INTEGRATIONS.md
+│   │   └── CONCERNS.md
+│   ├── phases/                            # Granular phase planning
+│   ├── milestones/                        # Milestone summaries
+│   └── PROJECT.md
+│
+├── .glass/                                # Local Glass state
+│   ├── history.db                        # Project command history
+│   ├── snapshots.db                      # File snapshot metadata
+│   ├── agents.db                         # Global agent coordination DB
+│   └── blob/                              # Content-addressed file blobs
+│
+├── Cargo.toml                             # Workspace root manifest
+├── Cargo.lock                             # Dependency lock file
+├── build.rs                               # Build script (icon embedding on Windows)
+│
+├── CLAUDE.md                              # Project context for Claude
+├── README.md                              # Project documentation
+├── PRD.md                                 # Product requirements
+├── SOI_AND_AGENT_MODE.md                 # Agent mode design
+├── AGENT_COORDINATION_DESIGN.md          # Multi-agent coordination design
+├── AGENT_MCP_FEATURES.md                 # MCP tools specification
+│
+└── .github/workflows/                     # CI configuration
+    └── ci.yml                             # Format, clippy, build+test matrix
 ```
 
 ## Directory Purposes
 
-**`src/`:**
-- Purpose: Binary crate (the `glass` executable)
-- Contains: `main.rs` (event loop, window management, input handling, rendering orchestration, CLI dispatch), `history.rs` (history subcommand), `tests.rs`
-- Key files: `src/main.rs` is the application orchestrator
+**src/:**
+- Purpose: Main executable crate, wires all subsystems together
+- Contains: GUI event loop, CLI subcommands, orchestrator state machine
+- Key files: `main.rs` (7655 lines), `orchestrator.rs` (1127 lines)
 
-**`crates/glass_core/src/`:**
-- Purpose: Foundation crate with zero glass_* dependencies
-- Contains: Configuration loading/validation, event types shared across all crates, config file watcher, update checker
-- Key files: `event.rs` (defines `AppEvent` used everywhere), `config.rs` (defines `GlassConfig`)
+**crates/glass_terminal/:**
+- Purpose: PTY abstraction and shell integration event detection
+- Contains: ConPTY/forkpty wrappers, alacritty_terminal embedding, OSC 133 parsing
+- Key files: `pty.rs`, `block_manager.rs`, `osc_scanner.rs`
 
-**`crates/glass_terminal/src/`:**
-- Purpose: All terminal emulation concerns
-- Contains: PTY spawning, I/O polling, OSC parsing, command block tracking, grid snapshot extraction, keyboard encoding
-- Key files: `pty.rs` (PTY lifecycle), `block_manager.rs` (command lifecycle), `osc_scanner.rs` (shell integration parser)
+**crates/glass_mux/:**
+- Purpose: Session multiplexing for tabs and split panes
+- Contains: Session struct (owns PTY, grid, history), SessionMux router, search overlay
+- Key files: `session.rs`, `session_mux.rs`, `split_tree.rs`
 
-**`crates/glass_renderer/src/`:**
-- Purpose: All GPU rendering concerns
-- Contains: wgpu surface management, text rendering via glyphon, background rect rendering via instanced quads, UI chrome (tab bar, status bar, overlays)
-- Key files: `frame.rs` (render orchestrator), `surface.rs` (GPU init), `grid_renderer.rs` (cell layout)
+**crates/glass_renderer/:**
+- Purpose: GPU rendering pipeline with wgpu and glyphon
+- Contains: Frame composition, grid rendering, overlay renderers, scrollbar/tab bar UI
+- Key files: `frame.rs` (2615 lines), `surface.rs`, `grid_renderer.rs`
 
-**`crates/glass_mux/src/`:**
-- Purpose: Multi-session management
-- Contains: Session state, tab management, split pane layout, platform detection
-- Key files: `session.rs` (per-terminal state), `session_mux.rs` (tab/focus management), `split_tree.rs` (binary tree layout)
+**crates/glass_history/:**
+- Purpose: Command history persistence and search
+- Contains: SQLite schema, FTS5 full-text search, output compression, SOI records
+- Key files: `db.rs`, `query.rs`, `search.rs`, `soi.rs`
 
-**`crates/glass_history/src/`:**
-- Purpose: Persistent command history
-- Contains: SQLite database operations, full-text search, query filtering, output processing
-- Key files: `db.rs` (database operations), `query.rs` (filtering)
+**crates/glass_snapshot/:**
+- Purpose: File change tracking and undo system
+- Contains: blake3 blob store, snapshot metadata DB, destructive command detection, undo engine
+- Key files: `blob_store.rs`, `db.rs`, `command_parser.rs`, `undo.rs`
 
-**`crates/glass_snapshot/src/`:**
-- Purpose: File state capture for command undo
-- Contains: Content-addressed blob storage, snapshot metadata, command parsing for file prediction, undo engine, filesystem watcher
-- Key files: `lib.rs` (SnapshotStore API), `undo.rs` (UndoEngine), `command_parser.rs` (file prediction)
+**crates/glass_soi/:**
+- Purpose: Output classification and parsing
+- Contains: Language-specific parsers (Cargo, Git, Docker, C++, etc.), ANSI handling
+- Key files: `classifier.rs`, `cargo_test.rs`, `cargo_build.rs`
 
-**`crates/glass_pipes/src/`:**
-- Purpose: Pipeline command parsing
-- Contains: Pipe splitting, pipeline stage types
+**crates/glass_core/:**
+- Purpose: Configuration, event types, and background task management
+- Contains: AppEvent enum, GlassConfig TOML schema, config watcher, updater, coordination poller
+- Key files: `event.rs` (168 lines), `config.rs`, `config_watcher.rs`
+
+**crates/glass_coordination/:**
+- Purpose: Multi-agent coordination via shared SQLite
+- Contains: Agent registration, file locking, inter-agent messaging
+- Key files: `db.rs`, `types.rs`
+
+**crates/glass_agent/:**
+- Purpose: Isolated worktree management and session handoff
+- Contains: Git worktree creation, agent session DB for continuity
+- Key files: `worktree_manager.rs`, `session_db.rs`
+
+**crates/glass_pipes/:**
+- Purpose: Pipeline parsing and stage capture
+- Contains: Pipe splitting, CapturedStage structs
 - Key files: `parser.rs`, `types.rs`
 
-**`crates/glass_mcp/src/`:**
-- Purpose: AI assistant integration via MCP protocol
-- Contains: MCP server, tool definitions (history, context, undo, file diff)
-- Key files: `tools.rs` (tool implementations), `lib.rs` (server startup)
+**crates/glass_mcp/:**
+- Purpose: MCP server for AI assistant integration
+- Contains: History query tool, context summary tool, undo tool, file diff tool
+- Key files: `lib.rs`, `tools.rs`
 
-**`shell-integration/`:**
-- Purpose: Shell scripts that emit OSC sequences for Glass to parse
-- Contains: One script per supported shell (bash, zsh, fish, PowerShell)
-- Auto-injected by `find_shell_integration()` in `src/main.rs` at session startup
+**crates/glass_errors/:**
+- Purpose: Compiler error extraction
+- Contains: Rust/C++/generic parser, structured error structs
+- Key files: `lib.rs`, `rust_json.rs`, `rust_human.rs`
+
+**shell-integration/:**
+- Purpose: Shell integration scripts
+- Contains: Bash, Zsh, Fish, PowerShell OSC 133 emission scripts
+- Usage: Auto-injected into PTY by spawner
+
+**assets/:**
+- Purpose: Static resources
+- Contains: Windows icon for executable
+- Generated: No
+- Committed: Yes
+
+**benches/:**
+- Purpose: Performance benchmarks
+- Contains: Criterion benchmark suites
+- Generated: Yes (binaries)
+- Committed: No
+
+**tests/:**
+- Purpose: Integration tests
+- Contains: E2E test harnesses
+- Generated: Yes (binaries)
+- Committed: No
+
+**.planning/:**
+- Purpose: GSD phase planning and codebase documentation
+- Contains: Phase plans, milestone summaries, codebase analysis docs
+- Generated: Yes (by GSD tools)
+- Committed: Yes
+
+**.glass/:**
+- Purpose: Local Glass state (per-project or global)
+- Contains: history.db (project), snapshots.db (project), agents.db (global), blob/ (global)
+- Generated: Yes (auto-created by Glass)
+- Committed: No
 
 ## Key File Locations
 
 **Entry Points:**
-- `src/main.rs`: Binary entry, CLI parsing, event loop, all event handling
-- `src/history.rs`: History CLI subcommand handler
-- `crates/glass_mcp/src/lib.rs`: MCP server entry (`run_mcp_server()`)
+- `src/main.rs:7167` - fn main() - GUI entry point
+- `src/main.rs:50-123` - Cli/Commands/HistoryAction enums - CLI subcommands
+- `crates/glass_mcp/src/lib.rs` - run_mcp_server() - MCP server entry point
+- `src/history.rs` - History subcommand handlers
 
 **Configuration:**
-- `crates/glass_core/src/config.rs`: `GlassConfig` struct definition and loading
-- `crates/glass_core/src/config_watcher.rs`: Hot-reload watcher
-- Runtime config: `~/.glass/config.toml`
+- `src/main.rs:163-186` - WindowContext struct definition
+- `crates/glass_core/src/config.rs` - GlassConfig TOML schema
+- `crates/glass_core/src/config_watcher.rs` - Hot-reload via notify
 
 **Core Logic:**
-- `crates/glass_terminal/src/pty.rs`: PTY creation and reader thread
-- `crates/glass_terminal/src/block_manager.rs`: Command lifecycle state machine
-- `crates/glass_terminal/src/osc_scanner.rs`: Shell integration sequence parser
-- `crates/glass_renderer/src/frame.rs`: Render pipeline orchestrator
-- `crates/glass_mux/src/session_mux.rs`: Tab/session management
-- `crates/glass_mux/src/split_tree.rs`: Split pane binary tree
-
-**Data Storage:**
-- `crates/glass_history/src/db.rs`: History database operations
-- `crates/glass_snapshot/src/db.rs`: Snapshot metadata database
-- `crates/glass_snapshot/src/blob_store.rs`: Content-addressed blob storage
-- Runtime data: `.glass/history.db`, `.glass/snapshots.db`, `.glass/blobs/`
+- `crates/glass_terminal/src/pty.rs` - PTY spawning and reader loop
+- `crates/glass_terminal/src/block_manager.rs` - Block lifecycle (PromptActive → Executing → Complete)
+- `crates/glass_history/src/db.rs` - CommandRecord schema and queries
+- `crates/glass_snapshot/src/blob_store.rs` - blake3 content-addressed storage
+- `src/orchestrator.rs` - Orchestrator state machine (VerifyCommand, MetricBaseline, AgentResponse)
 
 **Testing:**
-- `crates/glass_terminal/src/tests.rs`: Terminal unit tests
-- `tests/mcp_integration.rs`: MCP integration tests
-- `benches/perf_benchmarks.rs`: Performance benchmarks
-- Inline `#[cfg(test)] mod tests` blocks in most crate files
+- `src/tests.rs` - Main integration tests
+- `crates/*/src/tests.rs` - Per-crate unit tests
+- `tests/` directory - E2E test suites
+
+**Rendering:**
+- `crates/glass_renderer/src/frame.rs` - FrameRenderer orchestration
+- `crates/glass_renderer/src/surface.rs` - wgpu surface binding
+- `crates/glass_renderer/src/grid_renderer.rs` - Grid cell rendering
 
 ## Naming Conventions
 
 **Files:**
-- `snake_case.rs`: All Rust source files use snake_case
-- `glass.{shell}`: Shell integration scripts named by shell type
-- Crate names: `glass_{domain}` pattern (e.g., `glass_terminal`, `glass_renderer`)
+- Modules use snake_case: `block_manager.rs`, `grid_snapshot.rs`, `config_watcher.rs`
+- Tests in same file as code: `#[cfg(test)] mod tests`
+- Main entry point: `main.rs` in binary crate, `lib.rs` in library crates
 
 **Directories:**
-- `crates/glass_{name}/`: Each workspace crate follows `glass_` prefix convention
-- `src/` inside each crate: Standard Rust layout
+- Workspace crates prefix with `glass_`: `glass_terminal`, `glass_renderer`, `glass_history`
+- Nested module directories match module names: `src/block_manager/` for large modules (not used; kept flat)
+- Hidden directories prefix with `.`: `.glass/`, `.planning/`, `.github/`
 
-**Modules:**
-- One concept per file: `session.rs`, `session_mux.rs`, `split_tree.rs`
-- `lib.rs` re-exports public API via `pub use`
-- Test modules: either `tests.rs` sibling or inline `#[cfg(test)] mod tests`
+**Types:**
+- Structs: PascalCase (`BlockManager`, `FrameRenderer`, `Session`)
+- Enums: PascalCase (`AppEvent`, `BlockState`, `ShellEvent`)
+- Constants: SCREAMING_SNAKE_CASE (`READ_BUFFER_SIZE`, `PTY_READ_WRITE_TOKEN`)
+- Traits: PascalCase (`EventListener`)
+
+**Functions:**
+- Module-level: snake_case (`spawn_pty`, `encode_key`, `snapshot_term`)
+- Methods: snake_case (`new()`, `create_snapshot()`, `resolve_db_path()`)
+- Test functions: `#[test] fn test_*` (e.g., `test_resolve_db_path_project`)
+
+**Variables:**
+- Local: snake_case (`window_id`, `session_id`, `exit_code`)
+- Mutable: same convention (`mut block_manager`)
+- Lifetime parameters: 'a, 'b (lowercase single quote)
 
 ## Where to Add New Code
 
-**New Feature (e.g., new terminal capability):**
-- Primary code: Add module in relevant crate under `crates/glass_{domain}/src/`
-- Register in `crates/glass_{domain}/src/lib.rs` with `pub mod` and `pub use`
-- Wire into `src/main.rs` event handling if it produces/consumes `AppEvent`
-- Tests: Add `#[cfg(test)] mod tests` block in the new module
+**New Feature (e.g., New Terminal Command):**
+- Primary code: `crates/glass_terminal/src/` (PTY-related) or appropriate domain crate
+- Tests: Same file as implementation, `#[cfg(test)] mod tests`
+- CLI handler: `src/history.rs` (if CLI-facing) or `src/main.rs` event handler
 
-**New Renderer Component (e.g., new overlay):**
-- Implementation: `crates/glass_renderer/src/{name}_renderer.rs`
-- Register: Add `pub mod` in `crates/glass_renderer/src/lib.rs`
-- Integrate: Call from `FrameRenderer::draw_frame()` in `crates/glass_renderer/src/frame.rs`
+**New Component/Module:**
+- Implementation: Create `crates/glass_*/src/new_module.rs`, export from `lib.rs`
+- Tests: Add `#[cfg(test)] mod tests` in same file
+- Integration: Wire into appropriate handler (e.g., AppEvent handler in main.rs)
 
-**New CLI Subcommand:**
-- Add variant to `Commands` enum in `src/main.rs` (line 47)
-- Add match arm in `fn main()` (line 2400)
-- For complex subcommands, create handler in `src/{name}.rs` and add `mod {name}` at top of `src/main.rs`
+**New Event Type:**
+- Definition: Add variant to `AppEvent` enum in `crates/glass_core/src/event.rs`
+- Handler: Add arm to `Processor::handle_event()` in `src/main.rs:1537`
+- Sender: Use `event_loop_proxy.send_event()` from background thread
 
-**New Crate:**
-- Create `crates/glass_{name}/` with `Cargo.toml` and `src/lib.rs`
-- Add to `[workspace]` members in root `Cargo.toml` (auto-included via `"crates/*"`)
-- Add dependency in consuming crates' `Cargo.toml`
+**New Rendering Overlay:**
+- Definition: Create `crates/glass_renderer/src/foo_renderer.rs`
+- Struct: Implement `FooRenderer` with `new()` and `render()` methods
+- Integration: Add to `FrameRenderer` struct, call from `draw_frame()`
+- State: Add to `Session` or `WindowContext` as needed
 
-**New Shell Integration:**
-- Add `shell-integration/glass.{shell}` script
-- Add detection logic in `find_shell_integration()` in `src/main.rs` (line 2324)
+**Utilities & Helpers:**
+- Shared across crates: `crates/glass_core/src/` (if config/event-related) or new utility crate
+- Single-crate: Within that crate's `src/` directory
+- Formatting: `cargo fmt --all`, linting: `cargo clippy --workspace -- -D warnings`
 
-**New MCP Tool:**
-- Add tool method in `crates/glass_mcp/src/tools.rs`
-- Register in `GlassServer` tool list
-
-**Utilities / Shared Helpers:**
-- Cross-crate types: `crates/glass_core/src/`
-- Terminal-specific: `crates/glass_terminal/src/`
-- Platform helpers: `crates/glass_mux/src/platform.rs`
+**Database Schema Changes:**
+- Location: `crates/glass_history/src/db.rs` (history) or `crates/glass_snapshot/src/db.rs` (snapshots)
+- Pattern: Add column in schema, increment version, auto-migrate in `open()` or `create()`
+- Testing: Add to crate's `#[cfg(test)]` module with temp database
 
 ## Special Directories
 
-**`shell-integration/`:**
-- Purpose: Shell scripts auto-injected into terminal sessions for OSC sequence emission
-- Generated: No (hand-written)
+**src/:**
+- Purpose: Main executable and orchestrator
+- Generated: No (source)
 - Committed: Yes
 
-**`packaging/`:**
-- Purpose: Platform-specific installer/package configurations
-- Generated: No
+**crates/:*/src/**/**tests.rs:**
+- Purpose: Unit tests co-located with code
+- Generated: No (source, compiled as part of crate)
 - Committed: Yes
 
-**`wix/`:**
-- Purpose: WiX MSI installer definition for Windows
-- Generated: No
+**.planning/codebase/:**
+- Purpose: Analysis documents (ARCHITECTURE.md, STRUCTURE.md, etc.)
+- Generated: Yes (by GSD mapper tool)
 - Committed: Yes
 
-**`target/`:**
-- Purpose: Cargo build output
-- Generated: Yes
-- Committed: No
+**.glass/:**
+- Purpose: Local state (history DB, snapshots, agents registry)
+- Generated: Yes (auto-created on first run)
+- Committed: No (in .gitignore)
 
-**`.planning/`:**
-- Purpose: Project planning and analysis documents
-- Generated: Yes (by tooling)
+**target/:**
+- Purpose: Build artifacts
+- Generated: Yes (cargo build)
+- Committed: No (in .gitignore)
+
+**shell-integration/:**
+- Purpose: OSC 133 shell scripts
+- Generated: No (source)
 - Committed: Yes
+- Injection: Auto-injected into PTY by `crates/glass_terminal/src/pty.rs` at spawn time
 
-**`.glass/` (runtime, not in repo):**
-- Purpose: Per-project data directory (history.db, snapshots.db, blobs/)
-- Generated: Yes (at runtime)
-- Committed: No (should be in .gitignore)
-
----
-
-*Structure analysis: 2026-03-08*

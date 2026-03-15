@@ -1,184 +1,231 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-03-08
+**Analysis Date:** 2026-03-15
 
 ## Tech Debt
 
-**Monolithic `src/main.rs` (2,537 lines):**
-- Issue: All window event handling, session lifecycle, rendering orchestration, shell event routing, keyboard shortcuts, mouse handling, clipboard, and CLI dispatch live in a single file.
-- Files: `src/main.rs`
-- Impact: Difficult to navigate, test, or refactor individual concerns. The `window_event` match arm alone spans ~1,050 lines. Adding new keyboard shortcuts or event handlers requires understanding the entire file.
-- Fix approach: Extract logical modules: `src/keybindings.rs`, `src/event_handler.rs`, `src/session_lifecycle.rs`, `src/clipboard.rs`. Keep `Processor` and `ApplicationHandler` impl in `main.rs` but delegate to extracted modules.
+### Unwrap/Expect Patterns in Main Event Loop
 
-**Duplicate `ShellEvent` to `OscEvent` conversion:**
-- Issue: `OscEvent` (in `glass_terminal`) and `ShellEvent` (in `glass_core`) are structurally identical enums. Two manual conversion functions exist: `shell_event_to_osc()` in `src/main.rs` (line 181) and `convert_osc_to_shell()` in `crates/glass_terminal/src/pty.rs` (line 94). Every variant must be kept in sync across both enums and both converters.
-- Files: `src/main.rs`, `crates/glass_terminal/src/pty.rs`, `crates/glass_terminal/src/osc_scanner.rs`, `crates/glass_core/src/event.rs`
-- Impact: Adding a new shell integration event requires changes in 4 files. Risk of silent breakage if a variant is added to one enum but not the other.
-- Fix approach: Unify into a single event type in `glass_core::event`, or use `From` trait implementations to automate conversion.
+**Area:** Event handling and window context access
+- **Issue:** 21+ `.unwrap()` and `.expect()` calls throughout `src/main.rs`, primarily for accessing session mux state (lines 1790, 1856, 2120, 2857, 3178, 3280, 4353, 4608, 5064, etc.)
+- **Files:** `src/main.rs` (lines 193, 200, 990, 991, 1558, 1569, 1790, 1856, 2120, 2857, 3178, 3280, 4353, 4608, 5064, 7234, 7310, 7376)
+- **Impact:** If a session becomes unavailable during event processing (e.g., due to concurrent tab removal or crash), panics kill the entire GUI. No graceful degradation.
+- **Fix approach:** Wrap all `focused_session()` calls with error handling paths that either skip the operation or close the offending pane. Return `Option` from event handlers instead of panicking.
 
-**Duplicated terminal size calculation logic:**
-- Issue: Terminal column/line computation from pixel dimensions appears in at least 4 places with slightly different formulations: `create_session()`, `resumed()`, `Resized` handler single-pane path, and `resize_all_panes()`.
-- Files: `src/main.rs` (lines 304, 360-362, 500-503, 877-879)
-- Impact: Easy to introduce off-by-one errors when adjusting chrome reservations (tab bar, status bar lines). One path subtracts 2, another subtracts `1 + tab_bar_lines`.
-- Fix approach: Create a `compute_grid_dimensions(window_size, cell_size, chrome_lines) -> (cols, lines)` helper and use it everywhere.
+### Platform-Specific Test Gating Incomplete
 
-**`Session` struct has too many public fields (17 fields, all `pub`):**
-- Issue: `Session` in `crates/glass_mux/src/session.rs` is a flat struct with 17 public fields and no methods. It acts as a bag of state with no encapsulation.
-- Files: `crates/glass_mux/src/session.rs`
-- Impact: Any code with a `&mut Session` can modify any field. Business logic for session lifecycle (command tracking, snapshot management) is scattered across `src/main.rs` rather than being co-located with the data.
-- Fix approach: Add methods to `Session` for common operations (start_command, finish_command, set_cwd). Make internal tracking fields private.
+**Area:** Cross-platform PTY handling
+- **Issue:** ConPTY tests gated with `#[cfg(target_os = "windows")]` but Unix PTY code paths (fork, forkpty) lack integration test coverage on CI
+- **Files:** `crates/glass_terminal/src/pty.rs`, CI configuration (not in repo, on remote)
+- **Impact:** Unix-specific PTY issues (signal handling, child reaping, PTY resize) may not be caught until user deployment
+- **Fix approach:** Add per-platform test suites in CI; ensure Unix tests exercise pty resize, SIGCHLD handling, and EOF scenarios
 
-**Prompt prefix stripping is fragile:**
-- Issue: Pipeline command text extraction strips the prompt prefix by searching for `"> "` (line 1934 of `src/main.rs`). This is a PowerShell-specific heuristic that will break for other shells or custom prompts.
-- Files: `src/main.rs` (lines 1934-1938)
-- Impact: Pipeline stage command text may include prompt prefix on non-PowerShell shells, or incorrectly strip content containing `"> "`.
-- Fix approach: Use shell integration OSC sequences to precisely delimit command input boundaries rather than heuristic stripping.
+### Alacritty Terminal Pinned to Exact Version
 
-## Known Bugs
+**Area:** Dependency fragility
+- **Issue:** `alacritty_terminal = "=0.25.1"` pinned exact. If a critical bug fix is released in 0.25.2+, Glass cannot use it
+- **Files:** `Cargo.toml`
+- **Impact:** VT parsing bugs or PTY handling regressions in the terminal emulator cannot be patched without a full PR to update the pin
+- **Fix approach:** Document why exact pin is necessary (likely due to event loop integration); consider loose pin (0.25.*) after validation tests pass on newer versions
 
-**Dynamic DPI / scale factor changes not supported:**
-- Symptoms: Moving Glass between monitors with different DPI scaling produces incorrect font rendering. A warning is logged: "Dynamic scale factor update not yet supported; restart Glass to apply new DPI settings."
-- Files: `src/main.rs` (lines 930-941)
-- Trigger: Drag window between monitors with different scale factors.
-- Workaround: Restart Glass after moving to a different-DPI monitor.
+## Known Risks & Fragile Areas
 
-**Mouse selection not accounting for multi-pane offsets:**
-- Symptoms: In split-pane mode, mouse selection coordinates use global window position but the grid renderer expects pane-local coordinates. Selection may land on wrong cells in non-primary panes.
-- Files: `src/main.rs` (lines 1418-1455, 1517-1549)
-- Trigger: Click and drag to select text in a split pane that is not at the top-left origin.
-- Workaround: None currently; selection works correctly only in single-pane mode and the primary pane of splits.
+### Orchestrator Checkpoint Timeout (3 minutes)
 
-## Security Considerations
+**Area:** Agent respawn loop
+- **Issue:** If Claude Code hangs writing `checkpoint.md`, orchestrator waits 180 seconds before respawning (line 279 `CHECKPOINT_TIMEOUT_SECS`)
+- **Files:** `src/orchestrator.rs` (line 279)
+- **Impact:** During a hang, Glass GUI remains responsive but orchestration stalls silently. User may not know why agent isn't responding.
+- **Safe modification:** Add a non-blocking progress indicator in status bar; display "Checkpoint timeout pending" after 30 seconds to give user visibility
+- **Test coverage:** Need integration test covering timeout path (currently may be untested)
 
-**Auto-update downloads and executes MSI without signature verification:**
-- Risk: The update mechanism in `apply_update()` downloads an MSI from the GitHub release URL and launches `msiexec /i /passive` without verifying any code signature, checksum, or TLS certificate pinning. A compromised GitHub account or MITM attack could deliver malicious installers.
-- Files: `crates/glass_core/src/updater.rs` (lines 131-162)
-- Current mitigation: HTTPS transport (TLS via ureq). User must explicitly press Ctrl+Shift+U to trigger.
-- Recommendations: Add SHA256 checksum verification against a signed manifest. Consider code-signing the MSI and verifying before execution. At minimum, prompt the user for confirmation before launching the installer.
+### Session Mux State Synchronization
 
-**`std::mem::forget(temp_dir)` leaks temporary MSI file:**
-- Risk: The downloaded MSI is intentionally leaked via `std::mem::forget(temp_dir)` so it persists for `msiexec`. This leaves an unmanaged executable file in the temp directory indefinitely.
-- Files: `crates/glass_core/src/updater.rs` (line 143)
-- Current mitigation: None. The file persists until OS temp cleanup.
-- Recommendations: Use `into_path()` instead of `forget()` to take ownership of the path without dropping the dir. Consider cleanup on next launch.
+**Area:** Multi-pane tab management
+- **Issue:** SessionMux tracks split tree and focus state in memory. If a panic occurs while mutating tree (split/resize), state becomes inconsistent. No persistent state restore.
+- **Files:** `crates/glass_mux/src/session_mux.rs` (718 lines), `crates/glass_mux/src/split_tree.rs` (725 lines)
+- **Impact:** Tab state lost on crash; user returns to default single pane
+- **Safe modification:** Consider snapshotting session layout to `~/.glass/session_state.json` on every tree mutation; restore on startup
+- **Test coverage:** Gaps in split/unsplit edge cases (rapid splits, deeply nested panes, resize during drag)
 
-**Shell integration injection via PTY input:**
-- Risk: Shell integration scripts are auto-injected by sending `source '<path>'\r\n` to the PTY as raw input (line 396 of `src/main.rs`). If the script path contains shell metacharacters (unlikely but possible via crafted filesystem paths), this could execute unintended commands.
-- Files: `src/main.rs` (lines 384-398)
-- Current mitigation: Path comes from the executable's own directory, which is typically controlled by the installer.
-- Recommendations: Validate the path contains no shell metacharacters, or use a safer injection mechanism.
+### PTY Reader Thread Polling Token Mismatch
 
-**History database uses `dirs::home_dir().expect()` which panics:**
-- Risk: If the home directory cannot be determined (rare but possible in containerized environments), the entire application panics on history DB path resolution.
-- Files: `crates/glass_history/src/lib.rs` (line 36), `crates/glass_snapshot/src/lib.rs` (line 93)
-- Current mitigation: None. The expect message describes the issue but the app crashes.
-- Recommendations: Return `Result` instead of panicking. The caller already handles `None` for `history_db` gracefully.
+**Area:** Platform-specific event loop integration
+- **Issue:** `PTY_READ_WRITE_TOKEN` differs per platform (Windows: 2, Unix: 0) — hardcoded at lines 34-36 in `crates/glass_terminal/src/pty.rs`
+- **Files:** `crates/glass_terminal/src/pty.rs` (lines 29-39)
+- **Impact:** If alacritty_terminal upstream changes these token values, Glass polling breaks silently (wrong event handler called)
+- **Mitigation:** Tokens are re-exported by alacritty_terminal; sync comment documents dependency
+- **Fix approach:** Extract magic constants to a module-level helper that validates tokens match upstream at compile time (via `const_assert!` or similar)
 
 ## Performance Bottlenecks
 
-**Glyph cache unbounded growth:**
-- Problem: The `GlyphCache` wraps glyphon's `TextAtlas` which grows as new glyphs are rasterized but is only trimmed via `trim()` at end of each frame. There is no upper bound on atlas size.
-- Files: `crates/glass_renderer/src/glyph_cache.rs`, `crates/glass_renderer/src/frame.rs` (line 857: `trim()` call)
-- Cause: Terminal output can contain arbitrary Unicode characters, each requiring atlas space. Long-running sessions with diverse output (e.g., CJK, emoji, math symbols) accumulate atlas entries.
-- Improvement path: Monitor atlas memory usage and implement a hard cap or LRU eviction strategy. Profile with `GLASS_LOG=glass_renderer=debug` to track atlas size.
+### Frame Renderer Per-Frame Allocations
 
-**O(n^2) divider computation for split panes:**
-- Problem: `compute_dividers()` compares every pair of pane layouts with a nested loop, checking 4 adjacency conditions per pair.
-- Files: `src/main.rs` (lines 208-273)
-- Cause: Brute-force pairwise comparison instead of spatial indexing.
-- Improvement path: For typical pane counts (2-8), this is negligible. Only becomes an issue if deeply nested splits are supported in the future. No action needed currently.
+**Area:** GPU rendering hot path
+- **Issue:** `FrameRenderer` has `text_buffers`, `cell_positions`, `overlay_buffers`, `pipeline_buffers` as reusable storage (lines 48-54 in `crates/glass_renderer/src/frame.rs`), but no explicit capacity pre-allocation or debug stats
+- **Files:** `crates/glass_renderer/src/frame.rs` (lines 38-55)
+- **Impact:** On large terminal sizes (80+ cols), buffer reallocation per frame may cause frame drops; no visibility into peak memory usage
+- **Improvement path:** Add runtime metrics (--features perf) to measure buffer sizes; implement `with_capacity()` for large expected grid sizes; log peak allocations
 
-**Git status query spawns a new thread per CWD change:**
-- Problem: Every `ShellEvent::CurrentDirectory` event spawns a new OS thread to run `query_git_status()`, which shells out to `git status --porcelain`.
-- Files: `src/main.rs` (lines 2168-2183)
-- Cause: No thread pool or debouncing. Rapid `cd` commands spawn many threads.
-- Improvement path: Use a dedicated background thread with a channel, or debounce CWD changes before spawning the query.
+### History Database FTS5 Query Cost
 
-**Full filesystem watcher per command execution:**
-- Problem: A `notify::RecommendedWatcher` is created for every command execution and watches the entire CWD recursively. In large directories (e.g., monorepos with thousands of files), this can be expensive.
-- Files: `src/main.rs` (lines 1953-1968), `crates/glass_snapshot/src/watcher.rs`
-- Cause: Recursive watch on potentially large directory trees. The watcher is created at CommandExecuted and drained at CommandFinished.
-- Improvement path: Consider rate-limiting watcher creation for rapid command sequences, or skip watching for read-only commands (already parsed by `command_parser`).
+**Area:** History search overlay
+- **Issue:** FTS5 queries in `glass_history::query` module execute on main thread during typing (debounced 150ms but still sync). No query cost estimation.
+- **Files:** `crates/glass_history/src/db.rs` (1464 lines)
+- **Impact:** On projects with >100k command records, FTS5 full-text search may block rendering for 50-100ms per keystroke
+- **Improvement path:** Move FTS5 queries to background thread; debounce at 300ms; show "searching..." placeholder; add query timeout (5s max)
 
-## Fragile Areas
+### Snapshot Pruning Synchronous at Startup
 
-**Keyboard shortcut handling in `window_event`:**
-- Files: `src/main.rs` (lines 945-1417)
-- Why fragile: Keyboard input handling is a deeply nested chain of `if`/`match` blocks with multiple early returns. The ordering matters (search overlay intercept must come first, then Glass shortcuts, then PTY forwarding). Adding a new shortcut requires understanding the full precedence chain.
-- Safe modification: When adding shortcuts, add them to the existing `Ctrl+Shift` match block (lines 1166-1302). Always test that the shortcut does not conflict with the search overlay intercept (lines 950-1029). Never add shortcuts before the overlay check.
-- Test coverage: Only CLI parsing is tested (`src/tests.rs`). No tests for keyboard shortcut routing.
+**Area:** Background disk I/O at launch
+- **Issue:** `Pruner::prune()` runs in a spawned thread, but scans all snapshots and blobs — no progress indicator or early exit
+- **Files:** `src/main.rs` (lines 1618-1649)
+- **Impact:** First launch may block shell rendering while pruning hundreds of old blobs (observable as slow startup)
+- **Improvement path:** Implement incremental pruning (batch of 10 snapshots per poll); add pruning progress event; skip pruning if Glass was opened recently
 
-**Shell event routing in `user_event` (AppEvent::Shell handler):**
-- Files: `src/main.rs` (lines 1732-2188)
-- Why fragile: The `AppEvent::Shell` handler is 456 lines of sequential logic that must maintain careful ordering: block manager update, snapshot creation, command text extraction, pipeline parsing, history DB insert, watcher drain, git query spawn. Borrow checker constraints require splitting session access across multiple scopes.
-- Safe modification: Follow the existing pattern of borrowing `session` in a block, extracting needed data, dropping the borrow, then using the data. Do not hold `session` across operations that need `ctx` or `self`.
-- Test coverage: No integration tests for the shell event lifecycle.
+### OSC 133 Parsing Without Bounds
 
-**Pipeline stage data flow:**
-- Files: `src/main.rs` (lines 1783-1829), `crates/glass_pipes/src/types.rs`, `crates/glass_terminal/src/block_manager.rs`
-- Why fragile: Pipeline data flows through: shell integration OSC -> BlockManager (allocates stages) -> main.rs (reads temp files, processes through StageBuffer, stores in block) -> history DB (serializes to PipeStageRow). A bug in any step silently produces empty or corrupt stage data.
-- Safe modification: Always test pipeline functionality end-to-end after changes to any file in this chain.
-- Test coverage: `glass_pipes` has unit tests for parsing and buffering. No integration test for the full pipeline data flow.
+**Area:** Command boundary detection
+- **Issue:** `OscScanner` in `crates/glass_terminal/src/osc_scanner.rs` accumulates OSC sequences in memory without documented size limit
+- **Files:** `crates/glass_terminal/src/osc_scanner.rs`
+- **Impact:** Pathological case: if shell emits very long OSC sequences (e.g., binary data), scanner buffer may grow unbounded
+- **Improvement path:** Document max OSC payload size (e.g., 64KB); log warning and truncate if exceeded
 
-## Scaling Limits
+## Concurrency & State Management
 
-**SQLite history database (single-writer):**
-- Current capacity: Handles thousands of commands efficiently with WAL mode and FTS5.
-- Limit: SQLite's single-writer model means concurrent sessions writing to the same DB could block each other. Currently each session opens its own `HistoryDb` connection, but they share the same database file per working directory.
-- Scaling path: The `PRAGMA busy_timeout = 5000` setting provides 5s of retry. For heavy concurrent use, consider a shared writer thread or separate DBs per session.
+### Activity Stream Channel Capacity Risk
 
-**Single-window architecture:**
-- Current capacity: One OS window with multiple tabs and split panes.
-- Limit: `Processor.windows` is a HashMap but `resumed()` exits early if any window exists (line 466). Only one window is ever created.
-- Scaling path: Remove the early return guard and handle per-window GPU resource creation.
+**Area:** Agent event ingestion (lines 1698-1701 in `src/main.rs`)
+- **Issue:** `create_channel(&activity_config)` creates bounded channel with default capacity. When agent is `Off`, rx is stored but tx is dropped periodically, causing channel fill-up
+- **Files:** `src/main.rs` (lines 1698-1701), `crates/glass_core/src/activity_stream.rs`
+- **Impact:** When channel is full, `try_send()` fails silently — activity events are discarded. If agent mode later changes to `Assist`, buffered activity is lost.
+- **Safe modification:** Make channel capacity configurable; emit trace logs when channel fills; consider persisting unbuffered activity to disk
+- **Test coverage:** Need test for mode-off → mode-assist transition under load
 
-## Dependencies at Risk
+### Database Connection Per-Query Pattern
 
-**`alacritty_terminal` pinned to exact version `=0.25.1`:**
-- Risk: Exact version pin means no automatic patch updates. The alacritty terminal library is the core of the terminal emulation and changes frequently. API breaks require careful migration.
-- Impact: Security patches to the terminal emulator require manual version bump and verification.
-- Migration plan: Periodically check for new releases. The pin is intentional to avoid surprise breaks, but should be reviewed quarterly.
+**Area:** SQLite multi-agent access
+- **Issue:** Each MCP tool opens a new `CoordinationDb` connection (e.g., lines 1005-1006 in `crates/glass_mcp/src/tools.rs`). With WAL mode and 5000ms busy_timeout, contention possible but not quantified
+- **Files:** `crates/glass_coordination/src/db.rs` (lines 26-40), `crates/glass_mcp/src/tools.rs` (1000+ lines)
+- **Mitigation:** `BEGIN IMMEDIATE` transactions reduce SQLITE_BUSY risk; WAL mode allows concurrent readers
+- **Test coverage:** No load test for 10+ concurrent agents all querying agents.db simultaneously
+- **Improvement path:** Add stress test for 5+ concurrent agents; measure query latency under contention; consider connection pooling if needed
+
+### Usage Tracker OAuth Token File Access
+
+**Area:** Polling loop credential read
+- **Issue:** `read_oauth_token()` in `src/usage_tracker.rs` reads `.credentials.json` every 60 seconds without caching. If file is deleted or permissions change, polling silently degrades
+- **Files:** `src/usage_tracker.rs` (lines 36-47)
+- **Impact:** User disables orchestrator via config, but usage_tracker thread keeps polling (wasting cycles, logging errors)
+- **Fix approach:** Cache token + expiry time; re-read only if cache expires or file mtime changes; log warnings when read fails (not just silently)
 
 ## Missing Critical Features
 
-**No right-click context menu:**
-- Problem: Terminal emulators conventionally offer right-click context menu for copy/paste/search. Glass has no context menu at all.
-- Blocks: Users accustomed to right-click paste (common on Windows terminals) have no alternative.
+### No Snapshot Integrity Verification
 
-**No font fallback chain:**
-- Problem: `GlassConfig.font_family` is a single string. If the font lacks glyphs for certain characters, rendering falls back to whatever glyphon selects internally, which may not be ideal.
-- Blocks: CJK characters, emoji, and special symbols may render as boxes if the primary font lacks them.
+**Area:** Undo engine trust boundary
+- **Issue:** `UndoEngine::restore_file()` in `crates/glass_snapshot/src/undo.rs` restores files from snapshots without cryptographic verification. If blob store is corrupted, bad data is silently written to disk.
+- **Files:** `crates/glass_snapshot/src/undo.rs` (528 lines)
+- **Impact:** Silent data loss if blake3 hash doesn't match (error is logged but file is not restored)
+- **Recommendation:** Verify blake3 hash before restore; fail with clear error message; add recovery path (keep corrupted blob for forensics)
 
-**No per-session history isolation:**
-- Problem: All sessions in the same CWD share the same SQLite history database. Commands from different tabs/panes interleave in the same DB.
-- Blocks: History search results mix commands from different sessions with no way to filter by session.
+### Command Parser Read-Only Classification Incomplete
+
+**Area:** Snapshot trust boundary
+- **Issue:** `glass_snapshot::command_parser` marks many commands as `Confidence::Low` when parsing fails (e.g., complex pipes, aliases). Reads from stdin or network are not snapshot-protected even if file writes might occur downstream.
+- **Files:** `crates/glass_snapshot/src/command_parser.rs` (1031 lines)
+- **Impact:** Destructive command may execute without pre-exec snapshot if parser marks it Low confidence
+- **Recommendation:** Add allowlist mode to whitelist-only commands for snapshot (default: Conservative); document limitations
+
+### No Graceful Degradation for MCP Tool Errors
+
+**Area:** Agent tool availability
+- **Issue:** If a single MCP tool handler panics (e.g., IPC timeout in `glass_ping`), error is caught as `McpError` but no fallback tool list is provided to agent
+- **Files:** `crates/glass_mcp/src/tools.rs` (3111 lines)
+- **Impact:** Agent loses a capability mid-task; no built-in retry or alternative provided
+- **Recommendation:** Implement circuit-breaker pattern for slow/failing tools (disable after 3 consecutive timeouts); emit advisory message to agent
 
 ## Test Coverage Gaps
 
-**No tests for `src/main.rs` event handling (2,537 lines):**
-- What's not tested: Window event handling, keyboard shortcuts, mouse input, shell event routing, session lifecycle, rendering orchestration. The only test in `src/tests.rs` covers CLI argument parsing (180 lines of parse tests).
-- Files: `src/main.rs`, `src/tests.rs`
-- Risk: Any refactoring of the main event loop could silently break keyboard shortcuts, clipboard, tab management, split pane focus, or pipeline interactions. This is the most critical untested code.
-- Priority: High
+### Event Loop Panic Recovery
 
-**No tests for GPU rendering pipeline:**
-- What's not tested: `glass_renderer` crate has test modules in `block_renderer.rs`, `config_error_overlay.rs`, `search_overlay_renderer.rs`, and `tab_bar.rs`, but these test only rect/layout computation, not actual GPU rendering. No tests verify that rendered output is visually correct.
-- Files: `crates/glass_renderer/src/frame.rs` (1,272 lines), `crates/glass_renderer/src/grid_renderer.rs` (391 lines)
-- Risk: Visual regressions in terminal rendering (wrong colors, misaligned text, missing cursor) go undetected.
-- Priority: Medium (visual testing is inherently hard; screenshot comparison tests would help)
+**Area:** Main application stability
+- **Issue:** No integration test for panic in event handler (e.g., in window_event callback)
+- **Files:** `src/main.rs` (ApplicationHandler impl, lines 1537+)
+- **Risk:** Panic propagates to winit event loop, crashes app without error logging
+- **Priority:** High
+- **Safe test approach:** Unit test individual event handlers in isolation; add panic hook in tests to verify error is logged
 
-**No tests for PTY event loop:**
-- What's not tested: `glass_pty_loop()`, `pty_read_with_scan()`, `pty_write()` in `crates/glass_terminal/src/pty.rs`. These are the core I/O functions bridging the shell process to the terminal grid.
-- Files: `crates/glass_terminal/src/pty.rs` (527 lines)
-- Risk: Regressions in PTY read/write, synchronized update handling, or output capture could cause data loss or hangs.
-- Priority: High
+### Orchestrator Stuck Detection False Positives
 
-**Single integration test file (`tests/mcp_integration.rs`):**
-- What's not tested: No integration tests for the terminal GUI workflow, history recording end-to-end, snapshot/undo lifecycle, or multi-tab/pane behavior.
-- Files: `tests/mcp_integration.rs`
-- Risk: Cross-crate interactions (glass_terminal -> glass_history -> glass_snapshot) are only tested via individual crate unit tests, not as an integrated system.
-- Priority: Medium
+**Area:** State fingerprinting (lines 282-327 in `src/orchestrator.rs`)
+- **Issue:** `StateFingerprint::compute()` uses DefaultHasher over terminal lines. If output is slow (e.g., 100 lines/sec), fingerprint may match even though terminal advanced
+- **Files:** `src/orchestrator.rs` (lines 282-327)
+- **Risk:** Stuck detection triggers when agent is still making progress
+- **Priority:** Medium
+- **Test approach:** Unit test with real terminal output (e.g., `cargo build` output); verify fingerprint changes
+
+### Database Schema Migration Path
+
+**Area:** Schema evolution safety
+- **Issue:** `HistoryDb` tracks `SCHEMA_VERSION` but migration logic is incomplete. If user upgrades Glass with new schema, old code running new schema may fail silently.
+- **Files:** `crates/glass_history/src/db.rs` (line 8)
+- **Risk:** Data loss or corruption during concurrent access by old + new Glass versions
+- **Priority:** Medium
+- **Safe migration:** Add detailed migration documentation in code; version each migration with date; add pre-flight check that prevents running if schema > code version
+
+## Security Considerations
+
+### Command Parser Shell Injection via Whitelist Bypass
+
+**Area:** Snapshot coverage
+- **Issue:** If a new shell or command alias becomes popular (e.g., `trash` instead of `rm`), command parser doesn't know it's destructive. Pre-exec snapshot is skipped.
+- **Files:** `crates/glass_snapshot/src/command_parser.rs` (1031 lines)
+- **Mitigation:** Parser maintains comprehensive whitelist of dangerous commands (rm, mv, dd, git checkout, etc.)
+- **Recommendation:** Document user-extension mechanism for adding custom dangerous commands; add config option to require snapshots for all commands
+
+### OAuth Token Exposure in Logs
+
+**Area:** Credential handling
+- **Issue:** Usage tracker logs API errors that may contain truncated oauth token in debug builds
+- **Files:** `src/usage_tracker.rs` (lines 50-65)
+- **Mitigation:** Errors are logged via tracing, which respects RUST_LOG level (debug-only by default)
+- **Recommendation:** Explicit token redaction in error strings (replace with `...REDACTED...`); add audit log of token access
+
+### Coordination Database Stale Agent Cleanup
+
+**Area:** Agent registration
+- **Issue:** `CoordinationDb` tracks `last_heartbeat` but has no automatic cleanup of stale agents. If agent crashes without calling `glass_agent_deregister`, file locks remain held indefinitely.
+- **Files:** `crates/glass_coordination/src/db.rs` (49-100)
+- **Mitigation:** File locks on deleted agent records cascade due to foreign key
+- **Recommendation:** Add cleanup task that deletes agents with `last_heartbeat > 24h` old; emit event when lock holder is stale
+
+## Scaling Limits
+
+### Terminal Grid Allocation for Large Displays
+
+**Area:** High-resolution rendering
+- **Issue:** Terminal grid stored as 2D array in memory. With 300+ column displays (e.g., 4K at high DPI), grid scales O(n²) memory
+- **Files:** `crates/glass_terminal/src/grid_snapshot.rs` (483 lines)
+- **Current limit:** Untested beyond 200 columns
+- **Improvement path:** Profile memory usage at 300+ cols; consider sparse grid representation for mostly-empty lines; add runtime warning if grid exceeds 250K cells
+
+### Snapshot Blob Store Linear Scan
+
+**Area:** File storage lookup
+- **Issue:** `glass_snapshot` blob store uses blake3 hash as filename; queries iterate all blobs to find matches. No index.
+- **Files:** `crates/glass_snapshot/src/db.rs` (537 lines)
+- **Current limit:** Untested beyond 10K blobs (~500MB)
+- **Improvement path:** Add SQLite index on (hash) in metadata DB; benchmark query time at 100K blobs
+
+### History Database FTS5 Index Memory
+
+**Area:** Search performance
+- **Issue:** FTS5 virtual table builds in-memory index. Large history (>1M commands) may consume 500MB+ RAM for index
+- **Files:** `crates/glass_history/src/db.rs` (1464 lines)
+- **Current limit:** Untested above 500K records
+- **Improvement path:** Implement retention auto-pruning based on index size (not just age/count); document FTS5 memory overhead in config guide
 
 ---
 
-*Concerns audit: 2026-03-08*
+*Concerns audit: 2026-03-15*

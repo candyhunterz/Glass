@@ -1,270 +1,223 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-03-08
+**Analysis Date:** 2026-03-15
 
 ## Naming Patterns
 
 **Files:**
-- Use `snake_case.rs` for all source files: `block_manager.rs`, `osc_scanner.rs`, `grid_snapshot.rs`
-- Crate names use `snake_case` with `glass_` prefix: `glass_core`, `glass_terminal`, `glass_renderer`
-- Test files are either `tests.rs` (co-located module) or same file with `#[cfg(test)] mod tests`
+- Snake case for source files: `block_manager.rs`, `pty.rs`, `osc_scanner.rs`
+- Test files in same crate (no separate `tests/` directory): inline `#[cfg(test)] mod tests`
+- Public modules exposed via `pub mod module_name` in `lib.rs` or `main.rs`
 
 **Functions:**
-- Use `snake_case` for all functions: `spawn_pty`, `resolve_db_path`, `parse_command`
-- Constructor pattern: `new()` for simple constructors, `open()` for I/O-backed types (databases, stores)
-- Predicate functions use `is_` prefix: `is_binary()`, `is_powershell_cmdlet()`, `blob_exists()`
-- Getter functions omit `get_` prefix in simple cases: `val()`, `conn()`
-- Database accessors use `get_` prefix: `get_command()`, `get_snapshot()`, `get_pipe_stages()`
+- Snake case: `parse_command()`, `encode_key()`, `query_git_status()`
+- Private helpers prefixed with intent: `tokenize_powershell()`, `strip_redirects()`, `contains_unparseable_syntax()`
+- Constructor functions named `new()` or specific to type: `open()`, `open_default()`, `resolve_db_path()`
+- Methods on impl blocks follow snake case convention
 
 **Variables:**
-- Use `snake_case` for all variables and fields
-- Abbreviated names acceptable for loop counters and short-lived values: `i`, `j`, `b`, `tx`, `rx`
-- Descriptive names for struct fields: `wakeup_received`, `prompt_start_line`, `pipeline_stage_count`
+- Snake case for local bindings: `let prompt_line = line`, `let redirect_targets = vec![]`
+- Single-letter for loop counters and iteration: `for (id, name, pid, last_heartbeat) in &agents`
+- Temporary mutable variables: `let mut result = ParseResult { ... }`
+- Underscore prefix for intentionally unused: `let (mut db, _dir) = test_db()`
 
 **Types:**
-- Use `PascalCase` for structs, enums, and traits
-- Enum variants use `PascalCase`: `BlockState::PromptActive`, `Confidence::High`
-- ID wrapper types follow `{Thing}Id` pattern: `SessionId`, `TabId`
-- Config structs follow `{Thing}Config` or `{Thing}Section` pattern: `GlassConfig`, `HistorySection`
-
-**Constants:**
-- Use `SCREAMING_SNAKE_CASE`: `SCHEMA_VERSION`, `PS_ALIASES`
+- PascalCase for structs, enums, traits: `Block`, `BlockState`, `BlockManager`, `CoordinationDb`
+- SCREAMING_SNAKE_CASE for constants: `READ_BUFFER_SIZE`, `MAX_LOCKED_READ`, `PTY_READ_WRITE_TOKEN`
+- Short uppercase for enum variants: `PromptActive`, `InputActive`, `Complete`, `Header`, `StageRow`
 
 ## Code Style
 
 **Formatting:**
-- `cargo fmt` (rustfmt) with default settings
-- Enforced in CI via `cargo fmt --all -- --check`
-- No custom `rustfmt.toml` or `.rustfmt.toml` -- uses Rust defaults
+- Enforced by `cargo fmt` in CI
+- 4-space indentation
+- Max line length enforced via clippy rules
+- Brace style: opening brace on same line (Rust convention)
 
 **Linting:**
-- `cargo clippy --workspace -- -D warnings` (all warnings are errors)
-- No custom `clippy.toml` -- uses Clippy defaults
-- Enforced in CI (runs on Windows to match primary dev platform)
+- Clippy with `-D warnings` — all warnings are errors in CI
+- Configuration enforced in CI at `.github/workflows/ci.yml` (remote only)
+- Warnings must be fixed, not suppressed, except:
+  - `#[allow(dead_code)]` on orchestrator module (`src/orchestrator.rs` line 7)
+  - Platform-specific dead code gated with `#[cfg(target_os = "...")]`
+
+**Module Organization:**
+- Crate root (`lib.rs` or `main.rs`) declares public modules
+- Submodules in separate files: `crate::module_name` resolves to `crate/module_name.rs`
+- Barrel file pattern: `lib.rs` re-exports public types: `pub use compress::...`, `pub use db::CommandRecord`
+- Example: `crates/glass_history/src/lib.rs` exports types from submodules
 
 ## Import Organization
 
 **Order:**
-1. Standard library (`std::*`)
-2. External crate imports (`alacritty_terminal::*`, `winit::*`, `rusqlite::*`)
-3. Workspace crate imports (`glass_core::*`, `glass_terminal::*`)
-4. Local module imports (`crate::*`, `super::*`)
+1. Standard library imports: `use std::...`
+2. External crate imports: `use anyhow::Result`, `use rusqlite::...`
+3. Workspace crate imports: `use glass_core::...`, `use crate::...`
+4. Module-level (optional): items from same crate submodules
 
-**Example from `src/main.rs`:**
+**Pattern Example** (from `src/main.rs`):
 ```rust
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
-use alacritty_terminal::grid::{Dimensions, Scroll};
 use clap::{Parser, Subcommand};
 use glass_core::config::GlassConfig;
-use glass_core::event::{AppEvent, GitStatus, SessionId, ShellEvent};
-use glass_terminal::{
-    encode_key, query_git_status, snapshot_term, Block, BlockManager, ...
+use glass_history::{
+    db::{CommandRecord, HistoryDb},
+    resolve_db_path,
 };
-use winit::application::ApplicationHandler;
 ```
 
 **Path Aliases:**
-- No path aliases. Use full crate paths via workspace dependencies.
-- Re-exports in `lib.rs` provide shorthand: `use glass_terminal::BlockManager` instead of `use glass_terminal::block_manager::BlockManager`
-
-**Re-export Pattern:**
-- Each crate's `lib.rs` declares `pub mod` for all modules and `pub use` for key public types
-- Example from `crates/glass_terminal/src/lib.rs`:
-```rust
-pub mod block_manager;
-pub mod event_proxy;
-// ...
-pub use block_manager::{format_duration, Block, BlockManager, BlockState, PipelineHit};
-pub use event_proxy::EventProxy;
-```
+- No explicit path aliases in `Cargo.toml`
+- Imports use full qualified paths: `use glass_terminal::...`
+- Workspace members referenced by full path
 
 ## Error Handling
 
 **Patterns:**
+- Primary error type: `anyhow::Result<T>` (wraps any error via `?` operator)
+- File: `crates/glass_core/src/error.rs` provides error definitions
+- Error propagation via `?` operator preferred over `match` on `Err`
+- SQLite errors wrapped automatically by `anyhow::Result`
 
-1. **`anyhow::Result<T>` for fallible operations** -- used throughout `glass_history`, `glass_snapshot`, `glass_mcp`:
+**Example Pattern** (from `crates/glass_history/src/db.rs`):
 ```rust
-pub fn open(path: &Path) -> Result<Self> { ... }
-pub fn store_file(&self, source_path: &Path) -> Result<(String, u64)> { ... }
-```
-
-2. **Custom `Result<T>` type alias** in `glass_core`:
-```rust
-// crates/glass_core/src/error.rs
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-```
-
-3. **Graceful fallback for config loading** -- never crash on bad config:
-```rust
-pub fn load() -> Self {
-    match std::fs::read_to_string(&config_path) {
-        Ok(contents) => Self::load_from_str(&contents),
-        Err(_) => Self::default(),  // Fall back to defaults
+pub fn open(path: &Path) -> Result<Self> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;  // Propagate via ?
     }
+    let conn = Connection::open(path)?;
+    // ... setup ...
+    Ok(Self { conn, path: path.to_path_buf() })
 }
 ```
 
-4. **Structured errors for user-facing messages** -- `ConfigError` with line/column info:
-```rust
-pub struct ConfigError {
-    pub message: String,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
-    pub snippet: Option<String>,
-}
-```
-
-5. **`expect()` for programmer errors** (things that should never fail):
-```rust
-self.session_mux.focused_session().expect("no focused session")
-```
-
-6. **`tracing` for recoverable errors** -- log warnings, continue with defaults:
-```rust
-tracing::warn!("Failed to parse config TOML: {err}; using defaults");
-```
+**Panic Usage (Limited):**
+- Panic acceptable in:
+  - Main thread initialization (e.g., font system startup in `src/main.rs` line 1569)
+  - Test assertion failures
+  - Orchestrator state machine invariant violations (`src/orchestrator.rs` lines 723, 735, 744, 808, 1060)
+- Orchestrator panics intentional for impossible state detection during agent control loop
 
 ## Logging
 
-**Framework:** `tracing` with `tracing-subscriber` (env-filter enabled)
+**Framework:** `tracing` crate (workspace dependency)
 
 **Patterns:**
-- Use `tracing::debug!` for routine operations (config loading, file paths)
-- Use `tracing::info!` for significant events (config loaded, server started)
-- Use `tracing::warn!` for recoverable errors (bad config, missing files)
-- Use `tracing::error!` sparingly -- only for truly unexpected failures
-- Performance-critical functions use conditional instrumentation:
+- Structured logging with field syntax: `tracing::info!(agent_id = %id, reason = %reason, "Pruning stale agent")`
+- Levels: `trace!`, `debug!`, `info!`, `warn!`, `error!`
+- Usage in critical paths: agent registration, database operations, coordinate multiplexing
+- Example (from `crates/glass_coordination/src/db.rs` line 813):
 ```rust
-#[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-pub fn scan(&mut self, data: &[u8]) -> Vec<OscEvent> { ... }
+tracing::info!(
+    agent_id = %id,
+    agent_name = %name,
+    reason = %reason,
+    "Pruning stale agent"
+);
 ```
 
-**Performance tracing:**
-- Feature flag `perf` enables `tracing::instrument` on hot-path functions
-- Used in renderer (`frame.rs`, `grid_renderer.rs`) and terminal (`osc_scanner.rs`, `pty.rs`, `grid_snapshot.rs`)
-- Build with `cargo build --features perf` to enable
-- `tracing-chrome` crate (optional dep) for Chrome trace format output
+**Environment Control:**
+- Tracing subscriber initialized in main binary
+- Filter configuration via environment variables (tracing-subscriber feature `env-filter`)
+- Feature flag `perf` enables `tracing-chrome` instrumentation: `cargo build --features perf`
 
 ## Comments
 
 **When to Comment:**
-- Module-level `//!` doc comments on every module explaining purpose
-- `///` doc comments on all public structs, enums, functions, and fields
-- Inline comments for non-obvious logic (e.g., "belt and suspenders with CASCADE")
-- Section separators using `// ---------------------------------------------------------------------------`
+- Module-level documentation: `//!` doc comments at top of file
+- Function documentation: `///` doc comments above public functions
+- Non-obvious logic: inline comments `// Explanation` before complex code blocks
+- Invariant assertions: comments explaining why a specific approach was needed
 
-**Doc comment style:**
+**JSDoc/TSDoc Style:**
+- Rust uses markdown in doc comments: `/// Text describing the function`
+- Parameter descriptions in doc comment text
+- Example: `crates/glass_terminal/src/block_manager.rs` line 86:
 ```rust
-/// Parse a shell command and extract file modification targets.
-///
-/// This is a heuristic parser -- it handles common destructive commands
-/// (rm, mv, cp, sed -i, chmod, git checkout, truncate) and returns
-/// `Confidence::Low` for anything it cannot parse.
-pub fn parse_command(command_text: &str, cwd: &Path) -> ParseResult { ... }
+/// Calculate the duration of command execution.
+pub fn duration(&self) -> Option<Duration> {
 ```
 
-**Section separators in large files:**
+**Module Documentation Example** (from `crates/glass_history/src/lib.rs`):
 ```rust
-// ---------------------------------------------------------------------------
-// CLI definition (clap derive)
-// ---------------------------------------------------------------------------
+//! glass_history -- SQLite-backed command history with FTS5 search.
+//!
+//! Provides a database for storing, searching, and managing command execution
+//! history. Supports project-local databases (`.glass/history.db`) with
+//! global fallback (`~/.glass/global-history.db`).
 ```
 
 ## Function Design
 
-**Size:** No strict limit, but most functions are under 50 lines. `src/main.rs` contains the monolithic event loop (~2200 lines total file).
+**Size:**
+- Median function length: 20-50 lines
+- Longer functions (100+ lines) typically database operations with transaction management
+- Helper functions extracted for readability: `tokenize()`, `strip_redirects()`, `dispatch_command()`
 
 **Parameters:**
-- Use `&Path` for filesystem path parameters (not `&str` or `String`)
-- Use `&str` for string references, `String` for owned strings
-- Use `&[T]` for slice parameters
-- Prefer borrowing over cloning
+- Pass by reference for borrowed data: `fn parse_command(command_text: &str, cwd: &Path)`
+- Move semantics for owned data: `fn new(prompt_line: usize) -> Self`
+- Return types explicit: `Result<T>` for fallible operations, `Option<T>` for nullable
 
 **Return Values:**
-- Use `Result<T>` (anyhow) for fallible I/O operations
-- Use `Option<T>` for lookups that may not find a result
-- Return owned types from constructors, borrowed from accessors
-- Builder-like patterns return `Self` for chaining (e.g., `QueryFilter`)
+- Success paths return `Ok(value)` via early returns
+- Fallible operations return `Result<T>` with `anyhow::Result` wrapper
+- Null-like values use `Option<T>`: `Option<i32>` for exit codes, `Option<String>` for output
+- None-type for pure state changes: no return value needed
 
 ## Module Design
 
 **Exports:**
-- Every crate has a `lib.rs` that declares all modules and re-exports key types
-- Use `pub use` to flatten the public API surface
-- Internal-only functions stay private (no `pub`)
+- Public types re-exported in crate root via barrel file pattern
+- Example (`crates/glass_history/src/lib.rs`):
+```rust
+pub use compress::{diff_compress, CompressedOutput, DiffSummary, RecordFingerprint};
+pub use config::HistoryConfig;
+pub use db::{CommandRecord, HistoryDb, PipeStageRow};
+```
 
 **Barrel Files:**
-- Each crate's `lib.rs` acts as a barrel file with `pub use` re-exports
-- Example: `pub use block_manager::{Block, BlockManager, BlockState}` in `glass_terminal/src/lib.rs`
+- Crate root (`lib.rs`) imports and re-exports submodule public types
+- Consumers use: `use glass_history::{CommandRecord, HistoryDb}`
+- No deep paths required: modules are implementation detail
 
-**Wildcard re-exports:**
-- Used sparingly: `pub use types::*` in `glass_pipes/src/lib.rs`
-- Prefer named re-exports for clarity
+**Visibility:**
+- Default private (`fn`, `struct`, `impl` without `pub`)
+- Explicit `pub` for public API surface
+- Private helper functions with leading underscore optional (not convention)
+- Test modules always gated with `#[cfg(test)]`
 
-## Struct Design
+## Type Definitions
 
-**Derive macros -- standard set per type:**
-- Data types: `#[derive(Debug, Clone)]`
-- Enum variants: `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`
-- ID wrappers: `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]`
-- Config types: `#[derive(Debug, Clone, PartialEq, Deserialize)]` with `#[serde(default)]`
+**Struct Design:**
+- Pub fields acceptable for simple data holders (e.g., `Block` struct in `crates/glass_terminal/src/block_manager.rs`)
+- Private fields with getter methods for encapsulation when invariants must be maintained
+- Derived traits: `#[derive(Debug, Clone)]` for most public structs
+- Constructor patterns: `new()` for zero-state, `open()` for resource initialization
 
-**Newtype ID pattern:**
+**Enum Design:**
+- Variants without associated data for state machines: `BlockState::PromptActive`
+- Variants with data for heterogeneous results: `PipelineHit::StageRow(usize)`
+- Example (`crates/glass_terminal/src/block_manager.rs`):
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SessionId(u64);
-
-impl SessionId {
-    pub fn new(id: u64) -> Self { Self(id) }
-    pub fn val(self) -> u64 { self.0 }
-}
-```
-
-## Platform-Specific Code
-
-**Pattern:** Use `#[cfg(target_os = "...")]` for platform-specific code:
-```rust
-#[cfg(target_os = "windows")]
-fn default_font_family() -> &'static str { "Consolas" }
-
-#[cfg(target_os = "macos")]
-fn default_font_family() -> &'static str { "Menlo" }
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn default_font_family() -> &'static str { "Monospace" }
-```
-
-- Windows-only dependencies use `[target.'cfg(windows)'.dependencies]` in `Cargo.toml`
-- Platform-specific tests use `#[cfg(target_os = "windows")]` on the test module
-
-## Serde/Config Patterns
-
-**Default values pattern:**
-```rust
-#[derive(Deserialize)]
-#[serde(default)]
-pub struct GlassConfig {
-    pub font_size: f32,
-    // ...
+pub enum BlockState {
+    PromptActive,
+    InputActive,
+    Executing,
+    Complete,
 }
 
-impl Default for GlassConfig {
-    fn default() -> Self { ... }
+pub enum PipelineHit {
+    Header,
+    StageRow(usize),
 }
-```
-
-**Per-field defaults with helper functions:**
-```rust
-#[serde(default = "default_max_output_capture_kb")]
-pub max_output_capture_kb: u32,
-
-fn default_max_output_capture_kb() -> u32 { 50 }
 ```
 
 ---
 
-*Convention analysis: 2026-03-08*
+*Convention analysis: 2026-03-15*

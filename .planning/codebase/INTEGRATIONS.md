@@ -1,165 +1,186 @@
 # External Integrations
 
-**Analysis Date:** 2026-03-08
+**Analysis Date:** 2026-03-15
 
 ## APIs & External Services
 
-**GitHub Releases API:**
-- Purpose: Auto-update checker queries latest release to compare versions
-- SDK/Client: `ureq` 3 (blocking HTTP client)
-- Endpoint: `https://api.github.com/repos/nkngu/Glass/releases/latest`
-- Auth: None (public repo, unauthenticated requests)
-- Implementation: `crates/glass_core/src/updater.rs`
-- Headers: `User-Agent: glass-terminal`, `Accept: application/vnd.github.v3+json`
-- Behavior: Runs on a background thread at startup; non-fatal on failure
-- Response parsing: Extracts `tag_name` for semver comparison, `assets[].browser_download_url` for platform-specific installer download
+**Anthropic API:**
+- OAuth Usage API - Monitors 5-hour and 7-day utilization for rate limit enforcement
+  - Endpoint: `https://api.anthropic.com/api/oauth/usage`
+  - SDK: `ureq` (sync HTTP client)
+  - Auth: OAuth access token from `~/.claude/.credentials.json` → `claudeAiOauth.accessToken`
+  - Header: `Authorization: Bearer {token}`, `anthropic-beta: oauth-2025-04-20`
+  - Implementation: `src/usage_tracker.rs` - Polls every 60 seconds, auto-pauses orchestrator at 80%, hard-stops at 95%
+  - Related: `src/main.rs` - Displays usage in status bar, pauses agent execution on thresholds
+
+**GitHub:**
+- Release Download - Checks for Glass updates
+  - Repository: `https://github.com/nkngu/Glass/releases`
+  - SDK: None (manual URL construction in `crates/glass_core/src/updater.rs`)
+- Issue Filing - Pre-fills crash reports
+  - Template: `https://github.com/candyhunterz/Glass/issues/new?title={}&body={}&labels=bug,crash`
+  - Implementation: `src/main.rs` - Launches browser on panic
+
+**Claude AI Desktop:**
+- MCP Tools Exposure - Exposes Glass tools to Claude Code
+  - Protocol: Model Context Protocol (MCP) over stdio
+  - SDK: `rmcp` (Rust MCP library)
+  - Entry Point: `crates/glass_mcp/src/lib.rs::run_mcp_server()`
+  - Tools provided: `glass_query`, `glass_context`, `glass_undo`, `glass_file_diff`, `glass_pipes`, `glass_agent_*`
+  - Implementation: `crates/glass_mcp/src/tools.rs` - JSON-RPC 2.0 service
+  - Stderr only: Logging goes to stderr, stdout reserved for JSON-RPC
+  - Related: `crates/glass_coordination/src/lib.rs` - Agent registry in `~/.glass/agents.db`
+
+**Shell Integration:**
+- OS Shells - Command boundary detection via OSC 133 sequences
+  - Location: `shell-integration/` (bash, zsh, fish, PowerShell scripts)
+  - Emission: Injected at PTY startup by `crates/glass_terminal/src/pty.rs`
+  - Sequences: OSC 133 (command lifecycle), custom OSC 133;S (pipeline start), OSC 133;P (stage data)
+  - Parser: `crates/glass_terminal/src/osc_scanner.rs`
+  - Implementation: Not a network integration; shell hooks emit terminal sequences parsed in-process
 
 ## Data Storage
 
 **Databases:**
-- SQLite (bundled via `rusqlite` with `bundled` feature - no external SQLite installation needed)
-  - History DB: `{project}/.glass/history.db`
-    - Client: `rusqlite` 0.38.0 (`crates/glass_history/src/db.rs`)
-    - Mode: WAL journal, `PRAGMA synchronous = NORMAL`, `PRAGMA busy_timeout = 5000`
-    - Schema: `commands` table with FTS5 full-text search, `pipe_stages` table
-    - Migrations: Version-tracked via `PRAGMA user_version` (current version: 2)
-  - Snapshot DB: `{project}/.glass/snapshots.db`
-    - Client: `rusqlite` 0.38.0 (`crates/glass_snapshot/src/db.rs`)
-    - Mode: WAL journal, same pragmas as history DB
-    - Schema: `snapshots` and `snapshot_files` tables with foreign key constraints
-    - Migrations: Version-tracked via `PRAGMA user_version` (current version: 1)
+- **Command History** (SQLite + FTS5)
+  - Location: `.glass/history.db` (project-local) or `~/.glass/global-history.db` (fallback)
+  - Resolved by: `crates/glass_history/src/lib.rs::resolve_db_path()`
+  - Client: `rusqlite` (bundled SQLite with FTS5 extension)
+  - Schema: Commands, pipe stages, output (compressed), full-text index
+  - Implementation: `crates/glass_history/src/db.rs`
+  - Access: All crates via `crates/glass_history` public API
+
+- **File Snapshots** (SQLite metadata + blake3 blobs)
+  - Snapshot directory: `.glass/snapshots/`
+  - Metadata DB: `.glass/snapshots/meta.db` (rusqlite)
+  - Blob store: Blake3 content-addressed storage in `.glass/snapshots/blobs/`
+  - Implementation: `crates/glass_snapshot/src/lib.rs`, `blob_store.rs`, `undo.rs`
+  - Watch trigger: Filesystem watcher (notify) on command execution
+
+- **Agent Coordination** (SQLite WAL mode)
+  - Location: `~/.glass/agents.db`
+  - Resolved by: `crates/glass_coordination/src/lib.rs::resolve_db_path()`
+  - Mode: WAL (write-ahead logging) for concurrent agent access
+  - Tables: Agent registry, advisory locks, message queue
+  - Implementation: `crates/glass_coordination/src/lib.rs`
+  - Access: Via MCP tools (`glass_agent_register`, `glass_agent_lock`, `glass_agent_messages`, etc.)
 
 **File Storage:**
-- Content-addressed blob store at `{project}/.glass/blobs/`
-  - Hash algorithm: BLAKE3 (`blake3` 1.8.3)
-  - Implementation: `crates/glass_snapshot/src/blob_store.rs`
-  - Purpose: Stores pre-command file states for undo capability
-  - Pruning: `crates/glass_snapshot/src/pruner.rs` with configurable retention
+- Local filesystem only
+  - Config: `~/.glass/config.toml` (user-writable)
+  - Shells: `shell-integration/` (read at startup)
+  - Blobs: `.glass/snapshots/blobs/` (blake3 hashed)
 
 **Caching:**
-- Glyph cache for GPU text rendering (in-memory)
-  - Implementation: `crates/glass_renderer/src/glyph_cache.rs`
-  - No persistent disk cache
-
-## Model Context Protocol (MCP)
-
-**MCP Server:**
-- Purpose: Exposes Glass terminal data to AI assistants (e.g., Claude)
-- SDK: `rmcp` 1 with `server` and `transport-io` features
-- Transport: stdio (JSON-RPC 2.0 over stdin/stdout)
-- Implementation: `crates/glass_mcp/src/lib.rs`, `crates/glass_mcp/src/tools.rs`
-- Invocation: `glass mcp serve` CLI subcommand
-- Exposed tools:
-  - `GlassHistory` - Query command history with filters (text, time, exit code, cwd, limit)
-  - `GlassContext` - Activity summary with command counts, failure rate, directories
-  - `GlassUndo` - Undo file-modifying commands by restoring pre-command snapshots
-  - `GlassFileDiff` - Inspect pre-command file contents for a given command
-
-## Terminal / PTY
-
-**PTY Backend:**
-- Provider: `alacritty_terminal` =0.25.1 (exact version pin)
-- Implementation: `crates/glass_terminal/src/pty.rs`
-- I/O polling: `polling` 3 crate for cross-platform non-blocking PTY reads
-- VT parsing: `vte` 0.15 for escape sequence processing
-- Platform tokens differ: Windows uses token 2/1, Unix uses 0/1
-
-**Shell Integration:**
-- OSC escape sequence scanning for shell events (`crates/glass_terminal/src/osc_scanner.rs`)
-- OSC 7 file:// URL parsing for working directory tracking (`url` 2 crate)
-- Git status querying from shell context (`glass_terminal::query_git_status`)
-
-## GPU / Graphics
-
-**GPU Backend:**
-- API: wgpu 28.0.0 (WebGPU abstraction)
-- Platform backends:
-  - Windows: DirectX 12 (explicitly selected)
-  - macOS: Metal (via `wgpu::Backends::all()`)
-  - Linux: Vulkan (via `wgpu::Backends::all()`)
-- Power preference: `HighPerformance` (discrete GPU preferred)
-- Implementation: `crates/glass_renderer/src/surface.rs`
-
-## Clipboard
-
-**System Clipboard:**
-- Provider: `arboard` 3
-- Usage: Copy/paste in terminal (`crates/glass_terminal/`)
-- Cross-platform (Windows, macOS, Linux)
-
-## Filesystem Watching
-
-**Config Hot-Reload:**
-- Provider: `notify` 8.0
-- Implementation: `crates/glass_core/src/config_watcher.rs`
-- Watches parent directory of `~/.glass/config.toml` (non-recursive) for atomic save support
-
-**Snapshot File Watching:**
-- Provider: `notify` 8.2
-- Implementation: `crates/glass_snapshot/src/watcher.rs`
-- Purpose: Detects file changes for snapshot tracking
-- Gitignore-aware: Uses `ignore` 0.4 crate for respecting `.gitignore` rules
+- None. All data persisted to disk immediately.
+- In-memory caches: Terminal grid, PTY state (volatile)
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- None. Glass is a local desktop application with no user accounts or authentication.
+- Custom (OAuth via Anthropic)
+  - Token location: `~/.claude/.credentials.json`
+  - Format: JSON with `claudeAiOauth.accessToken` field
+  - Used by: `src/usage_tracker.rs`
+  - Scope: Read-only usage API access
+  - No refresh flow: Token assumed to be managed by Claude Desktop
+
+**Agent Authentication:**
+- No explicit auth
+  - Agent registration: Name + type (e.g., `claude-code`, `cursor`) stored in `~/.glass/agents.db`
+  - Lock conflicts resolved via agent messaging (advisory locks, not enforced)
+  - File access: Agent has full read/write on locked files (trust model)
 
 ## Monitoring & Observability
 
-**Structured Logging:**
-- Framework: `tracing` 0.1.44 + `tracing-subscriber` 0.3
-- Filter: Environment-based via `env-filter` feature (`RUST_LOG` env var)
-- All crates use `tracing` for structured log output
-
-**Performance Profiling:**
-- Optional Chrome trace output via `tracing-chrome` 0.7 (behind `perf` feature flag)
-- Memory usage tracking via `memory-stats` 1.2
-
 **Error Tracking:**
-- None (no external error tracking service)
+- None (no Sentry/Rollbar)
+- Local panic handler: Generates GitHub issue template, logs to stderr
+
+**Logs:**
+- Approach: Structured logging via `tracing` crate
+  - Subscriber: `tracing-subscriber` with `env-filter`
+  - Filter: `RUST_LOG` environment variable (e.g., `RUST_LOG=debug`)
+  - Output: stderr (stdout reserved for terminal output)
+  - Levels: trace, debug, info, warn, error
+  - Special logs:
+    - MCP server: Only stderr (JSON-RPC on stdout)
+    - Usage tracker: Warnings at 80%, 95%
+    - Orchestrator: Iteration counts, stuck detection, checkpoint cycles
+
+**Performance:**
+- Optional instrumentation via `tracing-chrome` (perf feature)
+  - Exported to Chrome DevTools timeline format
+  - Build with: `cargo build --features perf`
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- GitHub repository at `nkngu/Glass`
-- Releases published as GitHub Releases with platform-specific installers
+- Not a hosted service. Desktop application distributed via:
+  - GitHub Releases (precompiled binaries)
+  - Debian packages (via cargo-deb for Linux)
+  - MSI installer (Windows, experimental)
 
 **CI Pipeline:**
 - GitHub Actions (`.github/workflows/ci.yml`)
-  - Build: 3 platforms (Windows, macOS, Linux)
-  - Test: `cargo test --workspace`
-  - Lint: `cargo clippy --workspace -- -D warnings`
-  - Format: `cargo fmt --all -- --check`
+  - Format check: ubuntu-latest
+  - Clippy: windows-latest (matches dev platform)
+  - Build+test matrix: Linux (x86_64), macOS (aarch64), Windows (x86_64)
+  - Triggers: push to main/master, pull requests
 
-**Release Pipeline:**
-- GitHub Actions (`.github/workflows/release.yml`)
-- Trigger: Git tag push matching `v*`
-- Outputs: MSI (Windows via cargo-wix), DMG (macOS via build script), DEB (Linux via cargo-deb)
-- Version verification: Tag must match `Cargo.toml` version
+**Release Workflow:**
+- Tagging: Git tags trigger release binaries
+- Artifacts: Uploaded to GitHub Releases
+- Installers: MSI for Windows (experimental)
 
 ## Environment Configuration
 
-**Required env vars:**
-- None required for normal operation
+**Required env vars (optional, system defaults if absent):**
+- `RUST_LOG` - Logging filter (default: info)
+- `RUST_BACKTRACE` - Backtrace on panic (1 or full)
 
 **Optional env vars:**
-- `RUST_LOG` - Controls tracing log level filter
+- Shell override (via `~/.glass/config.toml` → `shell` field)
+- Font family/size (via config.toml)
 
-**User config file:**
-- `~/.glass/config.toml` - Font, shell, history, snapshot, pipes settings
-
-**Secrets:**
-- No secrets required. GitHub API access is unauthenticated.
+**Secrets location:**
+- OAuth token: `~/.claude/.credentials.json` (managed by Claude Desktop, NOT in .env)
+- No other secrets required
+- Config file (`~/.glass/config.toml`) is never committed
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None
+- None. Glass is event-driven via terminal I/O and filesystem watches, not webhooks.
 
 **Outgoing:**
-- None
+- GitHub issue auto-filing (browser launch on panic, user must confirm)
+- MCP tool callbacks: Claude Code calls Glass tools via stdio (request/response pattern)
+
+## Third-Party Services Dependencies
+
+None. Glass is fully self-contained:
+- No CDNs
+- No SaaS services (except optional Anthropic API usage polling)
+- No analytics
+- No telemetry
+
+## IPC & Networking
+
+**Inter-process:**
+- MCP over stdio (Glass MCP server ↔ Claude Code process)
+  - No network protocol, same machine only
+  - JSON-RPC 2.0 over pipe/stdio
+  - Managed by `rmcp` crate
+
+**Local networking:**
+- None (not a network service)
+
+**PTY Spawning:**
+- Platform-specific: ConPTY (Windows), forkpty (Unix)
+- Handled by: `crates/glass_terminal/src/pty.rs`
+- No SSH or remote execution
 
 ---
 
-*Integration audit: 2026-03-08*
+*Integration audit: 2026-03-15*
