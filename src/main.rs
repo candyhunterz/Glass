@@ -2539,13 +2539,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .as_ref()
                                 .map(|h| h.max_output_capture_kb)
                                 .unwrap_or(50),
-                            orchestrator_enabled: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.enabled)
-                                .unwrap_or(false),
+                            orchestrator_enabled: self.orchestrator.active,
                             orchestrator_silence_secs: self
                                 .config
                                 .agent
