@@ -1459,17 +1459,26 @@ impl Processor {
         let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
         self.activity_stream_tx = Some(new_tx);
 
-        // Build agent config
+        // Build agent config — mark orchestrator enabled since this function
+        // is only called when the orchestrator is active at runtime
         let agent_config = self
             .config
             .agent
             .clone()
-            .map(|a| glass_core::agent_runtime::AgentRuntimeConfig {
-                mode: a.mode,
-                max_budget_usd: a.max_budget_usd,
-                cooldown_secs: a.cooldown_secs,
-                allowed_tools: a.allowed_tools,
-                orchestrator: a.orchestrator,
+            .map(|mut a| {
+                // Ensure the orchestrator section is marked enabled so try_spawn_agent
+                // generates the orchestrator system prompt (not the basic assistant prompt).
+                // The TOML config may have enabled=false since it's toggled at runtime.
+                if let Some(ref mut orch) = a.orchestrator {
+                    orch.enabled = true;
+                }
+                glass_core::agent_runtime::AgentRuntimeConfig {
+                    mode: a.mode,
+                    max_budget_usd: a.max_budget_usd,
+                    cooldown_secs: a.cooldown_secs,
+                    allowed_tools: a.allowed_tools,
+                    orchestrator: a.orchestrator,
+                }
             })
             .unwrap_or_default();
 
