@@ -242,6 +242,9 @@ struct AgentRuntime {
     /// Shared writer for sending orchestrator messages to the agent's stdin.
     orchestrator_writer:
         Option<std::sync::Arc<std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
+    /// Generation counter — incremented on each respawn. Used to ignore stale AgentCrashed
+    /// events from orphaned reader threads of previously killed agents.
+    generation: u64,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -281,6 +284,8 @@ struct Processor {
     activity_filter: glass_core::activity_stream::ActivityFilter,
     /// Agent subprocess lifecycle. None when mode is Off or binary not found.
     agent_runtime: Option<AgentRuntime>,
+    /// Generation counter for agent runtime — incremented on each respawn.
+    agent_generation: u64,
     /// Orchestrator state for autonomous Claude Code collaboration.
     orchestrator: orchestrator::OrchestratorState,
     /// Shared usage tracker state (polled from background thread).
@@ -742,9 +747,39 @@ fn try_spawn_agent(
     use std::io::{BufRead, BufReader, BufWriter, Write};
     use std::process::{Command, Stdio};
 
-    // Skip `claude --version` check — if claude isn't on PATH, cmd.spawn()
-    // below will fail and we handle that already. The version check blocks
-    // the UI thread for several seconds on Windows.
+    // Check if claude binary is available (also warms up Windows console subsystem)
+    let mut version_cmd = Command::new("claude");
+    version_cmd
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        version_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let version_result = version_cmd.status();
+    let claude_available = version_result.is_ok();
+    // Debug: write spawn diagnostics to file
+    let diag_path = dirs::home_dir()
+        .map(|h| h.join(".glass").join("agent-diag.txt"))
+        .unwrap_or_else(|| std::path::PathBuf::from("agent-diag.txt"));
+    let mut diag = format!(
+        "timestamp: {:?}\nclaude --version result: {:?}\nclaude_available: {}\nPATH: {}\n",
+        std::time::SystemTime::now(),
+        version_result,
+        claude_available,
+        std::env::var("PATH").unwrap_or_else(|_| "NOT SET".to_string()),
+    );
+
+    if !claude_available {
+        diag.push_str("FAILED: claude not on PATH\n");
+        let _ = std::fs::write(&diag_path, &diag);
+        tracing::warn!(
+            "AgentRuntime: 'claude' binary not found on PATH -- agent runtime disabled"
+        );
+        return None;
+    }
 
     // Write system prompt
     let glass_dir = dirs::home_dir()
@@ -958,7 +993,7 @@ Session Continuity:
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    // Windows: suppress the console window that would otherwise flash on screen
+    // Windows: suppress the console window
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -978,9 +1013,17 @@ Session Continuity:
         }
     }
 
+    let args_str = args.join(" ");
+    diag.push_str(&format!("spawn args: claude {}\n", args_str));
     let mut child = match cmd.spawn() {
-        Ok(c) => c,
+        Ok(c) => {
+            diag.push_str(&format!("spawn SUCCESS pid={}\n", c.id()));
+            let _ = std::fs::write(&diag_path, &diag);
+            c
+        }
         Err(e) => {
+            diag.push_str(&format!("spawn FAILED: {}\n", e));
+            let _ = std::fs::write(&diag_path, &diag);
             tracing::warn!("AgentRuntime: failed to spawn claude process: {}", e);
             return None;
         }
@@ -1241,6 +1284,7 @@ Session Continuity:
         agent_id: coord_agent_id,
         project_root: coord_project_root,
         orchestrator_writer: Some(shared_writer),
+        generation: 0, // set by caller after spawn
     })
 }
 
@@ -1469,8 +1513,9 @@ impl Processor {
     /// Kill the current agent and respawn with a fresh system prompt.
     /// `handoff_content` is the initial message sent to the new agent.
     fn respawn_orchestrator_agent(&mut self, cwd: &str, handoff_content: String) {
-        // Kill old agent
+        // Kill old agent and increment generation to ignore stale AgentCrashed events
         self.agent_runtime = None;
+        self.agent_generation += 1;
 
         // Create new activity channel
         let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
@@ -1530,7 +1575,11 @@ impl Processor {
             }
         }
 
-        tracing::info!("Orchestrator: respawned agent for {}", cwd);
+        // Tag with current generation so stale AgentCrashed events are ignored
+        if let Some(ref mut rt) = self.agent_runtime {
+            rt.generation = self.agent_generation;
+        }
+        tracing::info!("Orchestrator: respawned agent gen={} for {}", self.agent_generation, cwd);
     }
 }
 
@@ -5639,6 +5688,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
             }
             AppEvent::AgentCrashed => {
+                // Ignore stale crashes from orphaned reader threads of previously killed agents.
+                // After respawn, self.agent_generation is incremented. If the current runtime's
+                // generation doesn't match, this crash is from an old agent — ignore it.
+                let current_gen = self
+                    .agent_runtime
+                    .as_ref()
+                    .map(|r| r.generation)
+                    .unwrap_or(0);
+                if current_gen != self.agent_generation {
+                    tracing::info!(
+                        "AgentRuntime: ignoring stale AgentCrashed (gen {} vs current {})",
+                        current_gen,
+                        self.agent_generation
+                    );
+                    return;
+                }
                 tracing::error!("AgentRuntime: agent subprocess crashed or exited");
                 let should_restart = if let Some(ref mut runtime) = self.agent_runtime {
                     let backoff_secs: u64 = match runtime.restart_count {
@@ -7282,6 +7347,7 @@ fn main() {
                     glass_core::activity_stream::ActivityStreamConfig::default(),
                 ),
                 agent_runtime: None,
+                agent_generation: 0,
                 orchestrator: orchestrator::OrchestratorState::new(orch_max_retries),
                 usage_state: None,
                 agent_cost_usd: 0.0,

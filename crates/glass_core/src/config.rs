@@ -981,3 +981,62 @@ max_iterations = 25"#;
         assert_eq!(orch.verify_mode, "floor");
     }
 }
+
+#[cfg(test)]
+mod agent_spawn_test {
+    use super::*;
+    
+    #[test]
+    fn test_user_config_parses_for_orchestrator() {
+        let toml = r#"[agent]
+mode = "Assist"
+
+[agent.orchestrator]
+silence_timeout_secs = 30
+prd_path = "PRD-full-audit.md"
+verify_mode = "floor"
+max_iterations = 100
+completion_artifact = ".glass/done"
+orchestrator_mode = "audit"
+"#;
+        let config = GlassConfig::load_from_str(toml);
+        let agent = config.agent.as_ref().expect("agent section must exist");
+        
+        // Simulate respawn_orchestrator_agent: clone and set enabled=true
+        let mut agent_clone = agent.clone();
+        if let Some(ref mut orch) = agent_clone.orchestrator {
+            orch.enabled = true;
+        }
+        
+        let orch = agent_clone.orchestrator.as_ref().expect("orchestrator must exist");
+        assert!(orch.enabled, "enabled must be true after override");
+        assert_eq!(orch.orchestrator_mode, "audit");
+        assert_eq!(orch.prd_path, "PRD-full-audit.md");
+        
+        // Build AgentRuntimeConfig
+        let runtime_config = crate::agent_runtime::AgentRuntimeConfig {
+            mode: agent_clone.mode,
+            max_budget_usd: agent_clone.max_budget_usd,
+            cooldown_secs: agent_clone.cooldown_secs,
+            allowed_tools: agent_clone.allowed_tools.clone(),
+            orchestrator: agent_clone.orchestrator.clone(),
+        };
+        
+        // Build args
+        let args = crate::agent_runtime::build_agent_command_args(
+            &runtime_config,
+            "/tmp/prompt.txt",
+            "/tmp/mcp.json",
+        );
+        
+        let args_str = args.join(" ");
+        eprintln!("ARGS: {}", args_str);
+        
+        // Check tools include MCP tools (audit mode)
+        assert!(args_str.contains("glass_history"), "audit mode must include glass_history");
+        assert!(args_str.contains("glass_tab_create"), "audit mode must include glass_tab_create");
+        assert!(args_str.contains("Read"), "audit mode must include Read");
+        assert!(!args_str.contains("Bash"), "audit mode must NOT include Bash");
+        assert!(args_str.contains("--disable-slash-commands"), "must disable slash commands");
+    }
+}
