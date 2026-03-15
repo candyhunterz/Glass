@@ -36,7 +36,7 @@ A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal ter
 | Multi-agent coordination | Shared SQLite, advisory locks (atomic all-or-nothing), messaging, activity stream | None |
 | Structured output | 12 format parsers (cargo, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines, ...) | None |
 | Agent mode | Background Claude CLI runtime, approval UI, budget cap, worktree isolation | None |
-| Orchestrator | Autonomous project builder from PRD, overnight runs, checkpoint/resume | None |
+| Orchestrator | Autonomous project builder from PRD, overnight runs, checkpoint/resume, metric guard (auto-revert on regression), bounded iterations | None |
 
 ---
 
@@ -132,6 +132,10 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 - Course correction via .glass/nudge.md while running
 - Iteration logging to .glass/iterations.tsv
 - Emergency checkpoint on usage hard stop
+- Metric guard: auto-detect verify commands (Rust, Node, Python, Go, Make), background verification after each iteration, auto-revert via git on regression
+- Artifact-based completion signal: file watcher triggers orchestrator instantly when agent writes to configurable path (default `.glass/done`)
+- Bounded iteration mode: limit orchestration to N iterations, then checkpoint-stop with summary
+- GLASS_VERIFY agent response for dynamic verification command discovery
 
 **Activity Stream -- new in v3.1**
 - Real-time coordination event log (agent registrations, lock acquisitions, conflicts, messages)
@@ -143,7 +147,7 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 
 **Settings Overlay -- new in v3.1**
 - In-app settings editor (Ctrl+Shift+,) with three tabs: Settings, Shortcuts, About
-- Settings tab: sidebar with 6 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History)
+- Settings tab: sidebar with 7 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History, Orchestrator)
 - Editable fields with Enter/Space to toggle booleans, +/- to adjust numeric values
 - Changes write back to ~/.glass/config.toml (hot-reload picks up changes immediately)
 - Shortcuts tab: two-column keyboard shortcut cheatsheet
@@ -338,6 +342,14 @@ prd_path = "PRD.md"
 checkpoint_path = ".glass/checkpoint.md"
 # Identical responses before stuck detection triggers
 max_retries_before_stuck = 3
+# Verification mode: "floor" (auto-detect and guard) or "disabled"
+verify_mode = "floor"
+# Optional override for verification command (skips auto-detect)
+# verify_command = "cargo test"
+# File path that triggers orchestrator when created (empty to disable)
+completion_artifact = ".glass/done"
+# Maximum iterations before checkpoint-stop (omit or 0 for unlimited)
+# max_iterations = 25
 ```
 
 Default fonts: Consolas (Windows), Menlo (macOS), Monospace (Linux).
@@ -377,11 +389,12 @@ The orchestrator drives autonomous project development by pairing two AI agents:
 
 1. **Silence detection**: Glass monitors the PTY for periods of inactivity (default 30 seconds). When Claude Code finishes working and the terminal goes quiet, Glass captures the last 100 lines of output.
 2. **Agent review**: The captured context is sent to the Glass Agent, which reviews what happened and decides the next step.
-3. **Agent response**: The Glass Agent responds with one of four actions:
+3. **Agent response**: The Glass Agent responds with one of five actions:
    - **Text** — typed into the terminal as instructions for Claude Code
    - **GLASS_WAIT** — Claude Code is still working, check again later
    - **GLASS_CHECKPOINT** — feature complete, trigger a context refresh cycle
    - **GLASS_DONE** — all PRD items are complete, stop orchestration
+   - **GLASS_VERIFY** — report additional verification commands for the metric guard
 4. **Loop**: Steps 1-3 repeat until the project is complete or the orchestrator is paused.
 
 ### Workflows
@@ -413,9 +426,12 @@ Context refresh prevents the Glass Agent from hitting its context limit during l
 
 | Feature | Description |
 |---|---|
+| Metric guard | Auto-detects project test/build commands, runs verification after each iteration, auto-reverts via git if tests regress or build breaks |
 | Stuck detection | After 3 identical responses, the orchestrator tells Claude Code to stash changes and try a different approach |
 | Crash recovery | If Claude Code exits unexpectedly, Glass restarts it with `-p "Read .glass/checkpoint.md and continue"` |
 | Usage tracking | Polls Anthropic OAuth usage API every 60 seconds. Auto-pause at 80%, hard stop at 95% with emergency checkpoint |
+| Bounded iterations | Optional iteration limit with checkpoint-stop and summary (configurable via `max_iterations`) |
+| Artifact completion | File watcher on configurable path (default `.glass/done`) triggers orchestrator instantly |
 | User typing | Any keyboard input while orchestrating auto-disables the orchestrator |
 | Grace period | 10-second window after orchestrator PTY writes prevents false crash recovery triggers |
 | Backpressure | Context sends are gated on pending response to prevent overlapping messages |
@@ -429,6 +445,7 @@ Context refresh prevents the Glass Agent from hitting its context limit during l
 | `.glass/handoff.md` | User instructions for mid-work handoff (read on enable, deleted after) |
 | `.glass/nudge.md` | Course correction while running (read on next silence, deleted after) |
 | `.glass/iterations.tsv` | Iteration log (TSV: iteration, commit, feature, metric, status, description) |
+| `.glass/done` | Artifact completion signal (configurable path, deleted after processing) |
 
 ---
 

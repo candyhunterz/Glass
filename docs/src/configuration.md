@@ -62,6 +62,14 @@ git_operations = "never"
 [agent.quiet_rules]
 ignore_patterns = []
 ignore_exit_zero = false
+
+[agent.orchestrator]
+enabled = false
+silence_timeout_secs = 30
+prd_path = "PRD.md"
+verify_mode = "floor"
+completion_artifact = ".glass/done"
+# max_iterations = 25
 ```
 
 ---
@@ -160,6 +168,23 @@ Controls which agent actions are silently suppressed rather than surfaced to the
 |-----|------|---------|-------------|
 | `ignore_patterns` | array of strings | `[]` | Glob patterns for commands or file paths that the agent may act on without surfacing a notification. Example: `["*.log", "tmp/**"]`. |
 | `ignore_exit_zero` | bool | `false` | When true, agent-run commands that exit with code 0 are not surfaced in the action log. |
+
+### [agent.orchestrator]
+
+Controls the orchestrator mode that drives autonomous project development. See [Orchestrator Mode](./features/orchestrator.md) for details.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable orchestrator mode. Can also be toggled at runtime with Ctrl+Shift+O. |
+| `silence_timeout_secs` | int | `30` | Seconds of PTY silence before sending context to the Glass Agent. |
+| `fast_trigger_secs` | int | `0` | Optional fast trigger threshold (seconds). When set, triggers after shorter silence if the agent appears idle. |
+| `prd_path` | string | `"PRD.md"` | Path to the project requirements document. |
+| `checkpoint_path` | string | `".glass/checkpoint.md"` | Path to the checkpoint file used for context refresh. |
+| `max_retries_before_stuck` | int | `3` | Number of identical agent responses before stuck detection triggers. |
+| `verify_mode` | string | `"floor"` | Verification mode. `"floor"` auto-detects and runs verification commands after each iteration, auto-reverting on regression. `"disabled"` turns off the metric guard. |
+| `verify_command` | string | (none) | Optional user override for the verification command. When set, skips auto-detection and agent discovery. |
+| `completion_artifact` | string | `".glass/done"` | File path (relative to project root) that triggers the orchestrator when created. Set to empty string to disable. |
+| `max_iterations` | int | (none) | Maximum iterations before checkpoint-stop. Omit or set to 0 for unlimited. |
 
 ---
 

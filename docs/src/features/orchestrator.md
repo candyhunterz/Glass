@@ -61,6 +61,7 @@ While the orchestrator is running, write `.glass/nudge.md` with new instructions
 │     • GLASS_WAIT → check again after next silence       │
 │     • GLASS_CHECKPOINT → refresh context cycle          │
 │     • GLASS_DONE → stop orchestration                   │
+│     • GLASS_VERIFY → report verification commands       │
 │  5. Repeat from step 1                                  │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -81,6 +82,74 @@ Long-running orchestration sessions need periodic context refresh to prevent the
 3. Once updated (or after 180 seconds), the Glass Agent subprocess is killed
 4. A new Glass Agent is spawned with a fresh system prompt containing the updated checkpoint
 5. The new agent receives a `[ORCHESTRATOR_CHECKPOINT_REFRESH]` handoff message and continues
+
+---
+
+## Metric Guard
+
+The metric guard prevents the agent from introducing regressions. After each orchestrator iteration, Glass runs verification commands and compares results against a baseline captured when orchestration started.
+
+### Auto-Detection
+
+Glass auto-detects verification commands based on project marker files:
+
+| Marker File | Verify Command |
+|---|---|
+| `Cargo.toml` | `cargo test` |
+| `package.json` with `"test"` script | `npm test` |
+| `pyproject.toml` or `setup.py` | `pytest` |
+| `go.mod` | `go test ./...` |
+| `tsconfig.json` | `npx tsc --noEmit` |
+| `Makefile` with `test` target | `make test` |
+
+Users can override auto-detection with `verify_command` in config. Set `verify_mode = "disabled"` to turn off the metric guard entirely.
+
+### Regression Detection
+
+The metric guard tracks a "floor" for each verification command:
+- **Pass count dropped** — regression
+- **Fail count increased** — regression
+- **Exit code went from 0 to non-zero** — regression (build broke)
+- **Tests added (pass count increased, fail count unchanged)** — floor rises
+
+### Auto-Revert
+
+When regression is detected, Glass:
+1. Reverts all changes via `git reset --hard` to the last known good commit
+2. Sends a `[METRIC_GUARD]` message to the Glass Agent with error details
+3. The agent instructs Claude Code to try a different approach
+
+### Agent Discovery
+
+Agents can report additional verification commands via `GLASS_VERIFY`:
+```
+GLASS_VERIFY: {"commands": [{"name": "integration", "cmd": "./scripts/integration-test.sh"}]}
+```
+Agent-discovered commands are appended to auto-detected ones. The agent cannot remove or replace auto-detected commands.
+
+---
+
+## Artifact-Based Completion
+
+An optional file path that, when created or modified, triggers the orchestrator immediately. More deterministic than silence detection.
+
+- Default path: `.glass/done` (configurable via `completion_artifact`)
+- When the file is created, Glass fires an `OrchestratorSilence` event instantly
+- The file is deleted after processing (one-shot signal)
+- The Glass Agent's system prompt instructs agents to write this file when done
+
+Set `completion_artifact = ""` in config to disable.
+
+---
+
+## Bounded Iteration Mode
+
+Optionally limit orchestration to N iterations, then gracefully checkpoint and stop.
+
+- Configure via `max_iterations` in `[agent.orchestrator]` (omit or set to 0 for unlimited)
+- When the limit is reached, Glass triggers a checkpoint cycle, prints a summary, and deactivates
+- The summary includes iteration count and metric guard stats (kept/reverted counts, test baseline vs. current)
+- The iteration counter is NOT reset on re-enable — to run another batch, increase `max_iterations`
 
 ---
 
@@ -123,6 +192,7 @@ Context sends are gated by a `response_pending` flag. While waiting for the Glas
 | `.glass/handoff.md` | Handoff instructions | User-created, read on enable, deleted after agent starts |
 | `.glass/nudge.md` | Course correction | User-created, read on next silence, deleted after |
 | `.glass/iterations.tsv` | Iteration log | Appended each iteration, included in system prompt (last 50) |
+| `.glass/done` | Completion signal | Written by agent, triggers orchestrator, deleted after processing |
 
 ---
 
@@ -135,6 +205,10 @@ silence_timeout_secs = 30      # Seconds of PTY silence before sending context t
 prd_path = "PRD.md"            # Path to project requirements document
 checkpoint_path = ".glass/checkpoint.md"  # Path to checkpoint file
 max_retries_before_stuck = 3   # Identical responses before stuck detection triggers
+verify_mode = "floor"          # "floor" (auto-detect + guard) or "disabled"
+# verify_command = "cargo test" # Optional override (skips auto-detect)
+completion_artifact = ".glass/done"  # File path that triggers orchestrator when created
+# max_iterations = 25          # Optional iteration limit (omit or 0 for unlimited)
 ```
 
 The orchestrator requires Agent Mode to be configured (the `[agent]` section). The Glass Agent subprocess uses the same Claude CLI as Agent Mode.
