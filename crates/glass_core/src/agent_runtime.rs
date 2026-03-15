@@ -392,16 +392,65 @@ pub fn build_agent_command_args(
         args.push("--mcp-config".to_string());
         args.push(mcp_config_path.to_string());
     }
-    // In orchestrator mode, restrict to observation-only tools so the agent
-    // writes instructions for Claude Code instead of doing the work itself.
-    // With Bash/Read available, the agent bypasses Claude Code entirely.
+    // In orchestrator mode, restrict tools based on orchestrator_mode:
+    // - "build": observation-only (glass_query, glass_context) — agent writes
+    //   instructions for Claude Code to implement
+    // - "audit": all MCP tools (tab control, history, undo, pipes, etc.) — agent
+    //   tests features interactively through Glass's own MCP interface, delegates
+    //   code fixes to Claude Code
+    // Bash/Read/Write/Edit are never given to the orchestrator agent — those would
+    // let it bypass Claude Code and do implementation work itself.
     let orchestrator_active = config
         .orchestrator
         .as_ref()
         .map(|o| o.enabled)
         .unwrap_or(false);
+    let orchestrator_mode = config
+        .orchestrator
+        .as_ref()
+        .map(|o| o.orchestrator_mode.as_str())
+        .unwrap_or("build");
     let tools = if orchestrator_active {
-        "glass_query,glass_context".to_string()
+        if orchestrator_mode == "audit" {
+            // All MCP tools for interactive testing — no Bash/Read/Write/Edit
+            [
+                "glass_history",
+                "glass_context",
+                "glass_undo",
+                "glass_file_diff",
+                "glass_pipe_inspect",
+                "glass_tab_create",
+                "glass_tab_list",
+                "glass_tab_send",
+                "glass_tab_output",
+                "glass_tab_close",
+                "glass_cache_check",
+                "glass_command_diff",
+                "glass_compressed_context",
+                "glass_extract_errors",
+                "glass_has_running_command",
+                "glass_cancel_command",
+                "glass_query",
+                "glass_query_trend",
+                "glass_query_drill",
+                "glass_agent_register",
+                "glass_agent_deregister",
+                "glass_agent_list",
+                "glass_agent_status",
+                "glass_agent_heartbeat",
+                "glass_agent_lock",
+                "glass_agent_unlock",
+                "glass_agent_locks",
+                "glass_agent_broadcast",
+                "glass_agent_send",
+                "glass_agent_messages",
+                "glass_ping",
+            ]
+            .join(",")
+        } else {
+            // Build mode: observation only — delegate implementation to Claude Code
+            "glass_query,glass_context".to_string()
+        }
     } else {
         config.allowed_tools.clone()
     };

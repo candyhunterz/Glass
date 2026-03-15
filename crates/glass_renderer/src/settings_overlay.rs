@@ -103,6 +103,7 @@ pub struct SettingsConfigSnapshot {
     pub orchestrator_verify_command: String,
     pub orchestrator_completion_artifact: String,
     pub orchestrator_max_iterations: u32,
+    pub orchestrator_mode: String,
 }
 
 impl Default for SettingsConfigSnapshot {
@@ -134,6 +135,7 @@ impl Default for SettingsConfigSnapshot {
             orchestrator_verify_command: String::new(),
             orchestrator_completion_artifact: ".glass/done".to_string(),
             orchestrator_max_iterations: 0,
+            orchestrator_mode: "build".to_string(),
         }
     }
 }
@@ -956,6 +958,11 @@ impl SettingsOverlayRenderer {
                     } else {
                         format!("{}", config.orchestrator_max_iterations)
                     },
+                    false,
+                ),
+                (
+                    "Mode",
+                    config.orchestrator_mode.clone(),
                     false,
                 ),
             ],

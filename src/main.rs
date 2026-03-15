@@ -803,6 +803,47 @@ fn try_spawn_agent(
             .map(|o| o.completion_artifact.as_str())
             .unwrap_or(".glass/done");
 
+        let orch_mode = orchestrator_config
+            .map(|o| o.orchestrator_mode.as_str())
+            .unwrap_or("build");
+
+        let mode_instructions = if orch_mode == "audit" {
+            r#"ORCHESTRATOR MODE: AUDIT
+You have access to ALL Glass MCP tools. Use them to test features interactively:
+- glass_tab_create / glass_tab_send / glass_tab_output — spawn tabs, run commands, read results
+- glass_history — verify commands are recorded correctly
+- glass_undo / glass_file_diff — test undo and snapshot features
+- glass_pipe_inspect — verify pipeline capture
+- glass_extract_errors — test error extraction
+- glass_compressed_context — test token-budgeted summaries
+- glass_query / glass_query_trend / glass_query_drill — test SOI queries
+- glass_agent_* tools — test multi-agent coordination
+
+AUDIT PROTOCOL:
+For each audit area in the plan:
+1. TEST: Use MCP tools to test the feature as a user would (create tabs, run commands, check results)
+2. VERIFY: Compare actual MCP tool output against expected behavior
+3. REPORT: If you find a bug, tell Claude Code exactly what's wrong with file:line references
+4. FIX: Tell Claude Code to fix the bug and write a regression test
+5. RETEST: Use MCP tools again to verify the fix works
+6. COMMIT: Tell Claude Code to commit the fix
+
+You can test features YOURSELF using MCP tools. You CANNOT write code — tell Claude Code to do that.
+Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#
+        } else {
+            r#"ORCHESTRATOR MODE: BUILD
+ITERATION PROTOCOL:
+For each feature, guide Claude Code through this cycle:
+1. PLAN: Tell Claude Code what to build next and define acceptance criteria
+2. IMPLEMENT: Let Claude Code work. Answer its questions with clear decisions.
+3. COMMIT: Tell Claude Code to commit before verification
+4. VERIFY: Tell Claude Code to write tests and run them
+5. DECIDE: Tests pass → move to next feature. Tests fail → tell Claude Code to fix.
+   Stuck after 3 attempts → tell Claude Code to revert and try different approach.
+
+You CANNOT implement code yourself — you must instruct Claude Code to do it."#
+        };
+
         format!(
             r#"You are the Glass Agent, collaborating with Claude Code to build a project.
 Claude Code is the implementer — it writes code, runs commands, builds features.
@@ -820,14 +861,7 @@ CURRENT STATUS:
 ITERATION HISTORY:
 {iterations_content}
 
-ITERATION PROTOCOL:
-For each feature, guide Claude Code through this cycle:
-1. PLAN: Tell Claude Code what to build next and define acceptance criteria
-2. IMPLEMENT: Let Claude Code work. Answer its questions with clear decisions.
-3. COMMIT: Tell Claude Code to commit before verification
-4. VERIFY: Tell Claude Code to write tests and run them
-5. DECIDE: Tests pass → move to next feature. Tests fail → tell Claude Code to fix.
-   Stuck after 3 attempts → tell Claude Code to revert and try different approach.
+{mode_instructions}
 
 TASK COMPLETION SIGNAL:
 When the implementer is done with a task, have it create the file `{artifact_path}` to signal completion.
@@ -2603,6 +2637,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .and_then(|o| o.max_iterations)
                                 .unwrap_or(0),
+                            orchestrator_mode: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.orchestrator_mode.clone())
+                                .unwrap_or_else(|| "build".to_string()),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
@@ -7429,6 +7470,25 @@ fn handle_settings_activate(
             Some((
                 Some("agent.orchestrator"),
                 "verify_mode",
+                new_mode.to_string(),
+            ))
+        }
+        // Orchestrator: orchestrator_mode (toggle build <-> audit)
+        (6, 10) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.orchestrator_mode.as_str())
+                .unwrap_or("build");
+            let new_mode = if current == "build" {
+                "\"audit\""
+            } else {
+                "\"build\""
+            };
+            Some((
+                Some("agent.orchestrator"),
+                "orchestrator_mode",
                 new_mode.to_string(),
             ))
         }

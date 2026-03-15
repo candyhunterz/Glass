@@ -148,6 +148,11 @@ pub struct OrchestratorSection {
     /// Maximum iterations before checkpoint-stop. None = unlimited.
     #[serde(default)]
     pub max_iterations: Option<u32>,
+    /// Orchestrator mode: "build" (default) or "audit".
+    /// Build mode: agent has observation-only tools, delegates implementation to Claude Code.
+    /// Audit mode: agent gets all MCP tools to test features interactively, delegates code fixes to Claude Code.
+    #[serde(default = "default_orch_mode")]
+    pub orchestrator_mode: String,
 }
 
 fn default_orch_silence_timeout() -> u64 {
@@ -170,6 +175,9 @@ fn default_orch_verify_mode() -> String {
 }
 fn default_orch_completion_artifact() -> String {
     ".glass/done".to_string()
+}
+fn default_orch_mode() -> String {
+    "build".to_string()
 }
 
 fn default_agent_max_budget_usd() -> f64 {
