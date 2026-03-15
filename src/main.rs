@@ -1961,7 +1961,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     });
 
                     // Agent mode and proposal count for status bar display.
-                    let agent_mode_text = self.agent_runtime.as_ref().map(|_r| {
+                    // Show orchestrator status based on runtime state, not agent_runtime existence.
+                    let agent_mode_text = {
                         let usage_prefix = self
                             .usage_state
                             .as_ref()
@@ -1969,28 +1970,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            if usage_prefix.is_empty() {
+                            Some(if usage_prefix.is_empty() {
                                 format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
                             } else {
                                 format!(
                                     "{} | [orchestrating | iter #{}]",
                                     usage_prefix, self.orchestrator.iteration
                                 )
-                            }
-                        } else {
+                            })
+                        } else if self.agent_runtime.is_some() {
                             let mode = self
                                 .config
                                 .agent
                                 .as_ref()
                                 .map(|a| format!("{:?}", a.mode).to_lowercase())
                                 .unwrap_or_else(|| "off".to_string());
-                            if usage_prefix.is_empty() {
+                            Some(if usage_prefix.is_empty() {
                                 format!("[agent: {mode}]")
                             } else {
                                 format!("{usage_prefix} | [agent: {mode}]")
-                            }
+                            })
+                        } else {
+                            None
                         }
-                    });
+                    };
                     let proposal_count_text = if !self.agent_proposal_worktrees.is_empty() {
                         let n = self.agent_proposal_worktrees.len();
                         Some(if n == 1 {
@@ -2257,7 +2260,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     });
 
                     // Agent mode and proposal count for multi-pane status bar.
-                    let agent_mode_text_mp = self.agent_runtime.as_ref().map(|_r| {
+                    let agent_mode_text_mp = {
                         let usage_prefix = self
                             .usage_state
                             .as_ref()
@@ -2265,28 +2268,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            if usage_prefix.is_empty() {
+                            Some(if usage_prefix.is_empty() {
                                 format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
                             } else {
                                 format!(
                                     "{} | [orchestrating | iter #{}]",
                                     usage_prefix, self.orchestrator.iteration
                                 )
-                            }
-                        } else {
+                            })
+                        } else if self.agent_runtime.is_some() {
                             let mode = self
                                 .config
                                 .agent
                                 .as_ref()
                                 .map(|a| format!("{:?}", a.mode).to_lowercase())
                                 .unwrap_or_else(|| "off".to_string());
-                            if usage_prefix.is_empty() {
+                            Some(if usage_prefix.is_empty() {
                                 format!("[agent: {mode}]")
                             } else {
                                 format!("{usage_prefix} | [agent: {mode}]")
-                            }
+                            })
+                        } else {
+                            None
                         }
-                    });
+                    };
                     let proposal_count_text_mp = if !self.agent_proposal_worktrees.is_empty() {
                         let n = self.agent_proposal_worktrees.len();
                         Some(if n == 1 {
