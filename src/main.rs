@@ -3417,17 +3417,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         let results: Vec<VerifyEventResult> = commands
                                                             .iter()
                                                             .map(|cmd| {
-                                                                let output = if cfg!(target_os = "windows") {
-                                                                    std::process::Command::new("cmd")
-                                                                        .args(["/C", &cmd.cmd])
-                                                                        .current_dir(&verify_cwd)
-                                                                        .output()
+                                                                let mut proc = if cfg!(target_os = "windows") {
+                                                                    let mut c = std::process::Command::new("cmd");
+                                                                    c.args(["/C", &cmd.cmd]);
+                                                                    #[cfg(target_os = "windows")]
+                                                                    {
+                                                                        use std::os::windows::process::CommandExt;
+                                                                        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                                                                    }
+                                                                    c
                                                                 } else {
-                                                                    std::process::Command::new("sh")
-                                                                        .args(["-c", &cmd.cmd])
-                                                                        .current_dir(&verify_cwd)
-                                                                        .output()
+                                                                    let mut c = std::process::Command::new("sh");
+                                                                    c.args(["-c", &cmd.cmd]);
+                                                                    c
                                                                 };
+                                                                let output = proc.current_dir(&verify_cwd).output();
                                                                 match output {
                                                                     Ok(o) => {
                                                                         let stdout = String::from_utf8_lossy(&o.stdout).to_string();
@@ -6284,17 +6288,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             let results: Vec<VerifyEventResult> = commands
                                                 .iter()
                                                 .map(|cmd| {
-                                                    let output = if cfg!(target_os = "windows") {
-                                                        std::process::Command::new("cmd")
-                                                            .args(["/C", &cmd.cmd])
-                                                            .current_dir(&verify_cwd)
-                                                            .output()
+                                                    let mut proc = if cfg!(target_os = "windows") {
+                                                        let mut c = std::process::Command::new("cmd");
+                                                        c.args(["/C", &cmd.cmd]);
+                                                        #[cfg(target_os = "windows")]
+                                                        {
+                                                            use std::os::windows::process::CommandExt;
+                                                            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                                                        }
+                                                        c
                                                     } else {
-                                                        std::process::Command::new("sh")
-                                                            .args(["-c", &cmd.cmd])
-                                                            .current_dir(&verify_cwd)
-                                                            .output()
+                                                        let mut c = std::process::Command::new("sh");
+                                                        c.args(["-c", &cmd.cmd]);
+                                                        c
                                                     };
+                                                    let output = proc.current_dir(&verify_cwd)
+                                                            .output();
                                                     match output {
                                                         Ok(o) => {
                                                             let stdout =
