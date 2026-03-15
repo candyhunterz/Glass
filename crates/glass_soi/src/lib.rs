@@ -21,16 +21,24 @@ mod types;
 
 // Parser modules
 mod cargo_build;
+mod cargo_misc;
 mod cargo_test;
+mod cpp_compiler;
+mod csv_parser;
 mod docker;
+mod generic_compiler;
 mod git;
 mod go_build;
 mod go_test;
 mod jest;
 mod json_lines;
+mod json_object;
 mod kubectl;
 mod npm;
+mod pip;
 mod pytest;
+mod tap;
+mod terraform;
 mod tsc;
 
 pub use ansi::strip_ansi;
@@ -56,6 +64,14 @@ pub fn parse(output: &str, output_type: OutputType, command_hint: Option<&str>) 
         OutputType::GoBuild => go_build::parse(output),
         OutputType::GoTest => go_test::parse(output),
         OutputType::JsonLines => json_lines::parse(output),
+        OutputType::Pip => pip::parse(output),
+        OutputType::CppCompiler => cpp_compiler::parse(output),
+        OutputType::Terraform => terraform::parse(output),
+        OutputType::GenericTAP => tap::parse(output),
+        OutputType::Csv => csv_parser::parse(output),
+        OutputType::JsonObject => json_object::parse(output),
+        OutputType::GenericCompiler => generic_compiler::parse(output),
+        OutputType::Cargo => cargo_misc::parse(output),
         other => freeform_parse(output, Some(other), command_hint),
     }
 }
