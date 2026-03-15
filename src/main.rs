@@ -3827,19 +3827,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    // Auto-pause orchestrator if user types while it's active
-                    if self.orchestrator.active {
-                        self.orchestrator.active = false;
-                        tracing::info!("Orchestrator: auto-paused (user typing detected)");
-                        if let Some(handle) = self.artifact_watcher_thread.take() {
-                            handle.thread().unpark();
-                            let _ = handle.join();
-                        }
-                    }
-
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
+                        // Auto-pause orchestrator only when actual PTY input is sent
+                        // (not on Glass shortcuts which return early above)
+                        if self.orchestrator.active {
+                            self.orchestrator.active = false;
+                            tracing::info!("Orchestrator: auto-paused (user typing detected)");
+                            if let Some(handle) = self.artifact_watcher_thread.take() {
+                                handle.thread().unpark();
+                                let _ = handle.join();
+                            }
+                        }
                         let _ = ctx
                             .session()
                             .pty_sender
