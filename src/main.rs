@@ -3398,76 +3398,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         }
                                     }
 
-                                    // Run initial baseline verification on background thread
-                                    if let Some(ref baseline) = self.orchestrator.metric_baseline {
-                                        if !baseline.commands.is_empty() {
-                                            let commands = baseline.commands.clone();
-                                            let verify_cwd = current_cwd.clone();
-                                            let proxy = self.proxy.clone();
-                                            let bl_session_id = self
-                                                .windows
-                                                .get(&window_id)
-                                                .and_then(|ctx| ctx.session_mux.focused_session())
-                                                .map(|s| s.id);
-                                            if let Some(sid) = bl_session_id {
-                                                std::thread::Builder::new()
-                                                    .name("Glass verify baseline".into())
-                                                    .spawn(move || {
-                                                        use glass_core::event::VerifyEventResult;
-                                                        let results: Vec<VerifyEventResult> = commands
-                                                            .iter()
-                                                            .map(|cmd| {
-                                                                let mut proc = if cfg!(target_os = "windows") {
-                                                                    let mut c = std::process::Command::new("cmd");
-                                                                    c.args(["/C", &cmd.cmd]);
-                                                                    #[cfg(target_os = "windows")]
-                                                                    {
-                                                                        use std::os::windows::process::CommandExt;
-                                                                        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                                                                    }
-                                                                    c
-                                                                } else {
-                                                                    let mut c = std::process::Command::new("sh");
-                                                                    c.args(["-c", &cmd.cmd]);
-                                                                    c
-                                                                };
-                                                                let output = proc.current_dir(&verify_cwd).output();
-                                                                match output {
-                                                                    Ok(o) => {
-                                                                        let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                                                                        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                                                                        let combined = format!("{stdout}\n{stderr}");
-                                                                        let (passed, failed) = parse_test_counts_from_output(&combined);
-                                                                        VerifyEventResult {
-                                                                            command_name: cmd.name.clone(),
-                                                                            exit_code: o.status.code().unwrap_or(-1),
-                                                                            tests_passed: passed,
-                                                                            tests_failed: failed,
-                                                                            output: combined,
-                                                                        }
-                                                                    }
-                                                                    Err(e) => VerifyEventResult {
-                                                                        command_name: cmd.name.clone(),
-                                                                        exit_code: -1,
-                                                                        tests_passed: None,
-                                                                        tests_failed: None,
-                                                                        output: format!("Failed to run: {e}"),
-                                                                    },
-                                                                }
-                                                            })
-                                                            .collect();
-                                                        let _ = proxy.send_event(AppEvent::VerifyComplete {
-                                                            window_id,
-                                                            session_id: sid,
-                                                            results,
-                                                        });
-                                                    })
-                                                    .ok();
-                                                // Block context sends until baseline is established
-                                                self.orchestrator.response_pending = true;
-                                            }
-                                        }
-                                    }
+                                    // Baseline verification deferred to first iteration.
+                                    // Running cargo test at enable time blocks the orchestrator
+                                    // for minutes while compiling + running all tests. Instead,
+                                    // the VerifyComplete handler establishes the baseline lazily
+                                    // on the first verification run after the agent's first iteration.
 
                                     // Start artifact watcher
                                     let artifact_path = self
