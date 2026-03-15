@@ -392,8 +392,21 @@ pub fn build_agent_command_args(
         args.push("--mcp-config".to_string());
         args.push(mcp_config_path.to_string());
     }
+    // In orchestrator mode, restrict to observation-only tools so the agent
+    // writes instructions for Claude Code instead of doing the work itself.
+    // With Bash/Read available, the agent bypasses Claude Code entirely.
+    let orchestrator_active = config
+        .orchestrator
+        .as_ref()
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+    let tools = if orchestrator_active {
+        "glass_query,glass_context".to_string()
+    } else {
+        config.allowed_tools.clone()
+    };
     args.push("--allowedTools".to_string());
-    args.push(config.allowed_tools.clone());
+    args.push(tools);
     args.push("--dangerously-skip-permissions".to_string());
     // Disable skills/slash-commands to prevent SessionStart hooks
     // (e.g., Superpowers) from injecting instructions the agent can't follow
