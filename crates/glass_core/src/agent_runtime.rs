@@ -395,6 +395,9 @@ pub fn build_agent_command_args(
     args.push("--allowedTools".to_string());
     args.push(config.allowed_tools.clone());
     args.push("--dangerously-skip-permissions".to_string());
+    // Disable skills/slash-commands to prevent SessionStart hooks
+    // (e.g., Superpowers) from injecting instructions the agent can't follow
+    args.push("--disable-slash-commands".to_string());
     args
 }
 
