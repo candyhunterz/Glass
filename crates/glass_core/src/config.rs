@@ -447,16 +447,13 @@ pub fn update_config_field(
     value: &str,
 ) -> Result<(), ConfigError> {
     let content = std::fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml::Value = content
-        .parse()
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-
-    let table = doc.as_table_mut().ok_or_else(|| ConfigError {
-        message: "Config file is not a TOML table".to_string(),
-        line: None,
-        column: None,
-        snippet: None,
-    })?;
+    // Use toml::Table deserialization which correctly handles full TOML documents
+    // with multiple table headers (e.g., [agent] + [agent.orchestrator]).
+    // The previous toml::Value::parse() silently failed on multi-section files
+    // and fell through to an empty table, wiping all existing config.
+    let mut table: toml::map::Map<String, toml::Value> =
+        toml::from_str::<toml::map::Map<String, toml::Value>>(&content)
+            .unwrap_or_default();
 
     // Parse the value string into a TOML value
     let parsed_value: toml::Value = value
@@ -466,7 +463,7 @@ pub fn update_config_field(
     if let Some(section_name) = section {
         // Traverse dotted section names (e.g., "agent.orchestrator" -> agent -> orchestrator)
         let parts: Vec<&str> = section_name.split('.').collect();
-        let mut current = table as &mut toml::map::Map<String, toml::Value>;
+        let mut current = &mut table;
         for part in &parts {
             let entry = current
                 .entry(part.to_string())
@@ -483,7 +480,7 @@ pub fn update_config_field(
         table.insert(key.to_string(), parsed_value);
     }
 
-    let output = toml::to_string_pretty(&doc).map_err(|e| ConfigError {
+    let output = toml::to_string_pretty(&table).map_err(|e| ConfigError {
         message: format!("Failed to serialize config: {}", e),
         line: None,
         column: None,
@@ -950,5 +947,29 @@ max_iterations = 25"#;
         let config = GlassConfig::load_from_str(&content);
         let orch = config.agent.unwrap().orchestrator.unwrap();
         assert_eq!(orch.silence_timeout_secs, 15);
+    }
+
+    #[test]
+    fn test_update_parent_preserves_child_section() {
+        // Bug: writing to [agent].mode was wiping [agent.orchestrator]
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[agent]\nmode = \"Assist\"\n\n[agent.orchestrator]\nsilence_timeout_secs = 30\nprd_path = \"PRD.md\"\nverify_mode = \"floor\"\n",
+        )
+        .unwrap();
+
+        // Update parent section field
+        update_config_field(&path, Some("agent"), "mode", "\"Off\"").unwrap();
+
+        // Child section must survive
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        let agent = config.agent.expect("agent section must exist");
+        let orch = agent.orchestrator.expect("orchestrator must survive parent update");
+        assert_eq!(orch.silence_timeout_secs, 30);
+        assert_eq!(orch.prd_path, "PRD.md");
+        assert_eq!(orch.verify_mode, "floor");
     }
 }
