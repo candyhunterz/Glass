@@ -481,6 +481,23 @@ pub struct OrchestratorState {
     pub bounded_stop_pending: bool,
     /// Last iteration that ran verification (to avoid duplicate verify per iteration).
     pub last_verified_iteration: Option<u32>,
+    /// Timestamp of the last user keypress (for kickoff suppression).
+    /// During kickoff, the silence trigger is suppressed as long as the user
+    /// is actively engaged (has typed within the silence threshold).
+    pub last_user_keypress: Option<std::time::Instant>,
+    /// Whether the kickoff phase is complete. Set to true once both the terminal
+    /// and user have been silent for the threshold duration.
+    pub kickoff_complete: bool,
+    /// Feedback loop: count of iterations classified as wasted.
+    pub feedback_waste_iterations: u32,
+    /// Feedback loop: count of commits made during this run.
+    pub feedback_commit_count: u32,
+    /// Feedback loop: list of files that were reverted during this run.
+    pub feedback_reverted_files: Vec<String>,
+    /// Feedback loop: count of fast triggers during output.
+    pub feedback_fast_trigger_during_output: u32,
+    /// Feedback loop: timestamps for each iteration (for pacing analysis).
+    pub feedback_iteration_timestamps: Vec<std::time::Instant>,
 }
 
 impl OrchestratorState {
@@ -503,6 +520,13 @@ impl OrchestratorState {
             max_iterations: None,
             bounded_stop_pending: false,
             last_verified_iteration: None,
+            last_user_keypress: None,
+            kickoff_complete: false,
+            feedback_waste_iterations: 0,
+            feedback_commit_count: 0,
+            feedback_reverted_files: Vec::new(),
+            feedback_fast_trigger_during_output: 0,
+            feedback_iteration_timestamps: Vec::new(),
         }
     }
 
@@ -516,6 +540,19 @@ impl OrchestratorState {
     /// Record that the orchestrator just typed into the PTY.
     pub fn mark_pty_write(&mut self) {
         self.last_pty_write = Some(std::time::Instant::now());
+    }
+
+    /// Record a user keypress (for kickoff suppression).
+    pub fn mark_user_keypress(&mut self) {
+        self.last_user_keypress = Some(std::time::Instant::now());
+    }
+
+    /// Check if the user is still engaged during kickoff.
+    /// Returns true if the user has typed within the given threshold duration.
+    pub fn user_recently_active(&self, threshold: std::time::Duration) -> bool {
+        self.last_user_keypress
+            .map(|t| t.elapsed() < threshold)
+            .unwrap_or(false)
     }
 
     /// Check if automatic checkpoint should trigger.

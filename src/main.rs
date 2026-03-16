@@ -347,6 +347,10 @@ struct Processor {
     job_object_handle: Option<isize>,
     /// Thread handle for the artifact completion watcher (if active).
     artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
+    /// Feedback loop state for the current orchestrator run.
+    feedback_state: Option<glass_feedback::FeedbackState>,
+    /// Guard to prevent config reload from overwriting feedback-written values.
+    feedback_write_pending: bool,
 }
 
 impl Drop for AgentRuntime {
@@ -1644,6 +1648,96 @@ impl Processor {
             })
     }
 
+    /// Run the feedback loop on_run_end, applying any config changes and logging results.
+    fn run_feedback_on_end(&mut self) {
+        if let Some(feedback_state) = self.feedback_state.take() {
+            let run_data = self.build_feedback_run_data();
+            let result = glass_feedback::on_run_end(feedback_state, run_data);
+            if !result.config_changes.is_empty() {
+                self.feedback_write_pending = true;
+                if let Some(config_path) =
+                    dirs::home_dir().map(|h| h.join(".glass").join("config.toml"))
+                {
+                    for (field, _old, new_val) in &result.config_changes {
+                        let _ = glass_core::config::update_config_field(
+                            &config_path,
+                            Some("agent.orchestrator"),
+                            field,
+                            new_val,
+                        );
+                    }
+                }
+            }
+            tracing::info!(
+                "Feedback: {} findings, {} promoted, {} rejected, {} config changes",
+                result.findings.len(),
+                result.rules_promoted.len(),
+                result.rules_rejected.len(),
+                result.config_changes.len(),
+            );
+        }
+    }
+
+    /// Build a RunData snapshot from the current orchestrator state for the feedback loop.
+    fn build_feedback_run_data(&self) -> glass_feedback::RunData {
+        glass_feedback::RunData {
+            project_root: self.get_focused_cwd(),
+            iterations: self.orchestrator.iteration,
+            duration_secs: self
+                .orchestrator_activated_at
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0),
+            kickoff_duration_secs: 0,
+            iterations_tsv: std::fs::read_to_string(
+                std::path::Path::new(&self.get_focused_cwd())
+                    .join(".glass")
+                    .join("iterations.tsv"),
+            )
+            .unwrap_or_default(),
+            revert_count: self
+                .orchestrator
+                .metric_baseline
+                .as_ref()
+                .map(|m| m.revert_count)
+                .unwrap_or(0),
+            keep_count: self
+                .orchestrator
+                .metric_baseline
+                .as_ref()
+                .map(|m| m.keep_count)
+                .unwrap_or(0),
+            stuck_count: 0,
+            checkpoint_count: 0,
+            waste_count: self.orchestrator.feedback_waste_iterations,
+            commit_count: self.orchestrator.feedback_commit_count,
+            completion_reason: String::new(),
+            prd_content: None,
+            git_log: None,
+            git_diff_stat: None,
+            reverted_files: self.orchestrator.feedback_reverted_files.clone(),
+            verify_pass_fail_sequence: Vec::new(),
+            agent_responses: Vec::new(),
+            silence_interruptions: 0,
+            fast_trigger_during_output: self.orchestrator.feedback_fast_trigger_during_output,
+            avg_idle_between_iterations_secs: 0.0,
+            fingerprint_sequence: Vec::new(),
+            config_silence_timeout: self
+                .config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.silence_timeout_secs)
+                .unwrap_or(30),
+            config_max_retries: self
+                .config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_retries_before_stuck)
+                .unwrap_or(3),
+        }
+    }
+
     /// Kill the current agent and respawn with a fresh system prompt.
     /// `handoff_content` is the initial message sent to the new agent.
     fn respawn_orchestrator_agent(&mut self, cwd: &str, handoff_content: String) {
@@ -1699,6 +1793,7 @@ impl Processor {
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
         if self.agent_runtime.is_none() {
             tracing::error!("Orchestrator: agent respawn failed — deactivating orchestrator");
+            self.run_feedback_on_end();
             self.orchestrator.active = false;
             self.orchestrator.response_pending = false;
             return;
@@ -1720,6 +1815,8 @@ impl Processor {
                     use std::io::Write;
                     let _ = writeln!(w, "{msg}");
                     let _ = w.flush();
+                    // Suppress silence trigger until the agent responds to the handoff
+                    self.orchestrator.response_pending = true;
                 }
             }
         }
@@ -3715,6 +3812,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.orchestrator.reset_stuck();
                                     self.orchestrator.iterations_since_checkpoint = 0;
                                     self.orchestrator.bounded_stop_pending = false;
+                                    self.orchestrator.kickoff_complete = false;
+                                    self.orchestrator.last_user_keypress = None;
                                     self.orchestrator.max_iterations = self
                                         .config
                                         .agent
@@ -3943,9 +4042,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             sid,
                                         );
                                     }
+
+                                    // Initialize feedback loop
+                                    self.orchestrator.feedback_waste_iterations = 0;
+                                    self.orchestrator.feedback_commit_count = 0;
+                                    self.orchestrator.feedback_reverted_files.clear();
+                                    self.orchestrator.feedback_fast_trigger_during_output = 0;
+                                    self.orchestrator.feedback_iteration_timestamps.clear();
+
+                                    let feedback_config = glass_feedback::FeedbackConfig {
+                                        project_root: current_cwd.clone(),
+                                        feedback_llm: self
+                                            .config
+                                            .agent
+                                            .as_ref()
+                                            .and_then(|a| a.orchestrator.as_ref())
+                                            .map(|o| o.feedback_llm)
+                                            .unwrap_or(false),
+                                        max_prompt_hints: self
+                                            .config
+                                            .agent
+                                            .as_ref()
+                                            .and_then(|a| a.orchestrator.as_ref())
+                                            .map(|o| o.max_prompt_hints)
+                                            .unwrap_or(10),
+                                    };
+                                    self.feedback_state = Some(glass_feedback::on_run_start(
+                                        &current_cwd,
+                                        &feedback_config,
+                                    ));
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
                                     let _ = ctx;
+                                    self.run_feedback_on_end();
                                     // Stop artifact watcher
                                     if let Some(handle) = self.artifact_watcher_thread.take() {
                                         handle.thread().unpark();
@@ -4352,6 +4481,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
+                        // Track user keypress for kickoff suppression.
+                        // During the kickoff phase, the silence trigger is suppressed
+                        // as long as the user is actively typing.
+                        if self.orchestrator.active && !self.orchestrator.kickoff_complete {
+                            self.orchestrator.mark_user_keypress();
+                        }
+
                         // Orchestrator no longer auto-pauses on user input.
                         // Only Ctrl+Shift+O toggles orchestration on/off.
                         let _ = ctx
@@ -5882,6 +6018,15 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         tracing::info!("Agent config reloaded: mode={:?}", new_agent_config.mode);
 
+                        // If feedback just wrote config values, skip the orchestrator
+                        // sync this cycle to avoid overwriting them.
+                        if self.feedback_write_pending {
+                            self.feedback_write_pending = false;
+                            tracing::debug!(
+                                "Feedback: skipping orchestrator config reload (feedback write pending)"
+                            );
+                        }
+
                         // Sync orchestrator.active with config.agent.orchestrator.enabled
                         // so the settings overlay toggle actually activates orchestration.
                         let orch_enabled = self
@@ -5900,6 +6045,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             self.orchestrator.reset_stuck();
                             self.orchestrator.iterations_since_checkpoint = 0;
                             self.orchestrator.bounded_stop_pending = false;
+                            self.orchestrator.kickoff_complete = false;
+                            self.orchestrator.last_user_keypress = None;
                             self.orchestrator.max_iterations = self
                                 .config
                                 .agent
@@ -5925,10 +6072,41 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.orchestrator.metric_baseline = Some(baseline);
                                 }
                             }
+                            // Initialize feedback loop
+                            self.orchestrator.feedback_waste_iterations = 0;
+                            self.orchestrator.feedback_commit_count = 0;
+                            self.orchestrator.feedback_reverted_files.clear();
+                            self.orchestrator.feedback_fast_trigger_during_output = 0;
+                            self.orchestrator.feedback_iteration_timestamps.clear();
+
+                            let cwd_for_feedback = self.get_focused_cwd();
+                            let feedback_config = glass_feedback::FeedbackConfig {
+                                project_root: cwd_for_feedback.clone(),
+                                feedback_llm: self
+                                    .config
+                                    .agent
+                                    .as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.feedback_llm)
+                                    .unwrap_or(false),
+                                max_prompt_hints: self
+                                    .config
+                                    .agent
+                                    .as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.max_prompt_hints)
+                                    .unwrap_or(10),
+                            };
+                            self.feedback_state = Some(glass_feedback::on_run_start(
+                                &cwd_for_feedback,
+                                &feedback_config,
+                            ));
+
                             tracing::info!(
                                 "Orchestrator: activated via config reload (settings overlay)"
                             );
                         } else if !orch_enabled && was_active {
+                            self.run_feedback_on_end();
                             self.orchestrator.active = false;
                             tracing::info!(
                                 "Orchestrator: deactivated via config reload (settings overlay)"
@@ -6340,6 +6518,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // If orchestrating, deactivate — can't orchestrate without an agent
                     if self.orchestrator.active {
+                        self.run_feedback_on_end();
                         self.orchestrator.active = false;
                         self.orchestrator.response_pending = false;
                         tracing::error!(
@@ -6646,6 +6825,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             &prd_path,
                         );
 
+                        self.run_feedback_on_end();
                         self.orchestrator.active = false;
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
@@ -6700,6 +6880,42 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if self.orchestrator.response_pending {
                     tracing::debug!("Orchestrator: skipping context send (response pending)");
                     return;
+                }
+
+                // Kickoff guard: during the kickoff phase, suppress the silence
+                // trigger while the user is still actively engaged. This is
+                // model-agnostic — it only tracks user keypress recency, not any
+                // specific agent's prompt format.
+                //
+                // Three cases:
+                // 1. User hasn't typed yet → suppress (still waiting for interaction)
+                // 2. User typed recently → suppress (still engaged)
+                // 3. User typed but has gone idle → kickoff complete, start loop
+                if !self.orchestrator.kickoff_complete {
+                    let threshold = std::time::Duration::from_secs(
+                        self.config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.silence_timeout_secs)
+                            .unwrap_or(30),
+                    );
+                    if self.orchestrator.last_user_keypress.is_none() {
+                        // User hasn't typed anything yet — still waiting
+                        tracing::debug!(
+                            "Orchestrator: skipping context send during kickoff (no user input yet)"
+                        );
+                        return;
+                    }
+                    if self.orchestrator.user_recently_active(threshold) {
+                        tracing::debug!(
+                            "Orchestrator: skipping context send during kickoff (user recently active)"
+                        );
+                        return;
+                    }
+                    // User typed and has gone idle — kickoff is complete
+                    self.orchestrator.kickoff_complete = true;
+                    tracing::info!("Orchestrator: kickoff complete (user and terminal both idle)");
                 }
 
                 // Check if we're in a checkpoint cycle
@@ -6845,6 +7061,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             );
 
                             // Deactivate orchestrator
+                            self.run_feedback_on_end();
                             self.orchestrator.active = false;
                             self.orchestrator.bounded_stop_pending = false;
 
@@ -7110,6 +7327,50 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
+                        // Feedback loop: check rules for live injection
+                        let mut feedback_instructions = Vec::new();
+                        if let Some(ref feedback_state) = self.feedback_state {
+                            let run_state = glass_feedback::RunState {
+                                iteration: self.orchestrator.iteration,
+                                uncommitted_iterations: self
+                                    .orchestrator
+                                    .feedback_commit_count
+                                    .max(1)
+                                    .saturating_sub(1),
+                                revert_rate: if self.orchestrator.iteration > 0 {
+                                    self.orchestrator
+                                        .metric_baseline
+                                        .as_ref()
+                                        .map(|m| {
+                                            m.revert_count as f64
+                                                / self.orchestrator.iteration as f64
+                                        })
+                                        .unwrap_or(0.0)
+                                } else {
+                                    0.0
+                                },
+                                stuck_rate: 0.0,
+                                waste_rate: if self.orchestrator.iteration > 0 {
+                                    self.orchestrator.feedback_waste_iterations as f64
+                                        / self.orchestrator.iteration as f64
+                                } else {
+                                    0.0
+                                },
+                                recent_reverted_files: self
+                                    .orchestrator
+                                    .feedback_reverted_files
+                                    .clone(),
+                                verify_alternations: 0,
+                            };
+                            let actions =
+                                glass_feedback::check_rules(feedback_state, &run_state);
+                            for action in &actions {
+                                if let glass_feedback::RuleAction::TextInjection(text) = action {
+                                    feedback_instructions.push(text.clone());
+                                }
+                            }
+                        }
+
                         // If no verification needed, proceed with normal context send
                         let has_nudge = nudge.is_some();
                         let mut content = String::from("[TERMINAL_CONTEXT]\n");
@@ -7121,6 +7382,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::info!("Orchestrator: including nudge.md in context");
                         }
                         content.push_str(&context);
+
+                        // Append feedback rule injections
+                        if !feedback_instructions.is_empty() {
+                            content.push_str("\n[FEEDBACK_RULES]\n");
+                            for instr in &feedback_instructions {
+                                content.push_str(&format!("- {}\n", instr));
+                            }
+                        }
 
                         let msg = serde_json::json!({
                             "type": "user",
@@ -7402,6 +7671,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::UsagePause => {
                 tracing::info!("Orchestrator: usage pause triggered (>=80%)");
+                self.run_feedback_on_end();
                 self.orchestrator.active = false;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
@@ -7413,6 +7683,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::UsageHardStop => {
                 tracing::warn!("Orchestrator: usage hard stop (>=95%)");
+                self.run_feedback_on_end();
                 self.orchestrator.active = false;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
@@ -8240,6 +8511,8 @@ fn main() {
                 #[cfg(target_os = "windows")]
                 job_object_handle,
                 artifact_watcher_thread: None,
+                feedback_state: None,
+                feedback_write_pending: false,
             };
 
             event_loop
