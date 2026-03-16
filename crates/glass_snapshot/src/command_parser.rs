@@ -388,6 +388,10 @@ fn parse_powershell_command(cmd: &str, args: &[String], cwd: &Path) -> ParseResu
             targets: vec![],
             confidence: Confidence::ReadOnly,
         },
+        "set-location" | "sl" | "cd" | "chdir" => ParseResult {
+            targets: vec![],
+            confidence: Confidence::ReadOnly,
+        },
         "get-item" | "gi" => ParseResult {
             targets: vec![],
             confidence: Confidence::ReadOnly,
@@ -599,7 +603,12 @@ fn parse_sed(args: &[String], cwd: &Path) -> ParseResult {
     }
 
     let mut targets = Vec::new();
-    let mut past_expression = false;
+    // When -e or -f is used, the expression is supplied as a flag argument,
+    // so there is no bare expression to skip among positional args.
+    let has_explicit_expr = args
+        .iter()
+        .any(|a| a == "-e" || a == "-f" || a.starts_with("-e") || a.starts_with("-f"));
+    let mut past_expression = has_explicit_expr;
     let mut skip_next = false;
 
     for arg in args {
@@ -608,8 +617,8 @@ fn parse_sed(args: &[String], cwd: &Path) -> ParseResult {
             continue;
         }
         if arg.starts_with('-') {
-            // -e and -f take a following argument
-            if arg == "-e" || arg == "-f" {
+            // -e and -f take a following argument (unless value is attached: -e's/a/b/')
+            if (arg == "-e" || arg == "-f") && arg.len() <= 2 {
                 skip_next = true;
             }
             continue;
@@ -621,13 +630,14 @@ fn parse_sed(args: &[String], cwd: &Path) -> ParseResult {
         targets.push(resolve_path(arg, cwd));
     }
 
+    let confidence = if targets.is_empty() {
+        Confidence::Low
+    } else {
+        Confidence::High
+    };
     ParseResult {
-        targets: targets.clone(),
-        confidence: if targets.is_empty() {
-            Confidence::Low
-        } else {
-            Confidence::High
-        },
+        targets,
+        confidence,
     }
 }
 
@@ -648,13 +658,14 @@ fn parse_chmod(args: &[String], cwd: &Path) -> ParseResult {
         targets.push(resolve_path(arg, cwd));
     }
 
+    let confidence = if targets.is_empty() {
+        Confidence::Low
+    } else {
+        Confidence::High
+    };
     ParseResult {
-        targets: targets.clone(),
-        confidence: if targets.is_empty() {
-            Confidence::Low
-        } else {
-            Confidence::High
-        },
+        targets,
+        confidence,
     }
 }
 
@@ -732,13 +743,14 @@ fn parse_git_restore(args: &[String], cwd: &Path) -> ParseResult {
     // Without --, files could be at the end after flags
     let non_flag_args: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let targets: Vec<PathBuf> = non_flag_args.iter().map(|a| resolve_path(a, cwd)).collect();
+    let confidence = if targets.is_empty() {
+        Confidence::Low
+    } else {
+        Confidence::High
+    };
     ParseResult {
-        targets: targets.clone(),
-        confidence: if targets.is_empty() {
-            Confidence::Low
-        } else {
-            Confidence::High
-        },
+        targets,
+        confidence,
     }
 }
 
@@ -799,13 +811,14 @@ fn parse_truncate(args: &[String], cwd: &Path) -> ParseResult {
         targets.push(resolve_path(arg, cwd));
     }
 
+    let confidence = if targets.is_empty() {
+        Confidence::Low
+    } else {
+        Confidence::High
+    };
     ParseResult {
-        targets: targets.clone(),
-        confidence: if targets.is_empty() {
-            Confidence::Low
-        } else {
-            Confidence::High
-        },
+        targets,
+        confidence,
     }
 }
 
@@ -861,6 +874,37 @@ mod tests {
             "grep pattern file",
             "echo hello",
             "pwd",
+        ] {
+            let result = parse_command(cmd, &cwd());
+            assert_eq!(
+                result.confidence,
+                Confidence::ReadOnly,
+                "Expected ReadOnly for '{cmd}'"
+            );
+            assert!(result.targets.is_empty(), "Expected no targets for '{cmd}'");
+        }
+    }
+
+    #[test]
+    fn test_shell_builtins_are_readonly() {
+        for cmd in &[
+            "cd /tmp",
+            "cd app\\Glass",
+            "pushd /tmp",
+            "popd",
+            "export PATH=/usr/bin",
+            "source ~/.bashrc",
+            "alias ll='ls -la'",
+            "history",
+            "exit 0",
+            "true",
+            "false",
+            "clear",
+            "kill 1234",
+            "jobs",
+            "fg %1",
+            "bg %1",
+            "Set-Location C:\\Users",
         ] {
             let result = parse_command(cmd, &cwd());
             assert_eq!(
@@ -1034,5 +1078,94 @@ mod tests {
     fn test_powershell_unknown_cmdlet() {
         let result = parse_command("Invoke-CustomScript file.txt", &cwd());
         assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    // --- Audit area 4: edge-case tests ---
+
+    #[test]
+    fn test_sed_with_explicit_e_flag() {
+        // sed -i -e 'expr' file.txt — expression is supplied via -e,
+        // so file.txt must be treated as a target, not as the expression.
+        let result = parse_command("sed -i -e 's/a/b/' file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(
+            result.targets.contains(&resolved("file.txt")),
+            "file.txt should be a target when -e is used, got: {:?}",
+            result.targets
+        );
+    }
+
+    #[test]
+    fn test_sed_with_multiple_e_flags() {
+        let result = parse_command("sed -i -e 's/a/b/' -e 's/c/d/' file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("file.txt")));
+    }
+
+    #[test]
+    fn test_sed_with_f_flag() {
+        let result = parse_command("sed -i -f script.sed file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("file.txt")));
+    }
+
+    #[test]
+    fn test_rm_with_glob_returns_low() {
+        let result = parse_command("rm *.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn test_rm_with_flags() {
+        let result = parse_command("rm -rf dir/", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert_eq!(result.targets, vec![resolved("dir/")]);
+    }
+
+    #[test]
+    fn test_mv_single_arg_returns_low() {
+        // mv with only one arg is malformed
+        let result = parse_command("mv file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn test_git_status_is_readonly() {
+        let result = parse_command("git status", &cwd());
+        assert_eq!(result.confidence, Confidence::ReadOnly);
+    }
+
+    #[test]
+    fn test_git_reset_hard_is_low() {
+        let result = parse_command("git reset --hard HEAD", &cwd());
+        assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn test_git_restore_without_dashdash() {
+        let result = parse_command("git restore file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("file.txt")));
+    }
+
+    #[test]
+    fn test_truncate_with_size_flag() {
+        let result = parse_command("truncate -s 0 file.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("file.txt")));
+    }
+
+    #[test]
+    fn test_redirect_append() {
+        let result = parse_command("echo hello >> out.txt", &cwd());
+        assert!(result.targets.contains(&resolved("out.txt")));
+    }
+
+    #[test]
+    fn test_chmod_multiple_files() {
+        let result = parse_command("chmod 644 a.txt b.txt", &cwd());
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.targets.contains(&resolved("a.txt")));
+        assert!(result.targets.contains(&resolved("b.txt")));
     }
 }
