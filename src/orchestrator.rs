@@ -138,6 +138,125 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
     Vec::new()
 }
 
+/// Parse the "## Deliverables" section of a PRD file to extract file paths.
+///
+/// Looks for markdown list items and extracts the first token that looks like
+/// a file path (contains a dot or slash).
+pub fn parse_prd_deliverables(prd_content: &str) -> Vec<String> {
+    let mut in_deliverables = false;
+    let mut files = Vec::new();
+
+    for line in prd_content.lines() {
+        let trimmed = line.trim();
+
+        // Detect section headers
+        if trimmed.starts_with("## ") {
+            in_deliverables = trimmed
+                .strip_prefix("## ")
+                .map(|s| s.trim().eq_ignore_ascii_case("deliverables"))
+                .unwrap_or(false);
+            continue;
+        }
+
+        if !in_deliverables {
+            continue;
+        }
+
+        // Parse list items: "- file.md (description)" or "* file.md"
+        if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            let first_token = item.split_whitespace().next().unwrap_or("");
+            let first_token = first_token.trim_end_matches([',', ')', '(']);
+            if first_token.contains('.') || first_token.contains('/') || first_token.contains('\\')
+            {
+                files.push(first_token.to_string());
+            }
+        }
+    }
+
+    files
+}
+
+/// Auto-detect orchestrator mode and verification strategy from project + PRD.
+///
+/// Returns (orchestrator_mode, verify_mode, verify_files).
+pub fn auto_detect_orchestrator_config(
+    project_root: &str,
+    prd_content: Option<&str>,
+) -> (String, String, Vec<String>) {
+    // 1. Check for code project markers
+    let commands = auto_detect_verify_commands(project_root);
+    if !commands.is_empty() {
+        return ("build".to_string(), "floor".to_string(), Vec::new());
+    }
+
+    // 2. Parse PRD for deliverables
+    if let Some(content) = prd_content {
+        let deliverables = parse_prd_deliverables(content);
+        if !deliverables.is_empty() {
+            return ("general".to_string(), "files".to_string(), deliverables);
+        }
+    }
+
+    // 3. No markers, no deliverables
+    ("general".to_string(), "off".to_string(), Vec::new())
+}
+
+/// Baseline for file-based verification (general mode).
+#[derive(Debug, Clone)]
+pub struct FileVerifyBaseline {
+    /// Map of file path -> last known byte size.
+    pub file_sizes: std::collections::HashMap<String, u64>,
+}
+
+impl FileVerifyBaseline {
+    pub fn new() -> Self {
+        Self {
+            file_sizes: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Check deliverable files for regression.
+///
+/// Returns (regressed, results_summary).
+pub fn check_file_verification(
+    project_root: &str,
+    verify_files: &[String],
+    baseline: &mut FileVerifyBaseline,
+) -> (bool, String) {
+    let root = std::path::Path::new(project_root);
+    let mut regressed = false;
+    let mut summaries = Vec::new();
+
+    for file in verify_files {
+        let path = root.join(file);
+        let current_size = std::fs::metadata(&path).map(|m| m.len()).ok();
+
+        match (baseline.file_sizes.get(file), current_size) {
+            (Some(&prev_size), None) => {
+                regressed = true;
+                summaries.push(format!("{file}: MISSING (was {prev_size}B)"));
+            }
+            (Some(&prev_size), Some(curr)) if prev_size > 0 && curr < prev_size / 2 => {
+                regressed = true;
+                summaries.push(format!("{file}: SHRUNK ({prev_size}B -> {curr}B)"));
+            }
+            (_, Some(curr)) => {
+                baseline.file_sizes.insert(file.clone(), curr);
+                summaries.push(format!("{file}: {curr}B"));
+            }
+            (None, None) => {
+                summaries.push(format!("{file}: not yet created"));
+            }
+        }
+    }
+
+    (regressed, summaries.join(", "))
+}
+
 /// Parsed response from the Glass Agent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentResponse {
@@ -1292,6 +1411,120 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn parse_prd_deliverables_extracts_files() {
+        let prd = "# Plan\n\n## Deliverables\n- vacation-plan.md (itinerary)\n- site/index.html\n- research/flights.md (top options)\n\n## Requirements\n- Budget $5000";
+        let files = parse_prd_deliverables(prd);
+        assert_eq!(
+            files,
+            vec!["vacation-plan.md", "site/index.html", "research/flights.md"]
+        );
+    }
+
+    #[test]
+    fn parse_prd_deliverables_empty_when_no_section() {
+        let prd = "# Plan\n\n## Requirements\n- Do stuff";
+        let files = parse_prd_deliverables(prd);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn parse_prd_deliverables_ignores_non_file_items() {
+        let prd = "## Deliverables\n- A complete vacation plan\n- output.md\n- At least 3 options";
+        let files = parse_prd_deliverables(prd);
+        assert_eq!(files, vec!["output.md"]);
+    }
+
+    #[test]
+    fn auto_detect_code_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let (mode, verify, files) =
+            auto_detect_orchestrator_config(dir.path().to_str().unwrap(), None);
+        assert_eq!(mode, "build");
+        assert_eq!(verify, "floor");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn auto_detect_general_with_deliverables() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let prd = "## Deliverables\n- plan.md\n- site/index.html";
+        let (mode, verify, files) =
+            auto_detect_orchestrator_config(dir.path().to_str().unwrap(), Some(prd));
+        assert_eq!(mode, "general");
+        assert_eq!(verify, "files");
+        assert_eq!(files, vec!["plan.md", "site/index.html"]);
+    }
+
+    #[test]
+    fn auto_detect_general_no_deliverables() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mode, verify, files) =
+            auto_detect_orchestrator_config(dir.path().to_str().unwrap(), None);
+        assert_eq!(mode, "general");
+        assert_eq!(verify, "off");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn file_verify_new_file_not_regression() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("plan.md"), "hello world").unwrap();
+        let mut baseline = FileVerifyBaseline::new();
+        let (regressed, _) = check_file_verification(
+            dir.path().to_str().unwrap(),
+            &["plan.md".to_string()],
+            &mut baseline,
+        );
+        assert!(!regressed);
+        assert_eq!(*baseline.file_sizes.get("plan.md").unwrap(), 11);
+    }
+
+    #[test]
+    fn file_verify_missing_file_is_regression() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut baseline = FileVerifyBaseline::new();
+        baseline.file_sizes.insert("plan.md".to_string(), 100);
+        let (regressed, summary) = check_file_verification(
+            dir.path().to_str().unwrap(),
+            &["plan.md".to_string()],
+            &mut baseline,
+        );
+        assert!(regressed);
+        assert!(summary.contains("MISSING"));
+    }
+
+    #[test]
+    fn file_verify_shrunk_file_is_regression() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("plan.md"), "x").unwrap();
+        let mut baseline = FileVerifyBaseline::new();
+        baseline.file_sizes.insert("plan.md".to_string(), 100);
+        let (regressed, summary) = check_file_verification(
+            dir.path().to_str().unwrap(),
+            &["plan.md".to_string()],
+            &mut baseline,
+        );
+        assert!(regressed);
+        assert!(summary.contains("SHRUNK"));
+    }
+
+    #[test]
+    fn file_verify_growing_file_not_regression() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("plan.md"), "a".repeat(200)).unwrap();
+        let mut baseline = FileVerifyBaseline::new();
+        baseline.file_sizes.insert("plan.md".to_string(), 100);
+        let (regressed, _) = check_file_verification(
+            dir.path().to_str().unwrap(),
+            &["plan.md".to_string()],
+            &mut baseline,
+        );
+        assert!(!regressed);
+        assert_eq!(*baseline.file_sizes.get("plan.md").unwrap(), 200);
     }
 
     #[test]

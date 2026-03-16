@@ -94,16 +94,11 @@ pub struct SettingsConfigSnapshot {
     pub history_max_output_kb: u32,
     // Orchestrator
     pub orchestrator_enabled: bool,
-    pub orchestrator_silence_secs: u64,
-    pub orchestrator_fast_trigger_secs: u64,
-    pub orchestrator_prompt_pattern: String,
-    pub orchestrator_prd_path: String,
-    pub orchestrator_max_retries: u32,
-    pub orchestrator_verify_mode: String,
-    pub orchestrator_verify_command: String,
-    pub orchestrator_completion_artifact: String,
     pub orchestrator_max_iterations: u32,
+    pub orchestrator_silence_secs: u64,
+    pub orchestrator_prd_path: String,
     pub orchestrator_mode: String,
+    pub orchestrator_verify_mode: String,
 }
 
 impl Default for SettingsConfigSnapshot {
@@ -139,16 +134,11 @@ impl Default for SettingsConfigSnapshot {
             pipes_max_capture_mb: 10,
             history_max_output_kb: 50,
             orchestrator_enabled: false,
-            orchestrator_silence_secs: 30,
-            orchestrator_fast_trigger_secs: 5,
-            orchestrator_prompt_pattern: String::new(),
-            orchestrator_prd_path: "PRD.md".to_string(),
-            orchestrator_max_retries: 3,
-            orchestrator_verify_mode: "floor".to_string(),
-            orchestrator_verify_command: String::new(),
-            orchestrator_completion_artifact: ".glass/done".to_string(),
             orchestrator_max_iterations: 0,
+            orchestrator_silence_secs: 60,
+            orchestrator_prd_path: "PRD.md".to_string(),
             orchestrator_mode: "build".to_string(),
+            orchestrator_verify_mode: "floor".to_string(),
         }
     }
 }
@@ -910,7 +900,7 @@ impl SettingsOverlayRenderer {
                 ),
             ],
             6 => vec![
-                // Orchestrator
+                // Orchestrator — 3 editable + 3 display-only
                 (
                     "Enabled",
                     if config.orchestrator_enabled {
@@ -921,50 +911,6 @@ impl SettingsOverlayRenderer {
                     true,
                 ),
                 (
-                    "Silence Timeout (sec)",
-                    format!("{}", config.orchestrator_silence_secs),
-                    false,
-                ),
-                (
-                    "Fast Trigger (sec)",
-                    format!("{}", config.orchestrator_fast_trigger_secs),
-                    false,
-                ),
-                (
-                    "Prompt Pattern",
-                    if config.orchestrator_prompt_pattern.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        config.orchestrator_prompt_pattern.clone()
-                    },
-                    false,
-                ),
-                ("PRD Path", config.orchestrator_prd_path.clone(), false),
-                (
-                    "Max Retries",
-                    format!("{}", config.orchestrator_max_retries),
-                    false,
-                ),
-                (
-                    "Verify Mode",
-                    config.orchestrator_verify_mode.clone(),
-                    false,
-                ),
-                (
-                    "Verify Command",
-                    if config.orchestrator_verify_command.is_empty() {
-                        "(auto-detect)".to_string()
-                    } else {
-                        config.orchestrator_verify_command.clone()
-                    },
-                    false,
-                ),
-                (
-                    "Completion Artifact",
-                    config.orchestrator_completion_artifact.clone(),
-                    false,
-                ),
-                (
                     "Max Iterations",
                     if config.orchestrator_max_iterations == 0 {
                         "unlimited".to_string()
@@ -973,7 +919,19 @@ impl SettingsOverlayRenderer {
                     },
                     false,
                 ),
+                (
+                    "Silence Timeout (sec)",
+                    format!("{}", config.orchestrator_silence_secs),
+                    false,
+                ),
+                // Display-only fields
+                ("PRD Path", config.orchestrator_prd_path.clone(), false),
                 ("Mode", config.orchestrator_mode.clone(), false),
+                (
+                    "Verify Mode",
+                    config.orchestrator_verify_mode.clone(),
+                    false,
+                ),
             ],
             _ => vec![],
         }

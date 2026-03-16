@@ -153,6 +153,9 @@ pub struct OrchestratorSection {
     /// Audit mode: agent gets all MCP tools to test features interactively, delegates code fixes to Claude Code.
     #[serde(default = "default_orch_mode")]
     pub orchestrator_mode: String,
+    /// Files to check for file-based verification. Auto-populated from PRD deliverables.
+    #[serde(default)]
+    pub verify_files: Vec<String>,
 }
 
 fn default_orch_silence_timeout() -> u64 {
@@ -934,6 +937,24 @@ max_iterations = 25"#;
         assert_eq!(orch.verify_command.as_deref(), Some("cargo test"));
         assert_eq!(orch.completion_artifact, ".build/complete");
         assert_eq!(orch.max_iterations, Some(25));
+    }
+
+    #[test]
+    fn test_orchestrator_verify_files_default_empty() {
+        let toml = "[agent.orchestrator]\nenabled = true";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert!(orch.verify_files.is_empty());
+    }
+
+    #[test]
+    fn test_orchestrator_verify_files_custom() {
+        let toml = r#"[agent.orchestrator]
+enabled = true
+verify_files = ["plan.md", "site/index.html"]"#;
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert_eq!(orch.verify_files, vec!["plan.md", "site/index.html"]);
     }
 
     #[test]

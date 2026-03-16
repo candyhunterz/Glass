@@ -316,6 +316,8 @@ struct Processor {
     orchestrator_scroll_offset: usize,
     /// When orchestrator was activated (for relative timestamps in transcript).
     orchestrator_activated_at: Option<std::time::Instant>,
+    /// File-based verification baseline for general mode.
+    file_verify_baseline: orchestrator::FileVerifyBaseline,
     /// Whether the settings overlay is visible.
     settings_overlay_visible: bool,
     /// Active tab in the settings overlay.
@@ -848,6 +850,21 @@ For each audit area in the plan:
 
 You can test features YOURSELF using MCP tools. You CANNOT write code — tell Claude Code to do that.
 Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#
+        } else if orch_mode == "general" {
+            r#"ORCHESTRATOR MODE: GENERAL
+You are orchestrating a general task (research, planning, design, or mixed work).
+
+ITERATION PROTOCOL:
+1. READ the PRD deliverables and requirements
+2. INSTRUCT Claude Code on the next deliverable to produce
+3. MONITOR progress — is Claude Code making tangible output?
+4. REDIRECT if Claude Code goes off-track or stalls
+5. CHECK deliverable files exist and have content
+6. When all deliverables are complete, respond with GLASS_DONE
+
+Use whatever tools are needed: web search, file creation, shell commands, code.
+Track progress by deliverable completion, not test counts.
+You CANNOT create files yourself — instruct Claude Code to do it."#
         } else {
             r#"ORCHESTRATOR MODE: BUILD
 ITERATION PROTOCOL:
@@ -860,6 +877,13 @@ For each feature, guide Claude Code through this cycle:
    Stuck after 3 attempts → tell Claude Code to revert and try different approach.
 
 You CANNOT implement code yourself — you must instruct Claude Code to do it."#
+        };
+
+        let prd_missing = prd_content.starts_with("(PRD not found");
+        let kickoff_instructions = if prd_missing {
+            "\n\nKICKOFF MODE:\nNo PRD file exists yet. Your FIRST instruction to Claude Code must be:\n\"Generate a detailed PRD file. Name it descriptively based on the project goal (e.g., PRD-japan-vacation.md). Include:\n- ## Deliverables (list each output file with path)\n- ## Requirements (specific constraints)\n- ## Research Areas (if applicable)\nWrite it to disk, then start executing it.\"\n\nAfter Claude Code writes the PRD, continue with normal orchestration."
+        } else {
+            ""
         };
 
         format!(
@@ -879,7 +903,7 @@ CURRENT STATUS:
 ITERATION HISTORY:
 {iterations_content}
 
-{mode_instructions}
+{mode_instructions}{kickoff_instructions}
 
 TASK COMPLETION SIGNAL:
 When the implementer is done with a task, have it create the file `{artifact_path}` to signal completion.
@@ -2987,62 +3011,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .map(|h| h.max_output_capture_kb)
                                 .unwrap_or(50),
                             orchestrator_enabled: self.orchestrator.active,
-                            orchestrator_silence_secs: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.silence_timeout_secs)
-                                .unwrap_or(30),
-                            orchestrator_fast_trigger_secs: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.fast_trigger_secs)
-                                .unwrap_or(5),
-                            orchestrator_prompt_pattern: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .and_then(|o| o.agent_prompt_pattern.clone())
-                                .unwrap_or_default(),
-                            orchestrator_prd_path: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.prd_path.clone())
-                                .unwrap_or_else(|| "PRD.md".to_string()),
-                            orchestrator_max_retries: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.max_retries_before_stuck)
-                                .unwrap_or(3),
-                            orchestrator_verify_mode: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.verify_mode.clone())
-                                .unwrap_or_else(|| "floor".to_string()),
-                            orchestrator_verify_command: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .and_then(|o| o.verify_command.clone())
-                                .unwrap_or_default(),
-                            orchestrator_completion_artifact: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.completion_artifact.clone())
-                                .unwrap_or_else(|| ".glass/done".to_string()),
                             orchestrator_max_iterations: self
                                 .config
                                 .agent
@@ -3050,6 +3018,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .and_then(|o| o.max_iterations)
                                 .unwrap_or(0),
+                            orchestrator_silence_secs: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.silence_timeout_secs)
+                                .unwrap_or(60),
+                            orchestrator_prd_path: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.prd_path.clone())
+                                .unwrap_or_else(|| "PRD.md".to_string()),
                             orchestrator_mode: self
                                 .config
                                 .agent
@@ -3057,6 +3039,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.orchestrator_mode.clone())
                                 .unwrap_or_else(|| "build".to_string()),
+                            orchestrator_verify_mode: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.verify_mode.clone())
+                                .unwrap_or_else(|| "floor".to_string()),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
@@ -3746,7 +3735,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .to_string()
                                         });
 
-                                    // Validate PRD exists
+                                    // Kickoff flow: check PRD existence
                                     let prd_rel = self
                                         .config
                                         .agent
@@ -3755,12 +3744,42 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .map(|o| o.prd_path.as_str())
                                         .unwrap_or("PRD.md");
                                     let prd_path = std::path::Path::new(&current_cwd).join(prd_rel);
-                                    if !prd_path.exists() {
-                                        tracing::warn!(
-                                            "Orchestrator: PRD not found at {} — orchestrating without project plan",
+                                    if prd_path.exists() {
+                                        // PRD exists — prompt user to continue or start fresh
+                                        if let Some(session) = ctx.session_mux.focused_session() {
+                                            let msg = format!(
+                                                "\r\n[GLASS] Found existing PRD at {}. Continue with it? (y=continue, n=start fresh)\r\n",
+                                                prd_rel
+                                            );
+                                            let bytes = msg.into_bytes();
+                                            let _ = session.pty_sender.send(PtyMsg::Input(
+                                                std::borrow::Cow::Owned(bytes),
+                                            ));
+                                        }
+                                        tracing::info!(
+                                            "Orchestrator: PRD found at {}, prompting user",
+                                            prd_path.display()
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            "Orchestrator: no PRD at {} — kickoff mode",
                                             prd_path.display()
                                         );
                                     }
+
+                                    // Auto-detect mode from project + PRD
+                                    let prd_content = std::fs::read_to_string(&prd_path).ok();
+                                    let (detected_mode, detected_verify, detected_files) =
+                                        orchestrator::auto_detect_orchestrator_config(
+                                            &current_cwd,
+                                            prd_content.as_deref(),
+                                        );
+                                    tracing::info!(
+                                        "Orchestrator auto-detect: mode={}, verify={}, files={:?}",
+                                        detected_mode,
+                                        detected_verify,
+                                        detected_files
+                                    );
 
                                     // Capture context for handoff (gather from ctx before calling helper)
                                     let terminal_context = ctx
@@ -4299,16 +4318,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
-                        // Auto-pause orchestrator only when actual PTY input is sent
-                        // (not on Glass shortcuts which return early above)
-                        if self.orchestrator.active {
-                            self.orchestrator.active = false;
-                            tracing::info!("Orchestrator: auto-paused (user typing detected)");
-                            if let Some(handle) = self.artifact_watcher_thread.take() {
-                                handle.thread().unpark();
-                                let _ = handle.join();
-                            }
-                        }
+                        // Orchestrator no longer auto-pauses on user input.
+                        // Only Ctrl+Shift+O toggles orchestration on/off.
                         let _ = ctx
                             .session()
                             .pty_sender
@@ -5781,6 +5792,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let _ = tx.try_send(event);
                             }
                         }
+                        // Clear response_pending to prevent hang if a verify thread is in-flight
+                        self.orchestrator.response_pending = false;
                         // Drop old runtime (triggers Drop -> kill child + deregister).
                         self.agent_runtime = None;
 
@@ -7027,6 +7040,42 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
+                        // File-based verification for general mode
+                        if verify_mode == "files" && !already_verified {
+                            let verify_files = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.verify_files.clone())
+                                .unwrap_or_default();
+                            if !verify_files.is_empty() {
+                                let (regressed, summary) = orchestrator::check_file_verification(
+                                    &cwd,
+                                    &verify_files,
+                                    &mut self.file_verify_baseline,
+                                );
+                                orchestrator::append_iteration_log(
+                                    &cwd,
+                                    self.orchestrator.iteration,
+                                    "verify",
+                                    if regressed { "revert" } else { "keep" },
+                                    &summary,
+                                );
+                                if regressed {
+                                    if let Some(ref commit) = self.orchestrator.last_good_commit {
+                                        let _ = std::process::Command::new("git")
+                                            .args(["reset", "--hard", commit])
+                                            .current_dir(&cwd)
+                                            .output();
+                                        tracing::info!("File verify: reverted to {commit}");
+                                    }
+                                }
+                                self.orchestrator.last_verified_iteration =
+                                    Some(self.orchestrator.iteration);
+                            }
+                        }
+
                         // If no verification needed, proceed with normal context send
                         let has_nudge = nudge.is_some();
                         let mut content = String::from("[TERMINAL_CONTEXT]\n");
@@ -8143,6 +8192,7 @@ fn main() {
                 orchestrator_event_buffer: orchestrator_events::OrchestratorEventBuffer::new(),
                 orchestrator_scroll_offset: 0,
                 orchestrator_activated_at: None,
+                file_verify_baseline: orchestrator::FileVerifyBaseline::new(),
                 settings_overlay_visible: false,
                 settings_overlay_tab: Default::default(),
                 settings_section_index: 0,
@@ -8307,44 +8357,7 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
-        // Orchestrator: verify_mode (toggle floor <-> disabled)
-        (6, 6) => {
-            let current = config
-                .agent
-                .as_ref()
-                .and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.verify_mode.as_str())
-                .unwrap_or("floor");
-            let new_mode = if current == "floor" {
-                "\"disabled\""
-            } else {
-                "\"floor\""
-            };
-            Some((
-                Some("agent.orchestrator"),
-                "verify_mode",
-                new_mode.to_string(),
-            ))
-        }
-        // Orchestrator: orchestrator_mode (toggle build <-> audit)
-        (6, 10) => {
-            let current = config
-                .agent
-                .as_ref()
-                .and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.orchestrator_mode.as_str())
-                .unwrap_or("build");
-            let new_mode = if current == "build" {
-                "\"audit\""
-            } else {
-                "\"build\""
-            };
-            Some((
-                Some("agent.orchestrator"),
-                "orchestrator_mode",
-                new_mode.to_string(),
-            ))
-        }
+        // Orchestrator: verify_mode and orchestrator_mode removed (auto-detected)
         _ => None,
     }
 }
@@ -8431,74 +8444,35 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator silence_timeout_secs: step 5
+        // Orchestrator max_iterations: step 10 (field index 1)
         (6, 1) => {
-            let current = config
-                .agent
-                .as_ref()
-                .and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.silence_timeout_secs)
-                .unwrap_or(30) as i64;
-            let new_val = (current + delta * 5).max(5);
-            Some((
-                Some("agent.orchestrator"),
-                "silence_timeout_secs",
-                new_val.to_string(),
-            ))
-        }
-        // Orchestrator fast_trigger_secs: step 1
-        (6, 2) => {
-            let current = config
-                .agent
-                .as_ref()
-                .and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.fast_trigger_secs)
-                .unwrap_or(5) as i64;
-            let new_val = (current + delta).max(1);
-            Some((
-                Some("agent.orchestrator"),
-                "fast_trigger_secs",
-                new_val.to_string(),
-            ))
-        }
-        // Orchestrator max_retries: step 1
-        (6, 5) => {
-            let current = config
-                .agent
-                .as_ref()
-                .and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.max_retries_before_stuck)
-                .unwrap_or(3) as i64;
-            let new_val = (current + delta).max(1);
-            Some((
-                Some("agent.orchestrator"),
-                "max_retries_before_stuck",
-                new_val.to_string(),
-            ))
-        }
-        // Orchestrator max_iterations: step 5
-        (6, 9) => {
             let current = config
                 .agent
                 .as_ref()
                 .and_then(|a| a.orchestrator.as_ref())
                 .and_then(|o| o.max_iterations)
                 .unwrap_or(0) as i64;
-            let new_val = (current + delta * 5).max(0);
-            if new_val == 0 {
-                // 0 means unlimited — write 0, which should_stop_bounded treats as unlimited
-                Some((
-                    Some("agent.orchestrator"),
-                    "max_iterations",
-                    "0".to_string(),
-                ))
-            } else {
-                Some((
-                    Some("agent.orchestrator"),
-                    "max_iterations",
-                    new_val.to_string(),
-                ))
-            }
+            let new_val = (current + delta * 10).max(0);
+            Some((
+                Some("agent.orchestrator"),
+                "max_iterations",
+                new_val.to_string(),
+            ))
+        }
+        // Orchestrator silence_timeout_secs: step 10 (field index 2)
+        (6, 2) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.silence_timeout_secs)
+                .unwrap_or(60) as i64;
+            let new_val = (current + delta * 10).clamp(10, 300);
+            Some((
+                Some("agent.orchestrator"),
+                "silence_timeout_secs",
+                new_val.to_string(),
+            ))
         }
         _ => None,
     }
