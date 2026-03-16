@@ -307,6 +307,16 @@ impl CoordinationDb {
     ///
     /// All-or-nothing semantics: if ANY file is already locked by a different agent,
     /// no locks are acquired and a `LockResult::Conflict` is returned with details
+    /// Check whether an agent with the given ID is registered.
+    pub fn agent_exists(&self, agent_id: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM agents WHERE id = ?1",
+            params![agent_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// about who holds each conflicting file.
     ///
     /// If the same agent already holds a lock on a file, it is refreshed
@@ -320,6 +330,21 @@ impl CoordinationDb {
         paths: &[std::path::PathBuf],
         reason: Option<&str>,
     ) -> Result<LockResult> {
+        // Validate agent exists before starting transaction
+        if !self.agent_exists(agent_id)? {
+            anyhow::bail!("Agent not registered: {agent_id}");
+        }
+
+        // Validate all paths are absolute before canonicalizing
+        for p in paths {
+            if !p.is_absolute() {
+                anyhow::bail!(
+                    "Paths must be absolute, got relative path: {}",
+                    p.display()
+                );
+            }
+        }
+
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -669,6 +694,14 @@ impl CoordinationDb {
         msg_type: &str,
         content: &str,
     ) -> Result<i64> {
+        // Validate both agents exist before attempting insert
+        if !self.agent_exists(from_agent_id)? {
+            anyhow::bail!("Sender agent not found: {from_agent_id}");
+        }
+        if !self.agent_exists(to_agent_id)? {
+            anyhow::bail!("Recipient agent not found: {to_agent_id}");
+        }
+
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1830,5 +1863,84 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert!(events.iter().any(|e| e.event_type == "status_changed"));
         assert!(events.iter().any(|e| e.event_type == "task_changed"));
+    }
+
+    #[test]
+    fn test_agent_exists_returns_false_for_unknown_id() {
+        let (db, _dir) = test_db();
+        assert!(!db.agent_exists("nonexistent-uuid").unwrap());
+    }
+
+    #[test]
+    fn test_agent_exists_returns_true_for_registered() {
+        let (mut db, _dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        assert!(db.agent_exists(&id).unwrap());
+    }
+
+    #[test]
+    fn test_lock_files_rejects_unregistered_agent() {
+        let (mut db, dir) = test_db();
+        let fake_id = "00000000-0000-0000-0000-000000000000";
+        let path = dir.path().join("file.rs");
+        std::fs::write(&path, "").unwrap();
+        let err = db
+            .lock_files(fake_id, &[path], None)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Agent not registered"),
+            "Expected 'Agent not registered', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_lock_files_rejects_relative_paths() {
+        let (mut db, _dir) = test_db();
+        let id = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let err = db
+            .lock_files(&id, &[std::path::PathBuf::from("relative/path.rs")], None)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Paths must be absolute"),
+            "Expected 'Paths must be absolute', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_send_message_rejects_nonexistent_sender() {
+        let (mut db, _dir) = test_db();
+        let receiver = db
+            .register("receiver", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let err = db
+            .send_message("fake-sender-id", &receiver, "chat", "hello")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Sender agent not found"),
+            "Expected 'Sender agent not found', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_send_message_rejects_nonexistent_recipient() {
+        let (mut db, _dir) = test_db();
+        let sender = db
+            .register("sender", "claude-code", ".", "/tmp", None)
+            .unwrap();
+        let err = db
+            .send_message(&sender, "fake-recipient-id", "chat", "hello")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Recipient agent not found"),
+            "Expected 'Recipient agent not found', got: {msg}"
+        );
     }
 }
