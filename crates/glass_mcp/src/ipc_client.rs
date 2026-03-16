@@ -177,6 +177,11 @@ mod tests {
 
     #[tokio::test]
     async fn send_request_returns_error_when_gui_not_running() {
+        // Skip if Glass GUI is actually running — the connection will succeed,
+        // which invalidates the test premise.
+        if connect().await.is_ok() {
+            return;
+        }
         let client = IpcClient::new();
         let result = client.send_request("ping", serde_json::json!({})).await;
         assert!(result.is_err());
