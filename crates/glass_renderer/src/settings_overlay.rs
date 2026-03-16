@@ -109,7 +109,14 @@ pub struct SettingsConfigSnapshot {
 impl Default for SettingsConfigSnapshot {
     fn default() -> Self {
         Self {
-            font_family: "Consolas".to_string(),
+            font_family: {
+                #[cfg(target_os = "windows")]
+                { "Consolas".to_string() }
+                #[cfg(target_os = "macos")]
+                { "Menlo".to_string() }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                { "Monospace".to_string() }
+            },
             font_size: 14.0,
             agent_enabled: false,
             agent_mode: "Off".to_string(),
