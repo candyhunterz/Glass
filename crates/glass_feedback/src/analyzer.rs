@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::types::{Finding, FindingAction, FindingCategory, RunData, Scope, Severity};
 
 // ---------------------------------------------------------------------------
@@ -11,6 +13,16 @@ pub fn analyze(data: &RunData) -> Vec<Finding> {
     findings.extend(detect_stuck_sensitivity(data));
     findings.extend(detect_stuck_leniency(data));
     findings.extend(detect_checkpoint_overhead(data));
+    findings.extend(detect_checkpoint_frequency(data));
+    findings.extend(detect_hot_files(data));
+    findings.extend(detect_uncommitted_drift(data));
+    findings.extend(detect_instruction_overload(data));
+    findings.extend(detect_flaky_verification(data));
+    findings.extend(detect_ordering_failure(data));
+    findings.extend(detect_scope_creep(data));
+    findings.extend(detect_oscillation(data));
+    findings.extend(detect_revert_rate(data));
+    findings.extend(detect_waste_rate(data));
     findings
 }
 
@@ -161,9 +173,422 @@ fn detect_checkpoint_overhead(data: &RunData) -> Vec<Finding> {
     }]
 }
 
+/// If iterations >= 20 and checkpoint_count == 0, suggest more frequent checkpoints.
+fn detect_checkpoint_frequency(data: &RunData) -> Vec<Finding> {
+    if data.iterations < 20 || data.checkpoint_count != 0 {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "checkpoint-frequency".to_string(),
+        category: FindingCategory::ConfigTuning,
+        severity: Severity::Medium,
+        action: FindingAction::ConfigTuning {
+            field: "checkpoint_interval_iterations".to_string(),
+            current_value: "0".to_string(),
+            new_value: "lower".to_string(),
+        },
+        evidence: format!(
+            "{} iterations completed with 0 checkpoints; consider lowering checkpoint interval for long runs.",
+            data.iterations
+        ),
+        scope: Scope::Project,
+    }]
+}
+
+/// For each file in reverted_files appearing >= 3 times, produce a BehavioralRule
+/// finding with action = "isolate_commits".
+fn detect_hot_files(data: &RunData) -> Vec<Finding> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for f in &data.reverted_files {
+        *counts.entry(f.as_str()).or_insert(0) += 1;
+    }
+
+    let mut findings = Vec::new();
+    let mut hot: Vec<&&str> = counts
+        .iter()
+        .filter(|(_, &c)| c >= 3)
+        .map(|(f, _)| f)
+        .collect();
+    hot.sort(); // deterministic ordering
+
+    for file in hot {
+        let mut params = HashMap::new();
+        params.insert("file".to_string(), (*file).to_string());
+        findings.push(Finding {
+            id: format!("hot-file:{}", file),
+            category: FindingCategory::BehavioralRule,
+            severity: Severity::Medium,
+            action: FindingAction::BehavioralRule {
+                action: "isolate_commits".to_string(),
+                params,
+            },
+            evidence: format!(
+                "File '{}' was reverted {} time(s); isolating its commits may reduce churn.",
+                file,
+                counts[*file]
+            ),
+            scope: Scope::Project,
+        });
+    }
+    findings
+}
+
+/// If iterations >= 5 and commit_count == 0, or iterations/commits ratio > 5,
+/// produce a BehavioralRule finding with action = "force_commit".
+fn detect_uncommitted_drift(data: &RunData) -> Vec<Finding> {
+    let no_commits = data.iterations >= 5 && data.commit_count == 0;
+    let high_ratio = data.commit_count > 0
+        && data.iterations as f64 / data.commit_count as f64 > 5.0;
+
+    if !no_commits && !high_ratio {
+        return vec![];
+    }
+
+    let evidence = if no_commits {
+        format!(
+            "{} iterations completed with 0 commits; agent is drifting without committing.",
+            data.iterations
+        )
+    } else {
+        format!(
+            "{} iterations with only {} commit(s) (ratio {:.1}); committing more frequently is recommended.",
+            data.iterations,
+            data.commit_count,
+            data.iterations as f64 / data.commit_count as f64
+        )
+    };
+
+    vec![Finding {
+        id: "uncommitted-drift".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::Medium,
+        action: FindingAction::BehavioralRule {
+            action: "force_commit".to_string(),
+            params: HashMap::new(),
+        },
+        evidence,
+        scope: Scope::Global,
+    }]
+}
+
+/// Count responses with 4+ numbered list items. If count >= 2 AND waste_rate > 0.1,
+/// produce a BehavioralRule finding with action = "smaller_instructions".
+fn detect_instruction_overload(data: &RunData) -> Vec<Finding> {
+    let waste_rate = data.waste_count as f64 / data.iterations.max(1) as f64;
+    if waste_rate <= 0.1 {
+        return vec![];
+    }
+
+    let overloaded_count = data
+        .agent_responses
+        .iter()
+        .filter(|resp| {
+            // Check that the response has at least items 1., 2., 3., 4. as line starts
+            let has_1 = resp.lines().any(|l| l.trim_start().starts_with("1."));
+            let has_2 = resp.lines().any(|l| l.trim_start().starts_with("2."));
+            let has_3 = resp.lines().any(|l| l.trim_start().starts_with("3."));
+            let has_4 = resp.lines().any(|l| l.trim_start().starts_with("4."));
+            has_1 && has_2 && has_3 && has_4
+        })
+        .count();
+
+    if overloaded_count < 2 {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "instruction-overload".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::Medium,
+        action: FindingAction::BehavioralRule {
+            action: "smaller_instructions".to_string(),
+            params: HashMap::new(),
+        },
+        evidence: format!(
+            "{} agent response(s) contained 4+ numbered list items with waste rate {:.0}% (> 10%); instructions may be too large.",
+            overloaded_count,
+            waste_rate * 100.0
+        ),
+        scope: Scope::Global,
+    }]
+}
+
+/// Look for alternations in verify_pass_fail_sequence. If alternations >= 3,
+/// produce a BehavioralRule finding with action = "run_verify_twice".
+fn detect_flaky_verification(data: &RunData) -> Vec<Finding> {
+    let seq = &data.verify_pass_fail_sequence;
+    if seq.len() < 2 {
+        return vec![];
+    }
+
+    let alternations = seq.windows(2).filter(|w| w[0] != w[1]).count();
+    if alternations < 3 {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "flaky-verification".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::High,
+        action: FindingAction::BehavioralRule {
+            action: "run_verify_twice".to_string(),
+            params: HashMap::new(),
+        },
+        evidence: format!(
+            "Verification sequence has {} alternation(s) (pass↔fail flipping); running verification twice may improve reliability.",
+            alternations
+        ),
+        scope: Scope::Project,
+    }]
+}
+
+/// Search iterations_tsv for dependency/not found/undefined/import errors followed
+/// within 3 lines by a revert. If found, produce a BehavioralRule with action =
+/// "build_dependency_first".
+fn detect_ordering_failure(data: &RunData) -> Vec<Finding> {
+    let lines: Vec<&str> = data.iterations_tsv.lines().collect();
+    let mut found = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        let lower = line.to_lowercase();
+        let is_dep_error = lower.contains("dependency")
+            || lower.contains("not found")
+            || lower.contains("undefined")
+            || lower.contains("import");
+
+        if is_dep_error {
+            // Check next 3 lines for a revert
+            let end = (i + 4).min(lines.len());
+            for subsequent in &lines[i + 1..end] {
+                if subsequent.to_lowercase().contains("revert") {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if found {
+            break;
+        }
+    }
+
+    if !found {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "ordering-failure".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::Medium,
+        action: FindingAction::BehavioralRule {
+            action: "build_dependency_first".to_string(),
+            params: HashMap::new(),
+        },
+        evidence:
+            "iterations_tsv contains a dependency/import error followed by a revert within 3 lines; build dependencies first.".to_string(),
+        scope: Scope::Project,
+    }]
+}
+
+/// Parse prd_content for deliverable file paths under a `## Deliverables` section.
+/// If git_diff_stat contains files NOT in the deliverables list (and deliverables is
+/// non-empty), produce a BehavioralRule with action = "restrict_scope".
+fn detect_scope_creep(data: &RunData) -> Vec<Finding> {
+    let prd = match &data.prd_content {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let diff_stat = match &data.git_diff_stat {
+        Some(d) => d,
+        None => return vec![],
+    };
+
+    // Extract deliverables: find `## Deliverables` section, then list items
+    let deliverables = parse_deliverables(prd);
+    if deliverables.is_empty() {
+        return vec![];
+    }
+
+    // Extract touched file paths from git_diff_stat (each line starts with stats then filename)
+    let touched_files: Vec<&str> = diff_stat
+        .lines()
+        .filter_map(|line| {
+            // git diff --stat lines look like:  " src/foo.rs | 10 ++"
+            // split on '|' and take the left side, trim whitespace
+            let path = line.split('|').next()?.trim();
+            if path.is_empty() || (!path.contains('.') && !path.contains('/')) {
+                None
+            } else {
+                Some(path)
+            }
+        })
+        .collect();
+
+    let out_of_scope: Vec<&str> = touched_files
+        .iter()
+        .copied()
+        .filter(|tf| {
+            !deliverables
+                .iter()
+                .any(|d| tf.contains(d.as_str()) || d.contains(tf))
+        })
+        .collect();
+
+    if out_of_scope.is_empty() {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "scope-creep".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::Medium,
+        action: FindingAction::BehavioralRule {
+            action: "restrict_scope".to_string(),
+            params: HashMap::new(),
+        },
+        evidence: format!(
+            "{} file(s) in git diff are not listed in PRD deliverables (e.g. '{}'); scope may have drifted.",
+            out_of_scope.len(),
+            out_of_scope.first().copied().unwrap_or("")
+        ),
+        scope: Scope::Project,
+    }]
+}
+
+/// Group fingerprint_sequence into consecutive runs. If any window of 4+ consecutive
+/// values comes from a set of only 2 unique values, produce a BehavioralRule with
+/// action = "early_stuck".
+fn detect_oscillation(data: &RunData) -> Vec<Finding> {
+    let seq = &data.fingerprint_sequence;
+    if seq.len() < 4 {
+        return vec![];
+    }
+
+    // For each start position, collect the longest contiguous prefix that uses at most 2
+    // unique values and check if its length is >= 4.
+    let mut found = false;
+    'outer: for start in 0..seq.len() {
+        let mut unique = std::collections::HashSet::new();
+        let mut span = 0usize;
+        for &val in &seq[start..] {
+            unique.insert(val);
+            if unique.len() > 2 {
+                break;
+            }
+            span += 1;
+        }
+        if span >= 4 {
+            found = true;
+            break 'outer;
+        }
+    }
+
+    if !found {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "oscillation".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::Medium,
+        action: FindingAction::BehavioralRule {
+            action: "early_stuck".to_string(),
+            params: HashMap::new(),
+        },
+        evidence: "Fingerprint sequence contains 4+ consecutive values oscillating between only 2 states; agent may be stuck in a loop.".to_string(),
+        scope: Scope::Global,
+    }]
+}
+
+/// If iterations >= 5 AND revert_count / iterations > 0.3, produce a BehavioralRule
+/// with action = "smaller_instructions".
+fn detect_revert_rate(data: &RunData) -> Vec<Finding> {
+    if data.iterations < 5 {
+        return vec![];
+    }
+    if data.revert_count as f64 / data.iterations as f64 <= 0.3 {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "revert-rate".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::High,
+        action: FindingAction::BehavioralRule {
+            action: "smaller_instructions".to_string(),
+            params: HashMap::new(),
+        },
+        evidence: format!(
+            "Revert rate is {:.0}% ({}/{} iterations); instructions may be too large or ambiguous.",
+            data.revert_count as f64 / data.iterations as f64 * 100.0,
+            data.revert_count,
+            data.iterations
+        ),
+        scope: Scope::Global,
+    }]
+}
+
+/// If iterations >= 5 AND waste_count / iterations > 0.15, produce a BehavioralRule
+/// with action = "verify_progress".
+fn detect_waste_rate(data: &RunData) -> Vec<Finding> {
+    if data.iterations < 5 {
+        return vec![];
+    }
+    if data.waste_count as f64 / data.iterations as f64 <= 0.15 {
+        return vec![];
+    }
+
+    vec![Finding {
+        id: "waste-rate".to_string(),
+        category: FindingCategory::BehavioralRule,
+        severity: Severity::Medium,
+        action: FindingAction::BehavioralRule {
+            action: "verify_progress".to_string(),
+            params: HashMap::new(),
+        },
+        evidence: format!(
+            "Waste rate is {:.0}% ({}/{} iterations); adding progress verification steps may reduce wasted work.",
+            data.waste_count as f64 / data.iterations as f64 * 100.0,
+            data.waste_count,
+            data.iterations
+        ),
+        scope: Scope::Global,
+    }]
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Parse a PRD string for deliverable file paths under a `## Deliverables` section.
+/// Extracts the first token from each list item that contains `.` or `/`.
+fn parse_deliverables(prd: &str) -> Vec<String> {
+    let mut in_deliverables = false;
+    let mut deliverables = Vec::new();
+
+    for line in prd.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## Deliverables") {
+            in_deliverables = true;
+            continue;
+        }
+        if in_deliverables {
+            // Stop at the next heading
+            if trimmed.starts_with("## ") {
+                break;
+            }
+            // List items start with - or *
+            if trimmed.starts_with('-') || trimmed.starts_with('*') {
+                let content = trimmed.trim_start_matches(['-', '*', ' ']);
+                // Find first token containing '.' or '/'
+                if let Some(token) = content.split_whitespace().find(|t| t.contains('.') || t.contains('/')) {
+                    deliverables.push(token.trim_matches(['`', '"', '\'', '(', ')', '[', ']']).to_string());
+                }
+            }
+        }
+    }
+    deliverables
+}
 
 /// Returns the length of the longest run of consecutive identical values in `seq`.
 fn max_consecutive_run(seq: &[u64]) -> usize {
@@ -510,6 +935,478 @@ mod tests {
         assert!(detect_checkpoint_overhead(&data).is_empty());
     }
 
+    // --- detect_checkpoint_frequency ---
+
+    #[test]
+    fn detect_checkpoint_frequency_triggers() {
+        let data = RunData {
+            iterations: 20,
+            checkpoint_count: 0,
+            ..Default::default()
+        };
+        let findings = detect_checkpoint_frequency(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "checkpoint-frequency");
+        let (field, cur, new) = make_config_tuning(f);
+        assert_eq!(field, "checkpoint_interval_iterations");
+        assert_eq!(cur, "0");
+        assert_eq!(new, "lower");
+    }
+
+    #[test]
+    fn detect_checkpoint_frequency_no_trigger_too_few_iterations() {
+        let data = RunData {
+            iterations: 19,
+            checkpoint_count: 0,
+            ..Default::default()
+        };
+        assert!(detect_checkpoint_frequency(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_checkpoint_frequency_no_trigger_has_checkpoints() {
+        let data = RunData {
+            iterations: 25,
+            checkpoint_count: 2,
+            ..Default::default()
+        };
+        assert!(detect_checkpoint_frequency(&data).is_empty());
+    }
+
+    // --- detect_hot_files ---
+
+    #[test]
+    fn detect_hot_files_triggers() {
+        let data = RunData {
+            reverted_files: vec![
+                "src/main.rs".to_string(),
+                "src/main.rs".to_string(),
+                "src/main.rs".to_string(),
+            ],
+            ..Default::default()
+        };
+        let findings = detect_hot_files(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "hot-file:src/main.rs");
+        if let FindingAction::BehavioralRule { action, params } = &f.action {
+            assert_eq!(action, "isolate_commits");
+            assert_eq!(params.get("file").map(String::as_str), Some("src/main.rs"));
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.scope, Scope::Project));
+    }
+
+    #[test]
+    fn detect_hot_files_no_trigger_below_threshold() {
+        let data = RunData {
+            reverted_files: vec![
+                "src/main.rs".to_string(),
+                "src/main.rs".to_string(),
+            ],
+            ..Default::default()
+        };
+        assert!(detect_hot_files(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_hot_files_multiple_hot_files() {
+        let data = RunData {
+            reverted_files: vec![
+                "a.rs".to_string(), "a.rs".to_string(), "a.rs".to_string(),
+                "b.rs".to_string(), "b.rs".to_string(), "b.rs".to_string(), "b.rs".to_string(),
+            ],
+            ..Default::default()
+        };
+        let findings = detect_hot_files(&data);
+        assert_eq!(findings.len(), 2);
+        let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&"hot-file:a.rs"));
+        assert!(ids.contains(&"hot-file:b.rs"));
+    }
+
+    // --- detect_uncommitted_drift ---
+
+    #[test]
+    fn detect_uncommitted_drift_triggers_no_commits() {
+        let data = RunData {
+            iterations: 5,
+            commit_count: 0,
+            ..Default::default()
+        };
+        let findings = detect_uncommitted_drift(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "uncommitted-drift");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "force_commit");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.scope, Scope::Global));
+    }
+
+    #[test]
+    fn detect_uncommitted_drift_triggers_high_ratio() {
+        // 12 iterations / 2 commits = 6.0 > 5.0
+        let data = RunData {
+            iterations: 12,
+            commit_count: 2,
+            ..Default::default()
+        };
+        let findings = detect_uncommitted_drift(&data);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "uncommitted-drift");
+    }
+
+    #[test]
+    fn detect_uncommitted_drift_no_trigger_few_iterations() {
+        let data = RunData {
+            iterations: 4,
+            commit_count: 0,
+            ..Default::default()
+        };
+        assert!(detect_uncommitted_drift(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_uncommitted_drift_no_trigger_good_ratio() {
+        // 10 / 3 = 3.33 <= 5.0
+        let data = RunData {
+            iterations: 10,
+            commit_count: 3,
+            ..Default::default()
+        };
+        assert!(detect_uncommitted_drift(&data).is_empty());
+    }
+
+    // --- detect_instruction_overload ---
+
+    #[test]
+    fn detect_instruction_overload_triggers() {
+        let response_with_list = "Here are the steps:\n1. Do this\n2. Do that\n3. Also this\n4. Finally that\n".to_string();
+        let data = RunData {
+            iterations: 10,
+            waste_count: 2, // 2/10 = 0.20 > 0.10
+            agent_responses: vec![
+                response_with_list.clone(),
+                response_with_list,
+            ],
+            ..Default::default()
+        };
+        let findings = detect_instruction_overload(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "instruction-overload");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "smaller_instructions");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.scope, Scope::Global));
+    }
+
+    #[test]
+    fn detect_instruction_overload_no_trigger_low_waste() {
+        let response_with_list = "1. Do this\n2. Do that\n3. Also\n4. Finally\n".to_string();
+        let data = RunData {
+            iterations: 10,
+            waste_count: 1, // 1/10 = 0.10 — NOT > 0.10
+            agent_responses: vec![
+                response_with_list.clone(),
+                response_with_list,
+            ],
+            ..Default::default()
+        };
+        assert!(detect_instruction_overload(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_instruction_overload_no_trigger_few_overloaded() {
+        let response_with_list = "1. Do this\n2. Do that\n3. Also\n4. Finally\n".to_string();
+        let short_response = "Just do the thing.".to_string();
+        let data = RunData {
+            iterations: 10,
+            waste_count: 3, // high waste
+            agent_responses: vec![response_with_list, short_response],
+            ..Default::default()
+        };
+        // Only 1 response has 4+ items — need >= 2
+        assert!(detect_instruction_overload(&data).is_empty());
+    }
+
+    // --- detect_flaky_verification ---
+
+    #[test]
+    fn detect_flaky_verification_triggers() {
+        // pass, fail, pass, fail — 3 alternations
+        let data = RunData {
+            verify_pass_fail_sequence: vec![true, false, true, false],
+            ..Default::default()
+        };
+        let findings = detect_flaky_verification(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "flaky-verification");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "run_verify_twice");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.severity, Severity::High));
+        assert!(matches!(f.scope, Scope::Project));
+    }
+
+    #[test]
+    fn detect_flaky_verification_no_trigger_too_few_alternations() {
+        // pass, fail, pass — 2 alternations (< 3)
+        let data = RunData {
+            verify_pass_fail_sequence: vec![true, false, true],
+            ..Default::default()
+        };
+        assert!(detect_flaky_verification(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_flaky_verification_no_trigger_stable_sequence() {
+        let data = RunData {
+            verify_pass_fail_sequence: vec![true, true, true, true, false],
+            ..Default::default()
+        };
+        // Only 1 alternation
+        assert!(detect_flaky_verification(&data).is_empty());
+    }
+
+    // --- detect_ordering_failure ---
+
+    #[test]
+    fn detect_ordering_failure_triggers_dependency_then_revert() {
+        let tsv = "1\tkeep\tworking\n2\tkeep\tdependency not found\n3\trevert\tsomething\n4\tkeep\tfix\n";
+        let data = RunData {
+            iterations_tsv: tsv.to_string(),
+            ..Default::default()
+        };
+        let findings = detect_ordering_failure(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "ordering-failure");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "build_dependency_first");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.scope, Scope::Project));
+    }
+
+    #[test]
+    fn detect_ordering_failure_no_trigger_no_dependency_errors() {
+        let tsv = "1\tkeep\tworking\n2\tkeep\tall good\n3\tkeep\tcontinuing\n";
+        let data = RunData {
+            iterations_tsv: tsv.to_string(),
+            ..Default::default()
+        };
+        assert!(detect_ordering_failure(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_ordering_failure_no_trigger_revert_too_far() {
+        // dependency error at line 1, revert at line 5 — more than 3 lines away
+        let tsv = "1\tkeep\tdependency\n2\tkeep\ta\n3\tkeep\tb\n4\tkeep\tc\n5\trevert\tsomething\n";
+        let data = RunData {
+            iterations_tsv: tsv.to_string(),
+            ..Default::default()
+        };
+        assert!(detect_ordering_failure(&data).is_empty());
+    }
+
+    // --- detect_scope_creep ---
+
+    #[test]
+    fn detect_scope_creep_triggers() {
+        let prd = "# Project\n\n## Deliverables\n- src/main.rs the main entry point\n- src/lib.rs the library\n\n## Notes\nNothing here.\n";
+        let diff_stat = " src/main.rs | 10 ++\n src/extra.rs | 5 +\n";
+        let data = RunData {
+            prd_content: Some(prd.to_string()),
+            git_diff_stat: Some(diff_stat.to_string()),
+            ..Default::default()
+        };
+        let findings = detect_scope_creep(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "scope-creep");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "restrict_scope");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.scope, Scope::Project));
+    }
+
+    #[test]
+    fn detect_scope_creep_no_trigger_all_in_scope() {
+        let prd = "## Deliverables\n- src/main.rs the main file\n- src/lib.rs the lib\n";
+        let diff_stat = " src/main.rs | 10 ++\n src/lib.rs | 5 +\n";
+        let data = RunData {
+            prd_content: Some(prd.to_string()),
+            git_diff_stat: Some(diff_stat.to_string()),
+            ..Default::default()
+        };
+        assert!(detect_scope_creep(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_scope_creep_no_trigger_no_deliverables_section() {
+        let prd = "# Project\nJust some notes, no deliverables section.\n";
+        let diff_stat = " src/any.rs | 10 ++\n";
+        let data = RunData {
+            prd_content: Some(prd.to_string()),
+            git_diff_stat: Some(diff_stat.to_string()),
+            ..Default::default()
+        };
+        assert!(detect_scope_creep(&data).is_empty());
+    }
+
+    // --- detect_oscillation ---
+
+    #[test]
+    fn detect_oscillation_triggers() {
+        // 1,2,1,2 — 4 values, only 2 unique
+        let data = RunData {
+            fingerprint_sequence: vec![1, 2, 1, 2],
+            ..Default::default()
+        };
+        let findings = detect_oscillation(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "oscillation");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "early_stuck");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.scope, Scope::Global));
+    }
+
+    #[test]
+    fn detect_oscillation_triggers_with_prefix() {
+        // 3,4,5,1,2,1,2,1 — oscillation starts at index 3
+        let data = RunData {
+            fingerprint_sequence: vec![3, 4, 5, 1, 2, 1, 2],
+            ..Default::default()
+        };
+        let findings = detect_oscillation(&data);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn detect_oscillation_no_trigger_too_short() {
+        let data = RunData {
+            fingerprint_sequence: vec![1, 2, 1],
+            ..Default::default()
+        };
+        assert!(detect_oscillation(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_oscillation_no_trigger_three_unique_values() {
+        // 1,2,3,1,2,3 — 3 unique values, not oscillation
+        let data = RunData {
+            fingerprint_sequence: vec![1, 2, 3, 1, 2, 3],
+            ..Default::default()
+        };
+        assert!(detect_oscillation(&data).is_empty());
+    }
+
+    // --- detect_revert_rate ---
+
+    #[test]
+    fn detect_revert_rate_triggers() {
+        // 4/10 = 0.40 > 0.30
+        let data = RunData {
+            iterations: 10,
+            revert_count: 4,
+            ..Default::default()
+        };
+        let findings = detect_revert_rate(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "revert-rate");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "smaller_instructions");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.severity, Severity::High));
+        assert!(matches!(f.scope, Scope::Global));
+    }
+
+    #[test]
+    fn detect_revert_rate_no_trigger_low_rate() {
+        // 3/10 = 0.30 — NOT > 0.30
+        let data = RunData {
+            iterations: 10,
+            revert_count: 3,
+            ..Default::default()
+        };
+        assert!(detect_revert_rate(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_revert_rate_no_trigger_too_few_iterations() {
+        let data = RunData {
+            iterations: 4,
+            revert_count: 4,
+            ..Default::default()
+        };
+        assert!(detect_revert_rate(&data).is_empty());
+    }
+
+    // --- detect_waste_rate ---
+
+    #[test]
+    fn detect_waste_rate_triggers() {
+        // 2/10 = 0.20 > 0.15
+        let data = RunData {
+            iterations: 10,
+            waste_count: 2,
+            ..Default::default()
+        };
+        let findings = detect_waste_rate(&data);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.id, "waste-rate");
+        if let FindingAction::BehavioralRule { action, .. } = &f.action {
+            assert_eq!(action, "verify_progress");
+        } else {
+            panic!("expected BehavioralRule action");
+        }
+        assert!(matches!(f.severity, Severity::Medium));
+        assert!(matches!(f.scope, Scope::Global));
+    }
+
+    #[test]
+    fn detect_waste_rate_no_trigger_low_waste() {
+        // 1/10 = 0.10 — NOT > 0.15
+        let data = RunData {
+            iterations: 10,
+            waste_count: 1,
+            ..Default::default()
+        };
+        assert!(detect_waste_rate(&data).is_empty());
+    }
+
+    #[test]
+    fn detect_waste_rate_no_trigger_too_few_iterations() {
+        let data = RunData {
+            iterations: 4,
+            waste_count: 4,
+            ..Default::default()
+        };
+        assert!(detect_waste_rate(&data).is_empty());
+    }
+
     // --- analyze() integration ---
 
     #[test]
@@ -546,6 +1443,8 @@ mod tests {
             iterations: 10,
             stuck_count: 0,
             waste_count: 0,
+            revert_count: 0,
+            commit_count: 2, // 10/2 = 5.0 — NOT > 5.0, so uncommitted-drift does not fire
             config_max_retries: 3,
             fingerprint_sequence: vec![1, 2, 3, 4, 5],
             checkpoint_count: 1,
