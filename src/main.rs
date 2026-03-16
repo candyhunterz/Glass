@@ -3804,13 +3804,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         };
 
                                         if !commands.is_empty() {
-                                            let cmd_count = commands.len();
-                                            let mut baseline = orchestrator::MetricBaseline::new();
-                                            baseline.commands = commands;
-                                            self.orchestrator.metric_baseline = Some(baseline);
-                                            tracing::info!(
-                                                "Metric guard initialized with {cmd_count} commands"
-                                            );
+                                            // Preserve existing baseline across re-activations
+                                            // (e.g., user toggles off/on, or checkpoint respawn).
+                                            // Only create a new baseline if none exists.
+                                            if self.orchestrator.metric_baseline.is_none() {
+                                                let cmd_count = commands.len();
+                                                let mut baseline =
+                                                    orchestrator::MetricBaseline::new();
+                                                baseline.commands = commands;
+                                                self.orchestrator.metric_baseline = Some(baseline);
+                                                tracing::info!(
+                                                    "Metric guard initialized with {cmd_count} commands"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    "Metric guard: preserving existing baseline"
+                                                );
+                                            }
                                         }
                                     }
 
@@ -5781,7 +5791,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.verify_mode.as_str())
                                 .unwrap_or("floor");
-                            if verify_mode == "floor" {
+                            if verify_mode == "floor" && self.orchestrator.metric_baseline.is_none()
+                            {
                                 let cwd = self.get_focused_cwd();
                                 let commands = orchestrator::auto_detect_verify_commands(&cwd);
                                 if !commands.is_empty() {
@@ -6829,7 +6840,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|o| o.verify_mode.as_str())
                             .unwrap_or("floor");
 
-                        if verify_mode == "floor" {
+                        let already_verified = self
+                            .orchestrator
+                            .last_verified_iteration
+                            .map(|v| v == self.orchestrator.iteration)
+                            .unwrap_or(false);
+
+                        if verify_mode == "floor" && !already_verified {
                             if let Some(ref baseline) = self.orchestrator.metric_baseline {
                                 if !baseline.commands.is_empty() {
                                     let commands = baseline.commands.clone();
@@ -6884,12 +6901,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                                 parse_test_counts_from_output(
                                                                     &combined,
                                                                 );
+                                                            let exit_code =
+                                                                o.status.code().unwrap_or(-1);
+                                                            // If exit code is non-zero but parser
+                                                            // found no test counts, it's a build
+                                                            // failure — report 0/0 so the metric
+                                                            // guard display isn't "? / ?".
+                                                            let (passed, failed) =
+                                                                if exit_code != 0
+                                                                    && passed.is_none()
+                                                                    && failed.is_none()
+                                                                {
+                                                                    (Some(0), Some(0))
+                                                                } else {
+                                                                    (passed, failed)
+                                                                };
                                                             VerifyEventResult {
                                                                 command_name: cmd.name.clone(),
-                                                                exit_code: o
-                                                                    .status
-                                                                    .code()
-                                                                    .unwrap_or(-1),
+                                                                exit_code,
                                                                 tests_passed: passed,
                                                                 tests_failed: failed,
                                                                 output: combined,
@@ -6914,6 +6943,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .ok();
                                     // Block sending context until verification completes
                                     self.orchestrator.response_pending = true;
+                                    self.orchestrator.last_verified_iteration =
+                                        Some(self.orchestrator.iteration);
                                     return;
                                 }
                             }

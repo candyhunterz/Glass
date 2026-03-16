@@ -88,7 +88,7 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
     if root.join("Cargo.toml").exists() {
         return vec![VerifyCommand {
             name: "cargo test".to_string(),
-            cmd: "cargo test".to_string(),
+            cmd: "cargo test --workspace".to_string(),
         }];
     }
 
@@ -360,6 +360,8 @@ pub struct OrchestratorState {
     pub max_iterations: Option<u32>,
     /// Whether bounded stop has been triggered (deactivate after checkpoint completes).
     pub bounded_stop_pending: bool,
+    /// Last iteration that ran verification (to avoid duplicate verify per iteration).
+    pub last_verified_iteration: Option<u32>,
 }
 
 impl OrchestratorState {
@@ -381,6 +383,7 @@ impl OrchestratorState {
             last_good_commit: None,
             max_iterations: None,
             bounded_stop_pending: false,
+            last_verified_iteration: None,
         }
     }
 
@@ -514,6 +517,7 @@ pub fn append_iteration_log(
     // Get current git commit hash (short)
     let commit = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(project_root)
         .output()
         .ok()
         .and_then(|o| {
@@ -527,9 +531,11 @@ pub fn append_iteration_log(
         })
         .unwrap_or_else(|| "unknown".to_string());
 
+    // Sanitize description: replace newlines/tabs to prevent TSV corruption
+    let clean_desc = description.replace(['\n', '\r', '\t'], " ");
     let _ = writeln!(
         file,
-        "{iteration}\t{commit}\t{feature}\t\t{status}\t{description}"
+        "{iteration}\t{commit}\t{feature}\t\t{status}\t{clean_desc}"
     );
 }
 
@@ -1278,7 +1284,7 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
         let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
         assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].cmd, "cargo test");
+        assert_eq!(cmds[0].cmd, "cargo test --workspace");
     }
 
     #[test]
