@@ -273,4 +273,75 @@ mod tests {
         assert!(!pipeline.stages[0].is_tty);
         assert!(!pipeline.stages[1].is_tty);
     }
+
+    // --- Audit: edge-case tests ---
+
+    #[test]
+    fn split_pipes_no_spaces_around_pipe() {
+        let result = split_pipes("cmd1|cmd2");
+        assert_eq!(result, vec!["cmd1", "cmd2"]);
+    }
+
+    #[test]
+    fn split_pipes_with_redirection() {
+        let result = split_pipes("cat file | grep foo > out.txt");
+        assert_eq!(result, vec!["cat file", "grep foo > out.txt"]);
+    }
+
+    #[test]
+    fn split_pipes_stderr_redirect() {
+        let result = split_pipes("cmd1 2>&1 | cmd2");
+        assert_eq!(result, vec!["cmd1 2>&1", "cmd2"]);
+    }
+
+    #[test]
+    fn split_pipes_backgrounded_pipeline() {
+        let result = split_pipes("cmd1 | cmd2 &");
+        assert_eq!(result, vec!["cmd1", "cmd2 &"]);
+    }
+
+    #[test]
+    fn split_pipes_process_substitution() {
+        // <( starts a subshell; inner pipe should not split
+        let result = split_pipes("diff <(cmd1 | sort) <(cmd2 | sort)");
+        assert_eq!(
+            result,
+            vec!["diff <(cmd1 | sort) <(cmd2 | sort)"]
+        );
+    }
+
+    #[test]
+    fn split_pipes_arithmetic_expansion() {
+        let result = split_pipes("echo $((1+1)) | cat");
+        assert_eq!(result, vec!["echo $((1+1))", "cat"]);
+    }
+
+    #[test]
+    fn split_pipes_unmatched_quote_treats_as_single_stage() {
+        // Malformed: unclosed single quote — parser conservatively returns one stage
+        let result = split_pipes("echo 'unclosed | pipe");
+        assert_eq!(result, vec!["echo 'unclosed | pipe"]);
+    }
+
+    #[test]
+    fn split_pipes_pipe_at_start() {
+        let result = split_pipes("| cmd");
+        assert_eq!(result, vec!["", "cmd"]);
+    }
+
+    #[test]
+    fn split_pipes_pipe_at_end() {
+        let result = split_pipes("cmd |");
+        assert_eq!(result, vec!["cmd", ""]);
+    }
+
+    #[test]
+    fn extract_program_empty() {
+        assert_eq!(extract_program(""), "");
+    }
+
+    #[test]
+    fn extract_program_whitespace_only() {
+        assert_eq!(extract_program("   "), "");
+    }
 }
