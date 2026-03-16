@@ -128,6 +128,10 @@ pub enum PipelineHit {
     StageRow(usize),
 }
 
+/// Maximum number of blocks retained in memory per session.
+/// Prevents unbounded memory growth in very long-running sessions.
+const MAX_BLOCKS: usize = 10_000;
+
 /// Manages the collection of command blocks.
 pub struct BlockManager {
     blocks: Vec<Block>,
@@ -158,6 +162,13 @@ impl BlockManager {
     pub fn handle_event(&mut self, event: &OscEvent, line: usize) {
         match event {
             OscEvent::PromptStart => {
+                // Prune oldest blocks to prevent unbounded memory growth
+                if self.blocks.len() >= MAX_BLOCKS {
+                    let drain_count = MAX_BLOCKS / 10; // Remove 10% at a time
+                    self.blocks.drain(..drain_count);
+                    // Adjust current index after drain
+                    self.current = self.current.and_then(|idx| idx.checked_sub(drain_count));
+                }
                 let block = Block::new(line);
                 self.blocks.push(block);
                 self.current = Some(self.blocks.len() - 1);
@@ -165,6 +176,12 @@ impl BlockManager {
             OscEvent::CommandStart => {
                 if let Some(idx) = self.current {
                     if let Some(block) = self.blocks.get_mut(idx) {
+                        if block.state != BlockState::PromptActive {
+                            tracing::warn!(
+                                "Unexpected CommandStart in {:?} state (expected PromptActive)",
+                                block.state
+                            );
+                        }
                         block.state = BlockState::InputActive;
                         block.command_start_line = line;
                     }
@@ -173,6 +190,12 @@ impl BlockManager {
             OscEvent::CommandExecuted => {
                 if let Some(idx) = self.current {
                     if let Some(block) = self.blocks.get_mut(idx) {
+                        if block.state != BlockState::InputActive {
+                            tracing::warn!(
+                                "Unexpected CommandExecuted in {:?} state (expected InputActive)",
+                                block.state
+                            );
+                        }
                         block.state = BlockState::Executing;
                         block.output_start_line = Some(line);
                         block.started_at = Some(Instant::now());
@@ -186,6 +209,12 @@ impl BlockManager {
             OscEvent::CommandFinished { exit_code } => {
                 if let Some(idx) = self.current {
                     if let Some(block) = self.blocks.get_mut(idx) {
+                        if block.state != BlockState::Executing {
+                            tracing::warn!(
+                                "Unexpected CommandFinished in {:?} state (expected Executing)",
+                                block.state
+                            );
+                        }
                         block.state = BlockState::Complete;
                         block.exit_code = *exit_code;
                         block.output_end_line = Some(line);
@@ -237,7 +266,7 @@ impl BlockManager {
     /// Return blocks that overlap the given viewport.
     pub fn visible_blocks(&self, display_offset: usize, screen_lines: usize) -> Vec<&Block> {
         let viewport_start = display_offset;
-        let viewport_end = display_offset + screen_lines;
+        let viewport_end = display_offset.saturating_add(screen_lines);
 
         self.blocks
             .iter()
@@ -389,7 +418,13 @@ pub fn build_soi_hint_line(
     if min_lines > 0 && raw_line_count < min_lines as i64 {
         return None;
     }
-    Some(format!("\x1b[2m[glass-soi] {}\x1b[0m\r\n", summary))
+    // Truncate long summaries to prevent terminal buffer bloat
+    let display = if summary.len() > 200 {
+        format!("{}...", &summary[..197])
+    } else {
+        summary.to_string()
+    };
+    Some(format!("\x1b[2m[glass-soi] {}\x1b[0m\r\n", display))
 }
 
 /// Format a duration into a human-readable string.
@@ -916,5 +951,156 @@ mod tests {
         assert!(build_soi_hint_line("ok", true, true, 20, 25).is_some());
         // min_lines=0 always passes
         assert!(build_soi_hint_line("ok", true, true, 0, 0).is_some());
+    }
+
+    #[test]
+    fn soi_hint_line_truncates_long_summary() {
+        let long = "x".repeat(300);
+        let result = build_soi_hint_line(&long, true, true, 0, 100).unwrap();
+        // Should contain truncated text with "..." suffix
+        assert!(result.contains("..."));
+        // The raw summary portion should be at most 200 chars
+        let soi_prefix = "[glass-soi] ";
+        let start = result.find(soi_prefix).unwrap() + soi_prefix.len();
+        let end = result.find("...").unwrap() + 3;
+        assert!(end - start <= 200);
+    }
+
+    #[test]
+    fn soi_hint_line_short_summary_not_truncated() {
+        let short = "Build succeeded";
+        let result = build_soi_hint_line(short, true, true, 0, 100).unwrap();
+        assert!(result.contains(short));
+        assert!(!result.contains("..."));
+    }
+
+    #[test]
+    fn state_transition_command_start_from_prompt_active() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        assert_eq!(bm.blocks()[0].state, BlockState::PromptActive);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        assert_eq!(bm.blocks()[0].state, BlockState::InputActive);
+    }
+
+    #[test]
+    fn out_of_order_finished_before_executed() {
+        // CommandFinished without CommandExecuted should still complete
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        // Skip CommandExecuted, go straight to Finished
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(0),
+            },
+            5,
+        );
+        let block = &bm.blocks()[0];
+        assert_eq!(block.state, BlockState::Complete);
+        assert_eq!(block.exit_code, Some(0));
+        // started_at was never set, so duration is None
+        assert!(block.duration().is_none());
+    }
+
+    #[test]
+    fn out_of_order_executed_without_command_start() {
+        // CommandExecuted without CommandStart — block stays PromptActive→Executing
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandExecuted, 2);
+        assert_eq!(bm.blocks()[0].state, BlockState::Executing);
+    }
+
+    #[test]
+    fn rapid_full_lifecycle_under_1ms() {
+        let mut bm = BlockManager::new();
+        // All events at the same line — simulates sub-millisecond delivery
+        bm.handle_event(&OscEvent::PromptStart, 100);
+        bm.handle_event(&OscEvent::CommandStart, 100);
+        bm.handle_event(&OscEvent::CommandExecuted, 100);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(42),
+            },
+            100,
+        );
+        let block = &bm.blocks()[0];
+        assert_eq!(block.state, BlockState::Complete);
+        assert_eq!(block.exit_code, Some(42));
+        assert!(block.started_at.is_some());
+        assert!(block.finished_at.is_some());
+    }
+
+    #[test]
+    fn negative_exit_code_stored() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 2);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(-1),
+            },
+            3,
+        );
+        assert_eq!(bm.blocks()[0].exit_code, Some(-1));
+    }
+
+    #[test]
+    fn large_exit_code_stored() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 2);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(i32::MAX),
+            },
+            3,
+        );
+        assert_eq!(bm.blocks()[0].exit_code, Some(i32::MAX));
+    }
+
+    #[test]
+    fn signal_exit_code_137_stored() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        bm.handle_event(&OscEvent::CommandStart, 1);
+        bm.handle_event(&OscEvent::CommandExecuted, 2);
+        bm.handle_event(
+            &OscEvent::CommandFinished {
+                exit_code: Some(137),
+            },
+            3,
+        );
+        // 137 = 128 + SIGKILL(9)
+        assert_eq!(bm.blocks()[0].exit_code, Some(137));
+    }
+
+    #[test]
+    fn visible_blocks_saturating_add_no_overflow() {
+        let mut bm = BlockManager::new();
+        bm.handle_event(&OscEvent::PromptStart, 0);
+        // Should not panic on near-max values
+        let result = bm.visible_blocks(usize::MAX - 10, 100);
+        // Block at line 0 is below the viewport
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn block_pruning_at_max_capacity() {
+        let mut bm = BlockManager::new();
+        // Fill to MAX_BLOCKS
+        for i in 0..MAX_BLOCKS {
+            bm.handle_event(&OscEvent::PromptStart, i);
+        }
+        assert_eq!(bm.blocks().len(), MAX_BLOCKS);
+        // One more triggers pruning (removes 10%)
+        bm.handle_event(&OscEvent::PromptStart, MAX_BLOCKS);
+        assert!(bm.blocks().len() < MAX_BLOCKS);
+        assert_eq!(bm.blocks().len(), MAX_BLOCKS - MAX_BLOCKS / 10 + 1);
+        // Current block is valid
+        assert!(bm.current_block_mut().is_some());
     }
 }
