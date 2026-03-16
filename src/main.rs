@@ -6919,6 +6919,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if baseline.baseline_results.is_empty() {
                         baseline.baseline_results = verify_results.clone();
                         baseline.last_results = verify_results.clone();
+                        let baseline_desc = verify_results
+                            .iter()
+                            .map(|r| {
+                                let p = r
+                                    .tests_passed
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "?".into());
+                                let f = r
+                                    .tests_failed
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "?".into());
+                                format!("{}: {} passed, {} failed", r.command_name, p, f)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        orchestrator::append_iteration_log(
+                            &revert_cwd,
+                            self.orchestrator.iteration,
+                            "verify",
+                            "baseline",
+                            &format!("Baseline established: {baseline_desc}"),
+                        );
                         tracing::info!(
                             "Metric guard: baseline established with {} command(s)",
                             baseline.commands.len()
@@ -6940,6 +6962,33 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             baseline.revert_count += 1;
                             baseline.last_results = verify_results.clone();
+
+                            // Log revert to iterations.tsv
+                            let revert_desc = verify_results
+                                .iter()
+                                .map(|r| {
+                                    let p = r
+                                        .tests_passed
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "?".into());
+                                    let f = r
+                                        .tests_failed
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "?".into());
+                                    format!("{}: {} passed, {} failed", r.command_name, p, f)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            orchestrator::append_iteration_log(
+                                &revert_cwd,
+                                self.orchestrator.iteration,
+                                "verify",
+                                "revert",
+                                &format!(
+                                    "Regression detected, reverted to {}: {revert_desc}",
+                                    revert_commit.as_deref().unwrap_or("unknown")
+                                ),
+                            );
 
                             // Build METRIC_GUARD message for agent context
                             guard_msg = Some(format!(
@@ -6980,6 +7029,31 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             baseline.update_baseline_if_improved(&verify_results);
                             baseline.keep_count += 1;
+
+                            // Log keep to iterations.tsv
+                            let keep_desc = verify_results
+                                .iter()
+                                .map(|r| {
+                                    let p = r
+                                        .tests_passed
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "?".into());
+                                    let f = r
+                                        .tests_failed
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "?".into());
+                                    format!("{}: {} passed, {} failed", r.command_name, p, f)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            orchestrator::append_iteration_log(
+                                &revert_cwd,
+                                self.orchestrator.iteration,
+                                "verify",
+                                "keep",
+                                &keep_desc,
+                            );
+
                             baseline.last_results = verify_results;
                         }
                     }
