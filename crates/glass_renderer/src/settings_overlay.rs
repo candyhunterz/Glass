@@ -681,9 +681,15 @@ impl SettingsOverlayRenderer {
         let mut field_y = content_y + self.cell_height * 1.5;
         let fields = self.fields_for_section(section_index, config, editing, edit_buffer);
 
-        for (i, (label, value, is_toggle)) in fields.iter().enumerate() {
+        for (i, (label, value, is_toggle, is_display_only)) in fields.iter().enumerate() {
             let is_selected = i == field_index;
-            let label_color = if is_selected {
+            let label_color = if *is_display_only {
+                Rgb {
+                    r: 100,
+                    g: 100,
+                    b: 100,
+                }
+            } else if is_selected {
                 Rgb {
                     r: 255,
                     g: 255,
@@ -706,7 +712,13 @@ impl SettingsOverlayRenderer {
             });
 
             // Field value
-            let value_color = if *is_toggle {
+            let value_color = if *is_display_only {
+                Rgb {
+                    r: 100,
+                    g: 100,
+                    b: 100,
+                }
+            } else if *is_toggle {
                 if value == "ON" {
                     Rgb {
                         r: 106,
@@ -783,7 +795,7 @@ impl SettingsOverlayRenderer {
         config: &SettingsConfigSnapshot,
         editing: bool,
         edit_buffer: &str,
-    ) -> Vec<(&'static str, String, bool)> {
+    ) -> Vec<(&'static str, String, bool, bool)> {
         match section_index {
             0 => vec![
                 // Font
@@ -795,8 +807,14 @@ impl SettingsOverlayRenderer {
                         config.font_family.clone()
                     },
                     false,
+                    false,
                 ),
-                ("Font Size", format!("{:.1}", config.font_size), false),
+                (
+                    "Font Size",
+                    format!("{:.1}", config.font_size),
+                    false,
+                    false,
+                ),
             ],
             1 => vec![
                 // Agent Mode
@@ -808,16 +826,19 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
-                ("Mode", config.agent_mode.clone(), false),
+                ("Mode", config.agent_mode.clone(), false, false),
                 (
                     "Budget (USD)",
                     format!("${:.2}", config.agent_budget),
+                    false,
                     false,
                 ),
                 (
                     "Cooldown (sec)",
                     format!("{}", config.agent_cooldown),
+                    false,
                     false,
                 ),
             ],
@@ -831,6 +852,7 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
                 (
                     "Shell Summary",
@@ -840,8 +862,14 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
-                ("Min Lines", format!("{}", config.soi_min_lines), false),
+                (
+                    "Min Lines",
+                    format!("{}", config.soi_min_lines),
+                    false,
+                    false,
+                ),
             ],
             3 => vec![
                 // Snapshots
@@ -853,15 +881,18 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
                 (
                     "Max Storage (MB)",
                     format!("{}", config.snapshot_max_mb),
                     false,
+                    false,
                 ),
                 (
                     "Retention (days)",
                     format!("{}", config.snapshot_retention_days),
+                    false,
                     false,
                 ),
             ],
@@ -875,6 +906,7 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
                 (
                     "Auto Expand",
@@ -884,10 +916,12 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
                 (
                     "Max Capture (MB)",
                     format!("{}", config.pipes_max_capture_mb),
+                    false,
                     false,
                 ),
             ],
@@ -896,6 +930,7 @@ impl SettingsOverlayRenderer {
                 (
                     "Max Output (KB)",
                     format!("{}", config.history_max_output_kb),
+                    false,
                     false,
                 ),
             ],
@@ -909,6 +944,7 @@ impl SettingsOverlayRenderer {
                         "OFF".to_string()
                     },
                     true,
+                    false,
                 ),
                 (
                     "Max Iterations",
@@ -918,19 +954,27 @@ impl SettingsOverlayRenderer {
                         format!("{}", config.orchestrator_max_iterations)
                     },
                     false,
+                    false,
                 ),
                 (
                     "Silence Timeout (sec)",
                     format!("{}", config.orchestrator_silence_secs),
                     false,
+                    false,
                 ),
-                // Display-only fields
-                ("PRD Path", config.orchestrator_prd_path.clone(), false),
-                ("Mode", config.orchestrator_mode.clone(), false),
+                // Display-only fields (dimmed, not editable)
+                (
+                    "PRD Path",
+                    config.orchestrator_prd_path.clone(),
+                    false,
+                    true,
+                ),
+                ("Mode", config.orchestrator_mode.clone(), false, true),
                 (
                     "Verify Mode",
                     config.orchestrator_verify_mode.clone(),
                     false,
+                    true,
                 ),
             ],
             _ => vec![],
