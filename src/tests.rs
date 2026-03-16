@@ -191,16 +191,11 @@ mod settings_sync_tests {
 
         // Orchestrator
         assert!(!snap.orchestrator_enabled);
-        assert_eq!(snap.orchestrator_silence_secs, 30);
-        assert_eq!(snap.orchestrator_fast_trigger_secs, 5);
-        assert!(snap.orchestrator_prompt_pattern.is_empty());
-        assert_eq!(snap.orchestrator_prd_path, "PRD.md");
-        assert_eq!(snap.orchestrator_max_retries, 3);
-        assert_eq!(snap.orchestrator_verify_mode, "floor");
-        assert!(snap.orchestrator_verify_command.is_empty());
-        assert_eq!(snap.orchestrator_completion_artifact, ".glass/done");
         assert_eq!(snap.orchestrator_max_iterations, 0);
+        assert_eq!(snap.orchestrator_silence_secs, 60);
+        assert_eq!(snap.orchestrator_prd_path, "PRD.md");
         assert_eq!(snap.orchestrator_mode, "build");
+        assert_eq!(snap.orchestrator_verify_mode, "floor");
     }
 
     /// Verify SETTINGS_SECTIONS count matches the number of sections in
@@ -312,23 +307,7 @@ mod settings_sync_tests {
     }
 
     #[test]
-    fn activate_orchestrator_verify_mode_toggles() {
-        let config = GlassConfig::load_from_str("");
-        let (section, key, value) = handle_settings_activate(&config, 6, 6).unwrap();
-        assert_eq!(section, Some("agent.orchestrator"));
-        assert_eq!(key, "verify_mode");
-        assert_eq!(value, "\"disabled\""); // was "floor"
-    }
-
-    #[test]
-    fn activate_orchestrator_mode_toggles() {
-        let config = GlassConfig::load_from_str("");
-        let (section, key, value) = handle_settings_activate(&config, 6, 10).unwrap();
-        assert_eq!(section, Some("agent.orchestrator"));
-        assert_eq!(key, "orchestrator_mode");
-        assert_eq!(value, "\"audit\""); // was "build"
-    }
-
+    // verify_mode and orchestrator_mode toggles removed (auto-detected in V3)
     #[test]
     fn activate_nonexistent_field_returns_none() {
         let config = GlassConfig::load_from_str("");
@@ -409,28 +388,28 @@ mod settings_sync_tests {
     }
 
     #[test]
-    fn increment_orchestrator_silence_up() {
-        let config = GlassConfig::load_from_str("");
-        let (section, key, value) = handle_settings_increment(&config, 6, 1, true).unwrap();
-        assert_eq!(section, Some("agent.orchestrator"));
-        assert_eq!(key, "silence_timeout_secs");
-        assert_eq!(value, "35"); // 30 + 5
-    }
-
-    #[test]
     fn increment_orchestrator_max_iterations_up_from_zero() {
         let config = GlassConfig::load_from_str("");
-        let (_, key, value) = handle_settings_increment(&config, 6, 9, true).unwrap();
+        let (_, key, value) = handle_settings_increment(&config, 6, 1, true).unwrap();
         assert_eq!(key, "max_iterations");
-        assert_eq!(value, "5"); // 0 + 5
+        assert_eq!(value, "10"); // 0 + 10
     }
 
     #[test]
     fn increment_orchestrator_max_iterations_down_to_zero() {
-        let config = GlassConfig::load_from_str("[agent.orchestrator]\nmax_iterations = 5");
-        let (_, key, value) = handle_settings_increment(&config, 6, 9, false).unwrap();
+        let config = GlassConfig::load_from_str("[agent.orchestrator]\nmax_iterations = 10");
+        let (_, key, value) = handle_settings_increment(&config, 6, 1, false).unwrap();
         assert_eq!(key, "max_iterations");
         assert_eq!(value, "0"); // unlimited
+    }
+
+    #[test]
+    fn increment_orchestrator_silence_up() {
+        let config = GlassConfig::load_from_str("");
+        let (section, key, value) = handle_settings_increment(&config, 6, 2, true).unwrap();
+        assert_eq!(section, Some("agent.orchestrator"));
+        assert_eq!(key, "silence_timeout_secs");
+        assert_eq!(value, "70"); // 60 + 10
     }
 
     #[test]
@@ -474,21 +453,7 @@ mod settings_sync_tests {
         assert_eq!(reloaded.font_size, 14.5);
     }
 
-    #[test]
-    fn roundtrip_activate_orchestrator_verify_mode() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "").unwrap();
-
-        let config = GlassConfig::load_from_str("");
-        let (section, key, value) = handle_settings_activate(&config, 6, 6).unwrap();
-        glass_core::config::update_config_field(&path, section, key, &value).unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let reloaded = GlassConfig::load_from_str(&content);
-        let orch = reloaded.agent.unwrap().orchestrator.unwrap();
-        assert_eq!(orch.verify_mode, "disabled");
-    }
+    // roundtrip_activate_orchestrator_verify_mode removed (toggle removed in V3)
 }
 
 #[cfg(test)]
