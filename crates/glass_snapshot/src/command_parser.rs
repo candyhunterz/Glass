@@ -502,7 +502,14 @@ fn dispatch_command(cmd: &str, args: &[String], cwd: &Path) -> ParseResult {
         // Read-only commands -- skip snapshot
         "ls" | "dir" | "cat" | "type" | "head" | "tail" | "less" | "more" | "grep" | "rg"
         | "find" | "which" | "where" | "echo" | "printf" | "pwd" | "whoami" | "date" | "env"
-        | "set" | "wc" | "file" | "stat" | "df" | "du" | "ps" | "top" | "htop" => ParseResult {
+        | "set" | "wc" | "file" | "stat" | "df" | "du" | "ps" | "top" | "htop"
+        // Shell builtins that never modify files
+        | "cd" | "pushd" | "popd" | "dirs" | "export" | "unset" | "source" | "alias"
+        | "unalias" | "history" | "exit" | "return" | "true" | "false" | "test" | "help"
+        | "builtin" | "command" | "hash" | "ulimit" | "umask" | "times" | "wait"
+        | "jobs" | "fg" | "bg" | "kill" | "man" | "info" | "clear" | "reset" | "tput"
+        // PowerShell builtins for cd
+        | "Set-Location" | "sl" => ParseResult {
             targets: vec![],
             confidence: Confidence::ReadOnly,
         },
