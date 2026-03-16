@@ -118,7 +118,7 @@ pub struct OrchestratorSection {
     /// Whether the orchestrator loop is active. Default false.
     #[serde(default)]
     pub enabled: bool,
-    /// Seconds of PTY silence before triggering the orchestrator. Default 30.
+    /// Seconds of PTY silence before triggering the orchestrator. Default 60.
     #[serde(default = "default_orch_silence_timeout")]
     pub silence_timeout_secs: u64,
     /// Path to the project plan file (relative to CWD). Default "PRD.md".
@@ -156,7 +156,7 @@ pub struct OrchestratorSection {
 }
 
 fn default_orch_silence_timeout() -> u64 {
-    30
+    60
 }
 fn default_orch_prd_path() -> String {
     "PRD.md".to_string()
@@ -866,7 +866,7 @@ mod tests {
             .orchestrator
             .expect("orchestrator section");
         assert!(orch.enabled);
-        assert_eq!(orch.silence_timeout_secs, 30);
+        assert_eq!(orch.silence_timeout_secs, 60);
         assert_eq!(orch.prd_path, "PRD.md");
         assert_eq!(orch.checkpoint_path, ".glass/checkpoint.md");
         assert_eq!(orch.max_retries_before_stuck, 3);
