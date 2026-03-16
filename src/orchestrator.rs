@@ -402,8 +402,11 @@ impl OrchestratorState {
     }
 
     /// Record a response and check if we're stuck (N identical consecutive responses).
-    /// Returns true if stuck.
+    /// Returns true if stuck. max_retries of 0 disables stuck detection.
     pub fn record_response(&mut self, response: &str) -> bool {
+        if self.max_retries == 0 {
+            return false;
+        }
         self.recent_responses.push(response.to_string());
         if self.recent_responses.len() > self.max_retries as usize {
             self.recent_responses
@@ -419,8 +422,11 @@ impl OrchestratorState {
     }
 
     /// Record an environment fingerprint and check if stuck (N identical consecutive).
-    /// Returns true if stuck.
+    /// Returns true if stuck. max_retries of 0 disables stuck detection.
     pub fn record_fingerprint(&mut self, fp: StateFingerprint) -> bool {
+        if self.max_retries == 0 {
+            return false;
+        }
         self.recent_fingerprints.push(fp);
         if self.recent_fingerprints.len() > self.max_retries as usize {
             self.recent_fingerprints
@@ -1123,5 +1129,258 @@ mod tests {
         assert!(summary.contains("10/10"));
         assert!(!summary.contains("Metric guard"));
         assert!(summary.contains("checkpoint"));
+    }
+
+    // --- Audit area 3: edge-case tests ---
+
+    #[test]
+    fn parse_empty_string_returns_empty_type_text() {
+        // Empty or whitespace-only input should not produce actionable TypeText
+        match parse_agent_response("") {
+            AgentResponse::TypeText(s) => assert!(s.is_empty()),
+            other => panic!("Expected TypeText, got {:?}", other),
+        }
+        match parse_agent_response("   ") {
+            AgentResponse::TypeText(s) => assert!(s.is_empty()),
+            other => panic!("Expected TypeText, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_glass_wait_with_extra_text_is_type_text() {
+        // "GLASS_WAIT" must be the entire trimmed content
+        let resp = parse_agent_response("GLASS_WAIT and also do this");
+        assert!(matches!(resp, AgentResponse::TypeText(_)));
+    }
+
+    #[test]
+    fn parse_done_with_colon_no_space() {
+        assert_eq!(
+            parse_agent_response("GLASS_DONE:no space"),
+            AgentResponse::Done {
+                summary: "no space".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_checkpoint_nested_braces() {
+        let raw = r#"GLASS_CHECKPOINT: {"completed": "feat {x}", "next": "feat {y}"}"#;
+        match parse_agent_response(raw) {
+            AgentResponse::Checkpoint { completed, next } => {
+                assert_eq!(completed, "feat {x}");
+                assert_eq!(next, "feat {y}");
+            }
+            other => panic!("Expected Checkpoint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_verify_empty_commands_falls_through() {
+        let raw = r#"GLASS_VERIFY: {"commands": []}"#;
+        // Empty commands array should NOT produce Verify, falls through to TypeText
+        assert!(matches!(parse_agent_response(raw), AgentResponse::TypeText(_)));
+    }
+
+    #[test]
+    fn check_regression_empty_baselines() {
+        // Empty baseline + empty current = no regression
+        assert!(!MetricBaseline::check_regression(&[], &[]));
+    }
+
+    #[test]
+    fn check_regression_mismatched_lengths_ignores_extra() {
+        // Baseline has 1 entry, current has 2 — the extra entry is silently ignored by zip
+        let baseline = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![
+            VerifyResult {
+                command_name: "test".to_string(),
+                exit_code: 0,
+                tests_passed: Some(10),
+                tests_failed: Some(0),
+                errors: vec![],
+            },
+            VerifyResult {
+                command_name: "lint".to_string(),
+                exit_code: 1, // This failure is silently ignored!
+                tests_passed: None,
+                tests_failed: None,
+                errors: vec!["error".to_string()],
+            },
+        ];
+        // This documents the current behavior: extra entries are ignored
+        assert!(!MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn check_regression_all_none_counts() {
+        // Both baseline and current have None test counts — only exit code matters
+        let baseline = vec![VerifyResult {
+            command_name: "build".to_string(),
+            exit_code: 0,
+            tests_passed: None,
+            tests_failed: None,
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "build".to_string(),
+            exit_code: 0,
+            tests_passed: None,
+            tests_failed: None,
+            errors: vec![],
+        }];
+        assert!(!MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn check_regression_partial_none_passed() {
+        // Baseline has tests_passed=Some(10), current has tests_passed=None
+        // This should NOT be treated as regression since counts are incomparable
+        let baseline = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: None,
+            tests_failed: None,
+            errors: vec![],
+        }];
+        // Documents current behavior: None counts don't trigger regression
+        assert!(!MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn update_baseline_raises_floor_on_improvement() {
+        let mut baseline = MetricBaseline::new();
+        baseline.baseline_results = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(15),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        baseline.update_baseline_if_improved(&current);
+        assert_eq!(baseline.baseline_results[0].tests_passed, Some(15));
+    }
+
+    #[test]
+    fn update_baseline_does_not_raise_on_more_failures() {
+        let mut baseline = MetricBaseline::new();
+        baseline.baseline_results = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(15),
+            tests_failed: Some(2), // more failures
+            errors: vec![],
+        }];
+        baseline.update_baseline_if_improved(&current);
+        // Floor should NOT rise because failures increased
+        assert_eq!(baseline.baseline_results[0].tests_passed, Some(10));
+    }
+
+    #[test]
+    fn update_baseline_skips_when_counts_are_none() {
+        // Documents: build-only commands (no test counts) never get floor raised
+        let mut baseline = MetricBaseline::new();
+        baseline.baseline_results = vec![VerifyResult {
+            command_name: "build".to_string(),
+            exit_code: 0,
+            tests_passed: None,
+            tests_failed: None,
+            errors: vec![],
+        }];
+        let current = vec![VerifyResult {
+            command_name: "build".to_string(),
+            exit_code: 0,
+            tests_passed: Some(5),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        baseline.update_baseline_if_improved(&current);
+        // Baseline stays None because original tests_passed was None
+        assert_eq!(baseline.baseline_results[0].tests_passed, None);
+    }
+
+    #[test]
+    fn record_response_max_retries_zero_never_stuck() {
+        // max_retries=0 should mean "never trigger stuck"
+        let mut state = OrchestratorState::new(0);
+        assert!(!state.record_response("same"));
+        assert!(!state.record_response("same"));
+        assert!(!state.record_response("same"));
+    }
+
+    #[test]
+    fn record_response_max_retries_one() {
+        let mut state = OrchestratorState::new(1);
+        // A single response should trigger "stuck" with max_retries=1
+        assert!(state.record_response("anything"));
+    }
+
+    #[test]
+    fn should_auto_checkpoint_at_boundary() {
+        let mut state = OrchestratorState::new(3);
+        state.iterations_since_checkpoint = AUTO_CHECKPOINT_INTERVAL - 1;
+        assert!(!state.should_auto_checkpoint());
+        state.iterations_since_checkpoint = AUTO_CHECKPOINT_INTERVAL;
+        assert!(state.should_auto_checkpoint());
+    }
+
+    #[test]
+    fn in_grace_period_false_when_no_write() {
+        let state = OrchestratorState::new(3);
+        assert!(!state.in_grace_period());
+    }
+
+    #[test]
+    fn in_grace_period_true_after_write() {
+        let mut state = OrchestratorState::new(3);
+        state.mark_pty_write();
+        assert!(state.in_grace_period());
+    }
+
+    #[test]
+    fn checkpoint_changed_file_deleted_returns_false() {
+        // Documents: if file existed (baseline Some) but is now gone (mtime None),
+        // returns false — debatable but this is current behavior
+        let path = std::path::Path::new("nonexistent_test_file_xyz.md");
+        assert!(!checkpoint_changed(path, Some(std::time::SystemTime::now())));
+    }
+
+    #[test]
+    fn checkpoint_path_uses_config_override() {
+        let p = checkpoint_path("/project", Some("custom/checkpoint.md"));
+        assert_eq!(p, std::path::PathBuf::from("/project/custom/checkpoint.md"));
+    }
+
+    #[test]
+    fn checkpoint_path_uses_default() {
+        let p = checkpoint_path("/project", None);
+        assert_eq!(p, std::path::PathBuf::from("/project/.glass/checkpoint.md"));
     }
 }
