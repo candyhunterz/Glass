@@ -2122,13 +2122,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            if usage_prefix.is_empty() {
-                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-                            } else {
+                            let orch_status = if self.orchestrator.iteration == 0
+                                && !self.orchestrator_event_buffer.events.is_empty()
+                            {
+                                "[orchestrating | agent working (first turn)]".to_string()
+                            } else if self.orchestrator.response_pending {
                                 format!(
-                                    "{} | [orchestrating | iter #{}]",
-                                    usage_prefix, self.orchestrator.iteration
+                                    "[orchestrating | iter #{} | waiting for agent]",
+                                    self.orchestrator.iteration
                                 )
+                            } else {
+                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
+                            };
+                            if usage_prefix.is_empty() {
+                                orch_status
+                            } else {
+                                format!("{} | {}", usage_prefix, orch_status)
                             }
                         } else {
                             let mode = self
@@ -2418,13 +2427,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            if usage_prefix.is_empty() {
-                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-                            } else {
+                            let orch_status = if self.orchestrator.iteration == 0
+                                && !self.orchestrator_event_buffer.events.is_empty()
+                            {
+                                "[orchestrating | agent working (first turn)]".to_string()
+                            } else if self.orchestrator.response_pending {
                                 format!(
-                                    "{} | [orchestrating | iter #{}]",
-                                    usage_prefix, self.orchestrator.iteration
+                                    "[orchestrating | iter #{} | waiting for agent]",
+                                    self.orchestrator.iteration
                                 )
+                            } else {
+                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
+                            };
+                            if usage_prefix.is_empty() {
+                                orch_status
+                            } else {
+                                format!("{} | {}", usage_prefix, orch_status)
                             }
                         } else {
                             let mode = self
@@ -2679,122 +2697,124 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .events
                             .iter()
                             .map(|entry| {
-                            let relative_time = activated_at
-                                .map(|at| {
-                                    let elapsed = entry.timestamp.duration_since(at);
-                                    let total_secs = elapsed.as_secs();
-                                    format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
-                                })
-                                .unwrap_or_else(|| "--:--".to_string());
+                                let relative_time = activated_at
+                                    .map(|at| {
+                                        let elapsed = entry.timestamp.duration_since(at);
+                                        let total_secs = elapsed.as_secs();
+                                        format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+                                    })
+                                    .unwrap_or_else(|| "--:--".to_string());
 
-                            let (kind, text, expandable) = match &entry.event {
-                                orchestrator_events::OrchestratorEvent::Thinking {
-                                    token_estimate,
-                                    ..
-                                } => (
-                                    glass_renderer::OrchestratorEventKind::Thinking,
-                                    format!("Thinking...  ({token_estimate} tokens)"),
-                                    true,
-                                ),
-                                orchestrator_events::OrchestratorEvent::ToolCall {
-                                    name,
-                                    params_summary,
-                                } => (
-                                    glass_renderer::OrchestratorEventKind::ToolCall,
-                                    format!("-> {name}({params_summary})"),
-                                    false,
-                                ),
-                                orchestrator_events::OrchestratorEvent::ToolResult {
-                                    name,
-                                    output_summary,
-                                } => (
-                                    glass_renderer::OrchestratorEventKind::ToolResult,
-                                    format!("-> {name} -> {output_summary}"),
-                                    false,
-                                ),
-                                orchestrator_events::OrchestratorEvent::AgentText { text } => (
-                                    glass_renderer::OrchestratorEventKind::AgentText,
-                                    format!(
-                                        "Agent: \"{}\"",
-                                        orchestrator_events::truncate_display(text, 120)
+                                let (kind, text, expandable) = match &entry.event {
+                                    orchestrator_events::OrchestratorEvent::Thinking {
+                                        token_estimate,
+                                        ..
+                                    } => (
+                                        glass_renderer::OrchestratorEventKind::Thinking,
+                                        format!("Thinking...  ({token_estimate} tokens)"),
+                                        true,
                                     ),
-                                    false,
-                                ),
-                                orchestrator_events::OrchestratorEvent::ContextSent {
-                                    line_count,
-                                    has_soi,
-                                    has_nudge,
-                                } => {
-                                    let mut details = format!("{line_count} lines");
-                                    if *has_soi {
-                                        details.push_str(", SOI");
-                                    }
-                                    if *has_nudge {
-                                        details.push_str(", nudge");
-                                    }
-                                    (
-                                        glass_renderer::OrchestratorEventKind::ContextSent,
-                                        format!("Context sent ({details})"),
+                                    orchestrator_events::OrchestratorEvent::ToolCall {
+                                        name,
+                                        params_summary,
+                                    } => (
+                                        glass_renderer::OrchestratorEventKind::ToolCall,
+                                        format!("-> {name}({params_summary})"),
                                         false,
-                                    )
-                                }
-                                orchestrator_events::OrchestratorEvent::AgentRespawn { reason } => {
-                                    (
+                                    ),
+                                    orchestrator_events::OrchestratorEvent::ToolResult {
+                                        name,
+                                        output_summary,
+                                    } => (
+                                        glass_renderer::OrchestratorEventKind::ToolResult,
+                                        format!("-> {name} -> {output_summary}"),
+                                        false,
+                                    ),
+                                    orchestrator_events::OrchestratorEvent::AgentText { text } => (
+                                        glass_renderer::OrchestratorEventKind::AgentText,
+                                        format!(
+                                            "Agent: \"{}\"",
+                                            orchestrator_events::truncate_display(text, 120)
+                                        ),
+                                        false,
+                                    ),
+                                    orchestrator_events::OrchestratorEvent::ContextSent {
+                                        line_count,
+                                        has_soi,
+                                        has_nudge,
+                                    } => {
+                                        let mut details = format!("{line_count} lines");
+                                        if *has_soi {
+                                            details.push_str(", SOI");
+                                        }
+                                        if *has_nudge {
+                                            details.push_str(", nudge");
+                                        }
+                                        (
+                                            glass_renderer::OrchestratorEventKind::ContextSent,
+                                            format!("Context sent ({details})"),
+                                            false,
+                                        )
+                                    }
+                                    orchestrator_events::OrchestratorEvent::AgentRespawn {
+                                        reason,
+                                    } => (
                                         glass_renderer::OrchestratorEventKind::Respawn,
                                         format!("--- Agent respawned ({reason}) ---"),
                                         false,
-                                    )
-                                }
-                                orchestrator_events::OrchestratorEvent::VerifyResult {
-                                    passed,
-                                    failed,
-                                    regressed,
-                                } => {
-                                    let icon = if *regressed { "X" } else { "ok" };
-                                    let p =
-                                        passed.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
-                                    let f =
-                                        failed.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
-                                    (
-                                        glass_renderer::OrchestratorEventKind::Verify,
-                                        format!("{icon} Verify: {p} passed, {f} failed"),
-                                        false,
-                                    )
-                                }
-                            };
+                                    ),
+                                    orchestrator_events::OrchestratorEvent::VerifyResult {
+                                        passed,
+                                        failed,
+                                        regressed,
+                                    } => {
+                                        let icon = if *regressed { "X" } else { "ok" };
+                                        let p = passed
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "?".into());
+                                        let f = failed
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "?".into());
+                                        (
+                                            glass_renderer::OrchestratorEventKind::Verify,
+                                            format!("{icon} Verify: {p} passed, {f} failed"),
+                                            false,
+                                        )
+                                    }
+                                };
 
-                            let expanded = if expandable {
-                                self.orchestrator_event_buffer.is_expanded(entry.id)
-                            } else {
-                                false
-                            };
+                                let expanded = if expandable {
+                                    self.orchestrator_event_buffer.is_expanded(entry.id)
+                                } else {
+                                    false
+                                };
 
-                            // If expanded, replace summary text with full thinking text
-                            let display_text = if expanded {
-                                if let orchestrator_events::OrchestratorEvent::Thinking {
-                                    text,
-                                    ..
-                                } = &entry.event
-                                {
-                                    text.clone()
+                                // If expanded, replace summary text with full thinking text
+                                let display_text = if expanded {
+                                    if let orchestrator_events::OrchestratorEvent::Thinking {
+                                        text,
+                                        ..
+                                    } = &entry.event
+                                    {
+                                        text.clone()
+                                    } else {
+                                        text
+                                    }
                                 } else {
                                     text
-                                }
-                            } else {
-                                text
-                            };
+                                };
 
-                            glass_renderer::OrchestratorEventDisplay {
-                                id: entry.id,
-                                iteration: entry.iteration,
-                                relative_time,
-                                kind,
-                                text: display_text,
-                                expanded,
-                                expandable,
-                            }
-                        })
-                        .collect()
+                                glass_renderer::OrchestratorEventDisplay {
+                                    id: entry.id,
+                                    iteration: entry.iteration,
+                                    relative_time,
+                                    kind,
+                                    text: display_text,
+                                    expanded,
+                                    expandable,
+                                }
+                            })
+                            .collect()
                     };
 
                     let render_data = glass_renderer::ActivityOverlayRenderData {
