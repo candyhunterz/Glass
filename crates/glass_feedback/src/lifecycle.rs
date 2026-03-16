@@ -83,9 +83,9 @@ pub fn apply_findings(
 
         // Skip if there is a rejected rule with matching action + params still
         // in cooldown.
-        let in_cooldown = rejected_in_cooldown.iter().any(|r| {
-            r.action == action && params_equal(&r.action_params, &params)
-        });
+        let in_cooldown = rejected_in_cooldown
+            .iter()
+            .any(|r| r.action == action && params_equal(&r.action_params, &params));
         if in_cooldown {
             continue;
         }
@@ -267,8 +267,7 @@ pub fn process_cooldowns(rules: &mut [Rule]) {
     for rule in rules.iter_mut() {
         if rule.status == RuleStatus::Rejected && rule.cooldown_remaining > 0 {
             rule.cooldown_remaining -= 1;
-            if rule.cooldown_remaining == 0
-                && rule.status.can_transition_to(&RuleStatus::Proposed)
+            if rule.cooldown_remaining == 0 && rule.status.can_transition_to(&RuleStatus::Proposed)
             {
                 rule.status = RuleStatus::Proposed;
             }
@@ -634,7 +633,10 @@ mod tests {
 
         let new_rules = apply_findings(&mut rules, &findings, "run-002", false);
 
-        assert!(new_rules.is_empty(), "finding matching cooldown-rejected rule should be skipped");
+        assert!(
+            new_rules.is_empty(),
+            "finding matching cooldown-rejected rule should be skipped"
+        );
     }
 
     // -----------------------------------------------------------------------

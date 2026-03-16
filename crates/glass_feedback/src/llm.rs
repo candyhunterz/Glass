@@ -261,10 +261,7 @@ mod tests {
             prompt.contains("iterations: 42"),
             "prompt missing iteration count"
         );
-        assert!(
-            prompt.contains("reverts: 7"),
-            "prompt missing revert count"
-        );
+        assert!(prompt.contains("reverts: 7"), "prompt missing revert count");
     }
 
     #[test]
@@ -290,7 +287,10 @@ mod tests {
     #[test]
     fn build_prompt_truncates_prd() {
         // Build a PRD with 1000 words.
-        let prd: String = (1..=1000).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let prd: String = (1..=1000)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let data = RunData {
             prd_content: Some(prd),
             ..RunData::default()
@@ -415,7 +415,9 @@ mod tests {
     #[test]
     fn dedup_respects_capacity() {
         // 8 existing hints, max 10 => capacity of 2.
-        let existing: Vec<Rule> = (0..8).map(|i| hint_rule(&format!("existing hint {i}"))).collect();
+        let existing: Vec<Rule> = (0..8)
+            .map(|i| hint_rule(&format!("existing hint {i}")))
+            .collect();
 
         let new: Vec<Finding> = (0..5)
             .map(|i| Finding {

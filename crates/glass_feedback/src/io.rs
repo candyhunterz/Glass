@@ -140,9 +140,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::types::{
-        ConfigSnapshot, Rule, RuleStatus, RulesMeta, RunMetrics, Scope, Severity,
-    };
+    use crate::types::{ConfigSnapshot, Rule, RuleStatus, RulesMeta, RunMetrics, Scope, Severity};
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -252,9 +250,15 @@ mod tests {
 
         // Original file must have been renamed to .bak.
         let bak = path.with_extension("bak");
-        assert!(bak.exists(), ".bak file must exist after corruption recovery");
+        assert!(
+            bak.exists(),
+            ".bak file must exist after corruption recovery"
+        );
         // The original path should no longer exist.
-        assert!(!path.exists(), "corrupted file should have been moved to .bak");
+        assert!(
+            !path.exists(),
+            "corrupted file should have been moved to .bak"
+        );
     }
 
     // -----------------------------------------------------------------------

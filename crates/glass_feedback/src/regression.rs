@@ -77,10 +77,7 @@ pub fn take_snapshot(
 ///
 /// ## Improved criteria (any one triggers Improved, provided no regression)
 /// * Any of the three rates decreased by more than 0.05
-pub fn compare(
-    current: &RunMetrics,
-    baseline: Option<&RunMetrics>,
-) -> Option<RegressionResult> {
+pub fn compare(current: &RunMetrics, baseline: Option<&RunMetrics>) -> Option<RegressionResult> {
     let baseline = baseline?; // cold start → None
 
     let mut reasons: Vec<String> = Vec::new();
@@ -251,10 +248,7 @@ mod tests {
         let result = compare(&current, Some(&baseline));
         match result {
             Some(RegressionResult::Regressed { reasons }) => {
-                assert!(
-                    !reasons.is_empty(),
-                    "at least one reason must be reported"
-                );
+                assert!(!reasons.is_empty(), "at least one reason must be reported");
                 assert!(
                     reasons.iter().any(|r| r.contains("revert_rate")),
                     "reason must mention revert_rate"
@@ -323,12 +317,7 @@ mod tests {
         let metrics_path = dir.path().join("metrics.toml");
 
         // Write a snapshot for "run-crash" but no matching metrics entry.
-        take_snapshot(
-            config_values(),
-            vec![],
-            "run-crash",
-            &history_path,
-        );
+        take_snapshot(config_values(), vec![], "run-crash", &history_path);
 
         // metrics file has an entry for a different run
         let file = RunMetricsFile {
@@ -349,12 +338,7 @@ mod tests {
         let metrics_path = dir.path().join("metrics.toml");
 
         // Write a snapshot for "run-001"
-        take_snapshot(
-            config_values(),
-            vec![],
-            "run-001",
-            &history_path,
-        );
+        take_snapshot(config_values(), vec![], "run-001", &history_path);
 
         // metrics file has a matching entry for "run-001"
         let file = RunMetricsFile {
@@ -406,7 +390,11 @@ mod tests {
         let result = compare(&current, Some(&baseline));
         match result {
             Some(RegressionResult::Regressed { reasons }) => {
-                assert_eq!(reasons.len(), 3, "all three rate regressions must be reported");
+                assert_eq!(
+                    reasons.len(),
+                    3,
+                    "all three rate regressions must be reported"
+                );
             }
             other => panic!("expected Regressed, got {other:?}"),
         }

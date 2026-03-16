@@ -70,12 +70,17 @@ impl RuleEngine {
                 "force_commit" => {
                     if state.uncommitted_iterations >= 5 {
                         actions.push(RuleAction::TextInjection(
-                            "Commit your changes now — too many uncommitted iterations.".to_string(),
+                            "Commit your changes now — too many uncommitted iterations."
+                                .to_string(),
                         ));
                     }
                 }
                 "isolate_commits" => {
-                    let file_param = rule.action_params.get("file").map(String::as_str).unwrap_or("");
+                    let file_param = rule
+                        .action_params
+                        .get("file")
+                        .map(String::as_str)
+                        .unwrap_or("");
                     if !file_param.is_empty()
                         && state.recent_reverted_files.iter().any(|f| f == file_param)
                     {
@@ -227,7 +232,11 @@ mod tests {
         let global_path = save_rules(
             &dir,
             "global.toml",
-            vec![make_test_rule("g1", "extend_silence", RuleStatus::Confirmed)],
+            vec![make_test_rule(
+                "g1",
+                "extend_silence",
+                RuleStatus::Confirmed,
+            )],
         );
 
         let engine = RuleEngine::load(&project_path, &global_path, None);
@@ -295,7 +304,11 @@ mod tests {
     #[test]
     fn check_rules_returns_rust_level_actions() {
         let engine = RuleEngine {
-            rules: vec![make_test_rule("r1", "extend_silence", RuleStatus::Confirmed)],
+            rules: vec![make_test_rule(
+                "r1",
+                "extend_silence",
+                RuleStatus::Confirmed,
+            )],
         };
 
         let state = RunState::default();
@@ -365,7 +378,11 @@ mod tests {
     #[test]
     fn check_rules_verify_progress_fires() {
         let engine = RuleEngine {
-            rules: vec![make_test_rule("r1", "verify_progress", RuleStatus::Confirmed)],
+            rules: vec![make_test_rule(
+                "r1",
+                "verify_progress",
+                RuleStatus::Confirmed,
+            )],
         };
 
         let below = RunState {

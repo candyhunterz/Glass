@@ -92,8 +92,7 @@ fn detect_stuck_sensitivity(data: &RunData) -> Vec<Finding> {
     if data.stuck_count < 1 {
         return vec![];
     }
-    let waste_ratio =
-        data.waste_count as f64 / data.iterations.max(1) as f64;
+    let waste_ratio = data.waste_count as f64 / data.iterations.max(1) as f64;
     if waste_ratio >= 0.15 {
         return vec![];
     }
@@ -225,8 +224,7 @@ fn detect_hot_files(data: &RunData) -> Vec<Finding> {
             },
             evidence: format!(
                 "File '{}' was reverted {} time(s); isolating its commits may reduce churn.",
-                file,
-                counts[*file]
+                file, counts[*file]
             ),
             scope: Scope::Project,
         });
@@ -238,8 +236,8 @@ fn detect_hot_files(data: &RunData) -> Vec<Finding> {
 /// produce a BehavioralRule finding with action = "force_commit".
 fn detect_uncommitted_drift(data: &RunData) -> Vec<Finding> {
     let no_commits = data.iterations >= 5 && data.commit_count == 0;
-    let high_ratio = data.commit_count > 0
-        && data.iterations as f64 / data.commit_count as f64 > 5.0;
+    let high_ratio =
+        data.commit_count > 0 && data.iterations as f64 / data.commit_count as f64 > 5.0;
 
     if !no_commits && !high_ratio {
         return vec![];
@@ -581,8 +579,15 @@ fn parse_deliverables(prd: &str) -> Vec<String> {
             if trimmed.starts_with('-') || trimmed.starts_with('*') {
                 let content = trimmed.trim_start_matches(['-', '*', ' ']);
                 // Find first token containing '.' or '/'
-                if let Some(token) = content.split_whitespace().find(|t| t.contains('.') || t.contains('/')) {
-                    deliverables.push(token.trim_matches(['`', '"', '\'', '(', ')', '[', ']']).to_string());
+                if let Some(token) = content
+                    .split_whitespace()
+                    .find(|t| t.contains('.') || t.contains('/'))
+                {
+                    deliverables.push(
+                        token
+                            .trim_matches(['`', '"', '\'', '(', ')', '[', ']'])
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -1002,10 +1007,7 @@ mod tests {
     #[test]
     fn detect_hot_files_no_trigger_below_threshold() {
         let data = RunData {
-            reverted_files: vec![
-                "src/main.rs".to_string(),
-                "src/main.rs".to_string(),
-            ],
+            reverted_files: vec!["src/main.rs".to_string(), "src/main.rs".to_string()],
             ..Default::default()
         };
         assert!(detect_hot_files(&data).is_empty());
@@ -1015,8 +1017,13 @@ mod tests {
     fn detect_hot_files_multiple_hot_files() {
         let data = RunData {
             reverted_files: vec![
-                "a.rs".to_string(), "a.rs".to_string(), "a.rs".to_string(),
-                "b.rs".to_string(), "b.rs".to_string(), "b.rs".to_string(), "b.rs".to_string(),
+                "a.rs".to_string(),
+                "a.rs".to_string(),
+                "a.rs".to_string(),
+                "b.rs".to_string(),
+                "b.rs".to_string(),
+                "b.rs".to_string(),
+                "b.rs".to_string(),
             ],
             ..Default::default()
         };
@@ -1086,14 +1093,13 @@ mod tests {
 
     #[test]
     fn detect_instruction_overload_triggers() {
-        let response_with_list = "Here are the steps:\n1. Do this\n2. Do that\n3. Also this\n4. Finally that\n".to_string();
+        let response_with_list =
+            "Here are the steps:\n1. Do this\n2. Do that\n3. Also this\n4. Finally that\n"
+                .to_string();
         let data = RunData {
             iterations: 10,
             waste_count: 2, // 2/10 = 0.20 > 0.10
-            agent_responses: vec![
-                response_with_list.clone(),
-                response_with_list,
-            ],
+            agent_responses: vec![response_with_list.clone(), response_with_list],
             ..Default::default()
         };
         let findings = detect_instruction_overload(&data);
@@ -1114,10 +1120,7 @@ mod tests {
         let data = RunData {
             iterations: 10,
             waste_count: 1, // 1/10 = 0.10 — NOT > 0.10
-            agent_responses: vec![
-                response_with_list.clone(),
-                response_with_list,
-            ],
+            agent_responses: vec![response_with_list.clone(), response_with_list],
             ..Default::default()
         };
         assert!(detect_instruction_overload(&data).is_empty());
@@ -1183,7 +1186,8 @@ mod tests {
 
     #[test]
     fn detect_ordering_failure_triggers_dependency_then_revert() {
-        let tsv = "1\tkeep\tworking\n2\tkeep\tdependency not found\n3\trevert\tsomething\n4\tkeep\tfix\n";
+        let tsv =
+            "1\tkeep\tworking\n2\tkeep\tdependency not found\n3\trevert\tsomething\n4\tkeep\tfix\n";
         let data = RunData {
             iterations_tsv: tsv.to_string(),
             ..Default::default()
@@ -1422,16 +1426,34 @@ mod tests {
             config_max_retries: 3,
             checkpoint_count: 4,
             avg_idle_between_iterations_secs: 5.0, // below threshold — silence_waste NOT triggered
-            fingerprint_sequence: vec![1, 2, 3],  // max run=1 — stuck_leniency NOT triggered
+            fingerprint_sequence: vec![1, 2, 3],   // max run=1 — stuck_leniency NOT triggered
             ..Default::default()
         };
         let findings = analyze(&data);
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
-        assert!(ids.contains(&"silence-mismatch"), "expected silence-mismatch in {:?}", ids);
-        assert!(ids.contains(&"stuck-sensitivity"), "expected stuck-sensitivity in {:?}", ids);
-        assert!(ids.contains(&"checkpoint-overhead"), "expected checkpoint-overhead in {:?}", ids);
-        assert!(!ids.contains(&"silence-waste"), "silence-waste should NOT fire");
-        assert!(!ids.contains(&"stuck-leniency"), "stuck-leniency should NOT fire");
+        assert!(
+            ids.contains(&"silence-mismatch"),
+            "expected silence-mismatch in {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"stuck-sensitivity"),
+            "expected stuck-sensitivity in {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"checkpoint-overhead"),
+            "expected checkpoint-overhead in {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"silence-waste"),
+            "silence-waste should NOT fire"
+        );
+        assert!(
+            !ids.contains(&"stuck-leniency"),
+            "stuck-leniency should NOT fire"
+        );
     }
 
     #[test]
@@ -1474,10 +1496,19 @@ mod tests {
         };
         let findings = analyze(&data);
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
-        assert!(ids.contains(&"silence-mismatch"), "missing silence-mismatch");
+        assert!(
+            ids.contains(&"silence-mismatch"),
+            "missing silence-mismatch"
+        );
         assert!(ids.contains(&"silence-waste"), "missing silence-waste");
-        assert!(ids.contains(&"stuck-sensitivity"), "missing stuck-sensitivity");
+        assert!(
+            ids.contains(&"stuck-sensitivity"),
+            "missing stuck-sensitivity"
+        );
         assert!(ids.contains(&"stuck-leniency"), "missing stuck-leniency");
-        assert!(ids.contains(&"checkpoint-overhead"), "missing checkpoint-overhead");
+        assert!(
+            ids.contains(&"checkpoint-overhead"),
+            "missing checkpoint-overhead"
+        );
     }
 }
