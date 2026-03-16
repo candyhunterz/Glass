@@ -150,6 +150,9 @@ mod tests {
     fn empty_fallback() {
         let parsed = parse("");
         assert_eq!(parsed.output_type, OutputType::Csv);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 }

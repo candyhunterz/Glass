@@ -148,7 +148,8 @@ pub fn parse(output: &str) -> ParsedOutput {
 mod tests {
     use super::*;
 
-    const CARGO_ADD: &str = "    Updating crates.io index\n      Adding serde v1.0.200 to dependencies\n";
+    const CARGO_ADD: &str =
+        "    Updating crates.io index\n      Adding serde v1.0.200 to dependencies\n";
 
     const CARGO_UPDATE: &str = "    Updating crates.io index\n    Locking 3 packages to latest compatible versions\n    Updating serde v1.0.199 -> v1.0.200\n    Updating serde_json v1.0.119 -> v1.0.120\n";
 
@@ -163,7 +164,10 @@ mod tests {
         assert_eq!(parsed.summary.severity, Severity::Success);
         let adding = parsed.records.iter().find_map(|r| {
             if let OutputRecord::PackageEvent {
-                action, package, version, ..
+                action,
+                package,
+                version,
+                ..
             } = r
             {
                 if action == "adding" {
@@ -183,9 +187,9 @@ mod tests {
         let updates: Vec<_> = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::PackageEvent { action, .. } if action == "updating")
-            })
+            .filter(
+                |r| matches!(r, OutputRecord::PackageEvent { action, .. } if action == "updating"),
+            )
             .collect();
         assert!(updates.len() >= 2);
     }
@@ -225,6 +229,9 @@ mod tests {
     fn empty_fallback() {
         let parsed = parse("");
         assert_eq!(parsed.output_type, OutputType::Cargo);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 }

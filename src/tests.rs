@@ -427,9 +427,7 @@ mod settings_sync_tests {
 
     #[test]
     fn increment_orchestrator_max_iterations_down_to_zero() {
-        let config = GlassConfig::load_from_str(
-            "[agent.orchestrator]\nmax_iterations = 5",
-        );
+        let config = GlassConfig::load_from_str("[agent.orchestrator]\nmax_iterations = 5");
         let (_, key, value) = handle_settings_increment(&config, 6, 9, false).unwrap();
         assert_eq!(key, "max_iterations");
         assert_eq!(value, "0"); // unlimited

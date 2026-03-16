@@ -187,16 +187,20 @@ pub fn start_polling(
 /// Format usage for status bar display.
 /// Returns something like "5h: 42% | 7d: 15%" or "5h: --% | 7d: --%" if unavailable.
 pub fn format_status_bar(state: &UsageState) -> String {
-    if state.consecutive_failures >= 3 {
-        return "5h: --% | 7d: --%".to_string();
-    }
     match &state.data {
         Some(data) => {
-            format!(
-                "5h: {:.0}% | 7d: {:.0}%",
-                data.five_hour_utilization * 100.0,
-                data.seven_day_utilization * 100.0
-            )
+            // Show stale data with a marker if recent polls are failing,
+            // but still display the last known values rather than --.
+            let stale = data.fetched_at.elapsed() > Duration::from_secs(300);
+            if stale {
+                "5h: --% | 7d: --%".to_string()
+            } else {
+                format!(
+                    "5h: {:.0}% | 7d: {:.0}%",
+                    data.five_hour_utilization * 100.0,
+                    data.seven_day_utilization * 100.0
+                )
+            }
         }
         None => "5h: --% | 7d: --%".to_string(),
     }
@@ -242,7 +246,8 @@ mod tests {
     }
 
     #[test]
-    fn format_status_bar_disabled_after_failures() {
+    fn format_status_bar_shows_recent_data_despite_failures() {
+        // Recent data should still display even with consecutive failures
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.50,
@@ -253,6 +258,23 @@ mod tests {
             }),
             paused: false,
             consecutive_failures: 3,
+        };
+        assert_eq!(format_status_bar(&state), "5h: 50% | 7d: 10%");
+    }
+
+    #[test]
+    fn format_status_bar_stale_data_shows_dashes() {
+        // Data older than 5 minutes should show --
+        let state = UsageState {
+            data: Some(UsageData {
+                five_hour_utilization: 0.50,
+                five_hour_resets_at: String::new(),
+                seven_day_utilization: 0.10,
+                seven_day_resets_at: String::new(),
+                fetched_at: Instant::now() - Duration::from_secs(301),
+            }),
+            paused: false,
+            consecutive_failures: 0,
         };
         assert_eq!(format_status_bar(&state), "5h: --% | 7d: --%");
     }

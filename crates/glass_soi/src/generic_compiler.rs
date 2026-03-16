@@ -146,7 +146,11 @@ mod tests {
         assert_eq!(parsed.output_type, OutputType::GenericCompiler);
         assert_eq!(parsed.summary.severity, Severity::Error);
         if let OutputRecord::CompilerError {
-            file, line, column, message, ..
+            file,
+            line,
+            column,
+            message,
+            ..
         } = &parsed.records[0]
         {
             assert_eq!(file, "main.rs");
@@ -196,6 +200,9 @@ mod tests {
     fn empty_fallback() {
         let parsed = parse("");
         assert_eq!(parsed.output_type, OutputType::GenericCompiler);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 }

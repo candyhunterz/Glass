@@ -123,7 +123,8 @@ mod tests {
 
     #[test]
     fn warnings_only_severity() {
-        let output = "util.c:5:10: warning: implicit declaration\nutil.c:12:3: warning: unused variable\n";
+        let output =
+            "util.c:5:10: warning: implicit declaration\nutil.c:12:3: warning: unused variable\n";
         let parsed = parse(output);
         assert_eq!(parsed.summary.severity, Severity::Warning);
         assert_eq!(parsed.records.len(), 2);
@@ -131,7 +132,8 @@ mod tests {
 
     #[test]
     fn note_lines_severity() {
-        let output = "main.c:10:5: note: declared here\nmain.c:15:5: note: candidate function not viable\n";
+        let output =
+            "main.c:10:5: note: declared here\nmain.c:15:5: note: candidate function not viable\n";
         let parsed = parse(output);
         assert_eq!(parsed.summary.severity, Severity::Info);
     }
@@ -140,6 +142,9 @@ mod tests {
     fn empty_fallback() {
         let parsed = parse("");
         assert_eq!(parsed.output_type, OutputType::CppCompiler);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 }

@@ -19,7 +19,7 @@ pub mod tab_bar;
 
 pub use activity_overlay::{
     ActivityOverlayRenderData, ActivityOverlayRenderer, ActivityOverlayTextLabel,
-    ActivityViewFilter,
+    ActivityViewFilter, OrchestratorDashboard, OrchestratorEventDisplay, OrchestratorEventKind,
 };
 pub use block_renderer::{BlockLabel, BlockRenderer};
 pub use config_error_overlay::{ConfigErrorOverlay, ConfigErrorTextLabel};

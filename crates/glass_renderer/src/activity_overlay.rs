@@ -16,6 +16,7 @@ pub enum ActivityViewFilter {
     Locks,
     Observations,
     Messages,
+    Orchestrator,
 }
 
 impl ActivityViewFilter {
@@ -26,18 +27,20 @@ impl ActivityViewFilter {
             Self::Agents => Self::Locks,
             Self::Locks => Self::Observations,
             Self::Observations => Self::Messages,
-            Self::Messages => Self::All,
+            Self::Messages => Self::Orchestrator,
+            Self::Orchestrator => Self::All,
         }
     }
 
     /// Cycle to the previous filter tab.
     pub fn prev(self) -> Self {
         match self {
-            Self::All => Self::Messages,
+            Self::All => Self::Orchestrator,
             Self::Agents => Self::All,
             Self::Locks => Self::Agents,
             Self::Observations => Self::Locks,
             Self::Messages => Self::Observations,
+            Self::Orchestrator => Self::Messages,
         }
     }
 
@@ -49,6 +52,7 @@ impl ActivityViewFilter {
             Self::Locks => Some("lock"),
             Self::Observations => Some("observe"),
             Self::Messages => Some("message"),
+            Self::Orchestrator => None, // Not category-based
         }
     }
 
@@ -60,6 +64,7 @@ impl ActivityViewFilter {
             Self::Locks => "Locks",
             Self::Observations => "Observations",
             Self::Messages => "Messages",
+            Self::Orchestrator => "Orchestrator",
         }
     }
 }
@@ -79,6 +84,12 @@ pub struct ActivityOverlayRenderData {
     pub orchestrator_paused_reason: Option<String>,
     /// Usage tracker info.
     pub usage_text: Option<String>,
+    /// Orchestrator dashboard data (None if never activated).
+    pub orchestrator_dashboard: Option<OrchestratorDashboard>,
+    /// Orchestrator transcript events for display.
+    pub orchestrator_events: Vec<OrchestratorEventDisplay>,
+    /// Scroll offset for orchestrator transcript.
+    pub orchestrator_scroll_offset: usize,
 }
 
 /// Agent card data for the left column.
@@ -109,6 +120,49 @@ pub struct ActivityPinnedAlert {
     pub id: i64,
     pub summary: String,
     pub timestamp: i64,
+}
+
+/// Orchestrator dashboard data for the header section.
+#[derive(Debug)]
+pub struct OrchestratorDashboard {
+    pub iteration: u32,
+    pub iterations_since_checkpoint: u32,
+    pub max_iterations: Option<u32>,
+    pub mode: String,
+    pub verify_mode: String,
+    pub tests_passed: Option<u32>,
+    pub keep_count: u32,
+    pub revert_count: u32,
+    pub last_completed: String,
+    pub next_item: String,
+    pub active: bool,
+    pub response_pending: bool,
+    pub checkpoint_phase: String,
+    pub paused_reason: Option<String>,
+}
+
+/// Kind of orchestrator event for rendering color/icon selection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrchestratorEventKind {
+    Thinking,
+    ToolCall,
+    ToolResult,
+    AgentText,
+    ContextSent,
+    Respawn,
+    Verify,
+}
+
+/// Display-ready orchestrator event for the transcript.
+#[derive(Debug)]
+pub struct OrchestratorEventDisplay {
+    pub id: u64,
+    pub iteration: u32,
+    pub relative_time: String,
+    pub kind: OrchestratorEventKind,
+    pub text: String,
+    pub expanded: bool,
+    pub expandable: bool,
 }
 
 /// Text label for rendering in the overlay.
@@ -244,6 +298,7 @@ impl ActivityOverlayRenderer {
             ActivityViewFilter::Locks,
             ActivityViewFilter::Observations,
             ActivityViewFilter::Messages,
+            ActivityViewFilter::Orchestrator,
         ];
         let mut tab_x = viewport_width * 0.4;
         for f in &filters {
@@ -551,6 +606,268 @@ impl ActivityOverlayRenderer {
 
         labels
     }
+
+    /// Build text labels for the Orchestrator tab (dashboard header + transcript).
+    pub fn build_orchestrator_text(
+        &self,
+        data: &ActivityOverlayRenderData,
+        width: f32,
+        height: f32,
+    ) -> Vec<ActivityOverlayTextLabel> {
+        let mut labels = Vec::new();
+        let margin = 20.0;
+        let line_h = self.cell_height;
+        let mut y = margin;
+
+        // Title + filter tabs
+        let filters = [
+            ActivityViewFilter::All,
+            ActivityViewFilter::Agents,
+            ActivityViewFilter::Locks,
+            ActivityViewFilter::Observations,
+            ActivityViewFilter::Messages,
+            ActivityViewFilter::Orchestrator,
+        ];
+
+        let mut tab_x = margin;
+        for f in &filters {
+            let color = if *f == data.filter {
+                Rgb {
+                    r: 100,
+                    g: 200,
+                    b: 255,
+                }
+            } else {
+                Rgb {
+                    r: 120,
+                    g: 120,
+                    b: 120,
+                }
+            };
+            let label = f.label();
+            labels.push(ActivityOverlayTextLabel {
+                text: format!("[{label}]"),
+                x: tab_x,
+                y,
+                color,
+            });
+            tab_x += (label.len() as f32 + 3.0) * self.cell_width;
+        }
+        y += line_h * 1.5;
+
+        // Dashboard header
+        if let Some(ref dash) = data.orchestrator_dashboard {
+            let header_color = if dash.active {
+                Rgb {
+                    r: 0,
+                    g: 200,
+                    b: 120,
+                }
+            } else {
+                Rgb {
+                    r: 120,
+                    g: 120,
+                    b: 120,
+                }
+            };
+
+            // Line 1: Title + iteration
+            let iter_text = if let Some(max) = dash.max_iterations {
+                format!(
+                    "ORCHESTRATOR                iter #{} ({} since checkpoint, max {})",
+                    dash.iteration, dash.iterations_since_checkpoint, max
+                )
+            } else {
+                format!(
+                    "ORCHESTRATOR                iter #{} ({} since checkpoint)",
+                    dash.iteration, dash.iterations_since_checkpoint
+                )
+            };
+            labels.push(ActivityOverlayTextLabel {
+                text: iter_text,
+                x: margin,
+                y,
+                color: header_color,
+            });
+            y += line_h;
+
+            // Line 2: Mode + verify + guard
+            let verify_text = if let Some(passed) = dash.tests_passed {
+                format!("{} ({} passed)", dash.verify_mode, passed)
+            } else {
+                dash.verify_mode.clone()
+            };
+            labels.push(ActivityOverlayTextLabel {
+                text: format!(
+                    "Mode: {} | Verify: {} | Guard: {} kept, {} reverted",
+                    dash.mode, verify_text, dash.keep_count, dash.revert_count
+                ),
+                x: margin,
+                y,
+                color: Rgb {
+                    r: 180,
+                    g: 180,
+                    b: 180,
+                },
+            });
+            y += line_h;
+
+            // Line 3: Status
+            let status = if let Some(ref reason) = dash.paused_reason {
+                format!("Status: PAUSED ({reason})")
+            } else if dash.response_pending {
+                "Status: waiting for agent response".to_string()
+            } else if dash.active {
+                "Status: active".to_string()
+            } else {
+                "Status: inactive".to_string()
+            };
+            labels.push(ActivityOverlayTextLabel {
+                text: status,
+                x: margin,
+                y,
+                color: Rgb {
+                    r: 180,
+                    g: 180,
+                    b: 180,
+                },
+            });
+            y += line_h;
+
+            // Line 4: Checkpoint info
+            if !dash.last_completed.is_empty() || !dash.next_item.is_empty() {
+                labels.push(ActivityOverlayTextLabel {
+                    text: format!(
+                        "Last: \"{}\" -> Next: \"{}\"",
+                        dash.last_completed, dash.next_item
+                    ),
+                    x: margin,
+                    y,
+                    color: Rgb {
+                        r: 150,
+                        g: 150,
+                        b: 150,
+                    },
+                });
+                y += line_h;
+            }
+
+            // Separator
+            y += line_h * 0.5;
+            let sep_chars = ((width - margin * 2.0) / self.cell_width) as usize;
+            labels.push(ActivityOverlayTextLabel {
+                text: "-".repeat(sep_chars.min(200)),
+                x: margin,
+                y,
+                color: Rgb {
+                    r: 60,
+                    g: 60,
+                    b: 60,
+                },
+            });
+            y += line_h;
+        } else {
+            labels.push(ActivityOverlayTextLabel {
+                text: "Orchestrator inactive -- press Ctrl+Shift+O to start".to_string(),
+                x: margin,
+                y,
+                color: Rgb {
+                    r: 120,
+                    g: 120,
+                    b: 120,
+                },
+            });
+            y += line_h * 2.0;
+        }
+
+        // Transcript events
+        let available_lines = ((height - y - margin) / line_h).max(0.0) as usize;
+        let total_events = data.orchestrator_events.len();
+        let start = if total_events > available_lines + data.orchestrator_scroll_offset {
+            total_events - available_lines - data.orchestrator_scroll_offset
+        } else {
+            0
+        };
+        let end = total_events.saturating_sub(data.orchestrator_scroll_offset);
+
+        if start < end && end <= total_events {
+            for event in &data.orchestrator_events[start..end] {
+                let color = match event.kind {
+                    OrchestratorEventKind::Thinking => Rgb {
+                        r: 100,
+                        g: 100,
+                        b: 100,
+                    },
+                    OrchestratorEventKind::ToolCall => Rgb {
+                        r: 100,
+                        g: 150,
+                        b: 255,
+                    },
+                    OrchestratorEventKind::ToolResult => Rgb {
+                        r: 80,
+                        g: 200,
+                        b: 200,
+                    },
+                    OrchestratorEventKind::AgentText => Rgb {
+                        r: 80,
+                        g: 220,
+                        b: 120,
+                    },
+                    OrchestratorEventKind::ContextSent => Rgb {
+                        r: 80,
+                        g: 80,
+                        b: 80,
+                    },
+                    OrchestratorEventKind::Respawn => Rgb {
+                        r: 220,
+                        g: 180,
+                        b: 60,
+                    },
+                    OrchestratorEventKind::Verify => Rgb {
+                        r: 80,
+                        g: 220,
+                        b: 120,
+                    },
+                };
+
+                let prefix = format!("[#{} {}]  ", event.iteration, event.relative_time);
+                labels.push(ActivityOverlayTextLabel {
+                    text: format!("{prefix}{}", event.text),
+                    x: margin,
+                    y,
+                    color,
+                });
+
+                if event.expanded {
+                    // Expanded thinking takes multiple lines
+                    let text_lines: Vec<&str> = event.text.lines().collect();
+                    for line in text_lines.iter().skip(1) {
+                        y += line_h;
+                        if y > height - margin {
+                            break;
+                        }
+                        labels.push(ActivityOverlayTextLabel {
+                            text: format!("    {line}"),
+                            x: margin,
+                            y,
+                            color: Rgb {
+                                r: 120,
+                                g: 120,
+                                b: 120,
+                            },
+                        });
+                    }
+                }
+
+                y += line_h;
+                if y > height - margin {
+                    break;
+                }
+            }
+        }
+
+        labels
+    }
 }
 
 /// Format a unix timestamp's minute portion as "HH:MM".
@@ -570,13 +887,27 @@ mod tests {
         let f = ActivityViewFilter::All;
         assert_eq!(f.next(), ActivityViewFilter::Agents);
         assert_eq!(f.next().next(), ActivityViewFilter::Locks);
-        assert_eq!(ActivityViewFilter::Messages.next(), ActivityViewFilter::All);
+        assert_eq!(
+            ActivityViewFilter::Messages.next(),
+            ActivityViewFilter::Orchestrator
+        );
+        assert_eq!(
+            ActivityViewFilter::Orchestrator.next(),
+            ActivityViewFilter::All
+        );
     }
 
     #[test]
     fn test_activity_view_filter_prev() {
-        assert_eq!(ActivityViewFilter::All.prev(), ActivityViewFilter::Messages);
+        assert_eq!(
+            ActivityViewFilter::All.prev(),
+            ActivityViewFilter::Orchestrator
+        );
         assert_eq!(ActivityViewFilter::Agents.prev(), ActivityViewFilter::All);
+        assert_eq!(
+            ActivityViewFilter::Orchestrator.prev(),
+            ActivityViewFilter::Messages
+        );
     }
 
     #[test]

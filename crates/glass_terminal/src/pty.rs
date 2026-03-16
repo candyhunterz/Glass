@@ -348,6 +348,18 @@ fn glass_pty_loop(
         if events.is_empty() && !got_messages {
             parser.stop_sync(&mut *terminal.lock());
             event_proxy.send_event(Event::Wakeup);
+
+            // Check SmartTrigger even on idle timeouts — this is the primary
+            // path for silence detection when the terminal has no activity.
+            if let Some(ref mut trigger) = smart_trigger {
+                if trigger.should_fire() {
+                    let _ = app_proxy.send_event(AppEvent::OrchestratorSilence {
+                        window_id,
+                        session_id: event_proxy.session_id(),
+                    });
+                }
+            }
+
             continue;
         }
 

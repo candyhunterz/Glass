@@ -83,32 +83,40 @@ impl SessionMux {
         id
     }
 
-    /// Add a new tab with the given session, inserted after the active tab.
+    /// Add a new tab with the given session.
     ///
-    /// The new tab becomes active. Returns its `TabId`.
-    pub fn add_tab(&mut self, session: Session) -> TabId {
+    /// When `background` is false, the tab is inserted after the active tab
+    /// and becomes active. When `background` is true, the tab is appended
+    /// to the end without changing focus (used for MCP-created tabs during
+    /// orchestration).
+    pub fn add_tab(&mut self, session: Session, background: bool) -> TabId {
         let tab_id = TabId::new(self.next_id);
         let session_id = session.id;
         let title = session.title.clone();
         self.next_id += 1;
 
-        let insert_pos = if self.tabs.is_empty() {
-            0
-        } else {
-            self.active_tab + 1
+        let tab = Tab {
+            id: tab_id,
+            root: SplitNode::Leaf(session_id),
+            focused_pane: session_id,
+            title,
         };
 
-        self.tabs.insert(
-            insert_pos,
-            Tab {
-                id: tab_id,
-                root: SplitNode::Leaf(session_id),
-                focused_pane: session_id,
-                title,
-            },
-        );
         self.sessions.insert(session_id, session);
-        self.active_tab = insert_pos;
+
+        if background {
+            // Background tabs go at the end, don't change focus
+            self.tabs.push(tab);
+        } else {
+            // Foreground tabs insert after active and become active
+            let insert_pos = if self.tabs.is_empty() {
+                0
+            } else {
+                self.active_tab + 1
+            };
+            self.tabs.insert(insert_pos, tab);
+            self.active_tab = insert_pos;
+        }
 
         tab_id
     }

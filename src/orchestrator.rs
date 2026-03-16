@@ -1179,7 +1179,10 @@ mod tests {
     fn parse_verify_empty_commands_falls_through() {
         let raw = r#"GLASS_VERIFY: {"commands": []}"#;
         // Empty commands array should NOT produce Verify, falls through to TypeText
-        assert!(matches!(parse_agent_response(raw), AgentResponse::TypeText(_)));
+        assert!(matches!(
+            parse_agent_response(raw),
+            AgentResponse::TypeText(_)
+        ));
     }
 
     #[test]
@@ -1369,7 +1372,10 @@ mod tests {
         // Documents: if file existed (baseline Some) but is now gone (mtime None),
         // returns false — debatable but this is current behavior
         let path = std::path::Path::new("nonexistent_test_file_xyz.md");
-        assert!(!checkpoint_changed(path, Some(std::time::SystemTime::now())));
+        assert!(!checkpoint_changed(
+            path,
+            Some(std::time::SystemTime::now())
+        ));
     }
 
     #[test]

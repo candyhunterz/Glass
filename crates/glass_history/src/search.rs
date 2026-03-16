@@ -27,7 +27,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Search
     } else {
         (query, "")
     };
-    let escaped = format!("\"{}\"{}",  body.replace('"', "\"\""), suffix);
+    let escaped = format!("\"{}\"{}", body.replace('"', "\"\""), suffix);
 
     let mut stmt = conn.prepare(
         "SELECT c.id, c.command, c.cwd, c.exit_code, c.started_at,

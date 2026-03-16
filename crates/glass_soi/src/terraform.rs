@@ -187,7 +187,8 @@ mod tests {
 
     #[test]
     fn terraform_plan_add_only() {
-        let output = "  # aws_instance.web will be created\nPlan: 2 to add, 0 to change, 0 to destroy.\n";
+        let output =
+            "  # aws_instance.web will be created\nPlan: 2 to add, 0 to change, 0 to destroy.\n";
         let parsed = parse(output);
         assert_eq!(parsed.summary.severity, Severity::Success);
     }
@@ -196,6 +197,9 @@ mod tests {
     fn empty_fallback() {
         let parsed = parse("");
         assert_eq!(parsed.output_type, OutputType::Terraform);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 }

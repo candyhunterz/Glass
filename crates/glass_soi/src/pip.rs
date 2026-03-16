@@ -247,9 +247,9 @@ mod tests {
         let warnings = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::PackageEvent { action, .. } if action == "warning")
-            })
+            .filter(
+                |r| matches!(r, OutputRecord::PackageEvent { action, .. } if action == "warning"),
+            )
             .count();
         assert_eq!(warnings, 2);
     }
@@ -261,9 +261,7 @@ mod tests {
         let errors = parsed
             .records
             .iter()
-            .filter(|r| {
-                matches!(r, OutputRecord::PackageEvent { action, .. } if action == "error")
-            })
+            .filter(|r| matches!(r, OutputRecord::PackageEvent { action, .. } if action == "error"))
             .count();
         assert_eq!(errors, 2);
     }

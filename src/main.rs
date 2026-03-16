@@ -5,6 +5,7 @@
 mod history;
 #[allow(dead_code)]
 mod orchestrator;
+mod orchestrator_events;
 mod usage_tracker;
 
 use std::borrow::Cow;
@@ -311,6 +312,12 @@ struct Processor {
     activity_scroll_offset: usize,
     /// Whether verbose mode is on (shows dismissed events).
     activity_verbose: bool,
+    /// Orchestrator event ring buffer for the overlay transcript.
+    orchestrator_event_buffer: orchestrator_events::OrchestratorEventBuffer,
+    /// Separate scroll offset for orchestrator transcript (independent of activity overlay).
+    orchestrator_scroll_offset: usize,
+    /// When orchestrator was activated (for relative timestamps in transcript).
+    orchestrator_activated_at: Option<std::time::Instant>,
     /// Whether the settings overlay is visible.
     settings_overlay_visible: bool,
     /// Active tab in the settings overlay.
@@ -545,11 +552,13 @@ fn create_session(
         .map(|h| h.max_output_capture_kb)
         .unwrap_or(50);
     let pipes_enabled = config.pipes.as_ref().map(|p| p.enabled).unwrap_or(true);
+    // Always create the SmartTrigger when a silence timeout is configured.
+    // The OrchestratorSilence handler gates on self.orchestrator.active,
+    // so events are harmlessly ignored when orchestration isn't running.
     let orchestrator_silence_secs = config
         .agent
         .as_ref()
         .and_then(|a| a.orchestrator.as_ref())
-        .filter(|o| o.enabled)
         .map(|o| o.silence_timeout_secs)
         .unwrap_or(0);
     let fast_trigger = config
@@ -747,39 +756,15 @@ fn try_spawn_agent(
     use std::io::{BufRead, BufReader, BufWriter, Write};
     use std::process::{Command, Stdio};
 
-    // Check if claude binary is available (also warms up Windows console subsystem)
-    let mut version_cmd = Command::new("claude");
-    version_cmd
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        version_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let version_result = version_cmd.status();
-    let claude_available = version_result.is_ok();
     // Debug: write spawn diagnostics to file
     let diag_path = dirs::home_dir()
         .map(|h| h.join(".glass").join("agent-diag.txt"))
         .unwrap_or_else(|| std::path::PathBuf::from("agent-diag.txt"));
     let mut diag = format!(
-        "timestamp: {:?}\nclaude --version result: {:?}\nclaude_available: {}\nPATH: {}\n",
+        "timestamp: {:?}\nPATH: {}\n",
         std::time::SystemTime::now(),
-        version_result,
-        claude_available,
         std::env::var("PATH").unwrap_or_else(|_| "NOT SET".to_string()),
     );
-
-    if !claude_available {
-        diag.push_str("FAILED: claude not on PATH\n");
-        let _ = std::fs::write(&diag_path, &diag);
-        tracing::warn!(
-            "AgentRuntime: 'claude' binary not found on PATH -- agent runtime disabled"
-        );
-        return None;
-    }
 
     // Write system prompt
     let glass_dir = dirs::home_dir()
@@ -1085,6 +1070,11 @@ Session Continuity:
         .spawn(move || {
             let reader = BufReader::new(stdout);
             let mut current_session_id = String::new();
+            // Buffer the last assistant text so we only emit OrchestratorResponse
+            // on "result" (end of conversation turn), not on intermediate tool-loop text.
+            let mut buffered_response: Option<String> = None;
+            let mut tool_id_to_name: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
             for line in reader.lines() {
                 let line = match line {
                     Ok(l) => l,
@@ -1110,6 +1100,16 @@ Session Continuity:
                             glass_core::agent_runtime::parse_cost_from_result(&line).unwrap_or(0.0);
                         let _ = proxy_reader
                             .send_event(glass_core::event::AppEvent::AgentQueryResult { cost_usd });
+
+                        // Emit the buffered response now that the turn is complete.
+                        // This is the FINAL assistant text after all tool calls.
+                        if let Some(response) = buffered_response.take() {
+                            let _ = proxy_reader.send_event(
+                                glass_core::event::AppEvent::OrchestratorResponse {
+                                    response,
+                                },
+                            );
+                        }
                     }
                     Some("assistant") => {
                         // Concatenate all text content blocks
@@ -1117,12 +1117,52 @@ Session Continuity:
                         if let Some(content) = val.get("message").and_then(|m| m.get("content")) {
                             if let Some(arr) = content.as_array() {
                                 for block in arr {
-                                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        if let Some(text) =
-                                            block.get("text").and_then(|t| t.as_str())
-                                        {
-                                            full_text.push_str(text);
+                                    match block.get("type").and_then(|t| t.as_str()) {
+                                        Some("text") => {
+                                            if let Some(text) =
+                                                block.get("text").and_then(|t| t.as_str())
+                                            {
+                                                full_text.push_str(text);
+                                            }
                                         }
+                                        Some("thinking") => {
+                                            if let Some(text) =
+                                                block.get("thinking").and_then(|t| t.as_str())
+                                            {
+                                                let _ = proxy_reader.send_event(
+                                                    glass_core::event::AppEvent::OrchestratorThinking {
+                                                        text: text.to_string(),
+                                                    },
+                                                );
+                                            }
+                                        }
+                                        Some("tool_use") => {
+                                            let name = block
+                                                .get("name")
+                                                .and_then(|n| n.as_str())
+                                                .unwrap_or("?");
+                                            let id = block
+                                                .get("id")
+                                                .and_then(|i| i.as_str())
+                                                .unwrap_or("");
+                                            let input = block
+                                                .get("input")
+                                                .map(|i| i.to_string())
+                                                .unwrap_or_default();
+                                            let summary =
+                                                orchestrator_events::truncate_display(&input, 200);
+                                            if !id.is_empty() {
+                                                tool_id_to_name
+                                                    .insert(id.to_string(), name.to_string());
+                                            }
+                                            let _ = proxy_reader.send_event(
+                                                glass_core::event::AppEvent::OrchestratorToolCall {
+                                                    name: name.to_string(),
+                                                    params_summary: summary,
+                                                },
+                                            );
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -1145,13 +1185,54 @@ Session Continuity:
                                 },
                             );
                         }
-                        // Route all assistant responses to the orchestrator
+                        // Buffer text for orchestrator — only emitted on "result"
                         if !full_text.is_empty() {
-                            let _ = proxy_reader.send_event(
-                                glass_core::event::AppEvent::OrchestratorResponse {
-                                    response: full_text.clone(),
-                                },
-                            );
+                            buffered_response = Some(full_text);
+                        }
+                    }
+                    Some("user") => {
+                        // Tool results for orchestrator transcript
+                        if let Some(content) = val.get("message").and_then(|m| m.get("content")) {
+                            if let Some(arr) = content.as_array() {
+                                for block in arr {
+                                    if block.get("type").and_then(|t| t.as_str())
+                                        == Some("tool_result")
+                                    {
+                                        let tool_use_id = block
+                                            .get("tool_use_id")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("?");
+                                        let tool_name = tool_id_to_name
+                                            .remove(tool_use_id)
+                                            .unwrap_or_else(|| tool_use_id.to_string());
+                                        let content_text = match block.get("content") {
+                                            Some(c) if c.is_string() => {
+                                                c.as_str().unwrap_or("").to_string()
+                                            }
+                                            Some(c) if c.is_array() => c
+                                                .as_array()
+                                                .unwrap()
+                                                .iter()
+                                                .filter_map(|b| {
+                                                    b.get("text").and_then(|t| t.as_str())
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join("\n"),
+                                            _ => String::new(),
+                                        };
+                                        let summary = orchestrator_events::truncate_display(
+                                            &content_text,
+                                            200,
+                                        );
+                                        let _ = proxy_reader.send_event(
+                                            glass_core::event::AppEvent::OrchestratorToolResult {
+                                                name: tool_name,
+                                                output_summary: summary,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -1401,9 +1482,8 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
     static RE_FAILED: OnceLock<regex::Regex> = OnceLock::new();
 
     let re_rust = RE_RUST.get_or_init(|| regex::Regex::new(r"(\d+) passed; (\d+) failed").unwrap());
-    let re_jest = RE_JEST.get_or_init(|| {
-        regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed").unwrap()
-    });
+    let re_jest = RE_JEST
+        .get_or_init(|| regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed").unwrap());
     let re_passed = RE_PASSED.get_or_init(|| regex::Regex::new(r"(\d+) passed").unwrap());
     let re_failed = RE_FAILED.get_or_init(|| regex::Regex::new(r"(\d+) failed").unwrap());
 
@@ -1517,6 +1597,13 @@ impl Processor {
     /// Kill the current agent and respawn with a fresh system prompt.
     /// `handoff_content` is the initial message sent to the new agent.
     fn respawn_orchestrator_agent(&mut self, cwd: &str, handoff_content: String) {
+        self.orchestrator_event_buffer.push(
+            orchestrator_events::OrchestratorEvent::AgentRespawn {
+                reason: "checkpoint".to_string(),
+            },
+            self.orchestrator.iteration,
+        );
+
         // Kill old agent and increment generation to ignore stale AgentCrashed events
         self.agent_runtime = None;
         self.agent_generation += 1;
@@ -1583,7 +1670,11 @@ impl Processor {
         if let Some(ref mut rt) = self.agent_runtime {
             rt.generation = self.agent_generation;
         }
-        tracing::info!("Orchestrator: respawned agent gen={} for {}", self.agent_generation, cwd);
+        tracing::info!(
+            "Orchestrator: respawned agent gen={} for {}",
+            self.agent_generation,
+            cwd
+        );
     }
 }
 
@@ -1893,6 +1984,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             title: tab.title.clone(),
                             is_active,
                             has_locks: is_active && self.coordination_state.lock_count > 0,
+                            agent_created: false,
                         }
                     })
                     .collect();
@@ -2499,6 +2591,198 @@ impl ApplicationHandler<AppEvent> for Processor {
                         })
                         .collect();
 
+                    // Build orchestrator dashboard data
+                    let orch_dashboard = if self.orchestrator_activated_at.is_some() {
+                        let mode = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.orchestrator_mode.clone())
+                            .unwrap_or_else(|| "build".to_string());
+                        let verify_mode = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.verify_mode.clone())
+                            .unwrap_or_else(|| "floor".to_string());
+                        let (tests_passed, keep_count, revert_count) =
+                            if let Some(ref baseline) = self.orchestrator.metric_baseline {
+                                (
+                                    baseline.last_results.first().and_then(|r| r.tests_passed),
+                                    baseline.keep_count,
+                                    baseline.revert_count,
+                                )
+                            } else {
+                                (None, 0, 0)
+                            };
+                        let checkpoint_phase = match &self.orchestrator.checkpoint_phase {
+                            orchestrator::CheckpointPhase::Idle => "idle".to_string(),
+                            orchestrator::CheckpointPhase::WaitingForCheckpoint { .. } => {
+                                "waiting for checkpoint".to_string()
+                            }
+                            orchestrator::CheckpointPhase::ClearingSent => {
+                                "clearing sent".to_string()
+                            }
+                        };
+                        let paused_reason = if self
+                            .usage_state
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|s| s.paused)
+                            .unwrap_or(false)
+                        {
+                            Some("Usage limit".to_string())
+                        } else {
+                            None
+                        };
+                        Some(glass_renderer::OrchestratorDashboard {
+                            iteration: self.orchestrator.iteration,
+                            iterations_since_checkpoint: self
+                                .orchestrator
+                                .iterations_since_checkpoint,
+                            max_iterations: self.orchestrator.max_iterations,
+                            mode,
+                            verify_mode,
+                            tests_passed,
+                            keep_count,
+                            revert_count,
+                            last_completed: self.orchestrator.last_checkpoint_completed.clone(),
+                            next_item: self.orchestrator.last_checkpoint_next.clone(),
+                            active: self.orchestrator.active,
+                            response_pending: self.orchestrator.response_pending,
+                            checkpoint_phase,
+                            paused_reason,
+                        })
+                    } else {
+                        None
+                    };
+
+                    // Build orchestrator event displays
+                    let activated_at = self.orchestrator_activated_at;
+                    let orch_events: Vec<glass_renderer::OrchestratorEventDisplay> = self
+                        .orchestrator_event_buffer
+                        .events
+                        .iter()
+                        .map(|entry| {
+                            let relative_time = activated_at
+                                .map(|at| {
+                                    let elapsed = entry.timestamp.duration_since(at);
+                                    let total_secs = elapsed.as_secs();
+                                    format!("{:02}:{:02}", total_secs / 60, total_secs % 60)
+                                })
+                                .unwrap_or_else(|| "--:--".to_string());
+
+                            let (kind, text, expandable) = match &entry.event {
+                                orchestrator_events::OrchestratorEvent::Thinking {
+                                    token_estimate,
+                                    ..
+                                } => (
+                                    glass_renderer::OrchestratorEventKind::Thinking,
+                                    format!("Thinking...  ({token_estimate} tokens)"),
+                                    true,
+                                ),
+                                orchestrator_events::OrchestratorEvent::ToolCall {
+                                    name,
+                                    params_summary,
+                                } => (
+                                    glass_renderer::OrchestratorEventKind::ToolCall,
+                                    format!("-> {name}({params_summary})"),
+                                    false,
+                                ),
+                                orchestrator_events::OrchestratorEvent::ToolResult {
+                                    name,
+                                    output_summary,
+                                } => (
+                                    glass_renderer::OrchestratorEventKind::ToolResult,
+                                    format!("-> {name} -> {output_summary}"),
+                                    false,
+                                ),
+                                orchestrator_events::OrchestratorEvent::AgentText { text } => (
+                                    glass_renderer::OrchestratorEventKind::AgentText,
+                                    format!(
+                                        "Agent: \"{}\"",
+                                        orchestrator_events::truncate_display(text, 120)
+                                    ),
+                                    false,
+                                ),
+                                orchestrator_events::OrchestratorEvent::ContextSent {
+                                    line_count,
+                                    has_soi,
+                                    has_nudge,
+                                } => {
+                                    let mut details = format!("{line_count} lines");
+                                    if *has_soi {
+                                        details.push_str(", SOI");
+                                    }
+                                    if *has_nudge {
+                                        details.push_str(", nudge");
+                                    }
+                                    (
+                                        glass_renderer::OrchestratorEventKind::ContextSent,
+                                        format!("Context sent ({details})"),
+                                        false,
+                                    )
+                                }
+                                orchestrator_events::OrchestratorEvent::AgentRespawn { reason } => {
+                                    (
+                                        glass_renderer::OrchestratorEventKind::Respawn,
+                                        format!("--- Agent respawned ({reason}) ---"),
+                                        false,
+                                    )
+                                }
+                                orchestrator_events::OrchestratorEvent::VerifyResult {
+                                    passed,
+                                    failed,
+                                    regressed,
+                                } => {
+                                    let icon = if *regressed { "X" } else { "ok" };
+                                    let p =
+                                        passed.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+                                    let f =
+                                        failed.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+                                    (
+                                        glass_renderer::OrchestratorEventKind::Verify,
+                                        format!("{icon} Verify: {p} passed, {f} failed"),
+                                        false,
+                                    )
+                                }
+                            };
+
+                            let expanded = if expandable {
+                                self.orchestrator_event_buffer.is_expanded(entry.id)
+                            } else {
+                                false
+                            };
+
+                            // If expanded, replace summary text with full thinking text
+                            let display_text = if expanded {
+                                if let orchestrator_events::OrchestratorEvent::Thinking {
+                                    text,
+                                    ..
+                                } = &entry.event
+                                {
+                                    text.clone()
+                                } else {
+                                    text
+                                }
+                            } else {
+                                text
+                            };
+
+                            glass_renderer::OrchestratorEventDisplay {
+                                id: entry.id,
+                                iteration: entry.iteration,
+                                relative_time,
+                                kind,
+                                text: display_text,
+                                expanded,
+                                expandable,
+                            }
+                        })
+                        .collect();
+
                     let render_data = glass_renderer::ActivityOverlayRenderData {
                         agents,
                         events,
@@ -2524,6 +2808,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .as_ref()
                             .and_then(|s| s.lock().ok())
                             .map(|st| crate::usage_tracker::format_status_bar(&st)),
+                        orchestrator_dashboard: orch_dashboard,
+                        orchestrator_events: orch_events,
+                        orchestrator_scroll_offset: self.orchestrator_scroll_offset,
                     };
 
                     ctx.frame_renderer.draw_activity_overlay(
@@ -3003,7 +3290,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.height,
                                     1,
                                 );
-                                ctx.session_mux.add_tab(session);
+                                ctx.session_mux.add_tab(session, false);
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -3350,6 +3637,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.orchestrator.active = !self.orchestrator.active;
                                 if self.orchestrator.active {
                                     tracing::info!("Orchestrator: enabled by user");
+                                    self.orchestrator_activated_at =
+                                        Some(std::time::Instant::now());
                                     self.orchestrator.reset_stuck();
                                     self.orchestrator.iterations_since_checkpoint = 0;
                                     self.orchestrator.bounded_stop_pending = false;
@@ -3816,6 +4105,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.activity_overlay_visible = false;
                                 self.activity_view_filter = Default::default();
                                 self.activity_scroll_offset = 0;
+                                self.orchestrator_scroll_offset = 0;
                                 self.activity_verbose = false;
                                 ctx.window.request_redraw();
                                 return;
@@ -3829,6 +4119,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Key::Named(NamedKey::Tab) => {
                                 self.activity_view_filter = self.activity_view_filter.next();
                                 self.activity_scroll_offset = 0;
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp)
+                                if self.activity_view_filter
+                                    == glass_renderer::ActivityViewFilter::Orchestrator =>
+                            {
+                                let step =
+                                    if matches!(event.logical_key, Key::Named(NamedKey::PageUp)) {
+                                        20
+                                    } else {
+                                        1
+                                    };
+                                self.orchestrator_scroll_offset =
+                                    self.orchestrator_scroll_offset.saturating_add(step);
+                                ctx.window.request_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::PageDown)
+                                if self.activity_view_filter
+                                    == glass_renderer::ActivityViewFilter::Orchestrator =>
+                            {
+                                let step = if matches!(
+                                    event.logical_key,
+                                    Key::Named(NamedKey::PageDown)
+                                ) {
+                                    20
+                                } else {
+                                    1
+                                };
+                                self.orchestrator_scroll_offset =
+                                    self.orchestrator_scroll_offset.saturating_sub(step);
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -4163,7 +4485,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.height,
                                     1,
                                 );
-                                ctx.session_mux.add_tab(session);
+                                ctx.session_mux.add_tab(session, false);
                                 ctx.window.request_redraw();
                             }
                             None => {}
@@ -4809,11 +5131,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             // need a watcher — it can produce spurious snapshot entries.
                             let cwd_path_snap = std::path::Path::new(session.status.cwd());
                             let parse_confidence = if snapshot_enabled {
-                                let parse_result =
-                                    glass_snapshot::command_parser::parse_command(
-                                        &command_text,
-                                        cwd_path_snap,
-                                    );
+                                let parse_result = glass_snapshot::command_parser::parse_command(
+                                    &command_text,
+                                    cwd_path_snap,
+                                );
                                 let confidence = parse_result.confidence;
 
                                 if confidence != glass_snapshot::Confidence::ReadOnly
@@ -4838,8 +5159,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                     sid, parse_result.targets.len(), confidence,
                                                 );
                                                 session.pending_snapshot_id = Some(sid);
-                                                session.pending_parse_confidence =
-                                                    Some(confidence);
+                                                session.pending_parse_confidence = Some(confidence);
                                                 // Mark current block as having a snapshot for [undo] label
                                                 if let Some(block) =
                                                     session.block_manager.current_block_mut()
@@ -5374,6 +5694,58 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
 
                         tracing::info!("Agent config reloaded: mode={:?}", new_agent_config.mode);
+
+                        // Sync orchestrator.active with config.agent.orchestrator.enabled
+                        // so the settings overlay toggle actually activates orchestration.
+                        let orch_enabled = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.enabled)
+                            .unwrap_or(false);
+                        let was_active = self.orchestrator.active;
+
+                        if orch_enabled && !was_active {
+                            // Activating via settings — same setup as Ctrl+Shift+O
+                            self.orchestrator.active = true;
+                            self.orchestrator_activated_at = Some(std::time::Instant::now());
+                            self.orchestrator.reset_stuck();
+                            self.orchestrator.iterations_since_checkpoint = 0;
+                            self.orchestrator.bounded_stop_pending = false;
+                            self.orchestrator.max_iterations = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .and_then(|o| o.max_iterations);
+
+                            // Initialize metric guard
+                            let verify_mode = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.verify_mode.as_str())
+                                .unwrap_or("floor");
+                            if verify_mode == "floor" {
+                                let cwd = self.get_focused_cwd();
+                                let commands = orchestrator::auto_detect_verify_commands(&cwd);
+                                if !commands.is_empty() {
+                                    let mut baseline = orchestrator::MetricBaseline::new();
+                                    baseline.commands = commands;
+                                    self.orchestrator.metric_baseline = Some(baseline);
+                                }
+                            }
+                            tracing::info!(
+                                "Orchestrator: activated via config reload (settings overlay)"
+                            );
+                        } else if !orch_enabled && was_active {
+                            self.orchestrator.active = false;
+                            tracing::info!(
+                                "Orchestrator: deactivated via config reload (settings overlay)"
+                            );
+                        }
                     }
 
                     // Restart artifact watcher when orchestrator completion_artifact changes.
@@ -5846,6 +6218,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 self.orchestrator.response_pending = false;
+
+                // Push to orchestrator transcript
+                self.orchestrator_event_buffer.push(
+                    orchestrator_events::OrchestratorEvent::AgentText {
+                        text: response.clone(),
+                    },
+                    self.orchestrator.iteration,
+                );
 
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
@@ -6412,6 +6792,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
 
                         // If no verification needed, proceed with normal context send
+                        let has_nudge = nudge.is_some();
                         let mut content = String::from("[TERMINAL_CONTEXT]\n");
                         if let Some(nudge_text) = nudge {
                             content.push_str(&format!(
@@ -6438,6 +6819,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
                                     self.orchestrator.response_pending = true;
+
+                                    self.orchestrator_event_buffer.push(
+                                        orchestrator_events::OrchestratorEvent::ContextSent {
+                                            line_count: lines.len(),
+                                            has_soi: soi_summary.is_some(),
+                                            has_nudge,
+                                        },
+                                        self.orchestrator.iteration,
+                                    );
                                 }
                             }
                         }
@@ -6476,6 +6866,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .collect();
 
                 let mut guard_msg: Option<String> = None;
+
+                // Capture first result for orchestrator transcript (before potential move)
+                let first_verify_passed = verify_results.first().and_then(|r| r.tests_passed);
+                let first_verify_failed = verify_results.first().and_then(|r| r.tests_failed);
 
                 // Get CWD and commit before mutable borrow of orchestrator
                 let revert_cwd = self.get_focused_cwd();
@@ -6550,6 +6944,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                             baseline.last_results = verify_results;
                         }
                     }
+                }
+
+                // Push VerifyResult to orchestrator transcript
+                if first_verify_passed.is_some() || first_verify_failed.is_some() {
+                    self.orchestrator_event_buffer.push(
+                        orchestrator_events::OrchestratorEvent::VerifyResult {
+                            passed: first_verify_passed,
+                            failed: first_verify_failed,
+                            regressed: guard_msg.is_some(),
+                        },
+                        self.orchestrator.iteration,
+                    );
                 }
 
                 // Now send context to agent (with or without METRIC_GUARD prefix)
@@ -6653,6 +7059,49 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.window.request_redraw();
                 }
             }
+            AppEvent::OrchestratorThinking { text } => {
+                let token_estimate = orchestrator_events::estimate_tokens(&text);
+                self.orchestrator_event_buffer.push(
+                    orchestrator_events::OrchestratorEvent::Thinking {
+                        text,
+                        token_estimate,
+                    },
+                    self.orchestrator.iteration,
+                );
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::OrchestratorToolCall {
+                name,
+                params_summary,
+            } => {
+                self.orchestrator_event_buffer.push(
+                    orchestrator_events::OrchestratorEvent::ToolCall {
+                        name,
+                        params_summary,
+                    },
+                    self.orchestrator.iteration,
+                );
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
+            AppEvent::OrchestratorToolResult {
+                name,
+                output_summary,
+            } => {
+                self.orchestrator_event_buffer.push(
+                    orchestrator_events::OrchestratorEvent::ToolResult {
+                        name,
+                        output_summary,
+                    },
+                    self.orchestrator.iteration,
+                );
+                for ctx in self.windows.values() {
+                    ctx.window.request_redraw();
+                }
+            }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
@@ -6749,7 +7198,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 size.height,
                                 1,
                             );
-                            let tab_id = ctx.session_mux.add_tab(session);
+                            let tab_id = ctx.session_mux.add_tab(session, self.orchestrator.active);
                             let new_tab_index = ctx.session_mux.tab_count() - 1;
                             ctx.window.request_redraw();
                             glass_core::ipc::McpResponse::ok(
@@ -7386,6 +7835,9 @@ fn main() {
                 activity_view_filter: Default::default(),
                 activity_scroll_offset: 0,
                 activity_verbose: false,
+                orchestrator_event_buffer: orchestrator_events::OrchestratorEventBuffer::new(),
+                orchestrator_scroll_offset: 0,
+                orchestrator_activated_at: None,
                 settings_overlay_visible: false,
                 settings_overlay_tab: Default::default(),
                 settings_section_index: 0,

@@ -165,6 +165,18 @@ pub enum AppEvent {
     UsageHardStop,
     /// Usage tracker: 5h utilization dropped below 20%, safe to resume.
     UsageResume,
+    /// Agent thinking block for orchestrator transcript.
+    OrchestratorThinking { text: String },
+    /// Agent tool call for orchestrator transcript.
+    OrchestratorToolCall {
+        name: String,
+        params_summary: String,
+    },
+    /// Agent tool result for orchestrator transcript.
+    OrchestratorToolResult {
+        name: String,
+        output_summary: String,
+    },
 }
 
 #[cfg(test)]

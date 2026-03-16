@@ -2349,7 +2349,11 @@ impl FrameRenderer {
             .prepare(device, queue, &[backdrop], width, height);
 
         // 2. Text labels
-        let labels = overlay.build_overlay_text(data, width as f32, height as f32);
+        let labels = if data.filter == crate::activity_overlay::ActivityViewFilter::Orchestrator {
+            overlay.build_orchestrator_text(data, width as f32, height as f32)
+        } else {
+            overlay.build_overlay_text(data, width as f32, height as f32)
+        };
 
         // 3. Build per-label text buffers
         let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;

@@ -18,6 +18,8 @@ pub struct TabDisplayInfo {
     pub is_active: bool,
     /// Whether agents hold file locks in the current project.
     pub has_locks: bool,
+    /// Whether this tab was created by the orchestrator agent.
+    pub agent_created: bool,
 }
 
 /// Text label for a single tab.
@@ -397,6 +399,7 @@ mod tests {
                 title: title.to_string(),
                 is_active: *active,
                 has_locks: false,
+                agent_created: false,
             })
             .collect()
     }
@@ -540,6 +543,7 @@ mod tests {
             title: "Tab 1".to_string(),
             is_active: true,
             has_locks: true,
+            agent_created: false,
         }];
         let labels = renderer.build_tab_text(&tabs, 800.0, None);
         // Tab label + "+" label = 2
@@ -554,6 +558,7 @@ mod tests {
             title: "Tab 1".to_string(),
             is_active: true,
             has_locks: false,
+            agent_created: false,
         }];
         let labels = renderer.build_tab_text(&tabs, 800.0, None);
         assert_eq!(labels.len(), 2); // Tab label + "+" label

@@ -151,7 +151,10 @@ mod tests {
         let output = "this is not json {{{";
         let parsed = parse(output);
         assert_eq!(parsed.output_type, OutputType::JsonObject);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 
     #[test]

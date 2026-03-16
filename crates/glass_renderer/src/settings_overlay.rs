@@ -111,11 +111,17 @@ impl Default for SettingsConfigSnapshot {
         Self {
             font_family: {
                 #[cfg(target_os = "windows")]
-                { "Consolas".to_string() }
+                {
+                    "Consolas".to_string()
+                }
                 #[cfg(target_os = "macos")]
-                { "Menlo".to_string() }
+                {
+                    "Menlo".to_string()
+                }
                 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-                { "Monospace".to_string() }
+                {
+                    "Monospace".to_string()
+                }
             },
             font_size: 14.0,
             agent_enabled: false,
@@ -967,11 +973,7 @@ impl SettingsOverlayRenderer {
                     },
                     false,
                 ),
-                (
-                    "Mode",
-                    config.orchestrator_mode.clone(),
-                    false,
-                ),
+                ("Mode", config.orchestrator_mode.clone(), false),
             ],
             _ => vec![],
         }

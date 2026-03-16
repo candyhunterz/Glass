@@ -7,9 +7,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::types::{
-    OutputRecord, OutputSummary, OutputType, ParsedOutput, Severity, TestStatus,
-};
+use crate::types::{OutputRecord, OutputSummary, OutputType, ParsedOutput, Severity, TestStatus};
 
 fn re_plan() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -79,18 +77,17 @@ pub fn parse(output: &str) -> ParsedOutput {
                 .map_or_else(|| format!("test {}", &caps[2]), |m| m.as_str().to_string());
             let directive = caps.get(4).map(|m| m.as_str().to_lowercase());
 
-            let status = if directive.as_deref() == Some("skip")
-                || directive.as_deref() == Some("todo")
-            {
-                skipped += 1;
-                TestStatus::Skipped
-            } else if ok {
-                passed += 1;
-                TestStatus::Passed
-            } else {
-                failed += 1;
-                TestStatus::Failed
-            };
+            let status =
+                if directive.as_deref() == Some("skip") || directive.as_deref() == Some("todo") {
+                    skipped += 1;
+                    TestStatus::Skipped
+                } else if ok {
+                    passed += 1;
+                    TestStatus::Passed
+                } else {
+                    failed += 1;
+                    TestStatus::Failed
+                };
 
             records.push(OutputRecord::TestResult {
                 name,
@@ -123,9 +120,8 @@ pub fn parse(output: &str) -> ParsedOutput {
         Severity::Success
     };
 
-    let one_line = format!(
-        "{passed} passed, {failed} failed, {skipped} skipped out of {total} tests"
-    );
+    let one_line =
+        format!("{passed} passed, {failed} failed, {skipped} skipped out of {total} tests");
     let token_estimate = one_line.split_whitespace().count() + records.len() * 5 + raw_line_count;
 
     ParsedOutput {
@@ -184,6 +180,9 @@ mod tests {
     fn empty_fallback() {
         let parsed = parse("");
         assert_eq!(parsed.output_type, OutputType::GenericTAP);
-        assert!(matches!(parsed.records[0], OutputRecord::FreeformChunk { .. }));
+        assert!(matches!(
+            parsed.records[0],
+            OutputRecord::FreeformChunk { .. }
+        ));
     }
 }

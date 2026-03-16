@@ -304,10 +304,7 @@ mod tests {
     fn split_pipes_process_substitution() {
         // <( starts a subshell; inner pipe should not split
         let result = split_pipes("diff <(cmd1 | sort) <(cmd2 | sort)");
-        assert_eq!(
-            result,
-            vec!["diff <(cmd1 | sort) <(cmd2 | sort)"]
-        );
+        assert_eq!(result, vec!["diff <(cmd1 | sort) <(cmd2 | sort)"]);
     }
 
     #[test]
