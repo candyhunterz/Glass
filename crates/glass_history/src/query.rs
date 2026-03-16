@@ -111,7 +111,15 @@ pub fn filtered_query(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Com
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     let mut conditions: Vec<String> = Vec::new();
 
-    if let Some(text) = &filter.text {
+    // Use FTS5 only when text filter is non-empty after trimming;
+    // an empty quoted string is not valid FTS5 syntax.
+    let use_fts = filter
+        .text
+        .as_ref()
+        .is_some_and(|t| !t.trim().is_empty());
+
+    if use_fts {
+        let text = filter.text.as_ref().unwrap();
         sql.push_str(
             "SELECT c.id, c.command, c.cwd, c.exit_code, c.started_at, \
              c.finished_at, c.duration_ms, c.output \
@@ -119,7 +127,7 @@ pub fn filtered_query(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Com
              JOIN commands c ON c.id = f.rowid",
         );
         // Escape FTS5 special characters by wrapping in double quotes
-        let escaped = format!("\"{}\"", text.replace('"', "\"\""));
+        let escaped = format!("\"{}\"", text.trim().replace('"', "\"\""));
         conditions.push("commands_fts MATCH ?".to_string());
         params.push(rusqlite::types::Value::Text(escaped));
     } else {
@@ -427,5 +435,50 @@ mod tests {
         };
         // Should not crash, may or may not return results
         let _results = filtered_query(db.conn(), &filter);
+    }
+
+    #[test]
+    fn test_empty_text_filter_returns_all() {
+        let (db, _dir) = test_db();
+        insert_record(&db, "cargo build", "/home/user", Some(0), 1700000000);
+        insert_record(&db, "git status", "/home/user", Some(0), 1700000010);
+
+        // Empty text filter should fall back to non-FTS query (return all)
+        let filter = QueryFilter {
+            text: Some("".to_string()),
+            ..QueryFilter::new()
+        };
+        let results = filtered_query(db.conn(), &filter).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_whitespace_text_filter_returns_all() {
+        let (db, _dir) = test_db();
+        insert_record(&db, "cargo build", "/home/user", Some(0), 1700000000);
+        insert_record(&db, "git status", "/home/user", Some(0), 1700000010);
+
+        // Whitespace-only text filter should fall back to non-FTS query
+        let filter = QueryFilter {
+            text: Some("   ".to_string()),
+            ..QueryFilter::new()
+        };
+        let results = filtered_query(db.conn(), &filter).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_cwd_wildcard_characters() {
+        let (db, _dir) = test_db();
+        insert_record(&db, "cmd1", "/home/user", Some(0), 1700000000);
+        insert_record(&db, "cmd2", "/tmp/test", Some(0), 1700000010);
+
+        // SQL LIKE wildcard % in cwd matches everything (by design — not sanitized)
+        let filter = QueryFilter {
+            cwd: Some("%".to_string()),
+            ..QueryFilter::new()
+        };
+        let results = filtered_query(db.conn(), &filter).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

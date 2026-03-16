@@ -38,6 +38,7 @@ impl BlobStore {
 
     /// Read blob contents by hash.
     pub fn read_blob(&self, hash: &str) -> Result<Vec<u8>> {
+        anyhow::ensure!(hash.len() >= 2, "blob hash too short: '{hash}'");
         let blob_path = self
             .blob_dir
             .join(&hash[..2])
@@ -47,6 +48,9 @@ impl BlobStore {
 
     /// Check if a blob exists.
     pub fn blob_exists(&self, hash: &str) -> bool {
+        if hash.len() < 2 {
+            return false;
+        }
         let blob_path = self
             .blob_dir
             .join(&hash[..2])
@@ -80,6 +84,7 @@ impl BlobStore {
 
     /// Delete a blob by hash. Returns true if it existed.
     pub fn delete_blob(&self, hash: &str) -> Result<bool> {
+        anyhow::ensure!(hash.len() >= 2, "blob hash too short: '{hash}'");
         let blob_path = self
             .blob_dir
             .join(&hash[..2])
@@ -187,6 +192,51 @@ mod tests {
             .join(&hash[..2])
             .join(format!("{}.blob", &hash));
         assert!(expected_path.exists());
+    }
+
+    #[test]
+    fn test_read_blob_short_hash_returns_error() {
+        let (store, _dir) = setup();
+        assert!(store.read_blob("").is_err());
+        assert!(store.read_blob("a").is_err());
+    }
+
+    #[test]
+    fn test_blob_exists_short_hash_returns_false() {
+        let (store, _dir) = setup();
+        assert!(!store.blob_exists(""));
+        assert!(!store.blob_exists("x"));
+    }
+
+    #[test]
+    fn test_delete_blob_short_hash_returns_error() {
+        let (store, _dir) = setup();
+        assert!(store.delete_blob("").is_err());
+        assert!(store.delete_blob("a").is_err());
+    }
+
+    #[test]
+    fn test_read_blob_nonexistent_hash() {
+        let (store, _dir) = setup();
+        let result = store
+            .read_blob("0000000000000000000000000000000000000000000000000000000000000000");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_blob_nonexistent() {
+        let (store, _dir) = setup();
+        let existed = store
+            .delete_blob("0000000000000000000000000000000000000000000000000000000000000000")
+            .unwrap();
+        assert!(!existed);
+    }
+
+    #[test]
+    fn test_list_blob_hashes_empty_store() {
+        let (store, _dir) = setup();
+        let hashes = store.list_blob_hashes().unwrap();
+        assert!(hashes.is_empty());
     }
 
     /// Helper to count .blob files recursively under a directory.

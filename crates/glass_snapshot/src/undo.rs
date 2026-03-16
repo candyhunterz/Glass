@@ -525,4 +525,64 @@ mod tests {
         // Snapshot should be deleted after successful undo
         assert!(store.db().get_snapshot(sid).unwrap().is_none());
     }
+
+    #[test]
+    fn test_undo_missing_parent_directory() {
+        let (store, dir) = setup();
+        let engine = UndoEngine::new(&store);
+
+        // Snapshot a file under a subdirectory
+        let sub_dir = dir.path().join("sub");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let file_path = sub_dir.join("target.txt");
+        std::fs::write(&file_path, b"original").unwrap();
+
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
+        store.store_file(sid, &file_path, "parser").unwrap();
+
+        // Remove the entire subdirectory after snapshot
+        std::fs::remove_dir_all(&sub_dir).unwrap();
+
+        // Undo should report error (parent dir missing), not panic
+        let result = engine.undo_latest().unwrap().expect("should have a result");
+        assert_eq!(result.files.len(), 1);
+        assert!(
+            matches!(result.files[0].1, FileOutcome::Error(_)),
+            "Expected Error outcome when parent dir missing, got {:?}",
+            result.files[0].1
+        );
+    }
+
+    #[test]
+    fn test_undo_missing_blob() {
+        let (store, dir) = setup();
+        let engine = UndoEngine::new(&store);
+
+        let file_path = dir.path().join("orphan.txt");
+        std::fs::write(&file_path, b"content").unwrap();
+
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
+        store.store_file(sid, &file_path, "parser").unwrap();
+
+        // Get the blob hash, then delete the blob file from disk
+        let files = store.db().get_snapshot_files(sid).unwrap();
+        let hash = files[0].blob_hash.as_ref().unwrap();
+        store.blobs().delete_blob(hash).unwrap();
+
+        // Modify the file so there's something to undo
+        std::fs::write(&file_path, b"modified").unwrap();
+
+        // Undo should report error (blob missing), not panic
+        let result = engine.undo_latest().unwrap().expect("should have a result");
+        assert_eq!(result.files.len(), 1);
+        assert!(
+            matches!(result.files[0].1, FileOutcome::Error(_)),
+            "Expected Error outcome when blob missing, got {:?}",
+            result.files[0].1
+        );
+    }
 }

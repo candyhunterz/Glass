@@ -412,7 +412,7 @@ fn glass_pty_loop(
                     }
 
                     if event.writable {
-                        if let Err(err) = pty_write(&mut pty, &mut write_list) {
+                        if let Err(err) = pty_write(pty.writer(), &mut write_list) {
                             tracing::error!("Error writing to PTY: {err}");
                             break 'event_loop;
                         }
@@ -576,10 +576,20 @@ fn pty_read_with_scan(
     Ok(())
 }
 
-/// Write pending data to the PTY.
-fn pty_write(pty: &mut tty::Pty, write_list: &mut VecDeque<Cow<'static, [u8]>>) -> io::Result<()> {
+/// Write pending data from the write list to a writer (PTY stdin).
+///
+/// Accepts `&mut dyn Write` rather than a concrete PTY type for testability.
+/// Empty entries are skipped to prevent a stall: `write(b"")` returns `Ok(0)`
+/// which would otherwise leave the empty entry permanently at the front.
+fn pty_write(writer: &mut dyn Write, write_list: &mut VecDeque<Cow<'static, [u8]>>) -> io::Result<()> {
     while let Some(data) = write_list.front() {
-        match pty.writer().write(data.as_ref()) {
+        // Skip empty entries — write(b"") returns Ok(0) which hits the
+        // break below, permanently stalling the queue.
+        if data.is_empty() {
+            write_list.pop_front();
+            continue;
+        }
+        match writer.write(data.as_ref()) {
             Ok(0) => break,
             Ok(n) => {
                 if n >= data.len() {
@@ -602,4 +612,135 @@ fn pty_write(pty: &mut tty::Pty, write_list: &mut VecDeque<Cow<'static, [u8]>>) 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pty_write_empty_list() {
+        let mut writer = Vec::new();
+        let mut write_list = VecDeque::new();
+        pty_write(&mut writer, &mut write_list).unwrap();
+        assert!(write_list.is_empty());
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn test_pty_write_single_entry() {
+        let mut writer = Vec::new();
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"hello" as &[u8]));
+        pty_write(&mut writer, &mut write_list).unwrap();
+        assert_eq!(writer, b"hello");
+        assert!(write_list.is_empty());
+    }
+
+    #[test]
+    fn test_pty_write_multiple_entries() {
+        let mut writer = Vec::new();
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"hello " as &[u8]));
+        write_list.push_back(Cow::Borrowed(b"world" as &[u8]));
+        pty_write(&mut writer, &mut write_list).unwrap();
+        assert_eq!(writer, b"hello world");
+        assert!(write_list.is_empty());
+    }
+
+    #[test]
+    fn test_pty_write_skips_empty_data() {
+        let mut writer = Vec::new();
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"" as &[u8]));
+        write_list.push_back(Cow::Borrowed(b"hello" as &[u8]));
+        pty_write(&mut writer, &mut write_list).unwrap();
+        assert_eq!(writer, b"hello");
+        assert!(write_list.is_empty());
+    }
+
+    #[test]
+    fn test_pty_write_all_empty_entries() {
+        let mut writer = Vec::new();
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"" as &[u8]));
+        write_list.push_back(Cow::Borrowed(b"" as &[u8]));
+        write_list.push_back(Cow::Borrowed(b"" as &[u8]));
+        pty_write(&mut writer, &mut write_list).unwrap();
+        assert!(writer.is_empty());
+        assert!(write_list.is_empty());
+    }
+
+    #[test]
+    fn test_pty_write_partial_write() {
+        /// A writer that accepts at most `max_per_write` bytes per call.
+        struct PartialWriter {
+            inner: Vec<u8>,
+            max_per_write: usize,
+        }
+        impl io::Write for PartialWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                let n = buf.len().min(self.max_per_write);
+                self.inner.extend_from_slice(&buf[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = PartialWriter {
+            inner: Vec::new(),
+            max_per_write: 3,
+        };
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"hello" as &[u8]));
+        pty_write(&mut writer, &mut write_list).unwrap();
+        // Only 3 bytes written
+        assert_eq!(writer.inner, b"hel");
+        // Remainder stays in the write list
+        assert_eq!(write_list.len(), 1);
+        assert_eq!(write_list[0].as_ref(), b"lo");
+    }
+
+    #[test]
+    fn test_pty_write_would_block_retains_data() {
+        struct BlockingWriter;
+        impl io::Write for BlockingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(ErrorKind::WouldBlock, "would block"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = BlockingWriter;
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"hello" as &[u8]));
+        // WouldBlock is handled gracefully (not propagated as error)
+        pty_write(&mut writer, &mut write_list).unwrap();
+        // Data remains in queue for retry
+        assert_eq!(write_list.len(), 1);
+    }
+
+    #[test]
+    fn test_pty_write_io_error_propagates() {
+        struct ErrorWriter;
+        impl io::Write for ErrorWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = ErrorWriter;
+        let mut write_list = VecDeque::new();
+        write_list.push_back(Cow::Borrowed(b"hello" as &[u8]));
+        let result = pty_write(&mut writer, &mut write_list);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::BrokenPipe);
+    }
 }

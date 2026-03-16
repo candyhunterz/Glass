@@ -254,4 +254,69 @@ mod tests {
         let result = buf.finish();
         assert_eq!(result, Some(vec![]));
     }
+
+    #[test]
+    fn test_append_binary_data_with_null_bytes() {
+        let mut buf = OutputBuffer::new(1024);
+        buf.start_capture();
+        buf.append(&[0x00, 0x01, 0xFF, 0xFE, 0x00]);
+        let result = buf.finish().unwrap();
+        assert_eq!(result, &[0x00, 0x01, 0xFF, 0xFE, 0x00]);
+    }
+
+    #[test]
+    fn test_append_invalid_utf8() {
+        let mut buf = OutputBuffer::new(1024);
+        buf.start_capture();
+        // Invalid UTF-8: lone continuation bytes, overlong encoding
+        buf.append(&[0x80, 0xC0, 0xFF, 0xFE, 0xC1, 0xBF]);
+        let result = buf.finish().unwrap();
+        assert_eq!(result, &[0x80, 0xC0, 0xFF, 0xFE, 0xC1, 0xBF]);
+    }
+
+    #[test]
+    fn test_max_bytes_zero_captures_nothing() {
+        let mut buf = OutputBuffer::new(0);
+        buf.start_capture();
+        buf.append(b"data that should be dropped");
+        let result = buf.finish().unwrap();
+        assert!(result.is_empty());
+        assert_eq!(buf.total_seen(), 27);
+    }
+
+    #[test]
+    fn test_check_alt_screen_short_data_is_noop() {
+        let mut buf = OutputBuffer::new(1024);
+        buf.start_capture();
+        // Data shorter than alt-screen sequence (8 bytes) — should be ignored
+        buf.check_alt_screen(b"\x1b[?10");
+        buf.append(b"data");
+        let result = buf.finish().unwrap();
+        assert_eq!(result, b"data");
+    }
+
+    #[test]
+    fn test_check_alt_screen_empty_data_is_noop() {
+        let mut buf = OutputBuffer::new(1024);
+        buf.start_capture();
+        buf.check_alt_screen(b"");
+        buf.append(b"data");
+        let result = buf.finish().unwrap();
+        assert_eq!(result, b"data");
+    }
+
+    #[test]
+    fn test_alt_screen_split_across_buffers_not_detected() {
+        // Documents known limitation: alt-screen sequences split across
+        // two PTY reads are not detected. This is acceptable because
+        // the sequences are almost never split in practice.
+        let mut buf = OutputBuffer::new(1024);
+        buf.start_capture();
+        buf.check_alt_screen(b"\x1b[?1049"); // partial — missing 'h'
+        buf.check_alt_screen(b"h");           // remainder
+        buf.append(b"data");
+        // NOT detected as alt-screen — this is the known limitation
+        let result = buf.finish().unwrap();
+        assert_eq!(result, b"data");
+    }
 }
