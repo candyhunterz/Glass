@@ -980,6 +980,173 @@ max_iterations = 25"#;
         assert_eq!(orch.prd_path, "PRD.md");
         assert_eq!(orch.verify_mode, "floor");
     }
+
+    // === Audit: update_config_field covers all settings handler section paths ===
+
+    #[test]
+    fn test_update_config_field_empty_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        // File doesn't exist yet
+        update_config_field(&path, None, "font_size", "18.0").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        assert_eq!(config.font_size, 18.0);
+    }
+
+    #[test]
+    fn test_update_config_field_agent_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        update_config_field(&path, Some("agent"), "cooldown_secs", "15").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        assert_eq!(config.agent.unwrap().cooldown_secs, 15);
+    }
+
+    #[test]
+    fn test_update_config_field_agent_permissions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        update_config_field(
+            &path,
+            Some("agent.permissions"),
+            "edit_files",
+            "\"never\"",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        let perms = config.agent.unwrap().permissions.unwrap();
+        assert_eq!(perms.edit_files, PermissionLevel::Never);
+    }
+
+    #[test]
+    fn test_update_config_field_agent_quiet_rules() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        update_config_field(
+            &path,
+            Some("agent.quiet_rules"),
+            "ignore_exit_zero",
+            "true",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        let qr = config.agent.unwrap().quiet_rules.unwrap();
+        assert!(qr.ignore_exit_zero);
+    }
+
+    #[test]
+    fn test_update_config_field_history_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        update_config_field(&path, Some("history"), "max_output_capture_kb", "100").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        assert_eq!(config.history.unwrap().max_output_capture_kb, 100);
+    }
+
+    #[test]
+    fn test_update_config_field_snapshot_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        update_config_field(&path, Some("snapshot"), "retention_days", "7").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        assert_eq!(config.snapshot.unwrap().retention_days, 7);
+    }
+
+    #[test]
+    fn test_update_config_field_pipes_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        update_config_field(&path, Some("pipes"), "max_capture_mb", "5").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        assert_eq!(config.pipes.unwrap().max_capture_mb, 5);
+    }
+
+    // === Audit: config round-trip (write → read back → values match) ===
+
+    #[test]
+    fn test_roundtrip_all_sections() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+
+        // Write fields across multiple sections
+        update_config_field(&path, None, "font_size", "20.0").unwrap();
+        update_config_field(&path, Some("soi"), "enabled", "false").unwrap();
+        update_config_field(&path, Some("soi"), "min_lines", "5").unwrap();
+        update_config_field(&path, Some("snapshot"), "max_count", "500").unwrap();
+        update_config_field(&path, Some("pipes"), "auto_expand", "false").unwrap();
+        update_config_field(&path, Some("history"), "max_output_capture_kb", "200").unwrap();
+        update_config_field(&path, Some("agent"), "cooldown_secs", "10").unwrap();
+        update_config_field(
+            &path,
+            Some("agent.orchestrator"),
+            "silence_timeout_secs",
+            "15",
+        )
+        .unwrap();
+
+        // Read back and verify all values
+        let content = std::fs::read_to_string(&path).unwrap();
+        let config = GlassConfig::load_from_str(&content);
+        assert_eq!(config.font_size, 20.0);
+        let soi = config.soi.unwrap();
+        assert!(!soi.enabled);
+        assert_eq!(soi.min_lines, 5);
+        assert_eq!(config.snapshot.unwrap().max_count, 500);
+        assert!(!config.pipes.unwrap().auto_expand);
+        assert_eq!(config.history.unwrap().max_output_capture_kb, 200);
+        assert_eq!(config.agent.as_ref().unwrap().cooldown_secs, 10);
+        assert_eq!(
+            config
+                .agent
+                .unwrap()
+                .orchestrator
+                .unwrap()
+                .silence_timeout_secs,
+            15
+        );
+    }
+
+    // === Audit: serde defaults consistency ===
+
+    #[test]
+    fn test_agent_section_serde_defaults_match_default_impl() {
+        // Parsing "[agent]" with no fields should produce the same as AgentSection::default()
+        let toml = "[agent]";
+        let config = GlassConfig::load_from_str(toml);
+        let from_serde = config.agent.unwrap();
+        let from_default = AgentSection::default();
+        assert_eq!(from_serde, from_default);
+    }
+
+    #[test]
+    fn test_history_section_defaults() {
+        let toml = "[history]";
+        let config = GlassConfig::load_from_str(toml);
+        let history = config.history.unwrap();
+        assert_eq!(history.max_output_capture_kb, 50);
+    }
+
+    #[test]
+    fn test_history_section_custom() {
+        let toml = "[history]\nmax_output_capture_kb = 200";
+        let config = GlassConfig::load_from_str(toml);
+        let history = config.history.unwrap();
+        assert_eq!(history.max_output_capture_kb, 200);
+    }
 }
 
 #[cfg(test)]
