@@ -145,8 +145,6 @@ struct ScrollbarDragInfo {
     track_height: f32,
     /// The current thumb height (for drag math).
     thumb_height: f32,
-    /// History size at drag start.
-    history_size: usize,
 }
 
 /// Tab drag reorder tracking state.
@@ -4292,12 +4290,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if scrollable_track > 0.0 {
                         let ratio =
                             ((effective_y - drag.track_y) / scrollable_track).clamp(0.0, 1.0);
-                        // ratio 0.0 = top (oldest), 1.0 = bottom (newest)
-                        let target_offset =
-                            ((1.0 - ratio) * drag.history_size as f32).round() as i32;
                         let pane_id = drag.pane_id;
                         if let Some(session) = ctx.session_mux.session(pane_id) {
                             let mut term = session.term.lock();
+                            // Use current history_size, not the stale captured value.
+                            // History grows during long sessions (orchestrator runs),
+                            // and stale size causes the scroll to snap back or get stuck.
+                            let current_history = term.grid().history_size();
+                            // ratio 0.0 = top (oldest), 1.0 = bottom (newest)
+                            let target_offset =
+                                ((1.0 - ratio) * current_history as f32).round() as i32;
                             let current = term.grid().display_offset() as i32;
                             let delta = target_offset - current;
                             if delta != 0 {
@@ -4681,7 +4683,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     track_y,
                                     track_height,
                                     thumb_height,
-                                    history_size,
                                 });
                             }
                             ScrollbarHit::TrackAbove => {
