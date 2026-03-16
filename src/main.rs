@@ -1576,6 +1576,34 @@ fn start_artifact_watcher(
     Some(handle)
 }
 
+/// Parse .glass/iterations.tsv into structured entries for the overlay.
+fn parse_iteration_log(project_root: &str) -> Vec<glass_renderer::IterationLogEntry> {
+    let path = std::path::Path::new(project_root)
+        .join(".glass")
+        .join("iterations.tsv");
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .skip(1) // skip header
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() < 6 {
+                return None;
+            }
+            Some(glass_renderer::IterationLogEntry {
+                iteration: cols[0].trim().parse().unwrap_or(0),
+                commit: cols[1].trim().to_string(),
+                feature: cols[2].trim().to_string(),
+                status: cols[4].trim().to_string(),
+                description: cols[5].trim().to_string(),
+            })
+        })
+        .collect()
+}
+
 impl Processor {
     /// Get the CWD of the focused session, falling back to the process CWD.
     fn get_focused_cwd(&self) -> String {
@@ -2573,6 +2601,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Activity stream overlay (fullscreen, on top of everything)
+                let iteration_log_cwd = ctx
+                    .session_mux
+                    .focused_session()
+                    .map(|s| s.status.cwd().to_string())
+                    .unwrap_or_default();
                 if self.activity_overlay_visible {
                     let agents: Vec<glass_renderer::activity_overlay::ActivityAgentCard> = self
                         .coordination_state
@@ -2844,6 +2877,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                         orchestrator_dashboard: orch_dashboard,
                         orchestrator_events: orch_events,
                         orchestrator_scroll_offset: self.orchestrator_scroll_offset,
+                        iteration_log: if self.activity_view_filter
+                            != glass_renderer::ActivityViewFilter::Orchestrator
+                        {
+                            Vec::new()
+                        } else {
+                            parse_iteration_log(&iteration_log_cwd)
+                        },
                     };
 
                     ctx.frame_renderer.draw_activity_overlay(

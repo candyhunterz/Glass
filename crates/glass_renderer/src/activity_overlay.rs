@@ -90,6 +90,8 @@ pub struct ActivityOverlayRenderData {
     pub orchestrator_events: Vec<OrchestratorEventDisplay>,
     /// Scroll offset for orchestrator transcript.
     pub orchestrator_scroll_offset: usize,
+    /// Parsed iteration log from .glass/iterations.tsv.
+    pub iteration_log: Vec<IterationLogEntry>,
 }
 
 /// Agent card data for the left column.
@@ -163,6 +165,16 @@ pub struct OrchestratorEventDisplay {
     pub text: String,
     pub expanded: bool,
     pub expandable: bool,
+}
+
+/// A parsed iteration log entry from .glass/iterations.tsv.
+#[derive(Debug)]
+pub struct IterationLogEntry {
+    pub iteration: u32,
+    pub commit: String,
+    pub feature: String,
+    pub status: String,
+    pub description: String,
 }
 
 /// Text label for rendering in the overlay.
@@ -780,88 +792,132 @@ impl ActivityOverlayRenderer {
             y += line_h * 2.0;
         }
 
-        // Transcript events
-        let available_lines = ((height - y - margin) / line_h).max(0.0) as usize;
-        let total_events = data.orchestrator_events.len();
-        let start = if total_events > available_lines + data.orchestrator_scroll_offset {
-            total_events - available_lines - data.orchestrator_scroll_offset
+        // Iteration timeline from iterations.tsv
+        if data.iteration_log.is_empty() {
+            labels.push(ActivityOverlayTextLabel {
+                text: "No iteration history yet.".to_string(),
+                x: margin,
+                y,
+                color: Rgb {
+                    r: 100,
+                    g: 100,
+                    b: 100,
+                },
+            });
         } else {
-            0
-        };
-        let end = total_events.saturating_sub(data.orchestrator_scroll_offset);
+            // Section header
+            labels.push(ActivityOverlayTextLabel {
+                text: "Iteration Log".to_string(),
+                x: margin,
+                y,
+                color: Rgb {
+                    r: 102,
+                    g: 102,
+                    b: 102,
+                },
+            });
+            y += line_h * 1.2;
 
-        if start < end && end <= total_events {
-            for event in &data.orchestrator_events[start..end] {
-                let color = match event.kind {
-                    OrchestratorEventKind::Thinking => Rgb {
-                        r: 100,
-                        g: 100,
-                        b: 100,
-                    },
-                    OrchestratorEventKind::ToolCall => Rgb {
-                        r: 100,
-                        g: 150,
-                        b: 255,
-                    },
-                    OrchestratorEventKind::ToolResult => Rgb {
-                        r: 80,
-                        g: 200,
-                        b: 200,
-                    },
-                    OrchestratorEventKind::AgentText => Rgb {
-                        r: 80,
-                        g: 220,
-                        b: 120,
-                    },
-                    OrchestratorEventKind::ContextSent => Rgb {
-                        r: 80,
-                        g: 80,
-                        b: 80,
-                    },
-                    OrchestratorEventKind::Respawn => Rgb {
-                        r: 220,
-                        g: 180,
-                        b: 60,
-                    },
-                    OrchestratorEventKind::Verify => Rgb {
-                        r: 80,
-                        g: 220,
-                        b: 120,
-                    },
-                };
+            let available_lines = ((height - y - margin) / line_h).max(0.0) as usize;
+            let total = data.iteration_log.len();
+            let start = if total > available_lines + data.orchestrator_scroll_offset {
+                total - available_lines - data.orchestrator_scroll_offset
+            } else {
+                0
+            };
+            let end = total.saturating_sub(data.orchestrator_scroll_offset);
 
-                let prefix = format!("[#{} {}]  ", event.iteration, event.relative_time);
-                labels.push(ActivityOverlayTextLabel {
-                    text: format!("{prefix}{}", event.text),
-                    x: margin,
-                    y,
-                    color,
-                });
-
-                if event.expanded {
-                    // Expanded thinking takes multiple lines
-                    let text_lines: Vec<&str> = event.text.lines().collect();
-                    for line in text_lines.iter().skip(1) {
-                        y += line_h;
-                        if y > height - margin {
-                            break;
-                        }
-                        labels.push(ActivityOverlayTextLabel {
-                            text: format!("    {line}"),
-                            x: margin,
-                            y,
-                            color: Rgb {
-                                r: 120,
-                                g: 120,
+            if start < end && end <= total {
+                for entry in &data.iteration_log[start..end] {
+                    let (color, tag) = match entry.status.as_str() {
+                        "keep" => (
+                            Rgb {
+                                r: 80,
+                                g: 200,
                                 b: 120,
                             },
-                        });
-                    }
-                }
+                            "keep",
+                        ),
+                        "revert" => (
+                            Rgb {
+                                r: 255,
+                                g: 100,
+                                b: 100,
+                            },
+                            "REVERT",
+                        ),
+                        "stuck" => (
+                            Rgb {
+                                r: 220,
+                                g: 180,
+                                b: 60,
+                            },
+                            "stuck",
+                        ),
+                        "baseline" => (
+                            Rgb {
+                                r: 100,
+                                g: 150,
+                                b: 255,
+                            },
+                            "baseline",
+                        ),
+                        "checkpoint" => (
+                            Rgb {
+                                r: 100,
+                                g: 150,
+                                b: 255,
+                            },
+                            "checkpoint",
+                        ),
+                        "complete" => (
+                            Rgb {
+                                r: 180,
+                                g: 140,
+                                b: 255,
+                            },
+                            "DONE",
+                        ),
+                        _ => (
+                            Rgb {
+                                r: 170,
+                                g: 170,
+                                b: 170,
+                            },
+                            &entry.status as &str,
+                        ),
+                    };
 
-                y += line_h;
-                if y > height - margin {
-                    break;
+                    // Truncate description to fit in one line
+                    let max_desc_chars = ((width - margin * 2.0) / self.cell_width) as usize;
+                    let desc =
+                        if entry.description.chars().count() > max_desc_chars.saturating_sub(30) {
+                            let truncated: String = entry
+                                .description
+                                .chars()
+                                .take(max_desc_chars.saturating_sub(33))
+                                .collect();
+                            format!("{truncated}...")
+                        } else {
+                            entry.description.clone()
+                        };
+
+                    let line_text = format!(
+                        "#{:<3} [{:<10}] {:>7}  {}",
+                        entry.iteration, tag, entry.commit, desc
+                    );
+
+                    labels.push(ActivityOverlayTextLabel {
+                        text: line_text,
+                        x: margin,
+                        y,
+                        color,
+                    });
+
+                    y += line_h;
+                    if y > height - margin {
+                        break;
+                    }
                 }
             }
         }
