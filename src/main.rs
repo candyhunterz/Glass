@@ -4942,12 +4942,48 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 };
                 if lines != 0 {
-                    // Positive delta = scroll up (into history), negative = scroll down
-                    ctx.session()
-                        .term
-                        .lock()
-                        .scroll_display(Scroll::Delta(lines));
-                    ctx.window.request_redraw();
+                    // Overlay scroll: redirect wheel to overlay scroll offset
+                    if self.activity_overlay_visible {
+                        if self.activity_view_filter
+                            == glass_renderer::ActivityViewFilter::Orchestrator
+                        {
+                            if lines > 0 {
+                                self.orchestrator_scroll_offset = self
+                                    .orchestrator_scroll_offset
+                                    .saturating_add(lines as usize);
+                            } else {
+                                self.orchestrator_scroll_offset = self
+                                    .orchestrator_scroll_offset
+                                    .saturating_sub((-lines) as usize);
+                            }
+                        } else {
+                            // Other overlay tabs use the shared activity scroll offset
+                            if lines > 0 {
+                                self.activity_scroll_offset =
+                                    self.activity_scroll_offset.saturating_sub(lines as usize);
+                            } else {
+                                self.activity_scroll_offset += (-lines) as usize;
+                            }
+                        }
+                        ctx.window.request_redraw();
+                    } else if self.settings_overlay_visible {
+                        if lines > 0 {
+                            self.settings_shortcuts_scroll = self
+                                .settings_shortcuts_scroll
+                                .saturating_sub(lines as usize);
+                        } else {
+                            self.settings_shortcuts_scroll += (-lines) as usize;
+                        }
+                        ctx.window.request_redraw();
+                    } else {
+                        // Normal terminal scroll
+                        // Positive delta = scroll up (into history), negative = scroll down
+                        ctx.session()
+                            .term
+                            .lock()
+                            .scroll_display(Scroll::Delta(lines));
+                        ctx.window.request_redraw();
+                    }
                 }
             }
             WindowEvent::DroppedFile(path) => {
