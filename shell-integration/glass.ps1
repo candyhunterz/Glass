@@ -11,6 +11,10 @@
 #
 # Compatible with PowerShell 5.1+ and PowerShell 7+.
 
+# Idempotency guard — prevent double-load (avoids recursive prompt wrapping).
+if (Test-Path variable:\Global:__GLASS_INTEGRATION_LOADED) { return }
+$Global:__GLASS_INTEGRATION_LOADED = $true
+
 # ESC character that works on all PowerShell versions (5.1+).
 $Global:__GlassESC = [char]0x1b
 
@@ -83,10 +87,11 @@ function prompt {
         }
     }
 
-    # Report CWD via OSC 7  (backslashes -> forward slashes)
+    # Report CWD via OSC 7  (backslashes -> forward slashes, percent-encode)
     $loc = $executionContext.SessionState.Path.CurrentLocation
     $cwd = $loc.Path.Replace('\', '/')
-    $out += "$E]7;file://$($env:COMPUTERNAME)/$cwd$([char]7)"
+    $encodedCwd = [System.Uri]::EscapeUriString($cwd)
+    $out += "$E]7;file://$($env:COMPUTERNAME)/$encodedCwd$([char]7)"
 
     # Prompt start (OSC 133;A)
     $out += "$E]133;A$([char]7)"

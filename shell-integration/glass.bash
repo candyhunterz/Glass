@@ -22,8 +22,20 @@ __GLASS_INTEGRATION_LOADED=1
 # ---------------------------------------------------------------------------
 # CWD reporting via OSC 7
 # ---------------------------------------------------------------------------
+__glass_urlencode() {
+    local string="$1" i c
+    local -i len=${#string}
+    for (( i = 0; i < len; i++ )); do
+        c="${string:i:1}"
+        case "$c" in
+            [a-zA-Z0-9/_.~:-]) printf '%s' "$c" ;;
+            *) printf '%%%02X' "'$c" ;;
+        esac
+    done
+}
+
 __glass_osc7() {
-    printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "$PWD"
+    printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "$(__glass_urlencode "$PWD")"
 }
 
 # ---------------------------------------------------------------------------
@@ -212,7 +224,9 @@ if [[ "${BASH_VERSINFO[0]}" -ge 5 ]] || \
 
         if [[ -n "$cmd" ]] && __glass_has_pipes "$cmd"; then
             local tmpdir="${TMPDIR:-/tmp}/glass_${$}_$(date +%s%N)"
-            mkdir -p "$tmpdir" 2>/dev/null
+            if ! mkdir -p "$tmpdir" 2>/dev/null; then
+                return  # Skip pipeline rewriting if temp dir creation fails
+            fi
             __glass_capture_tmpdir="$tmpdir"
 
             local rewritten

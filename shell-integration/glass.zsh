@@ -16,8 +16,20 @@ __GLASS_INTEGRATION_LOADED=1
 # ---------------------------------------------------------------------------
 # CWD reporting via OSC 7
 # ---------------------------------------------------------------------------
+__glass_urlencode() {
+    local string="$1" i c encoded=""
+    for (( i = 0; i < ${#string}; i++ )); do
+        c="${string:$i:1}"
+        case "$c" in
+            [a-zA-Z0-9/_.~:-]) encoded+="$c" ;;
+            *) encoded+="$(printf '%%%02X' "'$c")" ;;
+        esac
+    done
+    printf '%s' "$encoded"
+}
+
 __glass_osc7() {
-    printf '\e]7;file://%s%s\e\\' "${HOST}" "${PWD}"
+    printf '\e]7;file://%s%s\e\\' "${HOST}" "$(__glass_urlencode "${PWD}")"
 }
 
 # ---------------------------------------------------------------------------
