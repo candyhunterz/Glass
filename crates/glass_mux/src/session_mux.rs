@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::session::Session;
-use crate::split_tree::SplitNode;
+use crate::split_tree::{SplitNode, MAX_SPLIT_DEPTH};
 use crate::tab::Tab;
 use crate::types::{SessionId, SplitDirection, TabId};
 
@@ -158,8 +158,25 @@ impl SessionMux {
     /// Split the focused pane in the active tab.
     ///
     /// Replaces the focused Leaf with a Split node where left=old session,
-    /// right=new session. Sets focused_pane to new session. Returns new session_id.
-    pub fn split_pane(&mut self, direction: SplitDirection, new_session: Session) -> SessionId {
+    /// right=new session. Sets focused_pane to new session. Returns new session_id,
+    /// or None if the split tree is already at maximum depth.
+    pub fn split_pane(
+        &mut self,
+        direction: SplitDirection,
+        new_session: Session,
+    ) -> Option<SessionId> {
+        // Refuse to split if tree is already at max depth
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            if tab.root.depth() >= MAX_SPLIT_DEPTH {
+                tracing::warn!(
+                    depth = tab.root.depth(),
+                    max = MAX_SPLIT_DEPTH,
+                    "split refused: tree at maximum depth"
+                );
+                return None;
+            }
+        }
+
         let new_id = new_session.id;
         self.sessions.insert(new_id, new_session);
 
@@ -169,7 +186,7 @@ impl SessionMux {
             tab.focused_pane = new_id;
         }
 
-        new_id
+        Some(new_id)
     }
 
     /// Remove a pane from the active tab's split tree.

@@ -788,4 +788,47 @@ mod tests {
         // bg + 3 tabs + "+" button = 5 (same as before)
         assert_eq!(rects_none.len(), 5);
     }
+
+    // ---- Tab overflow tests ----
+
+    /// 50 tabs in a standard viewport: tab width clamps to MIN_TAB_WIDTH,
+    /// no panics in rect/text generation.
+    #[test]
+    fn many_tabs_overflow_no_panic() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let tab_infos: Vec<TabDisplayInfo> = (0..50)
+            .map(|i| TabDisplayInfo {
+                title: format!("Tab {}", i),
+                is_active: i == 0,
+                has_locks: false,
+                agent_created: false,
+            })
+            .collect();
+        let (tab_width, total_width) = renderer.compute_tab_width(50, 1920.0);
+        assert!(
+            tab_width >= MIN_TAB_WIDTH,
+            "tab_width {} must be >= MIN_TAB_WIDTH {}",
+            tab_width,
+            MIN_TAB_WIDTH
+        );
+        // With 50 tabs at 60px each, total should exceed viewport
+        assert!(total_width > 1920.0, "50 tabs should overflow 1920px");
+        // Build rects shouldn't panic
+        let rects = renderer.build_tab_rects(&tab_infos, 1920.0, None, None);
+        assert_eq!(rects.len(), 50 + 2); // bg + 50 tabs + "+" button
+        // Build text shouldn't panic
+        let labels = renderer.build_tab_text(&tab_infos, 1920.0, None);
+        assert_eq!(labels.len(), 50 + 1); // 50 tab labels + "+" button
+    }
+
+    /// Zero-width viewport: tab bar should still produce valid output.
+    #[test]
+    fn zero_width_viewport_tab_bar_no_panic() {
+        let renderer = TabBarRenderer::new(8.0, 16.0);
+        let tabs = make_tabs(&[("Tab 1", true)]);
+        let (tab_width, _) = renderer.compute_tab_width(1, 0.0);
+        assert!(tab_width >= MIN_TAB_WIDTH);
+        let rects = renderer.build_tab_rects(&tabs, 0.0, None, None);
+        assert!(!rects.is_empty());
+    }
 }

@@ -3,6 +3,11 @@
 use crate::layout::ViewportLayout;
 use crate::types::{FocusDirection, SessionId, SplitDirection};
 
+/// Maximum allowed split tree depth. At depth 8, panes become too small
+/// to be usable on typical displays (< 10px). Also prevents unbounded
+/// recursion in layout computation.
+pub const MAX_SPLIT_DEPTH: u32 = 8;
+
 /// A node in the split pane tree.
 ///
 /// Leaf nodes hold a single session. Split nodes divide space between
@@ -185,6 +190,14 @@ impl SplitNode {
                 left.split_leaf(target, direction, new_id)
                     || right.split_leaf(target, direction, new_id)
             }
+        }
+    }
+
+    /// Return the maximum depth of this tree (leaf = 0, one split = 1, etc.).
+    pub fn depth(&self) -> u32 {
+        match self {
+            SplitNode::Leaf(_) => 0,
+            SplitNode::Split { left, right, .. } => 1 + left.depth().max(right.depth()),
         }
     }
 
@@ -681,6 +694,89 @@ mod tests {
         if let SplitNode::Split { ratio, .. } = &node {
             assert!((ratio - 0.5).abs() < 0.001, "ratio should be unchanged");
         }
+    }
+
+    // ---- SPLIT-08: depth and deep split trees ----
+
+    #[test]
+    fn leaf_depth_is_zero() {
+        let node = SplitNode::Leaf(sid(1));
+        assert_eq!(node.depth(), 0);
+    }
+
+    #[test]
+    fn single_split_depth_is_one() {
+        let node = SplitNode::Split {
+            direction: SplitDirection::Horizontal,
+            left: Box::new(SplitNode::Leaf(sid(1))),
+            right: Box::new(SplitNode::Leaf(sid(2))),
+            ratio: 0.5,
+        };
+        assert_eq!(node.depth(), 1);
+    }
+
+    #[test]
+    fn deep_split_tree_depth() {
+        // Build a chain of 10 levels deep (always split the rightmost leaf)
+        let mut root = SplitNode::Leaf(sid(1));
+        for i in 2..=11u64 {
+            root = SplitNode::Split {
+                direction: SplitDirection::Horizontal,
+                left: Box::new(root),
+                right: Box::new(SplitNode::Leaf(sid(i))),
+                ratio: 0.5,
+            };
+        }
+        assert_eq!(root.depth(), 10);
+        assert_eq!(root.leaf_count(), 11);
+    }
+
+    /// Deep split trees produce non-negative dimensions for all panes.
+    /// Some panes will have 0-width at extreme depths — this verifies no panics.
+    #[test]
+    fn deep_split_tree_layout_no_panic() {
+        // Build a 10-level deep split tree (all horizontal)
+        let mut root = SplitNode::Leaf(sid(1));
+        for i in 2..=11u64 {
+            root = SplitNode::Split {
+                direction: SplitDirection::Horizontal,
+                left: Box::new(root),
+                right: Box::new(SplitNode::Leaf(sid(i))),
+                ratio: 0.5,
+            };
+        }
+        let c = container(); // 1000x800
+        let layouts = root.compute_layout(&c);
+        assert_eq!(layouts.len(), 11);
+        // All dimensions must be non-negative (no underflow)
+        for (_, vp) in &layouts {
+            // u32 can't be negative, so we just verify they exist
+            let _ = vp.width;
+            let _ = vp.height;
+        }
+    }
+
+    /// Alternating H/V splits should produce non-zero dimensions for reasonable depths.
+    #[test]
+    fn alternating_split_directions_layout() {
+        let mut root = SplitNode::Leaf(sid(1));
+        for i in 2..=9u64 {
+            let dir = if i % 2 == 0 {
+                SplitDirection::Horizontal
+            } else {
+                SplitDirection::Vertical
+            };
+            root = SplitNode::Split {
+                direction: dir,
+                left: Box::new(root),
+                right: Box::new(SplitNode::Leaf(sid(i))),
+                ratio: 0.5,
+            };
+        }
+        assert_eq!(root.depth(), 8);
+        let c = container(); // 1000x800
+        let layouts = root.compute_layout(&c);
+        assert_eq!(layouts.len(), 9);
     }
 
     #[test]

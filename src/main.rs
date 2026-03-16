@@ -3393,8 +3393,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.height,
                                     1,
                                 );
-                                ctx.session_mux
-                                    .split_pane(SplitDirection::Horizontal, session);
+                                if ctx
+                                    .session_mux
+                                    .split_pane(SplitDirection::Horizontal, session)
+                                    .is_none()
+                                {
+                                    return; // max depth reached
+                                }
+
                                 // Resize all panes' PTYs with per-pane dimensions
                                 resize_all_panes(
                                     &mut ctx.session_mux,
@@ -3423,8 +3429,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.height,
                                     1,
                                 );
-                                ctx.session_mux
-                                    .split_pane(SplitDirection::Vertical, session);
+                                if ctx
+                                    .session_mux
+                                    .split_pane(SplitDirection::Vertical, session)
+                                    .is_none()
+                                {
+                                    return; // max depth reached
+                                }
                                 // Resize all panes' PTYs with per-pane dimensions
                                 resize_all_panes(
                                     &mut ctx.session_mux,

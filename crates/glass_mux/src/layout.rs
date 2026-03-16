@@ -118,4 +118,85 @@ mod tests {
         };
         assert_eq!(vp.center(), (300, 350));
     }
+
+    /// Zero-width viewport: saturating_sub prevents underflow.
+    #[test]
+    fn split_zero_width_no_panic() {
+        let vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 600,
+        };
+        let (left, right) = vp.split(SplitDirection::Horizontal, 0.5);
+        assert_eq!(left.width, 0);
+        assert_eq!(right.width, 0);
+        assert_eq!(left.height, 600);
+        assert_eq!(right.height, 600);
+    }
+
+    /// Zero-height viewport: saturating_sub prevents underflow.
+    #[test]
+    fn split_zero_height_no_panic() {
+        let vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 0,
+        };
+        let (top, bottom) = vp.split(SplitDirection::Vertical, 0.5);
+        assert_eq!(top.height, 0);
+        assert_eq!(bottom.height, 0);
+        assert_eq!(top.width, 800);
+        assert_eq!(bottom.width, 800);
+    }
+
+    /// Width smaller than divider gap: both panes get 0 width.
+    #[test]
+    fn split_width_smaller_than_gap() {
+        let vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 600,
+        };
+        let (left, right) = vp.split(SplitDirection::Horizontal, 0.5);
+        // width=1 < DIVIDER_GAP=2, so usable=0
+        assert_eq!(left.width, 0);
+        assert_eq!(right.width, 0);
+    }
+
+    /// Tiny viewport (3px wide): one pane gets 0, the other gets 1.
+    #[test]
+    fn split_tiny_viewport() {
+        let vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 3,
+            height: 3,
+        };
+        let (left, right) = vp.split(SplitDirection::Horizontal, 0.5);
+        // usable = 3 - 2 = 1, at ratio 0.5: left = 0, right = 1
+        assert_eq!(left.width + right.width, 1); // usable
+        let (top, bottom) = vp.split(SplitDirection::Vertical, 0.5);
+        assert_eq!(top.height + bottom.height, 1); // usable
+    }
+
+    /// Repeated splits on a tiny viewport don't panic.
+    #[test]
+    fn repeated_splits_tiny_viewport_no_panic() {
+        let mut vp = ViewportLayout {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        // Split 20 times — the viewport halves each time
+        for _ in 0..20 {
+            let (left, _right) = vp.split(SplitDirection::Horizontal, 0.5);
+            vp = left;
+        }
+        // Should have bottomed out at 0 width without panicking
+        assert_eq!(vp.width, 0);
+    }
 }
