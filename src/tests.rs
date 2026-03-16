@@ -306,8 +306,8 @@ mod settings_sync_tests {
         assert_eq!(value, "true"); // was false
     }
 
-    #[test]
     // verify_mode and orchestrator_mode toggles removed (auto-detected in V3)
+
     #[test]
     fn activate_nonexistent_field_returns_none() {
         let config = GlassConfig::load_from_str("");
