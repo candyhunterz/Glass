@@ -1938,8 +1938,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Execute debounced search query
-                {
-                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                if let Some(session) = ctx.session_mux.focused_session_mut() {
                     if let Some(ref mut overlay) = session.search_overlay {
                         if overlay.should_search(std::time::Duration::from_millis(150)) {
                             overlay.mark_searched();
@@ -2006,7 +2005,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     };
 
                     let (visible_blocks, search_overlay_data, status_clone) = {
-                        let session = ctx.session_mux.focused_session().unwrap();
+                        let Some(session) = ctx.session_mux.focused_session() else {
+                            return;
+                        };
                         let viewport_abs_start = snapshot
                             .history_size
                             .saturating_sub(snapshot.display_offset);
@@ -2278,8 +2279,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let pane_data: Vec<PaneData> = pane_layouts
                         .iter()
-                        .map(|(sid, vp)| {
-                            let session = ctx.session_mux.session(*sid).unwrap();
+                        .filter_map(|(sid, vp)| {
+                            let session = ctx.session_mux.session(*sid)?;
                             let term = session.term.lock();
                             let snapshot = snapshot_term(&term, &session.default_colors);
                             drop(term);
@@ -2292,12 +2293,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .into_iter()
                                 .cloned()
                                 .collect();
-                            PaneData {
+                            Some(PaneData {
                                 viewport: vp.clone(),
                                 snapshot,
                                 blocks,
                                 is_focused: focused_id == Some(*sid),
-                            }
+                            })
                         })
                         .collect();
 
@@ -3228,7 +3229,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Close,
                     }
                     let overlay_action = {
-                        let session = ctx.session_mux.focused_session_mut().unwrap();
+                        let Some(session) = ctx.session_mux.focused_session_mut() else {
+                            return;
+                        };
                         if let Some(ref mut overlay) = session.search_overlay {
                             match &event.logical_key {
                                 Key::Named(NamedKey::Escape) => {
@@ -3548,8 +3551,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
-                                {
-                                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                                if let Some(session) = ctx.session_mux.focused_session_mut() {
                                     if let Some(ref store) = session.snapshot_store {
                                         let engine = glass_snapshot::UndoEngine::new(store);
                                         match engine.undo_latest() {
@@ -3650,8 +3652,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
                                 // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
-                                {
-                                    let session = ctx.session_mux.focused_session_mut().unwrap();
+                                if let Some(session) = ctx.session_mux.focused_session_mut() {
                                     if let Some(block) =
                                         session.block_manager.blocks_mut().iter_mut().rev().find(
                                             |b| {
@@ -4759,32 +4760,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let status_bar_h = cell_h; // status bar is always 1 cell tall
 
                     // Hit test pipeline stage panel (bottom of viewport)
-                    let session = ctx.session_mux.focused_session_mut().unwrap();
-                    if let Some((block_idx, hit)) = session.block_manager.pipeline_hit_test(
-                        0.0,
-                        y as f32,
-                        cell_w,
-                        cell_h,
-                        viewport_h,
-                        status_bar_h,
-                    ) {
-                        match hit {
-                            PipelineHit::StageRow(stage_idx) => {
-                                if let Some(block) = session.block_manager.block_mut(block_idx) {
-                                    if block.expanded_stage_index == Some(stage_idx) {
-                                        block.set_expanded_stage(None);
-                                    } else {
-                                        block.set_expanded_stage(Some(stage_idx));
+                    if let Some(session) = ctx.session_mux.focused_session_mut() {
+                        if let Some((block_idx, hit)) = session.block_manager.pipeline_hit_test(
+                            0.0,
+                            y as f32,
+                            cell_w,
+                            cell_h,
+                            viewport_h,
+                            status_bar_h,
+                        ) {
+                            match hit {
+                                PipelineHit::StageRow(stage_idx) => {
+                                    if let Some(block) =
+                                        session.block_manager.block_mut(block_idx)
+                                    {
+                                        if block.expanded_stage_index == Some(stage_idx) {
+                                            block.set_expanded_stage(None);
+                                        } else {
+                                            block.set_expanded_stage(Some(stage_idx));
+                                        }
+                                    }
+                                }
+                                PipelineHit::Header => {
+                                    if let Some(block) =
+                                        session.block_manager.block_mut(block_idx)
+                                    {
+                                        block.toggle_pipeline_expanded();
                                     }
                                 }
                             }
-                            PipelineHit::Header => {
-                                if let Some(block) = session.block_manager.block_mut(block_idx) {
-                                    block.toggle_pipeline_expanded();
-                                }
-                            }
+                            true
+                        } else {
+                            false
                         }
-                        true
                     } else {
                         false
                     }
@@ -5013,8 +5021,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Holds command event data for emit_command_event (extracted inside borrow).
                     let mut command_event_data: Option<(String, String)> = None;
 
-                    {
-                        let session = ctx.session_mux.session_mut(session_id).unwrap();
+                    if let Some(session) = ctx.session_mux.session_mut(session_id) {
 
                         // Convert ShellEvent to OscEvent for BlockManager
                         let osc_event = shell_event_to_osc(&shell_event);
@@ -5478,8 +5485,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Spawn git query outside session borrow (needs self.proxy and window_id)
                     if let ShellEvent::CurrentDirectory(ref cwd) = shell_event {
                         // Re-check: only spawn if we set git_query_pending above
-                        let session = ctx.session_mux.session(session_id).unwrap();
-                        if session.status.git_query_pending {
+                        let git_pending = ctx
+                            .session_mux
+                            .session(session_id)
+                            .map(|s| s.status.git_query_pending)
+                            .unwrap_or(false);
+                        if git_pending {
                             let cwd_owned = cwd.clone();
                             let proxy = self.proxy.clone();
                             let wid = window_id;

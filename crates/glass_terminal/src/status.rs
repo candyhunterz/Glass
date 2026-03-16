@@ -162,11 +162,21 @@ mod tests {
 
     #[test]
     fn query_git_status_this_repo() {
-        // Integration test: use the Glass repo itself
-        let result = query_git_status(env!("CARGO_MANIFEST_DIR"));
-        // This test is running inside a git repo, so we should get info
-        assert!(result.is_some());
-        let info = result.unwrap();
-        assert!(!info.branch.is_empty());
+        // Skip if git is not available on PATH
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!("Skipping: git not on PATH");
+            return;
+        }
+        let dir = env!("CARGO_MANIFEST_DIR");
+        // Retry once — git can fail transiently under parallel test load
+        let result = query_git_status(dir).or_else(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            query_git_status(dir)
+        });
+        assert!(
+            result.is_some(),
+            "query_git_status returned None for {dir}"
+        );
+        assert!(!result.unwrap().branch.is_empty());
     }
 }

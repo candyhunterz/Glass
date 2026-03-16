@@ -436,7 +436,10 @@ fn glass_pty_loop(
         let needs_write = !write_list.is_empty();
         if needs_write != interest.writable {
             interest.writable = needs_write;
-            pty.reregister(&poll, interest, PollMode::Level).unwrap();
+            if let Err(e) = pty.reregister(&poll, interest, PollMode::Level) {
+                tracing::error!("PTY reregister failed: {e}");
+                break;
+            }
         }
     }
 
@@ -582,9 +585,13 @@ fn pty_write(pty: &mut tty::Pty, write_list: &mut VecDeque<Cow<'static, [u8]>>) 
                 if n >= data.len() {
                     write_list.pop_front();
                 } else {
-                    // Partial write — replace front with remainder
+                    // Partial write — replace front with remainder.
+                    // front_mut() is guaranteed Some: we entered via front() above
+                    // and only the n >= len branch pops.
                     let remaining = data[n..].to_vec();
-                    *write_list.front_mut().unwrap() = Cow::Owned(remaining);
+                    if let Some(front) = write_list.front_mut() {
+                        *front = Cow::Owned(remaining);
+                    }
                     break;
                 }
             }

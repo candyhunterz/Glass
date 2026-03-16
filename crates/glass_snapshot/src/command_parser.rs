@@ -582,8 +582,13 @@ fn parse_cp(args: &[String], cwd: &Path) -> ParseResult {
         };
     }
 
-    // Destination is the last non-flag argument
-    let dest = non_flag_args.last().unwrap();
+    // Destination is the last non-flag argument (guaranteed by len >= 2 check above)
+    let Some(dest) = non_flag_args.last() else {
+        return ParseResult {
+            targets: vec![],
+            confidence: Confidence::Low,
+        };
+    };
     let targets = vec![resolve_path(dest, cwd)];
 
     ParseResult {
