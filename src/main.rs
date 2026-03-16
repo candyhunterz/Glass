@@ -1646,6 +1646,14 @@ impl Processor {
             cwd.to_string(),
         );
 
+        // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
+        if self.agent_runtime.is_none() {
+            tracing::error!("Orchestrator: agent respawn failed — deactivating orchestrator");
+            self.orchestrator.active = false;
+            self.orchestrator.response_pending = false;
+            return;
+        }
+
         // Send handoff to new agent
         if let Some(ref runtime) = self.agent_runtime {
             if let Some(ref writer) = runtime.orchestrator_writer {
@@ -6351,14 +6359,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                             return;
                         }
 
-                        // Type the text into the active PTY
+                        // Type the text into the active PTY — but only if a command
+                        // isn't actively executing (avoid interrupting Claude Code mid-turn)
                         if let Some(ctx) = self.windows.values().next() {
                             if let Some(session) = ctx.session_mux.focused_session() {
-                                let bytes = format!("{}\n", text).into_bytes();
-                                let _ = session
-                                    .pty_sender
-                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
-                                self.orchestrator.mark_pty_write();
+                                let block_executing = session
+                                    .block_manager
+                                    .current_block_index()
+                                    .and_then(|idx| session.block_manager.blocks().get(idx))
+                                    .map(|b| {
+                                        b.state
+                                            == glass_terminal::block_manager::BlockState::Executing
+                                    })
+                                    .unwrap_or(false);
+
+                                if block_executing {
+                                    tracing::debug!(
+                                        "Orchestrator: deferring TypeText — command is executing"
+                                    );
+                                    // Don't type; next silence event will re-evaluate
+                                } else {
+                                    let bytes = format!("{}\n", text).into_bytes();
+                                    let _ = session
+                                        .pty_sender
+                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                    self.orchestrator.mark_pty_write();
+                                }
                             }
                         }
                     }
@@ -6723,9 +6749,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     std::thread::Builder::new()
                                         .name("Glass verify".into())
                                         .spawn(move || {
+                                            let deadline = std::time::Instant::now()
+                                                + std::time::Duration::from_secs(300); // 5 min timeout
                                             let results: Vec<VerifyEventResult> = commands
                                                 .iter()
                                                 .map(|cmd| {
+                                                    // Check deadline before starting each command
+                                                    if std::time::Instant::now() > deadline {
+                                                        return VerifyEventResult {
+                                                            command_name: cmd.name.clone(),
+                                                            exit_code: -1,
+                                                            tests_passed: None,
+                                                            tests_failed: None,
+                                                            output: "Verification timeout (5 min)"
+                                                                .to_string(),
+                                                        };
+                                                    }
                                                     let mut proc = if cfg!(target_os = "windows") {
                                                         let mut c = std::process::Command::new("cmd");
                                                         c.args(["/C", &cmd.cmd]);
