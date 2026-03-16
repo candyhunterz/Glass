@@ -2667,13 +2667,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
-                    // Build orchestrator event displays
+                    // Build orchestrator event displays — only when on the Orchestrator tab
                     let activated_at = self.orchestrator_activated_at;
-                    let orch_events: Vec<glass_renderer::OrchestratorEventDisplay> = self
-                        .orchestrator_event_buffer
-                        .events
-                        .iter()
-                        .map(|entry| {
+                    let orch_events: Vec<glass_renderer::OrchestratorEventDisplay> = if self
+                        .activity_view_filter
+                        != glass_renderer::ActivityViewFilter::Orchestrator
+                    {
+                        Vec::new()
+                    } else {
+                        self.orchestrator_event_buffer
+                            .events
+                            .iter()
+                            .map(|entry| {
                             let relative_time = activated_at
                                 .map(|at| {
                                     let elapsed = entry.timestamp.duration_since(at);
@@ -2789,7 +2794,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 expandable,
                             }
                         })
-                        .collect();
+                        .collect()
+                    };
 
                     let render_data = glass_renderer::ActivityOverlayRenderData {
                         agents,
@@ -7174,16 +7180,17 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::OrchestratorThinking { text } => {
                 let token_estimate = orchestrator_events::estimate_tokens(&text);
+                // Truncate thinking text to 2000 chars for storage — full text
+                // can be 50KB+ and gets cloned on every overlay redraw.
+                let truncated = orchestrator_events::truncate_display(&text, 2000);
                 self.orchestrator_event_buffer.push(
                     orchestrator_events::OrchestratorEvent::Thinking {
-                        text,
+                        text: truncated,
                         token_estimate,
                     },
                     self.orchestrator.iteration,
                 );
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
-                }
+                // No request_redraw — cosmetic update, next natural redraw picks it up
             }
             AppEvent::OrchestratorToolCall {
                 name,
@@ -7196,9 +7203,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                     },
                     self.orchestrator.iteration,
                 );
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
-                }
             }
             AppEvent::OrchestratorToolResult {
                 name,
@@ -7211,9 +7215,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                     },
                     self.orchestrator.iteration,
                 );
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
-                }
             }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
