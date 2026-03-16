@@ -3781,6 +3781,40 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         detected_files
                                     );
 
+                                    // Write auto-detected values to config.toml
+                                    if let Some(config_path) = dirs::home_dir()
+                                        .map(|h| h.join(".glass").join("config.toml"))
+                                    {
+                                        let _ = glass_core::config::update_config_field(
+                                            &config_path,
+                                            Some("agent.orchestrator"),
+                                            "orchestrator_mode",
+                                            &format!("\"{}\"", detected_mode),
+                                        );
+                                        let _ = glass_core::config::update_config_field(
+                                            &config_path,
+                                            Some("agent.orchestrator"),
+                                            "verify_mode",
+                                            &format!("\"{}\"", detected_verify),
+                                        );
+                                        if !detected_files.is_empty() {
+                                            let files_toml = format!(
+                                                "[{}]",
+                                                detected_files
+                                                    .iter()
+                                                    .map(|f| format!("\"{f}\""))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            );
+                                            let _ = glass_core::config::update_config_field(
+                                                &config_path,
+                                                Some("agent.orchestrator"),
+                                                "verify_files",
+                                                &files_toml,
+                                            );
+                                        }
+                                    }
+
                                     // Capture context for handoff (gather from ctx before calling helper)
                                     let terminal_context = ctx
                                         .session_mux
