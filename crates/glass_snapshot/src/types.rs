@@ -34,7 +34,7 @@ mod tests {
 }
 
 /// How confident the parser is in its identification of file targets.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Confidence {
     /// Known destructive command with clear file targets identified.
     High,
