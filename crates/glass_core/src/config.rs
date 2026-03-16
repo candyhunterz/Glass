@@ -156,6 +156,12 @@ pub struct OrchestratorSection {
     /// Files to check for file-based verification. Auto-populated from PRD deliverables.
     #[serde(default)]
     pub verify_files: Vec<String>,
+    /// Enable LLM-based qualitative analysis after each orchestrator run.
+    #[serde(default)]
+    pub feedback_llm: bool,
+    /// Maximum number of prompt hints (Tier 3) stored per project.
+    #[serde(default = "default_max_prompt_hints")]
+    pub max_prompt_hints: usize,
 }
 
 fn default_orch_silence_timeout() -> u64 {
@@ -181,6 +187,9 @@ fn default_orch_completion_artifact() -> String {
 }
 fn default_orch_mode() -> String {
     "build".to_string()
+}
+fn default_max_prompt_hints() -> usize {
+    10
 }
 
 fn default_agent_max_budget_usd() -> f64 {
