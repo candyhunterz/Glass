@@ -1393,33 +1393,37 @@ fn fetch_latest_soi_context(
 
 /// Extract test pass/fail counts from command output using common patterns.
 fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
+    use std::sync::OnceLock;
+
+    static RE_RUST: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_JEST: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_PASSED: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_FAILED: OnceLock<regex::Regex> = OnceLock::new();
+
+    let re_rust = RE_RUST.get_or_init(|| regex::Regex::new(r"(\d+) passed; (\d+) failed").unwrap());
+    let re_jest = RE_JEST.get_or_init(|| {
+        regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed").unwrap()
+    });
+    let re_passed = RE_PASSED.get_or_init(|| regex::Regex::new(r"(\d+) passed").unwrap());
+    let re_failed = RE_FAILED.get_or_init(|| regex::Regex::new(r"(\d+) failed").unwrap());
+
     // Rust: "test result: ok. 45 passed; 2 failed; 0 ignored"
-    if let Some(caps) = regex::Regex::new(r"(\d+) passed; (\d+) failed")
-        .ok()
-        .and_then(|re| re.captures(output))
-    {
+    if let Some(caps) = re_rust.captures(output) {
         let passed = caps.get(1).and_then(|m| m.as_str().parse().ok());
         let failed = caps.get(2).and_then(|m| m.as_str().parse().ok());
         return (passed, failed);
     }
     // Jest/Node: "Tests: 2 failed, 45 passed, 47 total"
-    if let Some(caps) = regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed")
-        .ok()
-        .and_then(|re| re.captures(output))
-    {
+    if let Some(caps) = re_jest.captures(output) {
         let failed = caps.get(1).and_then(|m| m.as_str().parse().ok());
         let passed = caps.get(2).and_then(|m| m.as_str().parse().ok());
         return (passed, failed.or(Some(0)));
     }
     // Pytest: "5 passed, 2 failed" or "5 passed"
-    if let Some(caps) = regex::Regex::new(r"(\d+) passed")
-        .ok()
-        .and_then(|re| re.captures(output))
-    {
+    if let Some(caps) = re_passed.captures(output) {
         let passed = caps.get(1).and_then(|m| m.as_str().parse().ok());
-        let failed = regex::Regex::new(r"(\d+) failed")
-            .ok()
-            .and_then(|re| re.captures(output))
+        let failed = re_failed
+            .captures(output)
             .and_then(|c| c.get(1))
             .and_then(|m| m.as_str().parse().ok())
             .or(Some(0));
@@ -4800,19 +4804,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .as_ref()
                                 .map(|s| s.enabled)
                                 .unwrap_or(true);
-                            if snapshot_enabled {
-                                if let Some(ref store) = session.snapshot_store {
-                                    let cwd_path_snap = std::path::Path::new(session.status.cwd());
-                                    let parse_result =
-                                        glass_snapshot::command_parser::parse_command(
-                                            &command_text,
-                                            cwd_path_snap,
-                                        );
+                            // Parse command to determine confidence before deciding whether
+                            // to start the watcher. ReadOnly commands (cd, ls, etc.) don't
+                            // need a watcher — it can produce spurious snapshot entries.
+                            let cwd_path_snap = std::path::Path::new(session.status.cwd());
+                            let parse_confidence = if snapshot_enabled {
+                                let parse_result =
+                                    glass_snapshot::command_parser::parse_command(
+                                        &command_text,
+                                        cwd_path_snap,
+                                    );
+                                let confidence = parse_result.confidence;
 
-                                    if parse_result.confidence
-                                        != glass_snapshot::Confidence::ReadOnly
-                                        && !parse_result.targets.is_empty()
-                                    {
+                                if confidence != glass_snapshot::Confidence::ReadOnly
+                                    && !parse_result.targets.is_empty()
+                                {
+                                    if let Some(ref store) = session.snapshot_store {
                                         match store.create_snapshot(0, session.status.cwd()) {
                                             Ok(sid) => {
                                                 for target in &parse_result.targets {
@@ -4828,11 +4835,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 }
                                                 tracing::info!(
                                                     "Pre-exec snapshot {} with {} targets (confidence: {:?})",
-                                                    sid, parse_result.targets.len(), parse_result.confidence,
+                                                    sid, parse_result.targets.len(), confidence,
                                                 );
                                                 session.pending_snapshot_id = Some(sid);
                                                 session.pending_parse_confidence =
-                                                    Some(parse_result.confidence);
+                                                    Some(confidence);
                                                 // Mark current block as having a snapshot for [undo] label
                                                 if let Some(block) =
                                                     session.block_manager.current_block_mut()
@@ -4847,11 +4854,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         }
                                     }
                                 }
+                                confidence
                             } else {
                                 tracing::debug!(
                                     "Pre-exec snapshot skipped: snapshots disabled in config"
                                 );
-                            }
+                                glass_snapshot::Confidence::Low
+                            };
 
                             // Parse pipeline stages to extract per-stage command text.
                             // Strip prompt prefix (e.g. "PS C:\path> ") since command_text
@@ -4880,23 +4889,28 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                             session.pending_command_text = Some(command_text);
 
-                            // Start filesystem watcher for this command's CWD
-                            let cwd_path = std::path::Path::new(session.status.cwd());
-                            let ignore = glass_snapshot::IgnoreRules::load(cwd_path);
-                            session.active_watcher =
-                                match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
-                                    Ok(w) => {
-                                        tracing::debug!(
-                                            "FS watcher started for {}",
-                                            cwd_path.display()
-                                        );
-                                        Some(w)
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to start FS watcher: {}", e);
-                                        None
-                                    }
-                                };
+                            // Start filesystem watcher for this command's CWD.
+                            // Skip for ReadOnly commands (cd, ls, etc.) — they never modify
+                            // files and the watcher can produce spurious entries (e.g. the
+                            // command name itself appearing as a file path).
+                            if parse_confidence != glass_snapshot::Confidence::ReadOnly {
+                                let cwd_path = std::path::Path::new(session.status.cwd());
+                                let ignore = glass_snapshot::IgnoreRules::load(cwd_path);
+                                session.active_watcher =
+                                    match glass_snapshot::FsWatcher::new(cwd_path, ignore) {
+                                        Ok(w) => {
+                                            tracing::debug!(
+                                                "FS watcher started for {}",
+                                                cwd_path.display()
+                                            );
+                                            Some(w)
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Failed to start FS watcher: {}", e);
+                                            None
+                                        }
+                                    };
+                            }
                         }
 
                         // Insert CommandRecord on CommandFinished
