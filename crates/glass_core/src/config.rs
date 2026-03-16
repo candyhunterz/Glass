@@ -187,7 +187,7 @@ fn default_agent_cooldown_secs() -> u64 {
     30
 }
 fn default_agent_allowed_tools() -> String {
-    "glass_query,glass_context,Bash,Read".to_string()
+    "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read".to_string()
 }
 
 impl Default for AgentSection {
