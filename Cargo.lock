@@ -1243,6 +1243,7 @@ dependencies = [
  "glass_agent",
  "glass_coordination",
  "glass_core",
+ "glass_feedback",
  "glass_history",
  "glass_mcp",
  "glass_mux",
@@ -1328,6 +1329,17 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "glass_feedback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glass_core",
+ "serde",
+ "toml 1.0.6+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

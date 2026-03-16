@@ -108,6 +108,7 @@ glass_mux = { path = "crates/glass_mux" }
 glass_coordination = { path = "crates/glass_coordination" }
 glass_soi = { path = "crates/glass_soi" }
 glass_agent = { path = "crates/glass_agent" }
+glass_feedback = { path = "crates/glass_feedback" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-chrome = { version = "0.7", optional = true }
 serde_json = { workspace = true }
