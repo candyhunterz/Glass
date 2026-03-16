@@ -104,41 +104,66 @@ if [[ "${BASH_VERSINFO[0]}" -ge 5 ]] || \
     __glass_capture_tmpdir=""
     __glass_capture_stage_count=0
 
-    # Detect whether a command line contains unquoted pipes (not ||)
+    # Detect whether a command line contains unquoted top-level pipes (not ||).
+    # Correctly handles: backslash escapes, $() subshells, backtick subshells,
+    # parenthesized subshells, and quoted strings.
     __glass_has_pipes() {
         local cmd="$1"
         # Skip internal functions
         [[ "$cmd" == __glass_* ]] && return 1
         # Skip --no-glass commands
         [[ "$cmd" == *"--no-glass"* ]] && return 1
-        # Walk characters, tracking quote state
-        local in_sq=0 in_dq=0 i=0 len=${#cmd}
+        # Walk characters, tracking quote state and nesting depth
+        local in_sq=0 in_dq=0 depth=0 i=0 len=${#cmd}
         while [[ $i -lt $len ]]; do
             local c="${cmd:$i:1}"
             if [[ $in_sq -eq 1 ]]; then
                 [[ "$c" == "'" ]] && in_sq=0
             elif [[ $in_dq -eq 1 ]]; then
-                [[ "$c" == '"' ]] && in_dq=0
+                if [[ "$c" == '\\' ]]; then
+                    ((i++))  # skip escaped char inside double quotes
+                elif [[ "$c" == '"' ]]; then
+                    in_dq=0
+                fi
+            elif [[ "$c" == '\\' ]]; then
+                ((i++))  # skip escaped char
             elif [[ "$c" == "'" ]]; then
                 in_sq=1
             elif [[ "$c" == '"' ]]; then
                 in_dq=1
-            elif [[ "$c" == '|' ]]; then
+            elif [[ "$c" == '$' && "${cmd:$((i+1)):1}" == '(' ]]; then
+                ((depth++))
+                ((i++))  # skip the '('
+            elif [[ "$c" == '(' ]]; then
+                ((depth++))
+            elif [[ "$c" == ')' ]]; then
+                ((depth > 0)) && ((depth--))
+            elif [[ "$c" == '`' ]]; then
+                # Skip to matching backtick
+                ((i++))
+                while [[ $i -lt $len ]]; do
+                    [[ "${cmd:$i:1}" == '\\' ]] && ((i++))
+                    [[ "${cmd:$i:1}" == '`' ]] && break
+                    ((i++))
+                done
+            elif [[ "$c" == '|' && $depth -eq 0 ]]; then
                 local next="${cmd:$((i+1)):1}"
-                [[ "$next" != '|' ]] && return 0  # found unquoted pipe
+                [[ "$next" != '|' ]] && return 0  # found unquoted top-level pipe
             fi
             ((i++))
         done
         return 1
     }
 
-    # Rewrite a pipeline command to insert tee between stages.
+    # Rewrite a pipeline command to insert tee between top-level stages.
     # Sets __glass_capture_stage_count as a side effect.
+    # Correctly handles: backslash escapes, $() subshells, backtick subshells,
+    # parenthesized subshells, and quoted strings.
     __glass_tee_rewrite() {
         local cmd="$1"
         local tmpdir="$2"
         local result="" current="" stage_idx=0
-        local in_sq=0 in_dq=0 i=0 len=${#cmd}
+        local in_sq=0 in_dq=0 depth=0 i=0 len=${#cmd}
 
         while [[ $i -lt $len ]]; do
             local c="${cmd:$i:1}"
@@ -147,14 +172,48 @@ if [[ "${BASH_VERSINFO[0]}" -ge 5 ]] || \
                 [[ "$c" == "'" ]] && in_sq=0
             elif [[ $in_dq -eq 1 ]]; then
                 current+="$c"
-                [[ "$c" == '"' ]] && in_dq=0
+                if [[ "$c" == '\\' ]]; then
+                    ((i++))
+                    current+="${cmd:$i:1}"  # append escaped char
+                elif [[ "$c" == '"' ]]; then
+                    in_dq=0
+                fi
+            elif [[ "$c" == '\\' ]]; then
+                current+="$c"
+                ((i++))
+                current+="${cmd:$i:1}"  # append escaped char
             elif [[ "$c" == "'" ]]; then
                 in_sq=1
                 current+="$c"
             elif [[ "$c" == '"' ]]; then
                 in_dq=1
                 current+="$c"
-            elif [[ "$c" == '|' ]]; then
+            elif [[ "$c" == '$' && "${cmd:$((i+1)):1}" == '(' ]]; then
+                ((depth++))
+                current+='$('
+                ((i++))  # skip the '('
+            elif [[ "$c" == '(' ]]; then
+                ((depth++))
+                current+="$c"
+            elif [[ "$c" == ')' ]]; then
+                ((depth > 0)) && ((depth--))
+                current+="$c"
+            elif [[ "$c" == '`' ]]; then
+                # Copy backtick-delimited subshell verbatim
+                current+='`'
+                ((i++))
+                while [[ $i -lt $len ]]; do
+                    local bc="${cmd:$i:1}"
+                    current+="$bc"
+                    if [[ "$bc" == '\\' ]]; then
+                        ((i++))
+                        current+="${cmd:$i:1}"
+                    elif [[ "$bc" == '`' ]]; then
+                        break
+                    fi
+                    ((i++))
+                done
+            elif [[ "$c" == '|' && $depth -eq 0 ]]; then
                 local next="${cmd:$((i+1)):1}"
                 if [[ "$next" == '|' ]]; then
                     # Logical OR -- pass through

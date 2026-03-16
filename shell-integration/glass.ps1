@@ -130,6 +130,8 @@ $Global:__GlassCaptureStageCount = 0
 
 # Detect and rewrite pipeline commands with Tee-Object capture.
 # Returns $null if the command is not a pipeline or should be skipped.
+# Correctly handles: backtick escapes, () nesting, $() subexpressions,
+# and quoted strings.
 function Global:__Glass-Rewrite-Pipeline {
     param([string]$Command)
 
@@ -138,26 +140,37 @@ function Global:__Glass-Rewrite-Pipeline {
     # Skip internal functions
     if ($Command -match '^__Glass') { return $null }
 
-    # Split on unquoted pipes (not ||)
+    # Split on unquoted top-level pipes (not ||)
     $stages = @()
     $current = ""
     $inSingle = $false
     $inDouble = $false
+    $depth = 0
 
     for ($i = 0; $i -lt $Command.Length; $i++) {
         $c = $Command[$i]
+        # Backtick escape (PowerShell's escape character)
+        if ($c -eq '`' -and -not $inSingle -and ($i + 1) -lt $Command.Length) {
+            $current += $c + $Command[$i + 1]
+            $i++
+            continue
+        }
         if ($c -eq "'" -and -not $inDouble) { $inSingle = -not $inSingle }
         elseif ($c -eq '"' -and -not $inSingle) { $inDouble = -not $inDouble }
-        elseif ($c -eq '|' -and -not $inSingle -and -not $inDouble) {
-            # Check for ||
-            if ($i + 1 -lt $Command.Length -and $Command[$i + 1] -eq '|') {
-                $current += '||'
-                $i++
+        elseif (-not $inSingle -and -not $inDouble) {
+            if ($c -eq '(') { $depth++ }
+            elseif ($c -eq ')' -and $depth -gt 0) { $depth-- }
+            elseif ($c -eq '|' -and $depth -eq 0) {
+                # Check for ||
+                if ($i + 1 -lt $Command.Length -and $Command[$i + 1] -eq '|') {
+                    $current += '||'
+                    $i++
+                    continue
+                }
+                $stages += $current.Trim()
+                $current = ""
                 continue
             }
-            $stages += $current.Trim()
-            $current = ""
-            continue
         }
         $current += $c
     }
@@ -170,7 +183,8 @@ function Global:__Glass-Rewrite-Pipeline {
     $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) "glass_$PID`_$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
     [System.IO.Directory]::CreateDirectory($tmpdir) | Out-Null
     $Global:__GlassCaptureDir = $tmpdir
-    $Global:__GlassCaptureStageCount = $stages.Count
+    # Stage count = number of pipe boundaries (tee files), not total stages
+    $Global:__GlassCaptureStageCount = $stages.Count - 1
 
     # Build rewritten command with Tee-Object between stages
     $parts = @()
@@ -194,17 +208,18 @@ function Global:__Glass-Emit-Stages {
     if (-not $tmpdir -or -not (Test-Path $tmpdir)) { return }
 
     $E = [char]0x1b
+    $BEL = [char]7
     $count = $Global:__GlassCaptureStageCount
     if (-not $count -or $count -eq 0) { return }
 
-    # Pipeline start marker
-    [Console]::Write("$E]133;S;$count$E\")
+    # Pipeline start marker (BEL terminator, consistent with prompt function)
+    [Console]::Write("$E]133;S;$count$BEL")
 
     for ($i = 0; $i -lt $count; $i++) {
         $path = Join-Path $tmpdir "stage_$i.txt"
         if (Test-Path $path) {
             $size = (Get-Item $path).Length
-            [Console]::Write("$E]133;P;$i;$size;$path$E\")
+            [Console]::Write("$E]133;P;$i;$size;$path$BEL")
         }
     }
 
