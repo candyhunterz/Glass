@@ -816,7 +816,7 @@ mod tests {
         // Build rects shouldn't panic
         let rects = renderer.build_tab_rects(&tab_infos, 1920.0, None, None);
         assert_eq!(rects.len(), 50 + 2); // bg + 50 tabs + "+" button
-        // Build text shouldn't panic
+                                         // Build text shouldn't panic
         let labels = renderer.build_tab_text(&tab_infos, 1920.0, None);
         assert_eq!(labels.len(), 50 + 1); // 50 tab labels + "+" button
     }

@@ -455,10 +455,7 @@ mod tests {
               \x1b]133;P;1;200;/tmp/glass/stage_1\x07",
         );
         assert_eq!(events.len(), 3);
-        assert_eq!(
-            events[0],
-            OscEvent::PipelineStart { stage_count: 2 }
-        );
+        assert_eq!(events[0], OscEvent::PipelineStart { stage_count: 2 });
         // Verify stage indices are sequential 0..stage_count
         for i in 0..2 {
             match &events[i + 1] {
@@ -475,17 +472,19 @@ mod tests {
         let mut input = b"\x1b]133;S;12\x07".to_vec();
         for i in 0..12 {
             input.extend_from_slice(
-                format!("\x1b]133;P;{};{};/tmp/glass/stage_{}\x07", i, (i + 1) * 50, i)
-                    .as_bytes(),
+                format!(
+                    "\x1b]133;P;{};{};/tmp/glass/stage_{}\x07",
+                    i,
+                    (i + 1) * 50,
+                    i
+                )
+                .as_bytes(),
             );
         }
         let events = s.scan(&input);
         // 1 PipelineStart + 12 PipelineStage
         assert_eq!(events.len(), 13);
-        assert_eq!(
-            events[0],
-            OscEvent::PipelineStart { stage_count: 12 }
-        );
+        assert_eq!(events[0], OscEvent::PipelineStart { stage_count: 12 });
         for i in 0..12 {
             match &events[i + 1] {
                 OscEvent::PipelineStage {
@@ -508,14 +507,9 @@ mod tests {
     fn pipeline_bel_and_st_terminators() {
         let mut s = OscScanner::new();
         // S with BEL, P with ST
-        let events = s.scan(
-            b"\x1b]133;S;1\x07\x1b]133;P;0;50;/tmp/stage_0\x1b\\",
-        );
+        let events = s.scan(b"\x1b]133;S;1\x07\x1b]133;P;0;50;/tmp/stage_0\x1b\\");
         assert_eq!(events.len(), 2);
-        assert_eq!(
-            events[0],
-            OscEvent::PipelineStart { stage_count: 1 }
-        );
+        assert_eq!(events[0], OscEvent::PipelineStart { stage_count: 1 });
         match &events[1] {
             OscEvent::PipelineStage {
                 index, temp_path, ..

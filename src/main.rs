@@ -4782,8 +4782,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         ) {
                             match hit {
                                 PipelineHit::StageRow(stage_idx) => {
-                                    if let Some(block) =
-                                        session.block_manager.block_mut(block_idx)
+                                    if let Some(block) = session.block_manager.block_mut(block_idx)
                                     {
                                         if block.expanded_stage_index == Some(stage_idx) {
                                             block.set_expanded_stage(None);
@@ -4793,8 +4792,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 PipelineHit::Header => {
-                                    if let Some(block) =
-                                        session.block_manager.block_mut(block_idx)
+                                    if let Some(block) = session.block_manager.block_mut(block_idx)
                                     {
                                         block.toggle_pipeline_expanded();
                                     }
@@ -5033,7 +5031,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                     let mut command_event_data: Option<(String, String)> = None;
 
                     if let Some(session) = ctx.session_mux.session_mut(session_id) {
-
                         // Convert ShellEvent to OscEvent for BlockManager
                         let osc_event = shell_event_to_osc(&shell_event);
                         session.block_manager.handle_event(&osc_event, line);
@@ -6490,6 +6487,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                             },
                         );
 
+                        // Generate post-mortem report
+                        let prd_path = self
+                            .config
+                            .agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.prd_path.clone())
+                            .unwrap_or_default();
+                        orchestrator::generate_postmortem(
+                            &self.get_focused_cwd(),
+                            self.orchestrator.iteration,
+                            self.orchestrator_activated_at.map(|t| t.elapsed()),
+                            self.orchestrator.metric_baseline.as_ref(),
+                            &format!(
+                                "Done ({})",
+                                if summary.is_empty() {
+                                    "no summary"
+                                } else {
+                                    &summary
+                                }
+                            ),
+                            &prd_path,
+                        );
+
                         self.orchestrator.active = false;
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
@@ -6666,6 +6687,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     "Bounded run complete ({} iterations)",
                                     self.orchestrator.iteration
                                 ),
+                            );
+
+                            // Generate post-mortem report
+                            let prd_path = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.prd_path.clone())
+                                .unwrap_or_default();
+                            orchestrator::generate_postmortem(
+                                &self.get_focused_cwd(),
+                                self.orchestrator.iteration,
+                                self.orchestrator_activated_at.map(|t| t.elapsed()),
+                                self.orchestrator.metric_baseline.as_ref(),
+                                &format!(
+                                    "Bounded stop (max {} iterations)",
+                                    self.orchestrator.max_iterations.unwrap_or(0)
+                                ),
+                                &prd_path,
                             );
 
                             // Deactivate orchestrator

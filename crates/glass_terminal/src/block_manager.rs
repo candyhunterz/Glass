@@ -990,12 +990,7 @@ mod tests {
         bm.handle_event(&OscEvent::PromptStart, 0);
         bm.handle_event(&OscEvent::CommandStart, 1);
         // Skip CommandExecuted, go straight to Finished
-        bm.handle_event(
-            &OscEvent::CommandFinished {
-                exit_code: Some(0),
-            },
-            5,
-        );
+        bm.handle_event(&OscEvent::CommandFinished { exit_code: Some(0) }, 5);
         let block = &bm.blocks()[0];
         assert_eq!(block.state, BlockState::Complete);
         assert_eq!(block.exit_code, Some(0));

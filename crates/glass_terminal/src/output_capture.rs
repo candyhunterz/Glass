@@ -313,7 +313,7 @@ mod tests {
         let mut buf = OutputBuffer::new(1024);
         buf.start_capture();
         buf.check_alt_screen(b"\x1b[?1049"); // partial — missing 'h'
-        buf.check_alt_screen(b"h");           // remainder
+        buf.check_alt_screen(b"h"); // remainder
         buf.append(b"data");
         // NOT detected as alt-screen — this is the known limitation
         let result = buf.finish().unwrap();

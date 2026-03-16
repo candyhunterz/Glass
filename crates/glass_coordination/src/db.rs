@@ -338,10 +338,7 @@ impl CoordinationDb {
         // Validate all paths are absolute before canonicalizing
         for p in paths {
             if !p.is_absolute() {
-                anyhow::bail!(
-                    "Paths must be absolute, got relative path: {}",
-                    p.display()
-                );
+                anyhow::bail!("Paths must be absolute, got relative path: {}", p.display());
             }
         }
 
@@ -1886,9 +1883,7 @@ mod tests {
         let fake_id = "00000000-0000-0000-0000-000000000000";
         let path = dir.path().join("file.rs");
         std::fs::write(&path, "").unwrap();
-        let err = db
-            .lock_files(fake_id, &[path], None)
-            .unwrap_err();
+        let err = db.lock_files(fake_id, &[path], None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("Agent not registered"),

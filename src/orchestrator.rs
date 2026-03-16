@@ -566,6 +566,240 @@ pub fn read_iterations_log_truncated(project_root: &str, max_entries: usize) -> 
     result
 }
 
+/// Generate a post-mortem report for a completed orchestrator run.
+///
+/// Reads iterations.tsv, git log, and metric baseline data to produce
+/// a structured markdown report at `.glass/postmortem-{timestamp}.md`.
+pub fn generate_postmortem(
+    project_root: &str,
+    iteration: u32,
+    duration: Option<std::time::Duration>,
+    metric_baseline: Option<&MetricBaseline>,
+    completion_reason: &str,
+    prd_path: &str,
+) {
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    let _ = std::fs::create_dir_all(&glass_dir);
+
+    // Read iterations.tsv for analysis
+    let iterations_content = read_iterations_log(project_root);
+    let mut stuck_count = 0;
+    let mut verify_keep_count = 0;
+    let mut verify_revert_count = 0;
+    let mut baseline_count = 0;
+    let mut checkpoint_count = 0;
+    for line in iterations_content.lines().skip(1) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() >= 5 {
+            match cols[3].trim() {
+                "stuck" => stuck_count += 1,
+                "keep" => verify_keep_count += 1,
+                "revert" => verify_revert_count += 1,
+                "baseline" => baseline_count += 1,
+                "checkpoint" => checkpoint_count += 1,
+                _ => {}
+            }
+        }
+    }
+
+    // Get git log for commits made during the run
+    let git_log = std::process::Command::new("git")
+        .args(["log", "--oneline", &format!("-{}", iteration.max(10))])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "(git log unavailable)".to_string());
+
+    // Get test counts from metric baseline
+    let (tests_passed, tests_failed, keep_count, revert_count) = metric_baseline
+        .map(|b| {
+            let passed = b
+                .last_results
+                .first()
+                .and_then(|r| r.tests_passed)
+                .unwrap_or(0);
+            let failed = b
+                .last_results
+                .first()
+                .and_then(|r| r.tests_failed)
+                .unwrap_or(0);
+            (passed, failed, b.keep_count, b.revert_count)
+        })
+        .unwrap_or((0, 0, 0, 0));
+
+    // Duration formatting
+    let duration_str = duration
+        .map(|d| {
+            let secs = d.as_secs();
+            if secs >= 3600 {
+                format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+            } else {
+                format!("{}m {}s", secs / 60, secs % 60)
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Efficiency: iterations per commit
+    let commit_count = git_log.lines().count();
+    let iters_per_commit = if commit_count > 0 {
+        format!("{:.1}", iteration as f64 / commit_count as f64)
+    } else {
+        "N/A".to_string()
+    };
+
+    // Build report
+    let report = format!(
+        r#"# Orchestrator Post-Mortem Report
+
+## Run Summary
+
+| Metric | Value |
+|--------|-------|
+| PRD | `{prd_path}` |
+| Completion | {completion_reason} |
+| Iterations | {iteration} |
+| Duration | {duration_str} |
+| Commits | {commit_count} |
+| Iterations/commit | {iters_per_commit} |
+
+## Metric Guard
+
+| Metric | Value |
+|--------|-------|
+| Baselines established | {baseline_count} |
+| Keeps (changes passed) | {keep_count} |
+| Reverts (regressions caught) | {revert_count} |
+| Final test count | {tests_passed} passed, {tests_failed} failed |
+
+## Agent Behavior
+
+| Metric | Value |
+|--------|-------|
+| Stuck events | {stuck_count} |
+| Checkpoint refreshes | {checkpoint_count} |
+| Verify keeps (from TSV) | {verify_keep_count} |
+| Verify reverts (from TSV) | {verify_revert_count} |
+
+## Commits
+
+```
+{git_log}```
+
+## Observations
+
+{observations}
+
+## Raw Iteration Log
+
+```
+{iterations_content}```
+"#,
+        observations = build_observations(
+            iteration,
+            stuck_count,
+            verify_revert_count,
+            checkpoint_count,
+            commit_count,
+            &duration_str,
+        ),
+    );
+
+    // Write report
+    let timestamp = chrono_free_timestamp();
+    let filename = format!("postmortem-{timestamp}.md");
+    let path = glass_dir.join(&filename);
+    if let Err(e) = std::fs::write(&path, &report) {
+        tracing::warn!("Failed to write postmortem report: {e}");
+    } else {
+        tracing::info!("Orchestrator: post-mortem report written to .glass/{filename}");
+    }
+}
+
+fn chrono_free_timestamp() -> String {
+    // Use SystemTime for a rough timestamp without chrono dependency
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Format as YYYYMMDD-HHMMSS (approximate from epoch)
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    // Rough date calc (good enough for filenames)
+    let years = 1970 + days / 365;
+    let day_of_year = days % 365;
+    let month = day_of_year / 30 + 1;
+    let day = day_of_year % 30 + 1;
+    format!("{years:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
+}
+
+fn build_observations(
+    iteration: u32,
+    stuck_count: usize,
+    revert_count: usize,
+    checkpoint_count: usize,
+    commit_count: usize,
+    duration: &str,
+) -> String {
+    let mut obs = Vec::new();
+
+    if stuck_count > 0 {
+        obs.push(format!(
+            "- Agent got stuck {stuck_count} time(s). Consider adjusting the PRD to be more explicit about expected approaches, or increase `max_retries_before_stuck`."
+        ));
+    }
+
+    if revert_count > 0 {
+        obs.push(format!(
+            "- Metric guard reverted {revert_count} change(s). The agent introduced regressions that were caught and rolled back."
+        ));
+    }
+
+    if iteration > 0 && commit_count == 0 {
+        obs.push(
+            "- No commits produced despite running iterations. The agent may have been unable to make progress on the PRD tasks.".to_string()
+        );
+    }
+
+    if checkpoint_count > 3 {
+        obs.push(format!(
+            "- {checkpoint_count} checkpoint refreshes — context was exhausted frequently. Consider breaking the PRD into smaller, focused runs."
+        ));
+    }
+
+    let iters_per_commit = if commit_count > 0 {
+        iteration as f64 / commit_count as f64
+    } else {
+        0.0
+    };
+    if iters_per_commit > 10.0 && commit_count > 0 {
+        obs.push(format!(
+            "- High iteration-to-commit ratio ({iters_per_commit:.1}). Many iterations produced no commits — the agent may be spending time reading/analyzing without acting."
+        ));
+    }
+
+    if stuck_count == 0 && revert_count == 0 && commit_count > 0 {
+        obs.push(format!(
+            "- Clean run: {commit_count} commits in {duration} with no stuck events or reverts."
+        ));
+    }
+
+    if obs.is_empty() {
+        "- No notable observations.".to_string()
+    } else {
+        obs.join("\n")
+    }
+}
+
 /// Line counts for SOI-driven context windowing.
 const CONTEXT_LINES_ON_ERROR: usize = 30;
 const CONTEXT_LINES_ON_SUCCESS: usize = 20;

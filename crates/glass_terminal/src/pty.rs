@@ -581,7 +581,10 @@ fn pty_read_with_scan(
 /// Accepts `&mut dyn Write` rather than a concrete PTY type for testability.
 /// Empty entries are skipped to prevent a stall: `write(b"")` returns `Ok(0)`
 /// which would otherwise leave the empty entry permanently at the front.
-fn pty_write(writer: &mut dyn Write, write_list: &mut VecDeque<Cow<'static, [u8]>>) -> io::Result<()> {
+fn pty_write(
+    writer: &mut dyn Write,
+    write_list: &mut VecDeque<Cow<'static, [u8]>>,
+) -> io::Result<()> {
     while let Some(data) = write_list.front() {
         // Skip empty entries — write(b"") returns Ok(0) which hits the
         // break below, permanently stalling the queue.

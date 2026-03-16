@@ -173,10 +173,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(200));
             query_git_status(dir)
         });
-        assert!(
-            result.is_some(),
-            "query_git_status returned None for {dir}"
-        );
+        assert!(result.is_some(), "query_git_status returned None for {dir}");
         assert!(!result.unwrap().branch.is_empty());
     }
 }

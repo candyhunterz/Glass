@@ -218,8 +218,8 @@ mod tests {
     #[test]
     fn test_read_blob_nonexistent_hash() {
         let (store, _dir) = setup();
-        let result = store
-            .read_blob("0000000000000000000000000000000000000000000000000000000000000000");
+        let result =
+            store.read_blob("0000000000000000000000000000000000000000000000000000000000000000");
         assert!(result.is_err());
     }
 

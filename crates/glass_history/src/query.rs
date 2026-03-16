@@ -113,10 +113,7 @@ pub fn filtered_query(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Com
 
     // Use FTS5 only when text filter is non-empty after trimming;
     // an empty quoted string is not valid FTS5 syntax.
-    let use_fts = filter
-        .text
-        .as_ref()
-        .is_some_and(|t| !t.trim().is_empty());
+    let use_fts = filter.text.as_ref().is_some_and(|t| !t.trim().is_empty());
 
     if use_fts {
         let text = filter.text.as_ref().unwrap();
