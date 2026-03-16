@@ -136,6 +136,7 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 - Artifact-based completion signal: file watcher triggers orchestrator instantly when agent writes to configurable path (default `.glass/done`)
 - Bounded iteration mode: limit orchestration to N iterations, then checkpoint-stop with summary
 - GLASS_VERIFY agent response for dynamic verification command discovery
+- Self-improving feedback loop: rule-based analysis after each run, auto config tuning, behavioral rules (hot file isolation, commit drift, instruction overload, flaky test detection), optional LLM qualitative analysis, regression guard with auto-rollback, rule lifecycle (proposed → provisional → confirmed), staleness detection, 6 default rules shipped
 
 **Activity Stream -- new in v3.1**
 - Real-time coordination event log (agent registrations, lock acquisitions, conflicts, messages)
@@ -350,6 +351,9 @@ verify_mode = "floor"
 completion_artifact = ".glass/done"
 # Maximum iterations before checkpoint-stop (omit or 0 for unlimited)
 # max_iterations = 25
+# Feedback loop
+feedback_llm = false          # Enable LLM qualitative analysis after each run (opt-in)
+# max_prompt_hints = 10       # Max Tier 3 prompt hints per project
 ```
 
 Default fonts: Consolas (Windows), Menlo (macOS), Monospace (Linux).
@@ -387,11 +391,16 @@ The orchestrator drives autonomous project development by pairing two AI agents:
 
 ### How It Works
 
-1. **Silence detection**: Glass monitors the PTY for periods of inactivity (default 30 seconds). When Claude Code finishes working and the terminal goes quiet, Glass captures the last 100 lines of output.
+The orchestrator has two phases: **kickoff** (interactive) and **autonomous loop**.
+
+**Kickoff phase** — When you press Ctrl+Shift+O, the orchestrator activates but does not immediately take over. You interact directly with the AI agent in the terminal (answer its questions, describe your task, clarify requirements). Glass tracks your keyboard activity and suppresses the autonomous loop as long as you're actively typing. Once both you and the terminal have been idle for the silence threshold (default 30s), kickoff ends and the autonomous loop begins.
+
+**Autonomous loop:**
+1. **Silence detection**: Glass monitors the PTY for inactivity. When the terminal goes quiet, Glass captures the last 100 lines of output.
 2. **Agent review**: The captured context is sent to the Glass Agent, which reviews what happened and decides the next step.
 3. **Agent response**: The Glass Agent responds with one of five actions:
-   - **Text** — typed into the terminal as instructions for Claude Code
-   - **GLASS_WAIT** — Claude Code is still working, check again later
+   - **Text** — typed into the terminal as instructions for the implementer
+   - **GLASS_WAIT** — still working, check again later
    - **GLASS_CHECKPOINT** — feature complete, trigger a context refresh cycle
    - **GLASS_DONE** — all PRD items are complete, stop orchestration
    - **GLASS_VERIFY** — report additional verification commands for the metric guard
@@ -402,14 +411,15 @@ The orchestrator drives autonomous project development by pairing two AI agents:
 **Fresh project from PRD:**
 1. Write `PRD.md` in your project root with the full project plan
 2. Open Glass in the project directory
-3. Start Claude Code: `claude --dangerously-skip-permissions`
+3. Start your AI agent (e.g., `claude --dangerously-skip-permissions`)
 4. Press Ctrl+Shift+O to enable orchestration
-5. The orchestrator reads the PRD, builds a system prompt for the Glass Agent, and starts the feedback loop
+5. The agent may ask clarifying questions — answer them at your own pace
+6. Once you stop typing and the terminal goes quiet, the Glass Agent takes over and drives the project autonomously
 
 **Mid-work handoff:**
 1. Write `.glass/handoff.md` with instructions for what to finish
 2. Press Ctrl+Shift+O
-3. The orchestrator captures your terminal context, git history, and handoff note, then starts driving Claude Code
+3. The orchestrator captures your terminal context, git history, and handoff note, then starts the autonomous loop
 
 **Course correction while running:**
 - Write `.glass/nudge.md` with new instructions. The orchestrator picks it up on the next silence cycle and injects it as a `[USER_NUDGE]`.
@@ -432,7 +442,7 @@ Context refresh prevents the Glass Agent from hitting its context limit during l
 | Usage tracking | Polls Anthropic OAuth usage API every 60 seconds. Auto-pause at 80%, hard stop at 95% with emergency checkpoint |
 | Bounded iterations | Optional iteration limit with checkpoint-stop and summary (configurable via `max_iterations`) |
 | Artifact completion | File watcher on configurable path (default `.glass/done`) triggers orchestrator instantly |
-| User typing | Any keyboard input while orchestrating auto-disables the orchestrator |
+| Kickoff guard | Suppresses autonomous loop during kickoff while user is actively typing; transitions to autonomous mode once user and terminal are both idle |
 | Grace period | 10-second window after orchestrator PTY writes prevents false crash recovery triggers |
 | Backpressure | Context sends are gated on pending response to prevent overlapping messages |
 

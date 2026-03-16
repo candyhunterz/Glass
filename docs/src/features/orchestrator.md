@@ -6,7 +6,11 @@ Orchestrator Mode drives autonomous project development by pairing two AI agents
 
 ## Overview
 
-When orchestration is enabled (Ctrl+Shift+O), Glass monitors the PTY for silence. When Claude Code finishes working, Glass captures terminal context and sends it to the Glass Agent for review. The agent decides the next step and Glass types its instructions back into the terminal. This cycle repeats until the project is complete.
+Orchestrator Mode has two phases: **kickoff** (interactive) and **autonomous loop**.
+
+When you press Ctrl+Shift+O, Glass enters the kickoff phase. You interact directly with the AI agent running in the terminal — answer questions, describe your task, provide context. Glass tracks your keyboard activity and suppresses the autonomous loop while you're engaged. Once both you and the terminal have been idle for the silence threshold (default 30 seconds), the kickoff phase ends and the autonomous loop begins.
+
+During the autonomous loop, Glass monitors the PTY for silence. When the agent finishes working, Glass captures terminal context and sends it to the Glass Agent (a background reviewer process) for review. The Glass Agent decides the next step and Glass types its instructions back into the terminal. This cycle repeats until the project is complete.
 
 The Glass Agent's system prompt includes:
 - The project plan (from PRD.md, truncated to 4000 words with a notice if truncated)
@@ -16,16 +20,55 @@ The Glass Agent's system prompt includes:
 
 ---
 
+## Kickoff Phase
+
+The kickoff phase prevents the orchestrator from taking over while you're still setting up the task. This is model-agnostic — it works with any AI agent running in the terminal, not just Claude Code.
+
+**How it works:**
+
+1. Press **Ctrl+Shift+O** — orchestrator activates, Glass Agent spawns in the background
+2. If a PRD exists, Glass displays a prompt asking whether to continue or start fresh
+3. You interact directly with the AI agent in the terminal — answer questions, type your task description, clarify requirements
+4. Glass tracks your keyboard activity. As long as you've typed recently (within the silence threshold), the autonomous loop is suppressed
+5. Once you stop typing and the terminal goes silent for the full threshold duration, kickoff ends
+6. The Glass Agent takes over and begins the autonomous feedback loop
+
+**Key behaviors during kickoff:**
+
+- You can have as many back-and-forth exchanges as needed — there is no limit
+- The orchestrator waits for you to finish naturally, not for a specific key or number of inputs
+- If you haven't typed at all since activation, the orchestrator will not start (it waits for at least one interaction)
+
+---
+
 ## Workflows
+
+### Example: Planning a Japan Trip
+
+A concrete example of the kickoff-to-autonomous flow:
+
+1. Open Glass, start your AI agent
+2. Press **Ctrl+Shift+O** — orchestrator activates
+3. Glass shows: "Found existing PRD. Continue? (y/n)"
+4. You type **N**, Enter
+5. Agent asks: "Starting fresh. What would you like to focus on?"
+6. Silence fires — **suppressed** (you haven't typed yet)
+7. You type: "Plan a 2-week Japan trip for October. Tokyo, Kyoto, Osaka. Budget $5k. Street food and temples."
+8. Agent asks: "Any dietary restrictions? Day-by-day or just highlights?"
+9. Silence fires — **suppressed** (you typed recently)
+10. You type: "No restrictions. Day-by-day with restaurant recs. Hotels near train stations."
+11. Agent starts working on the PRD, you sit back
+12. Silence fires — you typed before but have been idle for the full threshold — **kickoff complete**
+13. Glass Agent takes over — reviews terminal context, begins driving the agent autonomously: review, instruct, verify, next item
 
 ### Fresh Project from PRD
 
 1. Write `PRD.md` in your project root describing what to build
 2. Open Glass in the project directory
-3. Start Claude Code: `claude --dangerously-skip-permissions`
+3. Start your AI agent (e.g., `claude --dangerously-skip-permissions`)
 4. Press **Ctrl+Shift+O** to enable orchestration
-
-The orchestrator reads the PRD, builds a system prompt for the Glass Agent, captures your terminal context, and starts the feedback loop.
+5. The agent may ask clarifying questions — answer them at your own pace
+6. Once you stop typing and the terminal goes quiet, the Glass Agent takes over
 
 ### Mid-Work Handoff
 
@@ -47,7 +90,9 @@ While the orchestrator is running, write `.glass/nudge.md` with new instructions
 
 ---
 
-## Feedback Loop
+## Autonomous Loop
+
+Once kickoff is complete, the autonomous feedback loop runs:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -173,13 +218,19 @@ Glass polls the Anthropic OAuth usage API every 60 seconds:
 | >= 80% (5-hour window) | **Pause**: disable orchestrator, user must re-enable manually |
 | < 20% (5-hour window) | **Resume signal**: usage event sent (user still re-enables manually) |
 
-### User Override
+### Kickoff Guard
 
-Any keyboard input while orchestrating automatically disables the orchestrator. Press Ctrl+Shift+O to re-enable.
+When orchestration is first enabled, the autonomous loop is suppressed until the user has finished interacting with the AI agent. Glass tracks the timestamp of the user's last keypress. During the kickoff phase:
+
+- If the user hasn't typed at all yet, the silence trigger is suppressed
+- If the user typed recently (within the silence threshold), the silence trigger is suppressed
+- Once the user has typed and then gone idle for the full threshold, kickoff ends and the autonomous loop begins
+
+This is model-agnostic — it tracks user keyboard activity, not any specific agent's prompt format.
 
 ### Backpressure
 
-Context sends are gated by a `response_pending` flag. While waiting for the Glass Agent to respond, additional silence events do not trigger new context sends.
+Context sends are gated by a `response_pending` flag. While waiting for the Glass Agent to respond, additional silence events do not trigger new context sends. This flag is also set during agent handoff (spawn + initial message) to prevent premature silence triggers before the agent has responded.
 
 ---
 
@@ -196,6 +247,68 @@ Context sends are gated by a `response_pending` flag. While waiting for the Glas
 
 ---
 
+## Feedback Loop
+
+The orchestrator learns from each run. After orchestration stops, a rule-based analyzer examines the run's metrics and produces findings across three tiers:
+
+**Tier 1 — Config Tuning:** Findings that map directly to config values. If silence timeout was too short (agent got interrupted), Glass increases it. If stuck detection was too sensitive, Glass raises the threshold. Applied automatically, protected by a regression guard.
+
+**Tier 2 — Behavioral Rules:** Runtime rules injected as text instructions in the agent context. Examples: "Commit src/main.rs in isolation" (hot file detected), "Commit current changes before continuing" (uncommitted drift), "Give ONE instruction per response" (instruction overload). These are model-agnostic — any AI agent follows them.
+
+**Tier 3 — Prompt Hints (opt-in):** When `feedback_llm = true`, an LLM analyzes the run qualitatively and produces hints like "This project's tests are flaky on first run." Capped at 10 per project. Requires an extra API call.
+
+### Rule Lifecycle
+
+Every rule goes through a guarded lifecycle:
+
+```
+proposed → provisional → confirmed → stale → archived
+              ↓               ↓         ↓
+           rejected      provisional  confirmed
+                          (env drift)  (re-triggered)
+```
+
+- **Provisional → Confirmed:** Next run's metrics didn't regress
+- **Provisional → Rejected:** Next run's metrics regressed — rule and config rolled back
+- **Confirmed → Stale:** Rule hasn't triggered in 10 runs
+- **Stale → Archived:** Stale for 5 more runs, moved to archived file
+
+### Regression Guard
+
+Before each run, Glass snapshots the current config and provisional rules. After the run, it compares metrics (revert rate, stuck rate, waste rate). If any metric regressed, all provisional changes are rolled back and marked rejected.
+
+Safety constraints:
+- Max 3 provisional rules per run
+- Max 1 config value change per run
+- Rejected changes get a 5-run cooldown before re-proposal
+- User can pin rules with `status = "pinned"` to prevent auto-revert
+
+### Default Rules
+
+Glass ships with 6 default rules that enter each project as provisional:
+
+| Rule | Action |
+|---|---|
+| Uncommitted drift (5+ iterations) | Force commit |
+| Hot file (3+ reverts) | Isolate commits |
+| Instruction overload (4+ per response) | One instruction per response |
+| Flaky verification | Run verify twice |
+| High revert rate (>30%) | Smaller instructions |
+| High waste rate (>15%) | Verify progress |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `.glass/rules.toml` | Project rules with lifecycle state |
+| `.glass/run-metrics.toml` | Last 20 run metrics |
+| `.glass/tuning-history.toml` | Config snapshots for rollback |
+| `.glass/archived-rules.toml` | Pruned stale/rejected rules |
+| `~/.glass/global-rules.toml` | Cross-project rules |
+| `~/.glass/default-rules.toml` | Shipped defaults |
+
+---
+
 ## Configuration
 
 ```toml
@@ -209,6 +322,9 @@ verify_mode = "floor"          # "floor" (auto-detect + guard) or "disabled"
 # verify_command = "cargo test" # Optional override (skips auto-detect)
 completion_artifact = ".glass/done"  # File path that triggers orchestrator when created
 # max_iterations = 25          # Optional iteration limit (omit or 0 for unlimited)
+# Feedback loop
+feedback_llm = false           # Enable LLM qualitative analysis after each run (opt-in)
+# max_prompt_hints = 10        # Max Tier 3 prompt hints per project
 ```
 
 The orchestrator requires Agent Mode to be configured (the `[agent]` section). The Glass Agent subprocess uses the same Claude CLI as Agent Mode.
