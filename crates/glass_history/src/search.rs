@@ -15,7 +15,20 @@ pub struct SearchResult {
 }
 
 /// Search command history using FTS5 MATCH with BM25 ranking.
+///
+/// The query is wrapped in double quotes to prevent FTS5 syntax errors from
+/// unmatched quotes or special characters. A trailing `*` is preserved
+/// outside the quotes to support prefix matching (e.g. `car*`).
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    // Escape FTS5 special characters by wrapping in double quotes.
+    // Preserve trailing `*` for prefix matching.
+    let (body, suffix) = if let Some(stripped) = query.strip_suffix('*') {
+        (stripped, "*")
+    } else {
+        (query, "")
+    };
+    let escaped = format!("\"{}\"{}",  body.replace('"', "\"\""), suffix);
+
     let mut stmt = conn.prepare(
         "SELECT c.id, c.command, c.cwd, c.exit_code, c.started_at,
                 c.finished_at, c.duration_ms, f.rank
@@ -27,7 +40,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Search
     )?;
 
     let results = stmt
-        .query_map(params![query, limit as i64], |row| {
+        .query_map(params![escaped, limit as i64], |row| {
             Ok(SearchResult {
                 id: row.get(0)?,
                 command: row.get(1)?,
