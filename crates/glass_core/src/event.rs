@@ -63,6 +63,29 @@ pub struct GitStatus {
     pub dirty_count: usize,
 }
 
+/// Purpose of an ephemeral agent session, for routing completion events.
+#[derive(Debug, Clone)]
+pub enum EphemeralPurpose {
+    CheckpointSynthesis,
+    QualityVerification,
+}
+
+/// Response from a completed ephemeral agent session.
+#[derive(Debug, Clone)]
+pub struct EphemeralAgentResult {
+    pub text: String,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<u64>,
+}
+
+/// Error from an ephemeral agent session.
+#[derive(Debug, Clone)]
+pub enum EphemeralAgentError {
+    SpawnFailed(String),
+    Timeout,
+    ParseError(String),
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
     /// Any terminal output received -- triggers redraw. NO session_id because
@@ -176,6 +199,11 @@ pub enum AppEvent {
     OrchestratorToolResult {
         name: String,
         output_summary: String,
+    },
+    /// Ephemeral agent session completed (checkpoint synthesis or quality check).
+    EphemeralAgentComplete {
+        result: Result<EphemeralAgentResult, EphemeralAgentError>,
+        purpose: EphemeralPurpose,
     },
 }
 
