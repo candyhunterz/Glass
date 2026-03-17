@@ -11,6 +11,7 @@ pub mod lifecycle;
 pub mod llm;
 pub mod regression;
 pub mod rules;
+pub mod coverage;
 pub mod types;
 
 #[allow(unused_imports)]
