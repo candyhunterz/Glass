@@ -394,6 +394,9 @@ pub const AUTO_CHECKPOINT_INTERVAL: u32 = 15;
 /// PromptStart events within this window are ignored for crash recovery.
 pub const CRASH_RECOVERY_GRACE_SECS: u64 = 10;
 
+/// Maximum iterations to remain dependency-blocked before auto-clearing.
+pub const DEPENDENCY_BLOCK_MAX_ITERATIONS: u32 = 3;
+
 /// Maximum time to wait for Claude Code to write checkpoint.md before respawning anyway.
 pub const CHECKPOINT_TIMEOUT_SECS: u64 = 180;
 
@@ -498,6 +501,18 @@ pub struct OrchestratorState {
     pub feedback_fast_trigger_during_output: u32,
     /// Feedback loop: timestamps for each iteration (for pacing analysis).
     pub feedback_iteration_timestamps: Vec<std::time::Instant>,
+    /// Buffered split instructions (one-at-a-time enforcement).
+    pub instruction_buffer: Vec<String>,
+    /// Active dependency block message (None = not blocked).
+    pub dependency_block: Option<String>,
+    /// Iterations spent while dependency-blocked.
+    pub dependency_block_iterations: u32,
+    /// Cached PRD deliverable file paths (for scope guard).
+    pub prd_deliverable_files: Vec<String>,
+    /// Iterations since the last detected git commit.
+    pub iterations_since_last_commit: u32,
+    /// Last known git HEAD SHA (for commit detection).
+    pub last_known_head: Option<String>,
 }
 
 impl OrchestratorState {
@@ -527,6 +542,12 @@ impl OrchestratorState {
             feedback_reverted_files: Vec::new(),
             feedback_fast_trigger_during_output: 0,
             feedback_iteration_timestamps: Vec::new(),
+            instruction_buffer: Vec::new(),
+            dependency_block: None,
+            dependency_block_iterations: 0,
+            prd_deliverable_files: Vec::new(),
+            iterations_since_last_commit: 0,
+            last_known_head: None,
         }
     }
 
