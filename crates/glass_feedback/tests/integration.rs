@@ -133,7 +133,7 @@ fn check_rules_with_active_rules() {
     // Start a new run and check rules
     let state = on_run_start(&project_root, &config);
     let run_state = RunState {
-        uncommitted_iterations: 6,
+        iterations_since_last_commit: 6,
         waste_rate: 0.2,
         ..Default::default()
     };

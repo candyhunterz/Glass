@@ -536,17 +536,17 @@ mod tests {
         };
 
         let run_state = RunState {
-            uncommitted_iterations: 6, // > 5 → fires
+            iterations_since_last_commit: 6, // > 5 → fires
             ..RunState::default()
         };
 
         let actions = check_rules(&state, &run_state);
         assert!(!actions.is_empty(), "force_commit rule should fire");
 
-        let has_text = actions
+        let has_force_commit = actions
             .iter()
-            .any(|a| matches!(a, RuleAction::TextInjection(_)));
-        assert!(has_text, "expected at least one TextInjection action");
+            .any(|a| matches!(a, RuleAction::ForceCommit));
+        assert!(has_force_commit, "expected ForceCommit action");
     }
 
     // -----------------------------------------------------------------------

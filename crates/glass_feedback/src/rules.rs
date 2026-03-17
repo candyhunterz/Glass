@@ -68,11 +68,8 @@ impl RuleEngine {
 
             match rule.action.as_str() {
                 "force_commit" => {
-                    if state.uncommitted_iterations >= 5 {
-                        actions.push(RuleAction::TextInjection(
-                            "Commit your changes now — too many uncommitted iterations."
-                                .to_string(),
-                        ));
+                    if state.iterations_since_last_commit >= 5 {
+                        actions.push(RuleAction::ForceCommit);
                     }
                 }
                 "isolate_commits" => {
@@ -84,15 +81,13 @@ impl RuleEngine {
                     if !file_param.is_empty()
                         && state.recent_reverted_files.iter().any(|f| f == file_param)
                     {
-                        actions.push(RuleAction::TextInjection(format!(
-                            "Isolate commits for file: {file_param}"
-                        )));
+                        actions.push(RuleAction::IsolateCommit {
+                            file: file_param.to_string(),
+                        });
                     }
                 }
                 "smaller_instructions" => {
-                    actions.push(RuleAction::TextInjection(
-                        "Give ONE instruction per response".to_string(),
-                    ));
+                    actions.push(RuleAction::SplitInstructions);
                 }
                 "extend_silence" => {
                     actions.push(RuleAction::ExtendSilence { extra_secs: 30 });
@@ -106,24 +101,15 @@ impl RuleEngine {
                     actions.push(RuleAction::EarlyStuck { threshold: 2 });
                 }
                 "restrict_scope" => {
-                    actions.push(RuleAction::TextInjection(
-                        "Only modify files related to current PRD item".to_string(),
-                    ));
+                    actions.push(RuleAction::RevertOutOfScope { files: vec![] });
                 }
                 "build_dependency_first" => {
-                    let extra = if rule.action_params.is_empty() {
-                        String::new()
-                    } else {
-                        let parts: Vec<String> = rule
-                            .action_params
-                            .iter()
-                            .map(|(k, v)| format!("{k}={v}"))
-                            .collect();
-                        format!(": {}", parts.join(", "))
-                    };
-                    actions.push(RuleAction::TextInjection(format!(
-                        "Build dependency first{extra}"
-                    )));
+                    let message = rule
+                        .action_params
+                        .get("message")
+                        .cloned()
+                        .unwrap_or_else(|| rule.trigger.clone());
+                    actions.push(RuleAction::BlockUntilResolved { message });
                 }
                 "verify_progress" => {
                     if state.waste_rate > 0.15 {
@@ -138,6 +124,15 @@ impl RuleEngine {
         }
 
         actions
+    }
+
+    /// Returns true if any loaded rule with the given `action_name` is in an
+    /// active status (`Confirmed`, `Provisional`, or `Pinned`).
+    pub fn is_rule_active(&self, action_name: &str) -> bool {
+        self.rules.iter().any(|r| {
+            r.action == action_name
+                && matches!(r.status, RuleStatus::Confirmed | RuleStatus::Provisional | RuleStatus::Pinned)
+        })
     }
 
     /// Return the text of all `prompt_hint` rules that are `Confirmed` or
@@ -284,17 +279,16 @@ mod tests {
         };
 
         let state = RunState {
-            uncommitted_iterations: 5,
+            iterations_since_last_commit: 5,
             ..Default::default()
         };
 
         let result = engine.check_rules(&state);
         assert_eq!(result.len(), 1);
-        if let RuleAction::TextInjection(text) = &result[0] {
-            assert!(text.contains("Commit"));
-        } else {
-            panic!("expected TextInjection");
-        }
+        assert!(
+            matches!(result[0], RuleAction::ForceCommit),
+            "expected ForceCommit variant"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -340,7 +334,7 @@ mod tests {
         };
 
         let state = RunState {
-            uncommitted_iterations: 10,
+            iterations_since_last_commit: 10,
             waste_rate: 0.5,
             ..Default::default()
         };
@@ -353,7 +347,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 6. check_rules_force_commit_no_trigger — uncommitted < 5
+    // 6. check_rules_force_commit_no_trigger — iterations_since_last_commit < 5
     // -----------------------------------------------------------------------
 
     #[test]
@@ -363,7 +357,7 @@ mod tests {
         };
 
         let state = RunState {
-            uncommitted_iterations: 4,
+            iterations_since_last_commit: 4,
             ..Default::default()
         };
 
@@ -462,10 +456,10 @@ mod tests {
         };
         let result = engine.check_rules(&state_match);
         assert_eq!(result.len(), 1);
-        if let RuleAction::TextInjection(text) = &result[0] {
-            assert!(text.contains("src/lib.rs"));
+        if let RuleAction::IsolateCommit { file } = &result[0] {
+            assert_eq!(file, "src/lib.rs");
         } else {
-            panic!("expected TextInjection");
+            panic!("expected IsolateCommit");
         }
     }
 
@@ -519,5 +513,144 @@ mod tests {
 
         assert_eq!(engine.rules.len(), 1);
         assert_eq!(engine.rules[0].id, "d1");
+    }
+
+    // -----------------------------------------------------------------------
+    // New typed-variant tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_rules_force_commit_returns_variant() {
+        let engine = RuleEngine {
+            rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Confirmed)],
+        };
+
+        let state = RunState {
+            iterations_since_last_commit: 6,
+            ..Default::default()
+        };
+
+        let result = engine.check_rules(&state);
+        assert_eq!(result.len(), 1);
+        assert!(
+            matches!(result[0], RuleAction::ForceCommit),
+            "expected ForceCommit variant"
+        );
+    }
+
+    #[test]
+    fn check_rules_isolate_commit_returns_variant() {
+        let mut rule = make_test_rule("r1", "isolate_commits", RuleStatus::Confirmed);
+        rule.action_params
+            .insert("file".to_string(), "src/hot.rs".to_string());
+
+        let engine = RuleEngine { rules: vec![rule] };
+
+        let state = RunState {
+            recent_reverted_files: vec!["src/hot.rs".to_string()],
+            ..Default::default()
+        };
+
+        let result = engine.check_rules(&state);
+        assert_eq!(result.len(), 1);
+        if let RuleAction::IsolateCommit { file } = &result[0] {
+            assert_eq!(file, "src/hot.rs");
+        } else {
+            panic!("expected IsolateCommit variant");
+        }
+    }
+
+    #[test]
+    fn check_rules_smaller_instructions_returns_split() {
+        let engine = RuleEngine {
+            rules: vec![make_test_rule(
+                "r1",
+                "smaller_instructions",
+                RuleStatus::Confirmed,
+            )],
+        };
+
+        let state = RunState::default();
+        let result = engine.check_rules(&state);
+        assert_eq!(result.len(), 1);
+        assert!(
+            matches!(result[0], RuleAction::SplitInstructions),
+            "expected SplitInstructions variant"
+        );
+    }
+
+    #[test]
+    fn check_rules_restrict_scope_returns_revert() {
+        let engine = RuleEngine {
+            rules: vec![make_test_rule("r1", "restrict_scope", RuleStatus::Confirmed)],
+        };
+
+        let state = RunState::default();
+        let result = engine.check_rules(&state);
+        assert_eq!(result.len(), 1);
+        if let RuleAction::RevertOutOfScope { files } = &result[0] {
+            // Signal variant — files vec is empty (caller computes actual files).
+            assert!(files.is_empty());
+        } else {
+            panic!("expected RevertOutOfScope variant");
+        }
+    }
+
+    #[test]
+    fn check_rules_build_dependency_returns_block() {
+        let mut rule = make_test_rule("r1", "build_dependency_first", RuleStatus::Confirmed);
+        rule.action_params
+            .insert("message".to_string(), "Fix the linker error first".to_string());
+
+        let engine = RuleEngine { rules: vec![rule] };
+
+        let state = RunState::default();
+        let result = engine.check_rules(&state);
+        assert_eq!(result.len(), 1);
+        if let RuleAction::BlockUntilResolved { message } = &result[0] {
+            assert_eq!(message, "Fix the linker error first");
+        } else {
+            panic!("expected BlockUntilResolved variant");
+        }
+    }
+
+    #[test]
+    fn check_rules_verify_progress_still_text() {
+        let engine = RuleEngine {
+            rules: vec![make_test_rule(
+                "r1",
+                "verify_progress",
+                RuleStatus::Confirmed,
+            )],
+        };
+
+        let state = RunState {
+            waste_rate: 0.20,
+            ..Default::default()
+        };
+
+        let result = engine.check_rules(&state);
+        assert_eq!(result.len(), 1);
+        if let RuleAction::TextInjection(text) = &result[0] {
+            assert!(text.contains("Verify progress"));
+        } else {
+            panic!("expected TextInjection for verify_progress");
+        }
+    }
+
+    #[test]
+    fn is_rule_active_true() {
+        let engine = RuleEngine {
+            rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Confirmed)],
+        };
+        assert!(engine.is_rule_active("force_commit"));
+    }
+
+    #[test]
+    fn is_rule_active_false_rejected() {
+        let engine = RuleEngine {
+            rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Rejected)],
+        };
+        assert!(!engine.is_rule_active("force_commit"));
     }
 }
