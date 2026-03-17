@@ -7362,8 +7362,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .clone(),
                                 verify_alternations: 0,
                             };
-                            let actions =
-                                glass_feedback::check_rules(feedback_state, &run_state);
+                            let actions = glass_feedback::check_rules(feedback_state, &run_state);
                             for action in &actions {
                                 if let glass_feedback::RuleAction::TextInjection(text) = action {
                                     feedback_instructions.push(text.clone());

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::io::{load_rules_file, save_rules_file};
-use crate::types::{Rule, RulesFile, RuleStatus, Scope, Severity};
+use crate::types::{Rule, RuleStatus, RulesFile, Scope, Severity};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -170,10 +170,7 @@ pub fn merge_defaults_into_project(
     }
 
     for default_rule in defaults {
-        let already_present = project_rules
-            .rules
-            .iter()
-            .any(|r| r.id == default_rule.id);
+        let already_present = project_rules.rules.iter().any(|r| r.id == default_rule.id);
 
         if !already_present {
             project_rules.rules.push(default_rule.clone());
@@ -207,8 +204,7 @@ pub fn ensure_global_defaults(global_defaults_path: &Path) {
 
     // Ensure description is set on fresh files.
     if file.meta.description.is_empty() {
-        file.meta.description =
-            "Glass built-in default rules (auto-generated)".to_string();
+        file.meta.description = "Glass built-in default rules (auto-generated)".to_string();
     }
 
     if let Err(err) = save_rules_file(global_defaults_path, &file) {
@@ -393,7 +389,10 @@ mod tests {
 
         ensure_global_defaults(&path);
 
-        assert!(path.exists(), "file must be created by ensure_global_defaults");
+        assert!(
+            path.exists(),
+            "file must be created by ensure_global_defaults"
+        );
 
         let loaded = load_rules_file(&path);
         assert_eq!(
