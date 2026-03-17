@@ -174,7 +174,7 @@ pub struct TuningHistoryFile {
 #[derive(Debug, Clone, Default)]
 pub struct RunState {
     pub iteration: u32,
-    pub uncommitted_iterations: u32,
+    pub iterations_since_last_commit: u32,
     pub revert_rate: f64,
     pub stuck_rate: f64,
     pub waste_rate: f64,
@@ -203,12 +203,27 @@ impl Default for FeedbackConfig {
 // RuleAction — runtime only, no serde
 // ---------------------------------------------------------------------------
 
+/// Actions returned by the rule engine at runtime.
 #[derive(Debug, Clone)]
 pub enum RuleAction {
-    TextInjection(String),
+    /// Rust-level: run git commit -am to checkpoint.
+    ForceCommit,
+    /// Rust-level: git add + commit a specific hot file in isolation.
+    IsolateCommit { file: String },
+    /// Rust-level: signal that instruction splitting is active.
+    SplitInstructions,
+    /// Rust-level: signal that scope guard is active (files computed by caller).
+    RevertOutOfScope { files: Vec<String> },
+    /// Rust-level: block forward progress until dependency resolved.
+    BlockUntilResolved { message: String },
+    /// Rust-level: extend silence threshold by N seconds.
     ExtendSilence { extra_secs: u64 },
+    /// Rust-level: run verification twice before reverting.
     RunVerifyTwice,
+    /// Rust-level: lower stuck detection threshold.
     EarlyStuck { threshold: u32 },
+    /// Text injection (kept only for verify_progress).
+    TextInjection(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +379,64 @@ mod tests {
         } else {
             panic!("expected ExtendSilence variant");
         }
+    }
+
+    #[test]
+    fn rule_action_force_commit_matches() {
+        let action = RuleAction::ForceCommit;
+        assert!(matches!(action, RuleAction::ForceCommit));
+    }
+
+    #[test]
+    fn rule_action_isolate_commit_matches() {
+        let action = RuleAction::IsolateCommit {
+            file: "src/lib.rs".to_string(),
+        };
+        if let RuleAction::IsolateCommit { file } = action {
+            assert_eq!(file, "src/lib.rs");
+        } else {
+            panic!("expected IsolateCommit variant");
+        }
+    }
+
+    #[test]
+    fn rule_action_split_instructions_matches() {
+        let action = RuleAction::SplitInstructions;
+        assert!(matches!(action, RuleAction::SplitInstructions));
+    }
+
+    #[test]
+    fn rule_action_revert_out_of_scope_matches() {
+        let action = RuleAction::RevertOutOfScope {
+            files: vec!["src/foo.rs".to_string(), "src/bar.rs".to_string()],
+        };
+        if let RuleAction::RevertOutOfScope { files } = action {
+            assert_eq!(files.len(), 2);
+            assert_eq!(files[0], "src/foo.rs");
+        } else {
+            panic!("expected RevertOutOfScope variant");
+        }
+    }
+
+    #[test]
+    fn rule_action_block_until_resolved_matches() {
+        let action = RuleAction::BlockUntilResolved {
+            message: "Resolve build error first".to_string(),
+        };
+        if let RuleAction::BlockUntilResolved { message } = action {
+            assert_eq!(message, "Resolve build error first");
+        } else {
+            panic!("expected BlockUntilResolved variant");
+        }
+    }
+
+    #[test]
+    fn run_state_iterations_since_last_commit_field() {
+        let state = RunState {
+            iterations_since_last_commit: 7,
+            ..Default::default()
+        };
+        assert_eq!(state.iterations_since_last_commit, 7);
     }
 
     #[test]
