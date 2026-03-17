@@ -3,6 +3,8 @@
 #![windows_subsystem = "windows"]
 
 #[allow(dead_code)]
+mod checkpoint_synth;
+#[allow(dead_code)]
 mod ephemeral_agent;
 mod history;
 #[allow(dead_code)]
