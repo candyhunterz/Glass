@@ -2850,11 +2850,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             };
                         let checkpoint_phase = match &self.orchestrator.checkpoint_phase {
                             orchestrator::CheckpointPhase::Idle => "idle".to_string(),
-                            orchestrator::CheckpointPhase::WaitingForCheckpoint { .. } => {
-                                "waiting for checkpoint".to_string()
-                            }
-                            orchestrator::CheckpointPhase::ClearingSent => {
-                                "clearing sent".to_string()
+                            orchestrator::CheckpointPhase::Synthesizing { .. } => {
+                                "synthesizing...".to_string()
                             }
                         };
                         let paused_reason = if self
@@ -6730,9 +6727,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .and_then(|a| a.orchestrator.as_ref())
                             .map(|o| o.checkpoint_path.as_str()),
                     );
-                    let cp_mtime = orchestrator::file_mtime(&cp_path);
+                    let _cp_mtime = orchestrator::file_mtime(&cp_path);
                     self.orchestrator
-                        .begin_checkpoint("bounded limit reached", "N/A", cp_mtime);
+                        .begin_synthesis("bounded limit reached", "N/A", String::new());
 
                     // Send checkpoint request to agent
                     if let Some(ctx) = self.windows.values().next() {
@@ -6768,9 +6765,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .and_then(|a| a.orchestrator.as_ref())
                             .map(|o| o.checkpoint_path.as_str()),
                     );
-                    let mtime = orchestrator::file_mtime(&cp_path);
+                    let _mtime = orchestrator::file_mtime(&cp_path);
                     self.orchestrator
-                        .begin_checkpoint("auto-refresh", "continue from PRD", mtime);
+                        .begin_synthesis("auto-refresh", "continue from PRD", String::new());
                     if let Some(ctx) = self.windows.values().next() {
                         if let Some(session) = ctx.session_mux.focused_session() {
                             let msg = "Commit all pending changes and write a brief status update to .glass/checkpoint.md: what you just completed, what's next, and any key decisions. Keep it under 500 words.\n";
@@ -6912,8 +6909,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.checkpoint_path.as_str()),
                         );
-                        let mtime = orchestrator::file_mtime(&cp_path);
-                        self.orchestrator.begin_checkpoint(&completed, &next, mtime);
+                        let _mtime = orchestrator::file_mtime(&cp_path);
+                        self.orchestrator.begin_synthesis(&completed, &next, String::new());
 
                         if let Some(ctx) = self.windows.values().next() {
                             if let Some(session) = ctx.session_mux.focused_session() {
@@ -7058,174 +7055,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                     tracing::info!("Orchestrator: kickoff complete (user and terminal both idle)");
                 }
 
-                // Check if we're in a checkpoint cycle
-                if let orchestrator::CheckpointPhase::WaitingForCheckpoint {
-                    started_at,
-                    last_mtime,
-                } = &self.orchestrator.checkpoint_phase
-                {
-                    let cwd = self.get_focused_cwd();
-                    let cp_path = orchestrator::checkpoint_path(
-                        &cwd,
-                        self.config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.checkpoint_path.as_str()),
-                    );
-
-                    let changed = orchestrator::checkpoint_changed(&cp_path, *last_mtime);
-                    let timed_out =
-                        started_at.elapsed().as_secs() >= orchestrator::CHECKPOINT_TIMEOUT_SECS;
-
-                    if changed || timed_out {
-                        if timed_out && !changed {
-                            tracing::warn!(
-                                "Orchestrator: checkpoint timeout after {}s — respawning anyway",
-                                started_at.elapsed().as_secs()
-                            );
-                        } else {
-                            tracing::info!(
-                                "Orchestrator: checkpoint.md updated — respawning agent"
-                            );
-                        }
-
-                        // Capture terminal context for the new agent
-                        let terminal_context = if let Some(ctx) = self.windows.get(&window_id) {
-                            ctx.session_mux
-                                .session(session_id)
-                                .map(|s| {
-                                    let lines = extract_term_lines(&s.term, 80);
-                                    let (exit_code, soi_summary, soi_errors) =
-                                        fetch_latest_soi_context(s);
-                                    orchestrator::build_orchestrator_context(
-                                        &lines,
-                                        exit_code,
-                                        soi_summary.as_deref(),
-                                        &soi_errors,
-                                    )
-                                })
-                                .unwrap_or_default()
-                        } else {
-                            String::new()
-                        };
-
-                        let git_log = std::process::Command::new("git")
-                            .args(["log", "--oneline", "-10"])
-                            .current_dir(&cwd)
-                            .output()
-                            .ok()
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    String::from_utf8(o.stdout).ok()
-                                } else {
-                                    None
-                                }
-                            });
-
-                        let mut content = format!(
-                            "[ORCHESTRATOR_CHECKPOINT_REFRESH]\n\
-                             Context has been refreshed. Your system prompt now contains the updated checkpoint.\n\
-                             Completed so far: {}\n\
-                             Next up: {}\n\
-                             Continue from where you left off.\n",
-                            self.orchestrator.last_checkpoint_completed,
-                            self.orchestrator.last_checkpoint_next,
-                        );
-                        if let Some(log) = git_log {
-                            content.push_str(&format!("\nRECENT GIT HISTORY:\n{}\n", log.trim()));
-                        }
-                        content.push_str(&format!("\nTERMINAL_CONTEXT:\n{}\n", terminal_context));
-
-                        // Handle bounded stop BEFORE respawning the agent
-                        if self.orchestrator.bounded_stop_pending {
-                            self.orchestrator.checkpoint_phase =
-                                orchestrator::CheckpointPhase::Idle;
-                            self.orchestrator.reset_stuck();
-
-                            let cp_path_resolved = orchestrator::checkpoint_path(
-                                &cwd,
-                                self.config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.checkpoint_path.as_str()),
-                            );
-                            let summary = orchestrator::build_bounded_summary(
-                                self.orchestrator.iteration,
-                                self.orchestrator.metric_baseline.as_ref(),
-                                &cp_path_resolved.to_string_lossy(),
-                            );
-
-                            // Write summary to terminal
-                            if let Some(ctx) = self.windows.values().next() {
-                                if let Some(session) = ctx.session_mux.focused_session() {
-                                    let bytes = format!("\r\n{summary}\r\n").into_bytes();
-                                    let _ = session
-                                        .pty_sender
-                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
-                                }
-                            }
-
-                            // Log to iterations.tsv
-                            let log_cwd = self.get_focused_cwd();
-                            orchestrator::append_iteration_log(
-                                &log_cwd,
-                                self.orchestrator.iteration,
-                                "bounded-stop",
-                                "complete",
-                                &format!(
-                                    "Bounded run complete ({} iterations)",
-                                    self.orchestrator.iteration
-                                ),
-                            );
-
-                            // Generate post-mortem report
-                            let prd_path = self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.prd_path.clone())
-                                .unwrap_or_default();
-                            orchestrator::generate_postmortem(
-                                &self.get_focused_cwd(),
-                                self.orchestrator.iteration,
-                                self.orchestrator_activated_at.map(|t| t.elapsed()),
-                                self.orchestrator.metric_baseline.as_ref(),
-                                &format!(
-                                    "Bounded stop (max {} iterations)",
-                                    self.orchestrator.max_iterations.unwrap_or(0)
-                                ),
-                                &prd_path,
-                            );
-
-                            // Deactivate orchestrator
-                            self.run_feedback_on_end();
-                            self.orchestrator.active = false;
-                            self.orchestrator.bounded_stop_pending = false;
-
-                            // Stop artifact watcher
-                            if let Some(handle) = self.artifact_watcher_thread.take() {
-                                handle.thread().unpark();
-                                let _ = handle.join();
-                            }
-
-                            tracing::info!(
-                                "Orchestrator: bounded run complete after {} iterations",
-                                self.orchestrator.iteration
-                            );
-                            for ctx in self.windows.values() {
-                                ctx.window.request_redraw();
-                            }
-                            return;
-                        }
-
-                        self.respawn_orchestrator_agent(&cwd, content);
-                        self.orchestrator.checkpoint_phase = orchestrator::CheckpointPhase::Idle;
-                        self.orchestrator.reset_stuck();
-                    }
-                    // Don't send normal context while waiting for checkpoint
+                // Check if we're in a checkpoint synthesis cycle
+                if matches!(
+                    &self.orchestrator.checkpoint_phase,
+                    orchestrator::CheckpointPhase::Synthesizing { .. }
+                ) {
+                    // Don't send normal context while synthesis is in progress.
+                    // Task 8 will wire the ephemeral agent completion event here.
                     return;
                 }
 
