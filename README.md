@@ -136,7 +136,7 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 - Artifact-based completion signal: file watcher triggers orchestrator instantly when agent writes to configurable path (default `.glass/done`)
 - Bounded iteration mode: limit orchestration to N iterations, then checkpoint-stop with summary
 - GLASS_VERIFY agent response for dynamic verification command discovery
-- Self-improving feedback loop: rule-based analysis after each run, auto config tuning, behavioral rules (hot file isolation, commit drift, instruction overload, flaky test detection), optional LLM qualitative analysis, regression guard with auto-rollback, rule lifecycle (proposed → provisional → confirmed), staleness detection, 6 default rules shipped
+- Self-improving feedback loop: rule-based analysis after each run (15 detectors), auto config tuning, Rust-level enforcement (auto-commit on drift, hot file isolation, instruction splitting, scope guard with auto-revert, dependency block), optional LLM qualitative analysis, regression guard with auto-rollback, rule lifecycle (proposed → provisional → confirmed), staleness detection, 6 default rules shipped — 8 of 9 actions enforced in code, no LLM compliance needed
 
 **Activity Stream -- new in v3.1**
 - Real-time coordination event log (agent registrations, lock acquisitions, conflicts, messages)

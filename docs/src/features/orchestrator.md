@@ -253,7 +253,20 @@ The orchestrator learns from each run. After orchestration stops, a rule-based a
 
 **Tier 1 — Config Tuning:** Findings that map directly to config values. If silence timeout was too short (agent got interrupted), Glass increases it. If stuck detection was too sensitive, Glass raises the threshold. Applied automatically, protected by a regression guard.
 
-**Tier 2 — Behavioral Rules:** Runtime rules injected as text instructions in the agent context. Examples: "Commit src/main.rs in isolation" (hot file detected), "Commit current changes before continuing" (uncommitted drift), "Give ONE instruction per response" (instruction overload). These are model-agnostic — any AI agent follows them.
+**Tier 2 — Rust-Level Enforcement:** Rules that the orchestrator executes directly in code — no LLM compliance needed. Glass runs git commands, splits agent responses, reverts out-of-scope files, and blocks forward progress autonomously. 8 of 9 actions are enforced in Rust:
+
+| Action | Enforcement |
+|---|---|
+| Force commit | `git commit -am` when 5+ iterations without a commit |
+| Isolate commit | `git add <file> && git commit` for hot files (3+ reverts) |
+| Split instructions | Parse agent response, buffer numbered items, send one at a time |
+| Scope guard | `git checkout --` for files outside PRD deliverables |
+| Dependency block | Block context send, type resolution message into PTY |
+| Extend silence | Dynamically increase silence threshold |
+| Verify twice | Run verification twice before declaring regression |
+| Early stuck | Lower stuck detection threshold |
+
+Only `verify_progress` remains as a text suggestion — the orchestrator cannot determine what "progress" means for an arbitrary task.
 
 **Tier 3 — Prompt Hints (opt-in):** When `feedback_llm = true`, an LLM analyzes the run qualitatively and produces hints like "This project's tests are flaky on first run." Capped at 10 per project. Requires an extra API call.
 
@@ -287,14 +300,14 @@ Safety constraints:
 
 Glass ships with 6 default rules that enter each project as provisional:
 
-| Rule | Action |
-|---|---|
-| Uncommitted drift (5+ iterations) | Force commit |
-| Hot file (3+ reverts) | Isolate commits |
-| Instruction overload (4+ per response) | One instruction per response |
-| Flaky verification | Run verify twice |
-| High revert rate (>30%) | Smaller instructions |
-| High waste rate (>15%) | Verify progress |
+| Rule | Enforcement | LLM needed? |
+|---|---|---|
+| Uncommitted drift (5+ iterations) | Auto `git commit -am` | No |
+| Hot file (3+ reverts) | Auto `git add <file> && git commit` | No |
+| Instruction overload (4+ per response) | Split response, buffer, send one at a time | No |
+| Flaky verification | Run tests twice before reverting | No |
+| High revert rate (>30%) | Split instructions (same as overload) | No |
+| High waste rate (>15%) | Text suggestion to verify progress | Yes |
 
 ### Files
 
