@@ -165,6 +165,59 @@ fn camel_to_segments(name: &str) -> Vec<String> {
     segments
 }
 
+/// Find files with no matching tests in the verification output.
+///
+/// For each changed file, extract its path segments and check if any
+/// test name shares at least one segment. Files with zero matches
+/// are reported as coverage gaps.
+pub fn find_coverage_gaps(test_output: &str, changed_files: &[String]) -> Vec<CoverageGap> {
+    let tests = extract_test_names(test_output);
+
+    changed_files
+        .iter()
+        .filter_map(|file| {
+            let file_segments = path_to_segments(file);
+            if file_segments.is_empty() {
+                return None;
+            }
+
+            let matched = tests
+                .iter()
+                .filter(|t| {
+                    t.segments
+                        .iter()
+                        .any(|ts| file_segments.iter().any(|fs| fs == ts))
+                })
+                .count();
+
+            if matched == 0 {
+                Some(CoverageGap {
+                    file: file.clone(),
+                    matched_test_count: 0,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Format coverage gaps for inclusion in the agent context string.
+/// Returns an empty string if there are no gaps.
+pub fn format_gaps_for_context(gaps: &[CoverageGap]) -> String {
+    if gaps.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for gap in gaps {
+        out.push_str(&format!(
+            "[COVERAGE_GAP] {} was modified but no tests appear to reference it (approximate match)\n",
+            gap.file
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +321,71 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored";
     fn camel_to_segments_no_test_prefix() {
         let segs = camel_to_segments("AuthLogin");
         assert_eq!(segs, vec!["auth", "login"]);
+    }
+
+    // --- Correlation ---
+
+    #[test]
+    fn correlate_finds_gap() {
+        let test_output = "\
+test auth::tests::test_login ... ok
+test auth::tests::test_logout ... ok";
+        let changed_files = vec!["src/auth.rs".to_string(), "src/db.rs".to_string()];
+        let gaps = find_coverage_gaps(test_output, &changed_files);
+        // auth.rs has matching tests (segment "auth"), db.rs does not
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].file, "src/db.rs");
+        assert_eq!(gaps[0].matched_test_count, 0);
+    }
+
+    #[test]
+    fn correlate_no_gap_when_all_covered() {
+        let test_output = "\
+test auth::tests::test_login ... ok
+test db::tests::test_connect ... ok";
+        let changed_files = vec!["src/auth.rs".to_string(), "src/db.rs".to_string()];
+        let gaps = find_coverage_gaps(test_output, &changed_files);
+        assert!(gaps.is_empty());
+    }
+
+    #[test]
+    fn correlate_common_segments_still_match() {
+        let test_output = "test util::tests::test_format ... ok\n";
+        let changed_files = vec!["src/util.rs".to_string()];
+        let gaps = find_coverage_gaps(test_output, &changed_files);
+        assert!(gaps.is_empty());
+    }
+
+    #[test]
+    fn correlate_empty_test_output() {
+        let changed_files = vec!["src/auth.rs".to_string()];
+        let gaps = find_coverage_gaps("", &changed_files);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].file, "src/auth.rs");
+    }
+
+    #[test]
+    fn correlate_empty_changed_files() {
+        let test_output = "test auth::tests::test_login ... ok\n";
+        let gaps = find_coverage_gaps(test_output, &[]);
+        assert!(gaps.is_empty());
+    }
+
+    #[test]
+    fn format_coverage_gaps_message() {
+        let gaps = vec![
+            CoverageGap { file: "src/db.rs".to_string(), matched_test_count: 0 },
+            CoverageGap { file: "src/config.rs".to_string(), matched_test_count: 0 },
+        ];
+        let msg = format_gaps_for_context(&gaps);
+        assert!(msg.contains("[COVERAGE_GAP]"));
+        assert!(msg.contains("src/db.rs"));
+        assert!(msg.contains("approximate match"));
+    }
+
+    #[test]
+    fn format_no_gaps_returns_empty() {
+        let msg = format_gaps_for_context(&[]);
+        assert!(msg.is_empty());
     }
 }
