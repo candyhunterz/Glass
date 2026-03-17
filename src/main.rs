@@ -1539,6 +1539,55 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
     (None, None)
 }
 
+/// Parse numbered instructions from agent text (e.g., "1. Do X\n2. Do Y").
+/// Returns individual instructions if 2+ are found, otherwise the original text.
+fn parse_numbered_instructions(text: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.len() >= 2 {
+            let first = trimmed.chars().next().unwrap_or(' ');
+            let second = trimmed.chars().nth(1).unwrap_or(' ');
+            if first.is_ascii_digit() && (second == '.' || second == ')') {
+                if !current.trim().is_empty() {
+                    items.push(current.trim().to_string());
+                }
+                current = trimmed.to_string();
+                continue;
+            }
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.trim().is_empty() {
+        items.push(current.trim().to_string());
+    }
+    if items.len() >= 2 {
+        items
+    } else {
+        vec![text.to_string()]
+    }
+}
+
+/// Parse file paths from `git diff --stat` output.
+/// Each line looks like: " src/main.rs | 42 +++---"
+fn parse_diff_stat_files(diff_stat: &str) -> Vec<String> {
+    diff_stat
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.contains('|') {
+                Some(trimmed.split('|').next()?.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Spawn a notify file watcher that sends `OrchestratorSilence` when the
 /// artifact file at `artifact_path` (relative to `cwd`) is created or modified.
 ///
@@ -1751,6 +1800,9 @@ impl Processor {
         // Kill old agent and increment generation to ignore stale AgentCrashed events
         self.agent_runtime = None;
         self.agent_generation += 1;
+
+        // Clear instruction buffer on respawn (fresh context)
+        self.orchestrator.instruction_buffer.clear();
 
         // Create new activity channel
         let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
@@ -3854,9 +3906,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .agent
                                         .as_ref()
                                         .and_then(|a| a.orchestrator.as_ref())
-                                        .map(|o| o.prd_path.as_str())
-                                        .unwrap_or("PRD.md");
-                                    let prd_path = std::path::Path::new(&current_cwd).join(prd_rel);
+                                        .map(|o| o.prd_path.clone())
+                                        .unwrap_or_else(|| "PRD.md".to_string());
+                                    let prd_path =
+                                        std::path::Path::new(&current_cwd).join(&prd_rel);
                                     if prd_path.exists() {
                                         // PRD exists — prompt user to continue or start fresh
                                         if let Some(session) = ctx.session_mux.focused_session() {
@@ -4085,6 +4138,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         &current_cwd,
                                         &feedback_config,
                                     ));
+
+                                    // Cache PRD deliverables for scope guard
+                                    let prd_full = std::path::Path::new(&current_cwd).join(prd_rel);
+                                    if let Ok(prd_text) = std::fs::read_to_string(&prd_full) {
+                                        self.orchestrator.prd_deliverable_files =
+                                            orchestrator::parse_prd_deliverables(&prd_text);
+                                    }
+
+                                    // Reset enforcement state
+                                    self.orchestrator.instruction_buffer.clear();
+                                    self.orchestrator.dependency_block = None;
+                                    self.orchestrator.dependency_block_iterations = 0;
+                                    self.orchestrator.iterations_since_last_commit = 0;
+                                    self.orchestrator.last_known_head = None;
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
                                     let _ = ctx;
@@ -6127,6 +6194,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 &feedback_config,
                             ));
 
+                            // Cache PRD deliverables for scope guard
+                            let prd_rel_reload = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.prd_path.as_str())
+                                .unwrap_or("PRD.md");
+                            let prd_full_reload =
+                                std::path::Path::new(&cwd_for_feedback).join(prd_rel_reload);
+                            if let Ok(prd_text) = std::fs::read_to_string(&prd_full_reload) {
+                                self.orchestrator.prd_deliverable_files =
+                                    orchestrator::parse_prd_deliverables(&prd_text);
+                            }
+
+                            // Reset enforcement state
+                            self.orchestrator.instruction_buffer.clear();
+                            self.orchestrator.dependency_block = None;
+                            self.orchestrator.dependency_block_iterations = 0;
+                            self.orchestrator.iterations_since_last_commit = 0;
+                            self.orchestrator.last_known_head = None;
+
                             tracing::info!(
                                 "Orchestrator: activated via config reload (settings overlay)"
                             );
@@ -6743,6 +6832,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                             return;
                         }
 
+                        // Instruction splitting enforcement: if the
+                        // smaller_instructions rule is active, split numbered
+                        // instructions and buffer all but the first.
+                        let text_to_type = if self
+                            .feedback_state
+                            .as_ref()
+                            .map(|fs| fs.engine.is_rule_active("smaller_instructions"))
+                            .unwrap_or(false)
+                        {
+                            let items = parse_numbered_instructions(&text);
+                            if items.len() >= 2 {
+                                let first = items[0].clone();
+                                self.orchestrator.instruction_buffer = items[1..].to_vec();
+                                tracing::info!(
+                                    "Orchestrator: split {} instructions, buffering {}",
+                                    items.len(),
+                                    items.len() - 1
+                                );
+                                first
+                            } else {
+                                text.clone()
+                            }
+                        } else {
+                            text.clone()
+                        };
+
                         // Type the text into the active PTY — but only if a command
                         // isn't actively executing (avoid interrupting Claude Code mid-turn)
                         if let Some(ctx) = self.windows.values().next() {
@@ -6763,7 +6878,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     );
                                     // Don't type; next silence event will re-evaluate
                                 } else {
-                                    let bytes = format!("{}\n", text).into_bytes();
+                                    let bytes = format!("{}\n", text_to_type).into_bytes();
                                     let _ = session
                                         .pty_sender
                                         .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
@@ -7157,6 +7272,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.orchestrator.fingerprint_stuck =
                             self.orchestrator.record_fingerprint(fingerprint);
 
+                        // Commit detection: track HEAD changes
+                        let current_head = std::process::Command::new("git")
+                            .args(["rev-parse", "HEAD"])
+                            .current_dir(&cwd)
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    String::from_utf8(o.stdout)
+                                        .ok()
+                                        .map(|s| s.trim().to_string())
+                                } else {
+                                    None
+                                }
+                            });
+                        if let Some(ref head_sha) = current_head {
+                            if self.orchestrator.last_known_head.as_ref() != Some(head_sha) {
+                                self.orchestrator.iterations_since_last_commit = 0;
+                                self.orchestrator.last_known_head = Some(head_sha.clone());
+                            } else {
+                                self.orchestrator.iterations_since_last_commit += 1;
+                            }
+                        }
+
                         // Fix #4/#5: Check for nudge.md (course correction while running)
                         let nudge_path = std::path::Path::new(&cwd).join(".glass").join("nudge.md");
                         let nudge = std::fs::read_to_string(&nudge_path).ok();
@@ -7352,16 +7491,63 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
-                        // Feedback loop: check rules for live injection
-                        let mut feedback_instructions = Vec::new();
+                        // Dependency block check: if blocked, repeat the block message
+                        if let Some(block_msg) = self.orchestrator.dependency_block.clone() {
+                            self.orchestrator.dependency_block_iterations += 1;
+
+                            // Check if resolved: look at last block's exit code
+                            let resolved = if let Some(ctx_ref) = self.windows.get(&window_id) {
+                                ctx_ref
+                                    .session_mux
+                                    .session(session_id)
+                                    .and_then(|s| {
+                                        s.block_manager
+                                            .current_block_index()
+                                            .and_then(|idx| s.block_manager.blocks().get(idx))
+                                            .and_then(|b| b.exit_code)
+                                    })
+                                    .map(|code| code == 0)
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+
+                            if resolved
+                                || self.orchestrator.dependency_block_iterations
+                                    >= orchestrator::DEPENDENCY_BLOCK_MAX_ITERATIONS
+                            {
+                                self.orchestrator.dependency_block = None;
+                                self.orchestrator.dependency_block_iterations = 0;
+                                tracing::info!("Orchestrator: dependency block cleared");
+                            } else {
+                                // Type block message directly into PTY
+                                if let Some(ctx_ref) = self.windows.get(&window_id) {
+                                    if let Some(session_ref) =
+                                        ctx_ref.session_mux.session(session_id)
+                                    {
+                                        let msg = format!("STOP current task. {}\n", block_msg);
+                                        let _ = session_ref.pty_sender.send(PtyMsg::Input(
+                                            std::borrow::Cow::Owned(msg.into_bytes()),
+                                        ));
+                                        self.orchestrator.mark_pty_write();
+                                    }
+                                }
+                                self.orchestrator.response_pending = true;
+                                for ctx_ref in self.windows.values() {
+                                    ctx_ref.window.request_redraw();
+                                }
+                                return;
+                            }
+                        }
+
+                        // Feedback loop: check rules and enforce actions
+                        let mut feedback_notifications = Vec::new();
                         if let Some(ref feedback_state) = self.feedback_state {
                             let run_state = glass_feedback::RunState {
                                 iteration: self.orchestrator.iteration,
-                                uncommitted_iterations: self
+                                iterations_since_last_commit: self
                                     .orchestrator
-                                    .feedback_commit_count
-                                    .max(1)
-                                    .saturating_sub(1),
+                                    .iterations_since_last_commit,
                                 revert_rate: if self.orchestrator.iteration > 0 {
                                     self.orchestrator
                                         .metric_baseline
@@ -7389,8 +7575,160 @@ impl ApplicationHandler<AppEvent> for Processor {
                             };
                             let actions = glass_feedback::check_rules(feedback_state, &run_state);
                             for action in &actions {
-                                if let glass_feedback::RuleAction::TextInjection(text) = action {
-                                    feedback_instructions.push(text.clone());
+                                match action {
+                                    glass_feedback::RuleAction::ForceCommit => {
+                                        // Check last verify wasn't regression before committing
+                                        let last_regressed = self
+                                            .orchestrator
+                                            .metric_baseline
+                                            .as_ref()
+                                            .map(|m| {
+                                                orchestrator::MetricBaseline::check_regression(
+                                                    &m.baseline_results,
+                                                    &m.last_results,
+                                                )
+                                            })
+                                            .unwrap_or(false);
+                                        if !last_regressed {
+                                            let result = std::process::Command::new("git")
+                                                .args([
+                                                    "commit",
+                                                    "-am",
+                                                    "checkpoint: auto-commit by orchestrator",
+                                                ])
+                                                .current_dir(&cwd)
+                                                .output();
+                                            if let Ok(o) = result {
+                                                if o.status.success() {
+                                                    self.orchestrator.last_good_commit =
+                                                        std::process::Command::new("git")
+                                                            .args(["rev-parse", "HEAD"])
+                                                            .current_dir(&cwd)
+                                                            .output()
+                                                            .ok()
+                                                            .and_then(|o2| {
+                                                                if o2.status.success() {
+                                                                    String::from_utf8(o2.stdout)
+                                                                        .ok()
+                                                                        .map(|s| {
+                                                                            s.trim().to_string()
+                                                                        })
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            });
+                                                    self.orchestrator
+                                                        .iterations_since_last_commit = 0;
+                                                    self.orchestrator.feedback_commit_count += 1;
+                                                    tracing::info!(
+                                                        "Enforcement: force-committed changes"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    glass_feedback::RuleAction::IsolateCommit { file } => {
+                                        // Check if file appears in git diff
+                                        let in_diff = git_diff
+                                            .as_deref()
+                                            .map(|d| {
+                                                parse_diff_stat_files(d).iter().any(|f| f == file)
+                                            })
+                                            .unwrap_or(false);
+                                        if in_diff {
+                                            let _ = std::process::Command::new("git")
+                                                .args(["add", file])
+                                                .current_dir(&cwd)
+                                                .output();
+                                            let msg =
+                                                format!("checkpoint: isolate-commit {}", file);
+                                            let result = std::process::Command::new("git")
+                                                .args(["commit", "-m", &msg])
+                                                .current_dir(&cwd)
+                                                .output();
+                                            if let Ok(o) = result {
+                                                if o.status.success() {
+                                                    self.orchestrator.last_good_commit =
+                                                        std::process::Command::new("git")
+                                                            .args(["rev-parse", "HEAD"])
+                                                            .current_dir(&cwd)
+                                                            .output()
+                                                            .ok()
+                                                            .and_then(|o2| {
+                                                                if o2.status.success() {
+                                                                    String::from_utf8(o2.stdout)
+                                                                        .ok()
+                                                                        .map(|s| {
+                                                                            s.trim().to_string()
+                                                                        })
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            });
+                                                    self.orchestrator
+                                                        .iterations_since_last_commit = 0;
+                                                    tracing::info!(
+                                                        "Enforcement: isolate-committed {}",
+                                                        file
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    glass_feedback::RuleAction::RevertOutOfScope { .. } => {
+                                        // Compute out-of-scope files from git diff vs prd_deliverable_files
+                                        let diff_files = git_diff
+                                            .as_deref()
+                                            .map(parse_diff_stat_files)
+                                            .unwrap_or_default();
+                                        let deliverables = &self.orchestrator.prd_deliverable_files;
+                                        if !deliverables.is_empty() {
+                                            let out_of_scope: Vec<String> = diff_files
+                                                .iter()
+                                                .filter(|f| {
+                                                    !deliverables.iter().any(|d| {
+                                                        f.contains(d) || d.contains(f.as_str())
+                                                    })
+                                                })
+                                                .cloned()
+                                                .collect();
+                                            if out_of_scope.len() >= 3 {
+                                                for oos_file in &out_of_scope {
+                                                    let _ = std::process::Command::new("git")
+                                                        .args(["checkout", "--", oos_file])
+                                                        .current_dir(&cwd)
+                                                        .output();
+                                                }
+                                                tracing::info!(
+                                                    "Enforcement: reverted {} out-of-scope files",
+                                                    out_of_scope.len()
+                                                );
+                                                feedback_notifications.push(format!(
+                                                    "Reverted {} out-of-scope files. Stay focused on PRD deliverables.",
+                                                    out_of_scope.len()
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    glass_feedback::RuleAction::BlockUntilResolved { message } => {
+                                        self.orchestrator.dependency_block = Some(message.clone());
+                                        self.orchestrator.dependency_block_iterations = 0;
+                                        tracing::info!(
+                                            "Enforcement: dependency block set — {}",
+                                            message
+                                        );
+                                    }
+                                    glass_feedback::RuleAction::SplitInstructions => {
+                                        // Handled in OrchestratorResponse handler
+                                    }
+                                    glass_feedback::RuleAction::ExtendSilence { .. }
+                                    | glass_feedback::RuleAction::RunVerifyTwice
+                                    | glass_feedback::RuleAction::EarlyStuck { .. } => {
+                                        // These are flag-based; handled elsewhere
+                                    }
+                                    glass_feedback::RuleAction::TextInjection(text) => {
+                                        feedback_notifications.push(text.clone());
+                                    }
                                 }
                             }
                         }
@@ -7407,12 +7745,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         content.push_str(&context);
 
-                        // Append feedback rule injections
-                        if !feedback_instructions.is_empty() {
+                        // Append feedback rule notifications
+                        if !feedback_notifications.is_empty() {
                             content.push_str("\n[FEEDBACK_RULES]\n");
-                            for instr in &feedback_instructions {
+                            for instr in &feedback_notifications {
                                 content.push_str(&format!("- {}\n", instr));
                             }
+                        }
+
+                        // Instruction buffer: if buffered instructions exist, send next one
+                        if !self.orchestrator.instruction_buffer.is_empty() {
+                            let next = self.orchestrator.instruction_buffer.remove(0);
+                            if let Some(ctx_ib) = self.windows.get(&window_id) {
+                                if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
+                                    let msg = format!("{}\n", next);
+                                    let _ = session_ib.pty_sender.send(PtyMsg::Input(
+                                        std::borrow::Cow::Owned(msg.into_bytes()),
+                                    ));
+                                    self.orchestrator.mark_pty_write();
+                                }
+                            }
+                            self.orchestrator.response_pending = true;
+                            tracing::info!(
+                                "Orchestrator: sent buffered instruction ({} remaining)",
+                                self.orchestrator.instruction_buffer.len()
+                            );
+                            return;
                         }
 
                         let msg = serde_json::json!({

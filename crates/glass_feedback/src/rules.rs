@@ -131,7 +131,10 @@ impl RuleEngine {
     pub fn is_rule_active(&self, action_name: &str) -> bool {
         self.rules.iter().any(|r| {
             r.action == action_name
-                && matches!(r.status, RuleStatus::Confirmed | RuleStatus::Provisional | RuleStatus::Pinned)
+                && matches!(
+                    r.status,
+                    RuleStatus::Confirmed | RuleStatus::Provisional | RuleStatus::Pinned
+                )
         })
     }
 
@@ -582,7 +585,11 @@ mod tests {
     #[test]
     fn check_rules_restrict_scope_returns_revert() {
         let engine = RuleEngine {
-            rules: vec![make_test_rule("r1", "restrict_scope", RuleStatus::Confirmed)],
+            rules: vec![make_test_rule(
+                "r1",
+                "restrict_scope",
+                RuleStatus::Confirmed,
+            )],
         };
 
         let state = RunState::default();
@@ -599,8 +606,10 @@ mod tests {
     #[test]
     fn check_rules_build_dependency_returns_block() {
         let mut rule = make_test_rule("r1", "build_dependency_first", RuleStatus::Confirmed);
-        rule.action_params
-            .insert("message".to_string(), "Fix the linker error first".to_string());
+        rule.action_params.insert(
+            "message".to_string(),
+            "Fix the linker error first".to_string(),
+        );
 
         let engine = RuleEngine { rules: vec![rule] };
 

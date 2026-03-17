@@ -543,9 +543,7 @@ mod tests {
         let actions = check_rules(&state, &run_state);
         assert!(!actions.is_empty(), "force_commit rule should fire");
 
-        let has_force_commit = actions
-            .iter()
-            .any(|a| matches!(a, RuleAction::ForceCommit));
+        let has_force_commit = actions.iter().any(|a| matches!(a, RuleAction::ForceCommit));
         assert!(has_force_commit, "expected ForceCommit action");
     }
 
