@@ -457,6 +457,73 @@ mod settings_sync_tests {
 }
 
 #[cfg(test)]
+mod orchestrator_parser_tests {
+    use super::super::{parse_diff_stat_files, parse_numbered_instructions};
+
+    #[test]
+    fn parse_numbered_instructions_splits() {
+        let text = "1. Build the API endpoint\n2. Write unit tests\n3. Update the docs";
+        let items = parse_numbered_instructions(text);
+        assert_eq!(items.len(), 3);
+        assert!(items[0].contains("Build the API"));
+        assert!(items[1].contains("Write unit tests"));
+        assert!(items[2].contains("Update the docs"));
+    }
+
+    #[test]
+    fn parse_numbered_instructions_no_numbers() {
+        let text = "Just do the thing and make it work";
+        let items = parse_numbered_instructions(text);
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn parse_numbered_instructions_single_item() {
+        let text = "1. Only one instruction here";
+        let items = parse_numbered_instructions(text);
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn parse_numbered_instructions_multiline_items() {
+        let text = "1. Build the API\n   with proper error handling\n2. Write tests";
+        let items = parse_numbered_instructions(text);
+        assert_eq!(items.len(), 2);
+        assert!(items[0].contains("error handling"));
+    }
+
+    #[test]
+    fn parse_numbered_instructions_parenthesis_style() {
+        let text = "1) First thing\n2) Second thing\n3) Third thing";
+        let items = parse_numbered_instructions(text);
+        assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn parse_diff_stat_files_parses() {
+        let diff = " src/main.rs     | 15 +++---\n crates/foo/lib.rs | 3 +\n 2 files changed";
+        let files = parse_diff_stat_files(diff);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], "src/main.rs");
+        assert_eq!(files[1], "crates/foo/lib.rs");
+    }
+
+    #[test]
+    fn parse_diff_stat_files_empty() {
+        let files = parse_diff_stat_files("");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_stat_files_summary_line_skipped() {
+        let diff = " src/main.rs | 5 ++\n 1 file changed, 5 insertions(+)";
+        let files = parse_diff_stat_files(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], "src/main.rs");
+    }
+}
+
+#[cfg(test)]
 mod codepage_tests {
     /// Verify that the Windows console codepage is set to 65001 (UTF-8).
     /// This test calls GetConsoleOutputCP() and asserts the value.
