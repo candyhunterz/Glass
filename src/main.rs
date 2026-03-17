@@ -6039,10 +6039,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::debug!(
                                 "Feedback: skipping orchestrator config reload (feedback write pending)"
                             );
+                            // Skip orchestrator sync entirely — only feedback values changed
+                            for ctx in self.windows.values() {
+                                ctx.window.request_redraw();
+                            }
+                            return;
                         }
 
                         // Sync orchestrator.active with config.agent.orchestrator.enabled
                         // so the settings overlay toggle actually activates orchestration.
+                        // Only activate/deactivate when the `enabled` field itself changed,
+                        // not when other orchestrator fields (feedback_llm, etc.) changed.
                         let orch_enabled = self
                             .config
                             .agent
@@ -6050,9 +6057,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .and_then(|a| a.orchestrator.as_ref())
                             .map(|o| o.enabled)
                             .unwrap_or(false);
-                        let was_active = self.orchestrator.active;
+                        let was_enabled = old_agent
+                            .as_ref()
+                            .and_then(|a| a.orchestrator.as_ref())
+                            .map(|o| o.enabled)
+                            .unwrap_or(false);
 
-                        if orch_enabled && !was_active {
+                        if orch_enabled && !was_enabled {
                             // Activating via settings — same setup as Ctrl+Shift+O
                             self.orchestrator.active = true;
                             self.orchestrator_activated_at = Some(std::time::Instant::now());
@@ -6119,7 +6130,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::info!(
                                 "Orchestrator: activated via config reload (settings overlay)"
                             );
-                        } else if !orch_enabled && was_active {
+                        } else if !orch_enabled && was_enabled {
                             self.run_feedback_on_end();
                             self.orchestrator.active = false;
                             tracing::info!(
