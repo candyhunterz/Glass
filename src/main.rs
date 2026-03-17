@@ -2,6 +2,8 @@
 // CLI subcommands (history, undo, mcp) still work when launched from an existing terminal.
 #![windows_subsystem = "windows"]
 
+#[allow(dead_code)]
+mod ephemeral_agent;
 mod history;
 #[allow(dead_code)]
 mod orchestrator;
@@ -8333,6 +8335,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ),
                 };
                 let _ = reply.send(response);
+            }
+            AppEvent::EphemeralAgentComplete { result, purpose } => {
+                tracing::debug!(
+                    "EphemeralAgentComplete: purpose={purpose:?} ok={}",
+                    result.is_ok()
+                );
             }
         }
     }
