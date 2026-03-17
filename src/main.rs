@@ -8143,6 +8143,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.orchestrator.iteration,
                 );
             }
+            AppEvent::EphemeralAgentComplete { result: _, purpose } => {
+                tracing::debug!("Ephemeral agent completed: {:?}", purpose);
+                // Routing handler for ephemeral agent results (checkpoint synthesis, quality verification, etc.)
+                // TODO: Implement routing based on purpose variant
+            }
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
