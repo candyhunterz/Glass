@@ -21,3 +21,6 @@ perf.data
 
 # Glass local data
 .glass/
+
+# Git worktrees
+.worktrees/
