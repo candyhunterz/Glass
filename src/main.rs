@@ -1942,6 +1942,59 @@ impl Processor {
             tracing::info!("Usage above threshold, using fallback checkpoint");
             self.write_checkpoint_and_respawn(&cwd);
         }
+
+        // Quality verification for general mode projects
+        let orchestrator_mode = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.orchestrator_mode.as_str())
+            .unwrap_or("build");
+
+        if orchestrator_mode == "general" && !self.orchestrator.prd_deliverable_files.is_empty() {
+            // Read deliverable file contents
+            let mut deliverable_content = String::new();
+            for file in &self.orchestrator.prd_deliverable_files {
+                let path = std::path::Path::new(&cwd).join(file);
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    deliverable_content.push_str(&format!("### {file}\n\n{content}\n\n"));
+                }
+            }
+
+            if !deliverable_content.is_empty() {
+                // Read PRD requirements
+                let prd_content = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.orchestrator.as_ref())
+                    .and_then(|o| {
+                        let prd_path = std::path::Path::new(&cwd).join(&o.prd_path);
+                        std::fs::read_to_string(prd_path).ok()
+                    })
+                    .unwrap_or_default();
+
+                if !prd_content.is_empty() {
+                    let quality_request = ephemeral_agent::EphemeralAgentRequest {
+                        system_prompt: glass_feedback::quality::quality_system_prompt(),
+                        user_message: glass_feedback::quality::quality_user_message(
+                            &deliverable_content,
+                            &prd_content,
+                            self.orchestrator.last_quality_score,
+                        ),
+                        timeout: std::time::Duration::from_secs(90),
+                        purpose: glass_core::event::EphemeralPurpose::QualityVerification,
+                    };
+
+                    if let Err(e) =
+                        ephemeral_agent::spawn_ephemeral_agent(quality_request, self.proxy.clone())
+                    {
+                        tracing::warn!("Quality verification spawn failed: {e:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Write the cached fallback checkpoint and respawn.
@@ -8068,11 +8121,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.orchestrator.iteration,
                 );
             }
-            AppEvent::EphemeralAgentComplete { result: _, purpose } => {
-                tracing::debug!("Ephemeral agent completed: {:?}", purpose);
-                // Routing handler for ephemeral agent results (checkpoint synthesis, quality verification, etc.)
-                // TODO: Implement routing based on purpose variant
-            }
+            // EphemeralAgentComplete handled below (after MCP handlers)
             AppEvent::McpRequest(mcp_req) => {
                 let glass_core::ipc::McpEventRequest { request, reply } = mcp_req;
                 let response = match request.method.as_str() {
@@ -8467,9 +8516,53 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 glass_feedback::quality::parse_quality_verdict(&resp.text)
                             {
                                 tracing::info!(
-                                    "Quality verdict: score={}, gaps={}",
+                                    "Quality verdict: score={}/10, completeness={:.0}%, gaps={}, regressed={}",
                                     verdict.score,
-                                    verdict.gaps.len()
+                                    verdict.completeness * 100.0,
+                                    verdict.gaps.len(),
+                                    verdict.regressed
+                                );
+
+                                // Store score for next comparison
+                                self.orchestrator.last_quality_score = Some(verdict.score);
+
+                                // Append quality context for the agent
+                                let mut quality_ctx = format!(
+                                    "[QUALITY_CHECK] score={}/10 completeness={:.0}%",
+                                    verdict.score,
+                                    verdict.completeness * 100.0
+                                );
+                                if !verdict.gaps.is_empty() {
+                                    quality_ctx.push_str(" gaps: ");
+                                    quality_ctx.push_str(&verdict.gaps.join("; "));
+                                }
+                                if verdict.regressed {
+                                    quality_ctx
+                                        .push_str(" [REGRESSED from previous checkpoint]");
+                                }
+                                quality_ctx.push('\n');
+                                self.orchestrator
+                                    .coverage_gaps_context
+                                    .push_str(&quality_ctx);
+
+                                // Log to iterations.tsv
+                                let cwd = self.get_focused_cwd();
+                                let status = if verdict.regressed {
+                                    "quality_regressed"
+                                } else {
+                                    "quality_ok"
+                                };
+                                orchestrator::append_iteration_log(
+                                    &cwd,
+                                    self.orchestrator.iteration,
+                                    "quality",
+                                    status,
+                                    &format!(
+                                        "score={} completeness={:.0}% gaps={}",
+                                        verdict.score,
+                                        verdict.completeness * 100.0,
+                                        verdict.gaps.len()
+                                    ),
                                 );
                             }
                         }

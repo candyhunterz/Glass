@@ -516,6 +516,8 @@ pub struct OrchestratorState {
     pub cached_checkpoint_fallback: Option<String>,
     /// Coverage gap context string appended to agent context.
     pub coverage_gaps_context: String,
+    /// Last quality verdict score (for regression comparison in general mode).
+    pub last_quality_score: Option<u32>,
 }
 
 impl OrchestratorState {
@@ -553,6 +555,7 @@ impl OrchestratorState {
             last_known_head: None,
             cached_checkpoint_fallback: None,
             coverage_gaps_context: String::new(),
+            last_quality_score: None,
         }
     }
 
