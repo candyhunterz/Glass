@@ -99,6 +99,8 @@ pub struct SettingsConfigSnapshot {
     pub orchestrator_prd_path: String,
     pub orchestrator_mode: String,
     pub orchestrator_verify_mode: String,
+    pub orchestrator_feedback_llm: bool,
+    pub orchestrator_max_prompt_hints: usize,
 }
 
 impl Default for SettingsConfigSnapshot {
@@ -139,6 +141,8 @@ impl Default for SettingsConfigSnapshot {
             orchestrator_prd_path: "PRD.md".to_string(),
             orchestrator_mode: "build".to_string(),
             orchestrator_verify_mode: "floor".to_string(),
+            orchestrator_feedback_llm: false,
+            orchestrator_max_prompt_hints: 10,
         }
     }
 }
@@ -975,6 +979,22 @@ impl SettingsOverlayRenderer {
                     config.orchestrator_verify_mode.clone(),
                     false,
                     true,
+                ),
+                (
+                    "Feedback LLM",
+                    if config.orchestrator_feedback_llm {
+                        "ON".to_string()
+                    } else {
+                        "OFF".to_string()
+                    },
+                    true,
+                    false,
+                ),
+                (
+                    "Max Prompt Hints",
+                    format!("{}", config.orchestrator_max_prompt_hints),
+                    false,
+                    false,
                 ),
             ],
             _ => vec![],

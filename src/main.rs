@@ -3143,6 +3143,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.verify_mode.clone())
                                 .unwrap_or_else(|| "floor".to_string()),
+                            orchestrator_feedback_llm: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.feedback_llm)
+                                .unwrap_or(false),
+                            orchestrator_max_prompt_hints: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.max_prompt_hints)
+                                .unwrap_or(10),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
@@ -8663,6 +8677,20 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
+        // Orchestrator: feedback_llm toggle (field index 6)
+        (6, 6) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.feedback_llm)
+                .unwrap_or(false);
+            Some((
+                Some("agent.orchestrator"),
+                "feedback_llm",
+                (!current).to_string(),
+            ))
+        }
         // Orchestrator: verify_mode and orchestrator_mode removed (auto-detected)
         _ => None,
     }
@@ -8777,6 +8805,21 @@ fn handle_settings_increment(
             Some((
                 Some("agent.orchestrator"),
                 "silence_timeout_secs",
+                new_val.to_string(),
+            ))
+        }
+        // Orchestrator max_prompt_hints: step 1 (field index 7)
+        (6, 7) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_prompt_hints)
+                .unwrap_or(10) as i64;
+            let new_val = (current + delta).clamp(0, 50);
+            Some((
+                Some("agent.orchestrator"),
+                "max_prompt_hints",
                 new_val.to_string(),
             ))
         }
