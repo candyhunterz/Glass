@@ -374,17 +374,16 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
 }
 
 /// State of a checkpoint refresh cycle.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum CheckpointPhase {
     /// Not in a checkpoint cycle.
     Idle,
-    /// Waiting for Claude Code to write checkpoint.md (polling mtime).
-    WaitingForCheckpoint {
+    /// Waiting for ephemeral agent to synthesize checkpoint.md.
+    Synthesizing {
         started_at: std::time::Instant,
-        last_mtime: Option<std::time::SystemTime>,
+        completed: String,
+        next: String,
     },
-    /// Checkpoint written; waiting for /clear to complete.
-    ClearingSent,
 }
 
 /// How many iterations before forcing an automatic context refresh.
@@ -397,8 +396,8 @@ pub const CRASH_RECOVERY_GRACE_SECS: u64 = 10;
 /// Maximum iterations to remain dependency-blocked before auto-clearing.
 pub const DEPENDENCY_BLOCK_MAX_ITERATIONS: u32 = 3;
 
-/// Maximum time to wait for Claude Code to write checkpoint.md before respawning anyway.
-pub const CHECKPOINT_TIMEOUT_SECS: u64 = 180;
+/// Maximum time to wait for ephemeral synthesis before using fallback.
+pub const SYNTHESIS_TIMEOUT_SECS: u64 = 120;
 
 /// Composite environment state fingerprint for semantic stuck detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,6 +512,10 @@ pub struct OrchestratorState {
     pub iterations_since_last_commit: u32,
     /// Last known git HEAD SHA (for commit detection).
     pub last_known_head: Option<String>,
+    /// Cached checkpoint data for fallback if ephemeral synthesis fails.
+    pub cached_checkpoint_fallback: Option<String>,
+    /// Coverage gap context string appended to agent context.
+    pub coverage_gaps_context: String,
 }
 
 impl OrchestratorState {
@@ -548,6 +551,8 @@ impl OrchestratorState {
             prd_deliverable_files: Vec::new(),
             iterations_since_last_commit: 0,
             last_known_head: None,
+            cached_checkpoint_fallback: None,
+            coverage_gaps_context: String::new(),
         }
     }
 
@@ -628,20 +633,17 @@ impl OrchestratorState {
         self.fingerprint_stuck = false;
     }
 
-    /// Start a checkpoint refresh cycle.
-    pub fn begin_checkpoint(
-        &mut self,
-        completed: &str,
-        next: &str,
-        checkpoint_mtime: Option<std::time::SystemTime>,
-    ) {
+    /// Start a checkpoint synthesis cycle.
+    pub fn begin_synthesis(&mut self, completed: &str, next: &str, fallback_content: String) {
         self.last_checkpoint_completed = completed.to_string();
         self.last_checkpoint_next = next.to_string();
         self.iterations_since_checkpoint = 0;
         self.response_pending = false;
-        self.checkpoint_phase = CheckpointPhase::WaitingForCheckpoint {
+        self.cached_checkpoint_fallback = Some(fallback_content);
+        self.checkpoint_phase = CheckpointPhase::Synthesizing {
             started_at: std::time::Instant::now(),
-            last_mtime: checkpoint_mtime,
+            completed: completed.to_string(),
+            next: next.to_string(),
         };
     }
 
@@ -1071,14 +1073,6 @@ pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
 
-/// Check if a checkpoint file has been updated since a baseline mtime.
-pub fn checkpoint_changed(path: &std::path::Path, baseline: Option<std::time::SystemTime>) -> bool {
-    match (baseline, file_mtime(path)) {
-        (None, Some(_)) => true,
-        (Some(old), Some(new)) => new > old,
-        _ => false,
-    }
-}
 
 /// Build the summary string for a bounded run completion.
 pub fn build_bounded_summary(
@@ -1214,25 +1208,26 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_changed_detects_creation() {
-        let path = std::path::Path::new("nonexistent_test_file_12345.md");
-        assert!(!checkpoint_changed(path, None));
-    }
-
-    #[test]
-    fn begin_checkpoint_stores_mtime() {
+    fn begin_synthesis_transitions_to_synthesizing() {
         let mut state = OrchestratorState::new(3);
-        let fake_mtime = std::time::SystemTime::now();
-        state.begin_checkpoint("feature-a", "feature-b", Some(fake_mtime));
-        match state.checkpoint_phase {
-            CheckpointPhase::WaitingForCheckpoint { last_mtime, .. } => {
-                assert_eq!(last_mtime, Some(fake_mtime));
+        state.begin_synthesis("feature-a", "feature-b", "fallback content".to_string());
+        match &state.checkpoint_phase {
+            CheckpointPhase::Synthesizing { completed, next, .. } => {
+                assert_eq!(completed, "feature-a");
+                assert_eq!(next, "feature-b");
             }
-            _ => panic!("Expected WaitingForCheckpoint"),
+            _ => panic!("Expected Synthesizing"),
         }
         assert_eq!(state.last_checkpoint_completed, "feature-a");
         assert_eq!(state.last_checkpoint_next, "feature-b");
         assert_eq!(state.iterations_since_checkpoint, 0);
+        assert!(!state.response_pending);
+        assert!(state.cached_checkpoint_fallback.is_some());
+    }
+
+    #[test]
+    fn synthesis_timeout_constant() {
+        assert_eq!(SYNTHESIS_TIMEOUT_SECS, 120);
     }
 
     #[test]
@@ -1896,17 +1891,6 @@ mod tests {
         let mut state = OrchestratorState::new(3);
         state.mark_pty_write();
         assert!(state.in_grace_period());
-    }
-
-    #[test]
-    fn checkpoint_changed_file_deleted_returns_false() {
-        // Documents: if file existed (baseline Some) but is now gone (mtime None),
-        // returns false — debatable but this is current behavior
-        let path = std::path::Path::new("nonexistent_test_file_xyz.md");
-        assert!(!checkpoint_changed(
-            path,
-            Some(std::time::SystemTime::now())
-        ));
     }
 
     #[test]

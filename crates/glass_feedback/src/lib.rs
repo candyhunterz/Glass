@@ -9,8 +9,10 @@ pub mod defaults;
 pub mod io;
 pub mod lifecycle;
 pub mod llm;
+pub mod quality;
 pub mod regression;
 pub mod rules;
+pub mod coverage;
 pub mod types;
 
 #[allow(unused_imports)]

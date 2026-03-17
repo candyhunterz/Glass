@@ -28,6 +28,37 @@ pub struct VerifyEventResult {
     pub output: String,
 }
 
+/// The purpose of an ephemeral agent session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EphemeralPurpose {
+    /// Synthesize a checkpoint summary from recent history.
+    CheckpointSynthesis,
+    /// Verify quality of a completed implementation.
+    QualityVerification,
+}
+
+/// Result from a successful ephemeral agent session.
+#[derive(Debug, Clone)]
+pub struct EphemeralAgentResult {
+    /// The assistant's response text (markdown fences stripped).
+    pub text: String,
+    /// API cost in USD, if reported.
+    pub cost_usd: Option<f64>,
+    /// Wall-clock duration in milliseconds, if reported.
+    pub duration_ms: Option<u64>,
+}
+
+/// Error from an ephemeral agent session.
+#[derive(Debug, Clone)]
+pub enum EphemeralAgentError {
+    /// Failed to spawn the `claude` process or create temp files.
+    SpawnFailed(String),
+    /// Session exceeded the timeout.
+    Timeout,
+    /// Response could not be parsed.
+    ParseError(String),
+}
+
 /// Events produced by shell integration OSC sequences.
 ///
 /// Mirrors `OscEvent` from glass_terminal but lives in glass_core
