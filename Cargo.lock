@@ -1449,11 +1449,13 @@ dependencies = [
 name = "glass_scripting"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "glass_core",
  "rhai",
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
 ]
