@@ -406,6 +406,10 @@ struct Processor {
     script_gen_project_root: Option<String>,
     /// Bridge to the Rhai scripting engine for hook-based automation.
     script_bridge: script_bridge::ScriptBridge,
+    /// Consecutive Tier 4 script generation parse failures. When >= 3,
+    /// new Tier 4 ephemeral agents are suppressed to avoid wasting resources.
+    /// Reset to 0 on any successful parse.
+    script_gen_parse_failures: u32,
 }
 
 impl Drop for AgentRuntime {
@@ -443,7 +447,7 @@ impl Drop for AgentRuntime {
 /// be called while other fields of `Processor` are mutably borrowed (e.g.
 /// `self.windows`). Short-circuits if no scripts match the hook.
 fn fire_hook_on_bridge(
-    bridge: &script_bridge::ScriptBridge,
+    bridge: &mut script_bridge::ScriptBridge,
     orchestrator_project_root: &str,
     hook: glass_scripting::HookPoint,
     event: &glass_scripting::HookEventData,
@@ -466,7 +470,8 @@ fn fire_hook_on_bridge(
     let actions = bridge.run_hook(hook, &ctx, event);
     if !actions.is_empty() {
         if let Some(root) = bridge.project_root() {
-            bridge.execute_actions(&actions, root);
+            let root = root.to_string();
+            bridge.execute_actions(&actions, &root);
         }
     }
 }
@@ -1882,6 +1887,13 @@ impl Processor {
                 result.config_changes.len(),
             );
 
+            // Apply script lifecycle transitions based on regression result.
+            let regressed = matches!(
+                result.regression,
+                Some(glass_feedback::regression::RegressionResult::Regressed { .. })
+            );
+            self.script_bridge.on_feedback_run_end(regressed);
+
             // Spawn LLM analysis if prompt was generated
             if let Some(prompt) = result.llm_prompt {
                 // Capture project root and max_prompt_hints NOW so the response
@@ -1910,21 +1922,30 @@ impl Processor {
 
             // Tier 4: spawn ephemeral agent for script generation
             if let Some(script_prompt) = result.script_prompt {
-                tracing::info!(
-                    "Tier 4: spawning ephemeral agent for script generation ({} chars)",
-                    script_prompt.len()
-                );
-                self.script_gen_project_root = Some(self.orchestrator.project_root.clone());
-                let request = ephemeral_agent::EphemeralAgentRequest {
-                    system_prompt: "You are generating a Rhai script for the Glass terminal emulator's self-improvement system. Respond ONLY in the structured format requested.".to_string(),
-                    user_message: script_prompt,
-                    timeout: std::time::Duration::from_secs(60),
-                    purpose: glass_core::event::EphemeralPurpose::ScriptGeneration,
-                };
-                if let Err(e) =
-                    ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
-                {
-                    tracing::warn!("Tier 4 script generation: ephemeral spawn failed: {e:?}");
+                // Suppress Tier 4 after too many consecutive parse failures
+                // to avoid wasting ephemeral agent resources.
+                if self.script_gen_parse_failures >= 3 {
+                    tracing::warn!(
+                        "Tier 4: suppressing script generation — {} consecutive parse failures",
+                        self.script_gen_parse_failures
+                    );
+                } else {
+                    tracing::info!(
+                        "Tier 4: spawning ephemeral agent for script generation ({} chars)",
+                        script_prompt.len()
+                    );
+                    self.script_gen_project_root = Some(self.orchestrator.project_root.clone());
+                    let request = ephemeral_agent::EphemeralAgentRequest {
+                        system_prompt: "You are generating a Rhai script for the Glass terminal emulator's self-improvement system. Respond ONLY in the structured format requested.".to_string(),
+                        user_message: script_prompt,
+                        timeout: std::time::Duration::from_secs(60),
+                        purpose: glass_core::event::EphemeralPurpose::ScriptGeneration,
+                    };
+                    if let Err(e) =
+                        ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
+                    {
+                        tracing::warn!("Tier 4 script generation: ephemeral spawn failed: {e:?}");
+                    }
                 }
             }
         }
@@ -2114,7 +2135,7 @@ impl Processor {
             {
                 let mut event = glass_scripting::HookEventData::new();
                 event.set("iterations", self.orchestrator.iteration as i64);
-                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                     glass_scripting::HookPoint::OrchestratorRunEnd,
                     &event,
                 );
@@ -2504,7 +2525,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         match event {
             WindowEvent::CloseRequested => {
-                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                     glass_scripting::HookPoint::SessionEnd,
                     &glass_scripting::HookEventData::new(),
                 );
@@ -3909,7 +3930,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabCreate,
                                         &event,
                                     );
@@ -3932,7 +3953,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         if ctx.session_mux.tab_count() < tab_count_before
                                             && ctx.session_mux.tab_count() == 0
                                         {
-                                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                                 glass_scripting::HookPoint::SessionEnd,
                                                 &glass_scripting::HookEventData::new(),
                                             );
@@ -3955,7 +3976,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     {
                                         let mut event = glass_scripting::HookEventData::new();
                                         event.set("tab_index", idx as i64);
-                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                             glass_scripting::HookPoint::TabClose,
                                             &event,
                                         );
@@ -3965,7 +3986,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                     ctx.tab_bar_hovered_tab = None;
                                     if ctx.session_mux.tab_count() == 0 {
-                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                             glass_scripting::HookPoint::SessionEnd,
                                             &glass_scripting::HookEventData::new(),
                                         );
@@ -4320,8 +4341,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Load scripts for the project now that we know its root.
                                     self.script_bridge.load_for_project(&current_cwd);
 
+                                    // Reset per-run script tracking for the new orchestrator run.
+                                    self.script_bridge.reset_run_tracking();
+
                                     // Fire scripting OrchestratorRunStart hook
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::OrchestratorRunStart,
                                         &glass_scripting::HookEventData::new(),
                                     );
@@ -4660,7 +4684,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             "iterations",
                                             self.orchestrator.iteration as i64,
                                         );
-                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                             glass_scripting::HookPoint::OrchestratorRunEnd,
                                             &event,
                                         );
@@ -5356,7 +5380,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 {
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabClose,
                                         &event,
                                     );
@@ -5366,7 +5390,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::SessionEnd,
                                         &glass_scripting::HookEventData::new(),
                                     );
@@ -5398,7 +5422,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabCreate,
                                         &event,
                                     );
@@ -5739,7 +5763,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 {
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabClose,
                                         &event,
                                     );
@@ -5749,7 +5773,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::SessionEnd,
                                         &glass_scripting::HookEventData::new(),
                                     );
@@ -5888,7 +5912,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if ctx.session_mux.tab_count() < tab_count_before
                                 && ctx.session_mux.tab_count() == 0
                             {
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::SessionEnd,
                                     &glass_scripting::HookEventData::new(),
                                 );
@@ -5909,7 +5933,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 let mut event = glass_scripting::HookEventData::new();
                                 event.set("tab_index", idx as i64);
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::TabClose,
                                     &event,
                                 );
@@ -5922,7 +5946,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     if ctx.session_mux.tab_count() == 0 {
                         tracing::info!("Last tab closed -- exiting");
-                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                             glass_scripting::HookPoint::SessionEnd,
                             &glass_scripting::HookEventData::new(),
                         );
@@ -6473,14 +6497,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if let Some(cmd_text) = hook_command_start_text {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("command", cmd_text);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,glass_scripting::HookPoint::CommandStart, &event);
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,glass_scripting::HookPoint::CommandStart, &event);
                 }
                 if let Some((cmd_text, exit_code, duration_ms)) = hook_command_complete_data {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("command", cmd_text);
                     event.set("exit_code", exit_code.unwrap_or(-1) as i64);
                     event.set("duration_ms", duration_ms);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                         glass_scripting::HookPoint::CommandComplete,
                         &event,
                     );
@@ -6868,7 +6892,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 let mut event = glass_scripting::HookEventData::new();
                                 event.set("iterations", self.orchestrator.iteration as i64);
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::OrchestratorRunEnd,
                                     &event,
                                 );
@@ -7315,7 +7339,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         {
                             let mut event = glass_scripting::HookEventData::new();
                             event.set("iterations", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                 glass_scripting::HookPoint::OrchestratorRunEnd,
                                 &event,
                             );
@@ -7624,7 +7648,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         {
                             let mut event = glass_scripting::HookEventData::new();
                             event.set("iterations", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                 glass_scripting::HookPoint::OrchestratorRunEnd,
                                 &event,
                             );
@@ -8270,7 +8294,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         {
                             let mut event = glass_scripting::HookEventData::new();
                             event.set("iteration", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                 glass_scripting::HookPoint::OrchestratorIteration,
                                 &event,
                             );
@@ -8644,7 +8668,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("iterations", self.orchestrator.iteration as i64);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                         glass_scripting::HookPoint::OrchestratorRunEnd,
                         &event,
                     );
@@ -8663,7 +8687,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("iterations", self.orchestrator.iteration as i64);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                         glass_scripting::HookPoint::OrchestratorRunEnd,
                         &event,
                     );
@@ -8847,7 +8871,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 let mut event = glass_scripting::HookEventData::new();
                                 event.set("tab_index", new_tab_index as i64);
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::TabCreate,
                                     &event,
                                 );
@@ -8995,7 +9019,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             let mut event =
                                                 glass_scripting::HookEventData::new();
                                             event.set("tab_index", tab_idx as i64);
-                                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                                 glass_scripting::HookPoint::TabClose,
                                                 &event,
                                             );
@@ -9265,35 +9289,60 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 match parse_script_response(&resp.text) {
                                     Some((name, hooks, source)) => {
+                                        // Successful parse — reset consecutive failure counter.
+                                        self.script_gen_parse_failures = 0;
                                         let scripts_dir = std::path::Path::new(&project_root)
                                             .join(".glass")
                                             .join("scripts")
                                             .join("feedback");
                                         let _ = std::fs::create_dir_all(&scripts_dir);
-                                        // Write TOML manifest
-                                        let now_secs = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs();
-                                        let manifest = format!(
-                                            "name = \"{name}\"\nhooks = [{hooks}]\nstatus = \"provisional\"\norigin = \"feedback\"\nversion = 1\napi_version = \"1\"\ncreated = \"{now_secs}\"\ntype = \"hook\"\n"
-                                        );
-                                        let _ = std::fs::write(
-                                            scripts_dir.join(format!("{name}.toml")),
-                                            &manifest,
-                                        );
-                                        let _ = std::fs::write(
-                                            scripts_dir.join(format!("{name}.rhai")),
-                                            &source,
-                                        );
-                                        tracing::info!(
-                                            "Tier 4: wrote provisional script '{name}'"
-                                        );
-                                        self.script_bridge.reload();
+
+                                        // Deduplicate: skip if a non-archived manifest already exists.
+                                        // Only archived scripts may be overwritten by a new generation.
+                                        let manifest_path = scripts_dir.join(format!("{name}.toml"));
+                                        let should_write = if manifest_path.exists() {
+                                            match glass_scripting::lifecycle::read_manifest(&manifest_path) {
+                                                Ok(existing) if existing.status != glass_scripting::ScriptStatus::Archived => {
+                                                    tracing::info!(
+                                                        "Tier 4: script '{name}' already exists (status={:?}), skipping",
+                                                        existing.status
+                                                    );
+                                                    false
+                                                }
+                                                _ => true, // Archived or unreadable — safe to overwrite
+                                            }
+                                        } else {
+                                            true
+                                        };
+
+                                        if should_write {
+                                            // Write TOML manifest
+                                            let now_secs = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs();
+                                            let manifest = format!(
+                                                "name = \"{name}\"\nhooks = [{hooks}]\nstatus = \"provisional\"\norigin = \"feedback\"\nversion = 1\napi_version = \"1\"\ncreated = \"{now_secs}\"\ntype = \"hook\"\n"
+                                            );
+                                            let _ = std::fs::write(
+                                                scripts_dir.join(format!("{name}.toml")),
+                                                &manifest,
+                                            );
+                                            let _ = std::fs::write(
+                                                scripts_dir.join(format!("{name}.rhai")),
+                                                &source,
+                                            );
+                                            tracing::info!(
+                                                "Tier 4: wrote provisional script '{name}'"
+                                            );
+                                            self.script_bridge.reload();
+                                        }
                                     }
                                     None => {
+                                        self.script_gen_parse_failures += 1;
                                         tracing::warn!(
-                                            "Tier 4: could not parse script from LLM response"
+                                            "Tier 4: could not parse script from LLM response (consecutive failures: {})",
+                                            self.script_gen_parse_failures
                                         );
                                     }
                                 }
@@ -9744,6 +9793,7 @@ fn main() {
                 feedback_llm_max_hints: 10,
                 script_gen_project_root: None,
                 script_bridge,
+                script_gen_parse_failures: 0,
             };
 
             event_loop

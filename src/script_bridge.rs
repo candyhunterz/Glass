@@ -5,6 +5,8 @@
 // Many hook methods are defined but not yet wired into the event loop --
 // they will be connected incrementally in future tasks.
 
+use std::collections::{HashMap, HashSet};
+
 use glass_core::config::GlassConfig;
 use glass_scripting::{
     Action, HookContext, HookEventData, HookPoint, LogLevel, ScriptSystem, ScriptToolRegistry,
@@ -22,6 +24,14 @@ pub struct ScriptBridge {
     tool_registry: ScriptToolRegistry,
     enabled: bool,
     project_root: Option<String>,
+    /// Guard to break ConfigReload -> SetConfig -> ConfigReloaded -> ConfigReload loops.
+    /// Set to `true` when a `SetConfig` action is executed; while true, the
+    /// `on_config_reload` hook is suppressed. Cleared when any other hook fires.
+    config_reload_guard: bool,
+    /// Names of scripts that fired successfully (no errors) during the current run.
+    scripts_triggered: HashSet<String>,
+    /// Script name -> error count during the current run.
+    scripts_errored: HashMap<String, u32>,
 }
 
 impl ScriptBridge {
@@ -43,6 +53,9 @@ impl ScriptBridge {
             tool_registry: ScriptToolRegistry::new(),
             enabled,
             project_root: None,
+            config_reload_guard: false,
+            scripts_triggered: HashSet::new(),
+            scripts_errored: HashMap::new(),
         }
     }
 
@@ -112,6 +125,135 @@ impl ScriptBridge {
     /// Return the stored project root, if any.
     pub fn project_root(&self) -> Option<&str> {
         self.project_root.as_deref()
+    }
+
+    /// Reset per-run script tracking counters.
+    ///
+    /// Call this at the start of each orchestrator run so that lifecycle
+    /// decisions are based only on the current run's data.
+    pub fn reset_run_tracking(&mut self) {
+        self.scripts_triggered.clear();
+        self.scripts_errored.clear();
+    }
+
+    // -------------------------------------------------------------------
+    // Lifecycle integration
+    // -------------------------------------------------------------------
+
+    /// Apply lifecycle transitions for feedback-origin scripts at the end
+    /// of an orchestrator run.
+    ///
+    /// For each loaded script with `origin == Feedback`:
+    /// - Errored >= 3 times this run: `record_failure` (may auto-archive)
+    /// - Provisional + regressed: `reject_script`
+    /// - Provisional + not regressed + triggered: `promote_script`
+    /// - Confirmed/Stale + triggered: `record_trigger`
+    /// - Confirmed/Stale + NOT triggered: `increment_stale(5, 10)`
+    ///
+    /// User-origin scripts are skipped entirely (they don't go through the
+    /// automated lifecycle). After processing, tracking counters are reset
+    /// and scripts are reloaded so status changes take effect immediately.
+    pub fn on_feedback_run_end(&mut self, regressed: bool) {
+        if !self.enabled {
+            return;
+        }
+
+        let infos = self.system.all_script_infos();
+
+        for info in &infos {
+            // Skip user-origin scripts — they aren't lifecycle-managed.
+            if info.origin == glass_scripting::ScriptOrigin::User {
+                continue;
+            }
+
+            let name = &info.name;
+            let path = &info.manifest_path;
+
+            // Check error count for this run.
+            let error_count = self.scripts_errored.get(name).copied().unwrap_or(0);
+            let was_triggered = self.scripts_triggered.contains(name);
+
+            // 1. Errored >= 3 times this run -> record_failure (may auto-archive)
+            if error_count >= 3 {
+                match glass_scripting::lifecycle::record_failure(path) {
+                    Ok(archived) => {
+                        if archived {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: script '{name}' auto-archived after {error_count} errors"
+                            );
+                        } else {
+                            tracing::info!(
+                                "ScriptBridge lifecycle: recorded failure for '{name}' ({error_count} errors)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "ScriptBridge lifecycle: record_failure for '{name}' failed: {e}"
+                        );
+                    }
+                }
+                continue;
+            }
+
+            match info.status {
+                glass_scripting::ScriptStatus::Provisional => {
+                    if regressed {
+                        // 2. Provisional + regressed -> reject
+                        if let Err(e) = glass_scripting::lifecycle::reject_script(path) {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: reject_script '{name}' failed: {e}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "ScriptBridge lifecycle: rejected provisional script '{name}' (regression detected)"
+                            );
+                        }
+                    } else if was_triggered {
+                        // 3. Provisional + not regressed + triggered -> promote
+                        if let Err(e) = glass_scripting::lifecycle::promote_script(path) {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: promote_script '{name}' failed: {e}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "ScriptBridge lifecycle: promoted script '{name}' to confirmed"
+                            );
+                        }
+                    }
+                    // Provisional + not regressed + not triggered: no action needed
+                }
+
+                glass_scripting::ScriptStatus::Confirmed
+                | glass_scripting::ScriptStatus::Stale => {
+                    if was_triggered {
+                        // 4. Confirmed/Stale + triggered -> record_trigger
+                        if let Err(e) = glass_scripting::lifecycle::record_trigger(path) {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: record_trigger '{name}' failed: {e}"
+                            );
+                        }
+                    } else {
+                        // 5. Confirmed/Stale + NOT triggered -> increment_stale
+                        if let Err(e) =
+                            glass_scripting::lifecycle::increment_stale(path, 5, 10)
+                        {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: increment_stale '{name}' failed: {e}"
+                            );
+                        }
+                    }
+                }
+
+                // Archived/Rejected scripts are already filtered out by the hook
+                // registry, but if they somehow appear here, skip them.
+                _ => {}
+            }
+        }
+
+        // Reset tracking and reload scripts so status changes take effect.
+        self.reset_run_tracking();
+        self.reload();
     }
 
     // -------------------------------------------------------------------
@@ -205,7 +347,7 @@ impl ScriptBridge {
 
     /// Fire when a command completes (exit code known).
     pub fn on_command_complete(
-        &self,
+        &mut self,
         ctx: &HookContext,
         command: &str,
         exit_code: Option<i32>,
@@ -219,55 +361,63 @@ impl ScriptBridge {
     }
 
     /// Fire when a command starts executing.
-    pub fn on_command_start(&self, ctx: &HookContext, command: &str) -> Vec<Action> {
+    pub fn on_command_start(&mut self, ctx: &HookContext, command: &str) -> Vec<Action> {
         let mut event = HookEventData::new();
         event.set("command", command.to_string());
         self.run_hook(HookPoint::CommandStart, ctx, &event)
     }
 
     /// Fire on each orchestrator iteration.
-    pub fn on_orchestrator_iteration(&self, ctx: &HookContext, iteration: u32) -> Vec<Action> {
+    pub fn on_orchestrator_iteration(&mut self, ctx: &HookContext, iteration: u32) -> Vec<Action> {
         let mut event = HookEventData::new();
         event.set("iteration", iteration as i64);
         self.run_hook(HookPoint::OrchestratorIteration, ctx, &event)
     }
 
     /// Fire when an orchestrator run starts.
-    pub fn on_orchestrator_run_start(&self, ctx: &HookContext) -> Vec<Action> {
+    pub fn on_orchestrator_run_start(&mut self, ctx: &HookContext) -> Vec<Action> {
         self.run_hook(HookPoint::OrchestratorRunStart, ctx, &HookEventData::new())
     }
 
     /// Fire when an orchestrator run ends.
-    pub fn on_orchestrator_run_end(&self, ctx: &HookContext, iterations: u32) -> Vec<Action> {
+    pub fn on_orchestrator_run_end(&mut self, ctx: &HookContext, iterations: u32) -> Vec<Action> {
         let mut event = HookEventData::new();
         event.set("iterations", iterations as i64);
         self.run_hook(HookPoint::OrchestratorRunEnd, ctx, &event)
     }
 
     /// Fire when the config is reloaded.
-    pub fn on_config_reload(&self, ctx: &HookContext) -> Vec<Action> {
+    ///
+    /// Suppressed when `config_reload_guard` is set (i.e. when a script's
+    /// `SetConfig` action just wrote to config.toml and the hot-reload
+    /// callback fired). This prevents infinite loops.
+    pub fn on_config_reload(&mut self, ctx: &HookContext) -> Vec<Action> {
+        if self.config_reload_guard {
+            tracing::debug!("ScriptBridge: suppressing ConfigReload hook (guard active)");
+            return Vec::new();
+        }
         self.run_hook(HookPoint::ConfigReload, ctx, &HookEventData::new())
     }
 
     /// Fire when a session starts.
-    pub fn on_session_start(&self, ctx: &HookContext) -> Vec<Action> {
+    pub fn on_session_start(&mut self, ctx: &HookContext) -> Vec<Action> {
         self.run_hook(HookPoint::SessionStart, ctx, &HookEventData::new())
     }
 
     /// Fire when a session ends.
-    pub fn on_session_end(&self, ctx: &HookContext) -> Vec<Action> {
+    pub fn on_session_end(&mut self, ctx: &HookContext) -> Vec<Action> {
         self.run_hook(HookPoint::SessionEnd, ctx, &HookEventData::new())
     }
 
     /// Fire when a tab is created.
-    pub fn on_tab_create(&self, ctx: &HookContext, tab_index: usize) -> Vec<Action> {
+    pub fn on_tab_create(&mut self, ctx: &HookContext, tab_index: usize) -> Vec<Action> {
         let mut event = HookEventData::new();
         event.set("tab_index", tab_index as i64);
         self.run_hook(HookPoint::TabCreate, ctx, &event)
     }
 
     /// Fire when a tab is closed.
-    pub fn on_tab_close(&self, ctx: &HookContext, tab_index: usize) -> Vec<Action> {
+    pub fn on_tab_close(&mut self, ctx: &HookContext, tab_index: usize) -> Vec<Action> {
         let mut event = HookEventData::new();
         event.set("tab_index", tab_index as i64);
         self.run_hook(HookPoint::TabClose, ctx, &event)
@@ -275,13 +425,35 @@ impl ScriptBridge {
 
     /// Fire before a snapshot is taken. Returns `true` if the snapshot
     /// should proceed, `false` if any script vetoed it.
-    pub fn on_snapshot_before(&self, ctx: &HookContext, command: &str) -> bool {
+    ///
+    /// Note: uses `system.run_hook` directly (not `self.run_hook`) because
+    /// it needs access to `filter_result`, but still tracks errors/triggers.
+    pub fn on_snapshot_before(&mut self, ctx: &HookContext, command: &str) -> bool {
         if !self.has_scripts_for(HookPoint::SnapshotBefore) {
             return true;
         }
         let mut event = HookEventData::new();
         event.set("command", command.to_string());
+
+        let script_names = self.system.scripts_for_hook(HookPoint::SnapshotBefore);
         let result = self.system.run_hook(HookPoint::SnapshotBefore, ctx, &event);
+
+        // Track errors and triggers the same way run_hook does.
+        let errored_names: HashSet<&str> = result
+            .errors
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        for (name, err) in &result.errors {
+            tracing::warn!("ScriptBridge: script '{name}' error on SnapshotBefore: {err}");
+            *self.scripts_errored.entry(name.clone()).or_insert(0) += 1;
+        }
+        for name in &script_names {
+            if !errored_names.contains(name.as_str()) {
+                self.scripts_triggered.insert(name.clone());
+            }
+        }
+
         // filter_result is Some(true/false) for SnapshotBefore, default true
         result.filter_result.unwrap_or(true)
     }
@@ -296,7 +468,7 @@ impl ScriptBridge {
     /// `IsolateCommit`, `RevertFiles` run git commands directly; orchestrator,
     /// config, script-management, and MCP actions are logged with context
     /// (full subsystem wiring is deferred to later phases).
-    pub fn execute_actions(&self, actions: &[Action], project_root: &str) {
+    pub fn execute_actions(&mut self, actions: &[Action], project_root: &str) {
         for action in actions {
             match action {
                 Action::Log { level, message } => match level {
@@ -343,6 +515,9 @@ impl ScriptBridge {
                 // -- Config/storage actions (log -- need subsystem access) --
                 Action::SetConfig { key, value } => {
                     tracing::info!("[script] set config {key} = {value:?}");
+                    // Arm the guard so the resulting ConfigReloaded event
+                    // does not re-trigger scripts (breaking the loop).
+                    self.config_reload_guard = true;
                 }
                 Action::ForceSnapshot { paths } => {
                     tracing::info!("[script] force snapshot for {} path(s)", paths.len());
@@ -381,8 +556,12 @@ impl ScriptBridge {
 
     /// Run a hook and return the resulting actions. Returns empty if
     /// scripting is disabled or an error occurs.
+    ///
+    /// Also updates per-run tracking: scripts that execute without errors
+    /// are recorded in `scripts_triggered`; scripts that error are tallied
+    /// in `scripts_errored`.
     pub(crate) fn run_hook(
-        &self,
+        &mut self,
         hook: HookPoint,
         context: &HookContext,
         event_data: &HookEventData,
@@ -390,10 +569,38 @@ impl ScriptBridge {
         if !self.enabled {
             return Vec::new();
         }
+        // Clear the config reload guard when any non-ConfigReload hook fires.
+        // The guard only needs to survive long enough to suppress the single
+        // ConfigReloaded event triggered by the SetConfig action.
+        if hook != HookPoint::ConfigReload {
+            self.config_reload_guard = false;
+        }
+
+        // Collect script names that will be attempted for this hook *before*
+        // running them, so we can attribute successes vs errors.
+        let script_names = self.system.scripts_for_hook(hook.clone());
+
         let result = self.system.run_hook(hook.clone(), context, event_data);
+
+        // Build a set of errored script names from this invocation.
+        let errored_names: HashSet<&str> = result
+            .errors
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+
         for (name, err) in &result.errors {
             tracing::warn!("ScriptBridge: script '{name}' error on {hook:?}: {err}");
+            *self.scripts_errored.entry(name.clone()).or_insert(0) += 1;
         }
+
+        // Scripts that were attempted and did NOT error are considered triggered.
+        for name in &script_names {
+            if !errored_names.contains(name.as_str()) {
+                self.scripts_triggered.insert(name.clone());
+            }
+        }
+
         result.actions
     }
 
