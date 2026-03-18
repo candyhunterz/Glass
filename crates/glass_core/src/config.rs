@@ -241,6 +241,9 @@ pub struct GlassConfig {
     pub soi: Option<SoiSection>,
     /// Agent runtime configuration section. Optional; defaults to Off mode.
     pub agent: Option<AgentSection>,
+    /// Scripting configuration section. Optional in the TOML file;
+    /// uses defaults when present without explicit field values.
+    pub scripting: Option<ScriptingSection>,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -336,6 +339,31 @@ fn default_auto_expand() -> bool {
     true
 }
 
+/// Scripting layer configuration in the `[scripting]` TOML section.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ScriptingSection {
+    /// Whether the scripting engine is enabled. Default true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Maximum number of operations a single script may perform.
+    pub max_operations: Option<u64>,
+    /// Maximum wall-clock timeout for a single script execution, in milliseconds.
+    pub max_timeout_ms: Option<u64>,
+    /// Maximum number of scripts that may be attached to a single hook.
+    pub max_scripts_per_hook: Option<u32>,
+    /// Maximum total number of registered scripts.
+    pub max_total_scripts: Option<u32>,
+    /// Maximum number of MCP tools a script may expose.
+    pub max_mcp_tools: Option<u32>,
+    /// Whether AI-assisted script generation is enabled. Default true.
+    #[serde(default = "default_true")]
+    pub script_generation: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn default_font_family() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -362,6 +390,7 @@ impl Default for GlassConfig {
             pipes: None,
             soi: None,
             agent: None,
+            scripting: None,
         }
     }
 }
@@ -1165,6 +1194,46 @@ verify_files = ["plan.md", "site/index.html"]"#;
         let config = GlassConfig::load_from_str(toml);
         let history = config.history.unwrap();
         assert_eq!(history.max_output_capture_kb, 200);
+    }
+
+    #[test]
+    fn parse_scripting_section() {
+        let toml = r#"
+[scripting]
+enabled = false
+max_operations = 5000
+max_timeout_ms = 30000
+max_scripts_per_hook = 10
+max_total_scripts = 100
+max_mcp_tools = 20
+script_generation = false
+"#;
+        let config = GlassConfig::load_from_str(toml);
+        let scripting = config.scripting.expect("scripting section must parse");
+        assert!(!scripting.enabled);
+        assert_eq!(scripting.max_operations, Some(5000));
+        assert_eq!(scripting.max_timeout_ms, Some(30000));
+        assert_eq!(scripting.max_scripts_per_hook, Some(10));
+        assert_eq!(scripting.max_total_scripts, Some(100));
+        assert_eq!(scripting.max_mcp_tools, Some(20));
+        assert!(!scripting.script_generation);
+    }
+
+    #[test]
+    fn scripting_section_defaults() {
+        let toml = "[scripting]";
+        let config = GlassConfig::load_from_str(toml);
+        let scripting = config.scripting.expect("scripting section must parse");
+        assert!(scripting.enabled, "enabled should default to true");
+        assert!(
+            scripting.script_generation,
+            "script_generation should default to true"
+        );
+        assert_eq!(scripting.max_operations, None);
+        assert_eq!(scripting.max_timeout_ms, None);
+        assert_eq!(scripting.max_scripts_per_hook, None);
+        assert_eq!(scripting.max_total_scripts, None);
+        assert_eq!(scripting.max_mcp_tools, None);
     }
 }
 
