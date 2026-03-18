@@ -55,6 +55,11 @@ pub struct FeedbackResult {
     /// The caller should send this to an ephemeral agent and pass
     /// the response to `apply_llm_findings`.
     pub llm_prompt: Option<String>,
+    /// Tier 4 script generation prompt — None unless existing tiers
+    /// produced no findings but the run had high waste or stuck rates.
+    /// The caller should send this to an ephemeral agent that returns
+    /// a Rhai script to install via the scripting layer.
+    pub script_prompt: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +261,22 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         None
     };
 
+    // --- Step 9c: Tier 4 script generation prompt ---
+    // Generate a script prompt when existing tiers produced no findings
+    // but the run still had high waste or stuck rates.
+    // TODO: Read script_generation from FeedbackConfig/GlassConfig when
+    // it becomes available on FeedbackState. For now, default to enabled.
+    let script_generation = true;
+    let script_prompt = if script_generation
+        && findings.is_empty()
+        && (data.stuck_count > data.iterations / 3
+            || data.waste_count > data.iterations / 3)
+    {
+        Some(build_script_prompt(&data))
+    } else {
+        None
+    };
+
     // --- Step 10: persist ---
     metrics_file.runs.push(current_metrics);
     let _ = save_metrics_file(&state.metrics_path, &metrics_file);
@@ -312,6 +333,7 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         rules_rejected,
         config_changes,
         llm_prompt,
+        script_prompt,
     }
 }
 
@@ -376,6 +398,96 @@ pub fn apply_llm_findings(project_root: &str, llm_response: &str, max_prompt_hin
         deduped.len(),
         rules_path.display()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tier 4: Script generation prompt
+// ---------------------------------------------------------------------------
+
+/// Build a prompt instructing an LLM to produce a Rhai script that addresses
+/// the root cause of high waste/stuck rates when Tier 1-3 findings are
+/// insufficient.
+///
+/// The prompt includes run metrics, available hook points, and the GlassApi
+/// action methods so the generated script can be directly loaded by the
+/// scripting layer.
+fn build_script_prompt(run_data: &RunData) -> String {
+    let iter_nonzero = run_data.iterations.max(1);
+    let stuck_pct = (run_data.stuck_count as f64 / iter_nonzero as f64) * 100.0;
+    let waste_pct = (run_data.waste_count as f64 / iter_nonzero as f64) * 100.0;
+
+    format!(
+        "[SCRIPT_GENERATION]
+The orchestrator run completed with high waste or stuck rates that
+existing TOML rules could not explain or fix. Write a Rhai script ONLY
+if a TOML rule cannot express the required behavior.
+
+RUN METRICS:
+  iterations: {iterations}
+  stuck_count: {stuck} ({stuck_pct:.0}%)
+  waste_count: {waste} ({waste_pct:.0}%)
+  revert_count: {reverts}
+  checkpoint_count: {checkpoints}
+  duration_secs: {duration}
+  completion: {completion}
+
+AVAILABLE HOOK POINTS (attach script to one or more):
+  command_start, command_complete, block_state_change,
+  snapshot_before, snapshot_after, history_query, history_insert,
+  pipeline_complete, config_reload,
+  orchestrator_run_start, orchestrator_run_end,
+  orchestrator_iteration, orchestrator_checkpoint, orchestrator_stuck,
+  mcp_request, mcp_response,
+  tab_create, tab_close, session_start, session_end
+
+GLASS API (available as `glass` variable in scripts):
+  Read-only:
+    glass.cwd()               -> String
+    glass.git_branch()         -> String
+    glass.git_dirty_files()    -> Array<String>
+    glass.config(key)          -> Dynamic
+    glass.active_rules()       -> Array<String>
+  Actions:
+    glass.commit(message)
+    glass.log(level, message)
+    glass.notify(message)
+    glass.set_config(key, value)
+    glass.inject_prompt_hint(text)
+    glass.force_snapshot(paths)
+    glass.trigger_checkpoint(reason)
+    glass.extend_silence(extra_secs)
+
+EVENT DATA (available as `event` variable, fields depend on hook):
+  command, exit_code, duration_ms, iteration, stuck_count,
+  waste_count, checkpoint_reason, file_paths, query
+
+INSTRUCTIONS:
+1. Analyze the run metrics above to identify the likely root cause.
+2. If a TOML rule (trigger + action pair) can fix it, say TOML_SUFFICIENT
+   and describe the rule — do not write a script.
+3. Otherwise, write a Rhai script with this structure:
+
+HOOK: <hook_point>
+SCRIPT:
+```rhai
+// Description of what this script does
+if <condition> {{
+    glass.log(\"info\", \"<explanation>\");
+    glass.<action>(<args>);
+}}
+```
+
+Respond with at most ONE script. Keep it under 30 lines.",
+        iterations = run_data.iterations,
+        stuck = run_data.stuck_count,
+        stuck_pct = stuck_pct,
+        waste = run_data.waste_count,
+        waste_pct = waste_pct,
+        reverts = run_data.revert_count,
+        checkpoints = run_data.checkpoint_count,
+        duration = run_data.duration_secs,
+        completion = run_data.completion_reason,
+    )
 }
 
 // ---------------------------------------------------------------------------

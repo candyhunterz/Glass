@@ -1,6 +1,6 @@
 //! MCP tool definitions for the Glass server.
 //!
-//! Defines `GlassServer` with twenty-eight tools:
+//! Defines `GlassServer` with thirty tools:
 //! - `glass_history`: Query terminal command history with filters
 //! - `glass_context`: Get a summary of recent terminal activity
 //! - `glass_undo`: Undo a file-modifying command by restoring pre-command state
@@ -29,6 +29,8 @@
 //! - `glass_extract_errors`: Extract structured errors from raw command output
 //! - `glass_has_running_command`: Check if a command is running in a tab with elapsed time
 //! - `glass_cancel_command`: Cancel a running command (Ctrl+C) in a tab
+//! - `glass_script_tool`: Execute a script-defined dynamic MCP tool
+//! - `glass_list_script_tools`: List available script-defined MCP tools
 //!
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
@@ -405,6 +407,17 @@ pub struct QueryDrillParams {
     /// Record ID from glass_query's record_ids field.
     #[schemars(description = "Record ID from glass_query's record_ids field")]
     pub record_id: i64,
+}
+
+/// Parameters for glass_script_tool -- execute a script-defined dynamic MCP tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScriptToolParams {
+    /// Name of the script-defined tool to execute.
+    #[schemars(description = "Name of the script-defined tool to execute")]
+    pub tool_name: String,
+    /// Optional parameters to pass to the script tool.
+    #[schemars(description = "Optional parameters to pass to the script tool")]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Parameters for glass_tab_close.
@@ -1916,6 +1929,68 @@ impl GlassServer {
             params["session_id"] = serde_json::json!(sid);
         }
         match client.send_request("cancel_command", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// Execute a script-defined dynamic MCP tool.
+    /// Routes the call through IPC to the Glass binary, which runs the
+    /// corresponding script via the scripting engine.
+    #[tool(
+        description = "Execute a script-defined dynamic MCP tool. The tool_name must match a registered script with type 'mcp_tool'. Params are forwarded to the script."
+    )]
+    async fn glass_script_tool(
+        &self,
+        Parameters(input): Parameters<ScriptToolParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        let params = serde_json::json!({
+            "tool_name": input.tool_name,
+            "params": input.params,
+        });
+        match client.send_request("script_tool", params).await {
+            Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to communicate with Glass GUI: {}",
+                e
+            ))])),
+        }
+    }
+
+    /// List available script-defined MCP tools.
+    /// Returns the names, descriptions, and parameter schemas of all registered
+    /// script tools from the scripting engine.
+    #[tool(
+        description = "List available script-defined MCP tools. Returns names, descriptions, and parameter schemas of all registered script tools."
+    )]
+    async fn glass_list_script_tools(&self) -> Result<CallToolResult, McpError> {
+        let client = match self.ipc_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Glass GUI is not running. Live tools require a running Glass window.",
+                )]));
+            }
+        };
+        match client
+            .send_request("list_script_tools", serde_json::json!({}))
+            .await
+        {
             Ok(resp) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&resp).unwrap_or_default(),
             )])),
