@@ -3617,6 +3617,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.max_prompt_hints)
                                 .unwrap_or(10),
+                            orchestrator_ablation_enabled: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.ablation_enabled)
+                                .unwrap_or(true),
+                            orchestrator_ablation_sweep_interval: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.ablation_sweep_interval)
+                                .unwrap_or(20),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
@@ -4655,6 +4669,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .as_ref()
                                             .and_then(|a| a.orchestrator.as_ref())
                                             .map(|o| o.max_retries_before_stuck),
+                                        ablation_enabled: self
+                                            .config
+                                            .agent
+                                            .as_ref()
+                                            .and_then(|a| a.orchestrator.as_ref())
+                                            .map(|o| o.ablation_enabled)
+                                            .unwrap_or(true),
                                     };
 
                                     self.feedback_state = Some(glass_feedback::on_run_start(
@@ -6857,6 +6878,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .as_ref()
                                     .and_then(|a| a.orchestrator.as_ref())
                                     .map(|o| o.max_retries_before_stuck),
+                                ablation_enabled: self
+                                    .config
+                                    .agent
+                                    .as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.ablation_enabled)
+                                    .unwrap_or(true),
                             };
                             self.feedback_state = Some(glass_feedback::on_run_start(
                                 &cwd_for_feedback,
@@ -10022,6 +10050,20 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
+        // Orchestrator: ablation_enabled toggle (field index 8)
+        (6, 8) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.ablation_enabled)
+                .unwrap_or(true);
+            Some((
+                Some("agent.orchestrator"),
+                "ablation_enabled",
+                (!current).to_string(),
+            ))
+        }
         // Orchestrator: verify_mode and orchestrator_mode removed (auto-detected)
         _ => None,
     }
@@ -10151,6 +10193,21 @@ fn handle_settings_increment(
             Some((
                 Some("agent.orchestrator"),
                 "max_prompt_hints",
+                new_val.to_string(),
+            ))
+        }
+        // Orchestrator: ablation_sweep_interval: step 5 (field index 9)
+        (6, 9) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.ablation_sweep_interval)
+                .unwrap_or(20) as i64;
+            let new_val = (current + delta * 5).clamp(5, 100);
+            Some((
+                Some("agent.orchestrator"),
+                "ablation_sweep_interval",
                 new_val.to_string(),
             ))
         }

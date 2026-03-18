@@ -21,7 +21,7 @@ pub fn select_target(
         // Only Confirmed rules are candidates (Pinned has its own status, so excluded here)
         .filter(|r| r.status == RuleStatus::Confirmed)
         .filter(|r| {
-            r.last_ablation_run.is_empty() || r.last_ablation_run <= last_sweep_run.to_string()
+            r.last_ablation_run.is_empty() || r.last_ablation_run.as_str() <= last_sweep_run
         })
         .map(|r| {
             let score = scores
@@ -43,7 +43,7 @@ pub fn sweep_complete(rules: &[Rule], last_sweep_run: &str) -> bool {
     // Pinned rules have status Pinned (not Confirmed), so are excluded by the Confirmed check
     !rules.iter().any(|r| {
         r.status == RuleStatus::Confirmed
-            && (r.last_ablation_run.is_empty() || r.last_ablation_run <= last_sweep_run.to_string())
+            && (r.last_ablation_run.is_empty() || r.last_ablation_run.as_str() <= last_sweep_run)
     })
 }
 

@@ -101,6 +101,8 @@ pub struct SettingsConfigSnapshot {
     pub orchestrator_verify_mode: String,
     pub orchestrator_feedback_llm: bool,
     pub orchestrator_max_prompt_hints: usize,
+    pub orchestrator_ablation_enabled: bool,
+    pub orchestrator_ablation_sweep_interval: u32,
 }
 
 impl Default for SettingsConfigSnapshot {
@@ -143,6 +145,8 @@ impl Default for SettingsConfigSnapshot {
             orchestrator_verify_mode: "floor".to_string(),
             orchestrator_feedback_llm: false,
             orchestrator_max_prompt_hints: 10,
+            orchestrator_ablation_enabled: true,
+            orchestrator_ablation_sweep_interval: 20,
         }
     }
 }
@@ -993,6 +997,22 @@ impl SettingsOverlayRenderer {
                 (
                     "Max Prompt Hints",
                     format!("{}", config.orchestrator_max_prompt_hints),
+                    false,
+                    false,
+                ),
+                (
+                    "Ablation Testing",
+                    if config.orchestrator_ablation_enabled {
+                        "ON".to_string()
+                    } else {
+                        "OFF".to_string()
+                    },
+                    true,
+                    false,
+                ),
+                (
+                    "Ablation Sweep Interval",
+                    format!("{}", config.orchestrator_ablation_sweep_interval),
                     false,
                     false,
                 ),
