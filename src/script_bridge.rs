@@ -90,6 +90,11 @@ impl ScriptBridge {
         self.enabled && self.system.has_scripts_for(hook)
     }
 
+    /// Return the stored project root, if any.
+    pub fn project_root(&self) -> Option<&str> {
+        self.project_root.as_deref()
+    }
+
     // -------------------------------------------------------------------
     // Per-hook convenience methods
     // -------------------------------------------------------------------
@@ -183,8 +188,10 @@ impl ScriptBridge {
 
     /// Execute a list of actions produced by scripts.
     ///
-    /// Handles `Log`, `Notify`, and `Commit` directly. Other action types
-    /// are logged as debug (to be wired in future phases).
+    /// Handles all [`Action`] variants: `Log`, `Notify`, `Commit`,
+    /// `IsolateCommit`, `RevertFiles` run git commands directly; orchestrator,
+    /// config, script-management, and MCP actions are logged with context
+    /// (full subsystem wiring is deferred to later phases).
     pub fn execute_actions(&self, actions: &[Action], project_root: &str) {
         for action in actions {
             match action {
@@ -204,8 +211,61 @@ impl ScriptBridge {
                 Action::Commit { message } => {
                     self.execute_git_commit(project_root, message);
                 }
-                other => {
-                    tracing::debug!("[script] unhandled action: {:?}", other);
+
+                // -- Git actions --
+                Action::IsolateCommit { message, files } => {
+                    self.execute_git_isolate_commit(project_root, files, message);
+                }
+                Action::RevertFiles { paths } => {
+                    self.execute_git_revert(project_root, paths);
+                }
+
+                // -- Orchestrator actions (log with context) --
+                Action::InjectPromptHint { hint } => {
+                    tracing::info!("[script] inject prompt hint: {hint}");
+                }
+                Action::TriggerCheckpoint { reason } => {
+                    let reason_str = reason.as_deref().unwrap_or("(no reason)");
+                    tracing::info!("[script] trigger checkpoint: {reason_str}");
+                }
+                Action::ExtendSilence { duration_ms } => {
+                    tracing::info!("[script] extend silence by {duration_ms}ms");
+                }
+                Action::BlockIteration { reason } => {
+                    let reason_str = reason.as_deref().unwrap_or("(no reason)");
+                    tracing::info!("[script] block iteration: {reason_str}");
+                }
+
+                // -- Config/storage actions (log -- need subsystem access) --
+                Action::SetConfig { key, value } => {
+                    tracing::info!("[script] set config {key} = {value:?}");
+                }
+                Action::ForceSnapshot { paths } => {
+                    tracing::info!("[script] force snapshot for {} path(s)", paths.len());
+                }
+                Action::SetSnapshotPolicy { pattern, policy } => {
+                    tracing::info!("[script] set snapshot policy: pattern={pattern} policy={policy}");
+                }
+                Action::TagCommand { block_id, tag } => {
+                    let id_str = block_id.as_deref().unwrap_or("current");
+                    tracing::info!("[script] tag command {id_str}: {tag}");
+                }
+
+                // -- Script management actions --
+                Action::EnableScript { name } => {
+                    tracing::info!("[script] enable script: {name}");
+                }
+                Action::DisableScript { name } => {
+                    tracing::info!("[script] disable script: {name}");
+                }
+
+                // -- MCP actions --
+                Action::RegisterTool { name, description } => {
+                    let desc = description.as_deref().unwrap_or("(no description)");
+                    tracing::info!("[script] register MCP tool: {name} - {desc}");
+                }
+                Action::UnregisterTool { name } => {
+                    tracing::info!("[script] unregister MCP tool: {name}");
                 }
             }
         }
@@ -217,7 +277,7 @@ impl ScriptBridge {
 
     /// Run a hook and return the resulting actions. Returns empty if
     /// scripting is disabled or an error occurs.
-    fn run_hook(
+    pub(crate) fn run_hook(
         &self,
         hook: HookPoint,
         context: &HookContext,
@@ -261,6 +321,104 @@ impl ScriptBridge {
             }
             Err(e) => {
                 tracing::warn!("[script] failed to run git commit: {e}");
+            }
+        }
+    }
+
+    /// Stage specific files and commit them in the project directory.
+    fn execute_git_isolate_commit(&self, project_root: &str, files: &[String], message: &str) {
+        if files.is_empty() {
+            tracing::warn!("[script] isolate commit with no files, skipping");
+            return;
+        }
+
+        // Stage the specified files
+        let mut add_cmd = std::process::Command::new("git");
+        add_cmd.arg("add").args(files).current_dir(project_root);
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            add_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        match add_cmd.output() {
+            Ok(output) if !output.status.success() => {
+                tracing::warn!(
+                    "[script] git add failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("[script] failed to run git add: {e}");
+                return;
+            }
+            _ => {}
+        }
+
+        // Commit the staged files
+        let mut commit_cmd = std::process::Command::new("git");
+        commit_cmd
+            .args(["commit", "-m", message])
+            .current_dir(project_root);
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            commit_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        match commit_cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    tracing::info!(
+                        "[script] isolate commit succeeded ({} file(s)): {}",
+                        files.len(),
+                        String::from_utf8_lossy(&output.stdout).trim()
+                    );
+                } else {
+                    tracing::warn!(
+                        "[script] isolate commit failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[script] failed to run git commit: {e}");
+            }
+        }
+    }
+
+    /// Revert specified files using `git checkout`.
+    fn execute_git_revert(&self, project_root: &str, paths: &[String]) {
+        if paths.is_empty() {
+            tracing::warn!("[script] revert with no paths, skipping");
+            return;
+        }
+
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["checkout", "--"]).args(paths).current_dir(project_root);
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        match cmd.output() {
+            Ok(output) => {
+                if output.status.success() {
+                    tracing::info!("[script] reverted {} file(s)", paths.len());
+                } else {
+                    tracing::warn!(
+                        "[script] git revert failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[script] failed to run git checkout: {e}");
             }
         }
     }

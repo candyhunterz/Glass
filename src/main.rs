@@ -1837,6 +1837,28 @@ impl Processor {
         }
     }
 
+    /// Fire a scripting hook with the given event data, executing any returned actions.
+    ///
+    /// Short-circuits if no scripts are registered for the hook or if scripting
+    /// is disabled. This avoids the cost of building a context when there are
+    /// no subscribers.
+    fn fire_script_hook(
+        &self,
+        hook: glass_scripting::HookPoint,
+        event: &glass_scripting::HookEventData,
+    ) {
+        if !self.script_bridge.has_scripts_for(hook.clone()) {
+            return;
+        }
+        let ctx = self.build_hook_context();
+        let actions = self.script_bridge.run_hook(hook, &ctx, event);
+        if !actions.is_empty() {
+            if let Some(root) = self.script_bridge.project_root() {
+                self.script_bridge.execute_actions(&actions, root);
+            }
+        }
+    }
+
     /// Run the feedback loop on_run_end, applying any config changes and logging results.
     fn run_feedback_on_end(&mut self) {
         if let Some(feedback_state) = self.feedback_state.take() {
