@@ -18,6 +18,16 @@ pub use mcp::ScriptToolRegistry;
 pub use sandbox::*;
 pub use types::{HookPoint, LoadedScript, ScriptManifest, ScriptOrigin, ScriptStatus};
 
+/// Summary information about a loaded script, suitable for callers that
+/// need to iterate scripts without holding references into the registry.
+#[derive(Debug, Clone)]
+pub struct ScriptInfo {
+    pub name: String,
+    pub manifest_path: std::path::PathBuf,
+    pub status: ScriptStatus,
+    pub origin: ScriptOrigin,
+}
+
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +147,29 @@ impl ScriptSystem {
     /// Return references to all unique scripts across every hook.
     pub fn all_scripts(&self) -> Vec<&types::LoadedScript> {
         self.registry.all_scripts()
+    }
+
+    /// Return [`ScriptInfo`] for every unique loaded script (all hooks combined).
+    pub fn all_script_infos(&self) -> Vec<ScriptInfo> {
+        self.registry
+            .all_scripts()
+            .into_iter()
+            .map(|s| ScriptInfo {
+                name: s.manifest.name.clone(),
+                manifest_path: s.manifest_path.clone(),
+                status: s.manifest.status.clone(),
+                origin: s.manifest.origin.clone(),
+            })
+            .collect()
+    }
+
+    /// Return the names of scripts registered for a specific hook point.
+    pub fn scripts_for_hook(&self, hook: HookPoint) -> Vec<String> {
+        self.registry
+            .scripts_for(hook)
+            .iter()
+            .map(|s| s.manifest.name.clone())
+            .collect()
     }
 
     // -- private helpers -----------------------------------------------------

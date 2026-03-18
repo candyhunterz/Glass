@@ -9271,26 +9271,47 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .join("scripts")
                                             .join("feedback");
                                         let _ = std::fs::create_dir_all(&scripts_dir);
-                                        // Write TOML manifest
-                                        let now_secs = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs();
-                                        let manifest = format!(
-                                            "name = \"{name}\"\nhooks = [{hooks}]\nstatus = \"provisional\"\norigin = \"feedback\"\nversion = 1\napi_version = \"1\"\ncreated = \"{now_secs}\"\ntype = \"hook\"\n"
-                                        );
-                                        let _ = std::fs::write(
-                                            scripts_dir.join(format!("{name}.toml")),
-                                            &manifest,
-                                        );
-                                        let _ = std::fs::write(
-                                            scripts_dir.join(format!("{name}.rhai")),
-                                            &source,
-                                        );
-                                        tracing::info!(
-                                            "Tier 4: wrote provisional script '{name}'"
-                                        );
-                                        self.script_bridge.reload();
+
+                                        // Deduplicate: skip if a non-archived manifest already exists.
+                                        // Only archived scripts may be overwritten by a new generation.
+                                        let manifest_path = scripts_dir.join(format!("{name}.toml"));
+                                        let should_write = if manifest_path.exists() {
+                                            match glass_scripting::lifecycle::read_manifest(&manifest_path) {
+                                                Ok(existing) if existing.status != glass_scripting::ScriptStatus::Archived => {
+                                                    tracing::info!(
+                                                        "Tier 4: script '{name}' already exists (status={:?}), skipping",
+                                                        existing.status
+                                                    );
+                                                    false
+                                                }
+                                                _ => true, // Archived or unreadable — safe to overwrite
+                                            }
+                                        } else {
+                                            true
+                                        };
+
+                                        if should_write {
+                                            // Write TOML manifest
+                                            let now_secs = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs();
+                                            let manifest = format!(
+                                                "name = \"{name}\"\nhooks = [{hooks}]\nstatus = \"provisional\"\norigin = \"feedback\"\nversion = 1\napi_version = \"1\"\ncreated = \"{now_secs}\"\ntype = \"hook\"\n"
+                                            );
+                                            let _ = std::fs::write(
+                                                scripts_dir.join(format!("{name}.toml")),
+                                                &manifest,
+                                            );
+                                            let _ = std::fs::write(
+                                                scripts_dir.join(format!("{name}.rhai")),
+                                                &source,
+                                            );
+                                            tracing::info!(
+                                                "Tier 4: wrote provisional script '{name}'"
+                                            );
+                                            self.script_bridge.reload();
+                                        }
                                     }
                                     None => {
                                         tracing::warn!(
