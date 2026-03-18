@@ -131,13 +131,13 @@ fn check_rules_with_active_rules() {
     let _ = on_run_end(state, data);
 
     // Start a new run and check rules
-    let state = on_run_start(&project_root, &config);
+    let mut state = on_run_start(&project_root, &config);
     let run_state = RunState {
         iterations_since_last_commit: 6,
         waste_rate: 0.2,
         ..Default::default()
     };
-    let _actions = check_rules(&state, &run_state);
+    let _actions = check_rules(&mut state, &run_state);
     // Should have some actions (from default rules + any created rules)
     // At minimum, default rules should fire
     // Don't assert specific count since it depends on which rules are active

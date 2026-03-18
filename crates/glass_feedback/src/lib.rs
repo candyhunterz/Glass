@@ -77,7 +77,13 @@ pub fn on_run_start(project_root: &str, config: &FeedbackConfig) -> FeedbackStat
     let _incomplete = regression::check_incomplete_run(&history_path, &metrics_path);
 
     // Load and merge rule engine (project > global, no defaults path here).
-    let engine = rules::RuleEngine::load(&rules_path, &global_rules_path, None);
+    let mut engine = rules::RuleEngine::load(&rules_path, &global_rules_path, None);
+
+    // Reset trigger_count per-run so staleness detection accurately
+    // reflects whether the rule fired during THIS run.
+    for rule in &mut engine.rules {
+        rule.trigger_count = 0;
+    }
 
     // Build config values snapshot — use values from the RunData fields that
     // are available at start time.  For now we snapshot what we know from the
@@ -235,6 +241,49 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     let _ = save_rules_file(&state.rules_path, &project_rules_file);
     let _ = save_archived_rules(&state.archived_path, &archived_file);
 
+    // --- Step 10b: sync global-scoped rules to ~/.glass/global-rules.toml ---
+    // Rules with scope=Global are useful across projects. Merge them into the
+    // global rules file so other projects benefit from learnings.
+    let global_rules_from_project: Vec<_> = project_rules_file
+        .rules
+        .iter()
+        .filter(|r| matches!(r.scope, types::Scope::Global))
+        .filter(|r| {
+            matches!(
+                r.status,
+                types::RuleStatus::Provisional | types::RuleStatus::Confirmed
+            )
+        })
+        .cloned()
+        .collect();
+    if !global_rules_from_project.is_empty() {
+        let mut global_file = load_rules_file(&state.global_rules_path);
+        for rule in &global_rules_from_project {
+            // Upsert: replace existing rule with same ID, or append
+            if let Some(existing) = global_file.rules.iter_mut().find(|r| r.id == rule.id) {
+                *existing = rule.clone();
+            } else {
+                global_file.rules.push(rule.clone());
+            }
+        }
+        // Remove global rules that were rejected or archived in this project
+        let rejected_ids: Vec<String> = project_rules_file
+            .rules
+            .iter()
+            .filter(|r| matches!(r.scope, types::Scope::Global))
+            .filter(|r| {
+                matches!(
+                    r.status,
+                    types::RuleStatus::Rejected | types::RuleStatus::Stale
+                )
+            })
+            .map(|r| r.id.clone())
+            .collect();
+        global_file.rules.retain(|r| !rejected_ids.contains(&r.id));
+
+        let _ = save_rules_file(&state.global_rules_path, &global_file);
+    }
+
     FeedbackResult {
         findings,
         regression,
@@ -250,7 +299,7 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
 
 /// Evaluate active rules against the live run state and return any triggered
 /// [`RuleAction`]s.  Delegates to the [`rules::RuleEngine`] stored in `state`.
-pub fn check_rules(state: &FeedbackState, run_state: &RunState) -> Vec<RuleAction> {
+pub fn check_rules(state: &mut FeedbackState, run_state: &RunState) -> Vec<RuleAction> {
     state.engine.check_rules(run_state)
 }
 
@@ -542,7 +591,7 @@ mod tests {
             ..RunState::default()
         };
 
-        let actions = check_rules(&state, &run_state);
+        let actions = check_rules(&mut state, &run_state);
         assert!(!actions.is_empty(), "force_commit rule should fire");
 
         let has_force_commit = actions.iter().any(|a| matches!(a, RuleAction::ForceCommit));

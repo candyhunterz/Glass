@@ -7679,7 +7679,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Feedback loop: check rules and enforce actions
                         let mut feedback_notifications = Vec::new();
-                        if let Some(ref feedback_state) = self.feedback_state {
+                        if let Some(ref mut feedback_state) = self.feedback_state {
                             let run_state = glass_feedback::RunState {
                                 iteration: self.orchestrator.iteration,
                                 iterations_since_last_commit: self

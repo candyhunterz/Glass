@@ -58,10 +58,10 @@ impl RuleEngine {
 
     /// Evaluate each active rule against `state` and return the list of
     /// `RuleAction`s whose preconditions are satisfied.
-    pub fn check_rules(&self, state: &RunState) -> Vec<RuleAction> {
+    pub fn check_rules(&mut self, state: &RunState) -> Vec<RuleAction> {
         let mut actions = Vec::new();
 
-        for rule in &self.rules {
+        for rule in &mut self.rules {
             if !is_active(&rule.status) {
                 continue;
             }
@@ -69,6 +69,7 @@ impl RuleEngine {
             match rule.action.as_str() {
                 "force_commit" => {
                     if state.iterations_since_last_commit >= 5 {
+                        rule.trigger_count += 1;
                         actions.push(RuleAction::ForceCommit);
                     }
                 }
@@ -81,26 +82,32 @@ impl RuleEngine {
                     if !file_param.is_empty()
                         && state.recent_reverted_files.iter().any(|f| f == file_param)
                     {
+                        rule.trigger_count += 1;
                         actions.push(RuleAction::IsolateCommit {
                             file: file_param.to_string(),
                         });
                     }
                 }
                 "smaller_instructions" => {
+                    rule.trigger_count += 1;
                     actions.push(RuleAction::SplitInstructions);
                 }
                 "extend_silence" => {
+                    rule.trigger_count += 1;
                     actions.push(RuleAction::ExtendSilence { extra_secs: 30 });
                 }
                 "run_verify_twice" => {
                     if state.verify_alternations >= 2 {
+                        rule.trigger_count += 1;
                         actions.push(RuleAction::RunVerifyTwice);
                     }
                 }
                 "early_stuck" => {
+                    rule.trigger_count += 1;
                     actions.push(RuleAction::EarlyStuck { threshold: 2 });
                 }
                 "restrict_scope" => {
+                    rule.trigger_count += 1;
                     actions.push(RuleAction::RevertOutOfScope { files: vec![] });
                 }
                 "build_dependency_first" => {
@@ -109,10 +116,12 @@ impl RuleEngine {
                         .get("message")
                         .cloned()
                         .unwrap_or_else(|| rule.trigger.clone());
+                    rule.trigger_count += 1;
                     actions.push(RuleAction::BlockUntilResolved { message });
                 }
                 "verify_progress" => {
                     if state.waste_rate > 0.15 {
+                        rule.trigger_count += 1;
                         actions.push(RuleAction::TextInjection(
                             "Verify progress before continuing".to_string(),
                         ));
@@ -277,7 +286,7 @@ mod tests {
 
     #[test]
     fn check_rules_returns_text_actions() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Confirmed)],
         };
 
@@ -300,7 +309,7 @@ mod tests {
 
     #[test]
     fn check_rules_returns_rust_level_actions() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule(
                 "r1",
                 "extend_silence",
@@ -325,7 +334,7 @@ mod tests {
 
     #[test]
     fn only_confirmed_provisional_pinned_rules_fire() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![
                 make_test_rule("r1", "extend_silence", RuleStatus::Confirmed),
                 make_test_rule("r2", "smaller_instructions", RuleStatus::Provisional),
@@ -355,7 +364,7 @@ mod tests {
 
     #[test]
     fn check_rules_force_commit_no_trigger() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Confirmed)],
         };
 
@@ -374,7 +383,7 @@ mod tests {
 
     #[test]
     fn check_rules_verify_progress_fires() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule(
                 "r1",
                 "verify_progress",
@@ -443,7 +452,7 @@ mod tests {
         rule.action_params
             .insert("file".to_string(), "src/lib.rs".to_string());
 
-        let engine = RuleEngine { rules: vec![rule] };
+        let mut engine = RuleEngine { rules: vec![rule] };
 
         // File not in reverted list — should not fire.
         let state_no_match = RunState {
@@ -472,7 +481,7 @@ mod tests {
 
     #[test]
     fn check_rules_run_verify_twice_threshold() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule(
                 "r1",
                 "run_verify_twice",
@@ -524,7 +533,7 @@ mod tests {
 
     #[test]
     fn check_rules_force_commit_returns_variant() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Confirmed)],
         };
 
@@ -547,7 +556,7 @@ mod tests {
         rule.action_params
             .insert("file".to_string(), "src/hot.rs".to_string());
 
-        let engine = RuleEngine { rules: vec![rule] };
+        let mut engine = RuleEngine { rules: vec![rule] };
 
         let state = RunState {
             recent_reverted_files: vec!["src/hot.rs".to_string()],
@@ -565,7 +574,7 @@ mod tests {
 
     #[test]
     fn check_rules_smaller_instructions_returns_split() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule(
                 "r1",
                 "smaller_instructions",
@@ -584,7 +593,7 @@ mod tests {
 
     #[test]
     fn check_rules_restrict_scope_returns_revert() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule(
                 "r1",
                 "restrict_scope",
@@ -611,7 +620,7 @@ mod tests {
             "Fix the linker error first".to_string(),
         );
 
-        let engine = RuleEngine { rules: vec![rule] };
+        let mut engine = RuleEngine { rules: vec![rule] };
 
         let state = RunState::default();
         let result = engine.check_rules(&state);
@@ -625,7 +634,7 @@ mod tests {
 
     #[test]
     fn check_rules_verify_progress_still_text() {
-        let engine = RuleEngine {
+        let mut engine = RuleEngine {
             rules: vec![make_test_rule(
                 "r1",
                 "verify_progress",
