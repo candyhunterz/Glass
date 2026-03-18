@@ -1930,23 +1930,23 @@ impl Processor {
                         self.script_gen_parse_failures
                     );
                 } else {
-                tracing::info!(
-                    "Tier 4: spawning ephemeral agent for script generation ({} chars)",
-                    script_prompt.len()
-                );
-                self.script_gen_project_root = Some(self.orchestrator.project_root.clone());
-                let request = ephemeral_agent::EphemeralAgentRequest {
-                    system_prompt: "You are generating a Rhai script for the Glass terminal emulator's self-improvement system. Respond ONLY in the structured format requested.".to_string(),
-                    user_message: script_prompt,
-                    timeout: std::time::Duration::from_secs(60),
-                    purpose: glass_core::event::EphemeralPurpose::ScriptGeneration,
-                };
-                if let Err(e) =
-                    ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
-                {
-                    tracing::warn!("Tier 4 script generation: ephemeral spawn failed: {e:?}");
+                    tracing::info!(
+                        "Tier 4: spawning ephemeral agent for script generation ({} chars)",
+                        script_prompt.len()
+                    );
+                    self.script_gen_project_root = Some(self.orchestrator.project_root.clone());
+                    let request = ephemeral_agent::EphemeralAgentRequest {
+                        system_prompt: "You are generating a Rhai script for the Glass terminal emulator's self-improvement system. Respond ONLY in the structured format requested.".to_string(),
+                        user_message: script_prompt,
+                        timeout: std::time::Duration::from_secs(60),
+                        purpose: glass_core::event::EphemeralPurpose::ScriptGeneration,
+                    };
+                    if let Err(e) =
+                        ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
+                    {
+                        tracing::warn!("Tier 4 script generation: ephemeral spawn failed: {e:?}");
+                    }
                 }
-                } // end else (not suppressed)
             }
         }
     }
