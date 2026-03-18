@@ -6,7 +6,7 @@ Glass is configured via a single TOML file. Changes are hot-reloaded at runtime 
 
 Press **Ctrl+Shift+,** (Cmd+Shift+, on macOS) to open the settings overlay. This provides a visual editor for common settings across three tabs:
 
-- **Settings** — Browse 6 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History) with a sidebar. Use arrow keys to navigate, Enter/Space to toggle booleans, and +/- to adjust numeric values. Changes are written directly to `~/.glass/config.toml` and hot-reloaded immediately.
+- **Settings** — Browse 8 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History, Orchestrator, Scripting) with a sidebar. Use arrow keys to navigate, Enter/Space to toggle booleans, and +/- to adjust numeric values. Changes are written directly to `~/.glass/config.toml` and hot-reloaded immediately.
 - **Shortcuts** — A two-column keyboard shortcut cheatsheet.
 - **About** — Version info, platform details, and license.
 
@@ -70,6 +70,14 @@ prd_path = "PRD.md"
 verify_mode = "floor"
 completion_artifact = ".glass/done"
 # max_iterations = 25
+feedback_llm = false
+# max_prompt_hints = 10
+
+[scripting]
+enabled = true
+max_operations = 10000
+max_timeout_ms = 5000
+max_scripts_per_hook = 10
 ```
 
 ---
@@ -185,6 +193,27 @@ Controls the orchestrator mode that drives autonomous project development. See [
 | `verify_command` | string | (none) | Optional user override for the verification command. When set, skips auto-detection and agent discovery. |
 | `completion_artifact` | string | `".glass/done"` | File path (relative to project root) that triggers the orchestrator when created. Set to empty string to disable. |
 | `max_iterations` | int | (none) | Maximum iterations before checkpoint-stop. Omit or set to 0 for unlimited. |
+| `feedback_llm` | bool | `false` | Enable LLM qualitative analysis after each orchestrator run. Produces Tier 3 prompt hints. Requires an extra API call per run. |
+| `max_prompt_hints` | int | `10` | Maximum number of Tier 3 prompt hints retained per project. |
+
+---
+
+## [scripting]
+
+Controls the embedded Rhai scripting engine. Scripts can hook into Glass lifecycle events (snapshot, MCP requests, orchestrator iterations) for custom automation.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable or disable the Rhai scripting engine. When disabled, all scripts are skipped. |
+| `max_operations` | int | `10000` | Maximum Rhai operations per script execution. Prevents runaway scripts from blocking the event loop. |
+| `max_timeout_ms` | int | `5000` | Maximum wall-clock time per script execution in milliseconds. |
+| `max_scripts_per_hook` | int | `10` | Maximum number of scripts that can register for a single hook point. |
+
+Scripts are loaded from two locations:
+- `~/.glass/scripts/` — Global scripts, available in all projects
+- `<project>/.glass/scripts/` — Project-local scripts, scoped to the project root
+
+Each script has a `manifest.toml` describing its hook point, status (provisional or confirmed), and metadata.
 
 ---
 

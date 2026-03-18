@@ -21,10 +21,10 @@ Glass adds durable structure to the command-line workflow without changing how y
 
 ## For AI Agents
 
-Glass exposes 31 MCP tools over an embedded MCP server, providing structured access to everything the terminal has seen.
+Glass exposes 33 MCP tools over an embedded MCP server, providing structured access to everything the terminal has seen.
 
-- **Structured Output Intelligence (SOI)** -- after a command completes, Glass classifies its output (error, warning, success, structured data, and others) and stores a structured representation alongside the raw text. Agents receive pre-classified output rather than raw terminal scrollback.
-- **31 MCP tools** -- covering history queries, context retrieval, undo, file diffs, pipe inspection, snapshot access, and multi-agent coordination. The MCP server is embedded in the Glass process; no separate setup is required.
+- **Structured Output Intelligence (SOI)** -- after a command completes, Glass classifies its output using 19 format-specific parsers (Rust, JavaScript, Python, Go, TypeScript, Docker, Kubernetes, Terraform, JSON, CSV, TAP, C++, and more) and stores a structured representation alongside the raw text. Agents receive pre-classified output rather than raw terminal scrollback.
+- **33 MCP tools** -- covering history queries, context retrieval, undo, file diffs, pipe inspection, snapshot access, multi-agent coordination, and scripting automation. The MCP server is embedded in the Glass process; no separate setup is required.
 - **Multi-agent coordination** -- a shared SQLite database in WAL mode provides an agent registry, advisory file locks, and inter-agent messaging. Multiple agents working on the same project can coordinate without race conditions or conflicting edits.
 - **Token-efficient tools** -- compressed context summaries, diff-only file representations, and per-block output access keep MCP call payloads small.
 
@@ -38,6 +38,10 @@ Agent Mode is designed for tasks that are too large or too risky to execute with
 
 ---
 
+## Self-Improvement
+
+Glass learns from every orchestrator run. A multi-tier feedback loop analyzes run metrics and automatically tunes configuration, enforces rules in Rust (auto-commit on drift, hot file isolation, scope guards), and generates Rhai automation scripts. Each improvement is guarded by a regression check -- if metrics worsen, changes are rolled back. The result is a terminal that gets better at building software by building itself.
+
 ## Core Design
 
 Glass passively watches, indexes, and snapshots everything. It does not require configuration to provide value and does not change how you interact with the shell. Structure is captured as a side effect of normal terminal use and surfaced only when needed -- as a decoration on a block, a diff on hover, or a structured query result from an MCP call.
@@ -48,4 +52,6 @@ Glass passively watches, indexes, and snapshots everything. It does not require 
 
 If you are new to Glass, start with [Getting Started](./getting-started.md) to install Glass, verify shell integration, and run your first commands.
 
-If you are integrating an AI agent, see [MCP Server](./mcp-server.md) for the full tool reference, or [Multi-Agent Coordination](./agent-coordination.md) for the agent registry and locking protocol.
+If you are integrating an AI agent, see [MCP Server](./mcp-server.md) for the full tool reference (33 tools), or [Multi-Agent Coordination](./agent-coordination.md) for the agent registry and locking protocol.
+
+If you want Glass to build projects autonomously, see [Orchestrator Mode](./features/orchestrator.md) for the feedback-loop-driven execution engine.

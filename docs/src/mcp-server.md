@@ -1,6 +1,6 @@
 # MCP Server
 
-Glass includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that exposes 31 tools covering terminal history, undo, pipe inspection, tab orchestration, structured output querying, multi-agent coordination, and more.
+Glass includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that exposes 33 tools covering terminal history, undo, pipe inspection, tab orchestration, structured output querying, multi-agent coordination, scripting automation, and more.
 
 ## What is MCP?
 
@@ -25,7 +25,7 @@ Add Glass to your Claude Desktop MCP server configuration:
 }
 ```
 
-Restart Claude Desktop after saving. Claude will discover all 31 tools automatically.
+Restart Claude Desktop after saving. Claude will discover all 33 tools automatically.
 
 ### With Claude Code
 
@@ -105,13 +105,22 @@ Point your MCP client at the `glass mcp` command. Glass follows the MCP stdio tr
 
 ### SOI Query
 
-Structured Output Inspection (SOI) tools query indexed structured data (JSON, CSV, tables) parsed from command output.
+Structured Output Intelligence (SOI) tools query indexed structured data parsed from command output using 19 format-specific parsers.
 
 | Tool | Description |
 |------|-------------|
 | `glass_query` | Query structured output for a specific command by `command_id`. Accepts a token `budget` parameter to limit response size. |
 | `glass_query_trend` | Run regression detection across the last N runs of a command pattern. Returns a trend summary indicating whether metrics have improved, degraded, or stayed stable. |
 | `glass_query_drill` | Expand a specific SOI record to its full detail. Used after `glass_query` to fetch a single row or object in its entirety. |
+
+### Scripting
+
+Rhai scripting tools allow agents to discover and execute automation scripts registered in Glass.
+
+| Tool | Description |
+|------|-------------|
+| `glass_list_script_tools` | List all available Rhai scripts with their names, hook points, and status (provisional/confirmed). |
+| `glass_script_tool` | Execute a registered Rhai script by name, passing optional parameters. Scripts run in a sandboxed Rhai engine with CPU and memory limits. |
 
 ### Coordination
 

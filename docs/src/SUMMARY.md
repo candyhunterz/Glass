@@ -26,6 +26,7 @@
 - [Pipe Inspection](./features/pipes.md)
 - [Tabs and Panes](./features/tabs-panes.md)
 - [History](./features/history.md)
+- [Settings Overlay](./features/settings.md)
 
 ---
 

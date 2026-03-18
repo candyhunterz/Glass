@@ -18,12 +18,13 @@ If no parser matches, output is stored as `Freeform` with no extracted structure
 
 ## Supported Parsers
 
-Glass ships 12 format-specific parsers:
+Glass ships 19 format-specific parsers:
 
 | Domain | Parser | Recognizes |
 |---|---|---|
 | Rust | `cargo-build` / `cargo-clippy` | Compiler errors and warnings |
 | Rust | `cargo-test` | Test results (passed, failed, ignored) |
+| Rust | `cargo-misc` | Other cargo commands (doc, publish, etc.) |
 | JavaScript | `npm` | Package install/update events |
 | JavaScript | `jest` | Test suite results |
 | Python | `pytest` | Test results |
@@ -33,7 +34,13 @@ Glass ships 12 format-specific parsers:
 | DevOps | `git` | Status, diff summary, log entries |
 | DevOps | `docker` | Build steps, compose service events |
 | DevOps | `kubectl` | Apply events, resource listings |
+| DevOps | `terraform` | Plan/apply output, resource changes |
 | Generic | `json-lines` | NDJSON / structured log streams |
+| Generic | `json-object` | Single JSON objects |
+| Generic | `csv` | CSV/TSV tabular data |
+| Generic | `tap` | Test Anything Protocol output |
+| Generic | `cpp-compiler` | C/C++ compiler errors and warnings |
+| Generic | `generic-compiler` | Catch-all compiler output patterns |
 
 Unrecognized output falls through to `Freeform`.
 
@@ -81,6 +88,8 @@ Four MCP tools expose SOI data to AI agents:
 **`glass_query_drill`** — Expands a specific `record_id` to full detail. Used after a `Summary` or `Detailed` query identifies a record worth investigating.
 
 **`glass_context` / `glass_compressed_context`** — The general-purpose context tools include SOI summaries for recently completed commands in the returned workspace snapshot.
+
+**`glass_list_script_tools`** / **`glass_script_tool`** — While not SOI-specific, these scripting tools can interact with SOI data through hook events, allowing custom automation triggered by parsed output.
 
 ---
 

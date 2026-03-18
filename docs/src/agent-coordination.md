@@ -54,7 +54,7 @@ Agents publish their current task via `glass_agent_status`. Any agent (or a huma
 
 ## MCP Tools
 
-All coordination is exposed through the Glass MCP server. The 11 coordination tools are:
+All coordination is exposed through the Glass MCP server (33 tools total, 11 of which are coordination-specific):
 
 | Tool | Description |
 |------|-------------|

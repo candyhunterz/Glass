@@ -56,33 +56,34 @@ The classification is stored in the history database and is accessible via MCP t
 | Close tab or pane | `Ctrl+Shift+W` |
 | Next tab | `Ctrl+Tab` |
 | Previous tab | `Ctrl+Shift+Tab` |
-| Split pane horizontally | `Ctrl+Shift+H` |
-| Split pane vertically | `Ctrl+Shift+V` |
-| Focus next pane | `Ctrl+Shift+]` |
-| Focus previous pane | `Ctrl+Shift+[` |
+| Split pane horizontally | `Ctrl+Shift+D` |
+| Split pane vertically | `Ctrl+Shift+E` |
+| Focus pane | `Alt+Arrow keys` |
+| Resize pane | `Alt+Shift+Arrow keys` |
 | Open search overlay | `Ctrl+Shift+F` |
 | Undo last file modification | `Ctrl+Shift+Z` |
+| Toggle pipeline view | `Ctrl+Shift+P` |
 | Open agent review overlay | `Ctrl+Shift+A` |
-| Scroll up one block | `Ctrl+Shift+Up` |
-| Scroll down one block | `Ctrl+Shift+Down` |
-
-The agent review overlay (`Ctrl+Shift+A`) is relevant only when Agent Mode is active. If no agent session is running, the overlay reports that no agent is present.
+| Activity stream | `Ctrl+Shift+G` |
+| Toggle orchestrator | `Ctrl+Shift+O` |
+| Settings | `Ctrl+Shift+,` |
 
 ---
 
 ## Configuration
 
-Configuration lives at `~/.glass/config.toml`. The file is created with defaults on first launch if it does not exist.
+Configuration lives at `~/.glass/config.toml`. Changes are hot-reloaded without restarting. You can also edit settings in-app with **Ctrl+Shift+,**.
 
 Glass watches the file with a filesystem watcher and applies changes immediately -- there is no need to restart. If a change introduces a parse error, Glass logs the error and continues using the last valid configuration.
 
 Key sections in `config.toml`:
 
-- `[font]` -- family, size, line height
-- `[shell]` -- override the detected shell, set environment variables
-- `[history]` -- retention period, database location
+- `[history]` -- retention period, output capture limits
 - `[snapshot]` -- which commands trigger snapshots, blob store location
 - `[pipes]` -- pipeline capture settings
+- `[soi]` -- structured output parsing settings
+- `[agent]` -- agent mode, orchestrator, permissions
+- `[scripting]` -- Rhai scripting engine settings
 
 See [Configuration](./configuration.md) for the full reference with all available keys and their defaults.
 
@@ -90,8 +91,10 @@ See [Configuration](./configuration.md) for the full reference with all availabl
 
 ## Next Steps
 
-- [Structured Output Intelligence](./features/soi.md) -- how Glass classifies command output and what the SOI pipeline produces
+- [Structured Output Intelligence](./features/soi.md) -- how Glass classifies command output with 19 format-specific parsers
 - [Agent Mode](./features/agent-mode.md) -- running Claude CLI in a supervised background session with worktree isolation
+- [Orchestrator Mode](./features/orchestrator.md) -- autonomous project execution with self-improving feedback loop
 - [Search](./features/search.md) -- searching current session output and persistent history
 - [Undo](./features/undo.md) -- restoring files after destructive commands
-- [MCP Server](./mcp-server.md) -- connecting an AI agent to Glass over MCP
+- [MCP Server](./mcp-server.md) -- connecting an AI agent to Glass over MCP (33 tools)
+- [Configuration](./configuration.md) -- full config reference including scripting and feedback settings

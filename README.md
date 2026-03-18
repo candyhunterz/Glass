@@ -4,7 +4,7 @@ A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal ter
 
 **For humans**: command blocks with exit codes, durations, and CWD badges; command-level undo; visual pipeline debugging; full-text history search.
 
-**For AI agents**: 31 MCP tools, Structured Output Intelligence (SOI) with 12 format-specific parsers, token-budgeted context compression, multi-agent coordination, and an optional autonomous agent mode backed by Claude CLI.
+**For AI agents**: 33 MCP tools, Structured Output Intelligence (SOI) with 19 format-specific parsers, token-budgeted context compression, multi-agent coordination, and an optional autonomous agent mode backed by Claude CLI.
 
 - [Why Glass?](#why-glass)
 - [What Makes Glass Different](#what-makes-glass-different)
@@ -34,7 +34,7 @@ A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal ter
 | Agent terminal control | glass_tab_create/send/output -- full tab orchestration | None |
 | Token efficiency | glass_cache_check, glass_command_diff, glass_compressed_context | None |
 | Multi-agent coordination | Shared SQLite, advisory locks (atomic all-or-nothing), messaging, activity stream | None |
-| Structured output | 12 format parsers (cargo, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines, ...) | None |
+| Structured output | 19 format parsers (cargo, npm, pytest, jest, git, docker, kubectl, tsc, Go, terraform, JSON, CSV, TAP, C++, ...) | None |
 | Agent mode | Background Claude CLI runtime, approval UI, budget cap, worktree isolation | None |
 | Orchestrator | Autonomous project builder from PRD, overnight runs, checkpoint/resume, metric guard (auto-revert on regression), bounded iterations | None |
 
@@ -50,9 +50,9 @@ Tabs support drag-to-reorder and close buttons. Panes use a binary tree layout: 
 
 ### For AI Agents
 
-Glass exposes 31 MCP tools covering the full surface of a terminal session: history, undo, file diffs, pipe inspection, tab orchestration, live command awareness, error extraction, token-efficient context, and structured output queries.
+Glass exposes 33 MCP tools covering the full surface of a terminal session: history, undo, file diffs, pipe inspection, tab orchestration, live command awareness, error extraction, token-efficient context, structured output queries, and scripting automation.
 
-Structured Output Intelligence (SOI) auto-parses every completed command using 12 format-specific parsers. Results are stored in SQLite (schema v3) and served through `glass_query`, `glass_query_trend`, and `glass_query_drill`. The `glass_compressed_context` tool delivers a 4-level token-budgeted summary (OneLine / Summary / Detailed / Full) with diff-aware change detection, so agents can maintain awareness of the terminal session without exhausting their context window. Block decorations show a one-line SOI summary on each completed command block. Shell hint lines are injected into PTY output to help agents discover available MCP tools at session start.
+Structured Output Intelligence (SOI) auto-parses every completed command using 19 format-specific parsers. Results are stored in SQLite (schema v3) and served through `glass_query`, `glass_query_trend`, and `glass_query_drill`. The `glass_compressed_context` tool delivers a 4-level token-budgeted summary (OneLine / Summary / Detailed / Full) with diff-aware change detection, so agents can maintain awareness of the terminal session without exhausting their context window. Block decorations show a one-line SOI summary on each completed command block. Shell hint lines are injected into PTY output to help agents discover available MCP tools at session start.
 
 ### Agent Mode
 
@@ -100,7 +100,7 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 - Multi-row pipeline UI with per-stage inspection (Ctrl+Shift+P)
 
 **Structured Output Intelligence (SOI) -- new in v3.0**
-- Output classifier with 12 format-specific parsers: cargo build/test, npm, pytest, jest, git, docker, kubectl, tsc, Go, JSON lines
+- Output classifier with 19 format-specific parsers: cargo (build/test/misc), npm, jest, pytest, tsc, Go (build/test), git, docker, kubectl, terraform, JSON (lines/object), CSV, TAP, C++ compiler, generic compiler
 - SQLite storage (schema v3) with auto-parse on CommandFinished via spawn_blocking
 - 4-level token-budgeted compression: OneLine / Summary / Detailed / Full
 - Diff-aware change detection across command runs
@@ -137,6 +137,16 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 - Bounded iteration mode: limit orchestration to N iterations, then checkpoint-stop with summary
 - GLASS_VERIFY agent response for dynamic verification command discovery
 - Self-improving feedback loop: rule-based analysis after each run (15 detectors), auto config tuning, Rust-level enforcement (auto-commit on drift, hot file isolation, instruction splitting, scope guard with auto-revert, dependency block), optional LLM qualitative analysis, regression guard with auto-rollback, rule lifecycle (proposed → provisional → confirmed), staleness detection, 6 default rules shipped — 8 of 9 actions enforced in code, no LLM compliance needed
+- Tier 4 scripting: Rhai-based automation scripts generated from feedback findings, sandboxed execution, promotion/rejection lifecycle, exportable profiles
+
+**Scripting Layer -- new in v3.2**
+- Embedded Rhai scripting engine with event-driven hook system
+- Hook points: SnapshotBefore, McpRequest, and orchestrator lifecycle events
+- Sandboxed execution: CPU time limits, memory caps, array size bounds
+- Script lifecycle: Provisional → Confirmed promotion with regression guard
+- Script profiles: export/import bundles with metadata and tech stack tags
+- 2 MCP tools: `glass_list_script_tools` (discover available scripts), `glass_script_tool` (execute a script)
+- Scripts loaded from `~/.glass/scripts/` (global) and `<project>/.glass/scripts/` (project-local)
 
 **Activity Stream -- new in v3.1**
 - Real-time coordination event log (agent registrations, lock acquisitions, conflicts, messages)
@@ -148,7 +158,7 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 
 **Settings Overlay -- new in v3.1**
 - In-app settings editor (Ctrl+Shift+,) with three tabs: Settings, Shortcuts, About
-- Settings tab: sidebar with 7 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History, Orchestrator)
+- Settings tab: sidebar with 8 config sections (Font, Agent Mode, SOI, Snapshots, Pipes, History, Orchestrator, Scripting)
 - Editable fields with Enter/Space to toggle booleans, +/- to adjust numeric values
 - Changes write back to ~/.glass/config.toml (hot-reload picks up changes immediately)
 - Shortcuts tab: two-column keyboard shortcut cheatsheet
@@ -163,7 +173,7 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 - Coordination event log for activity stream UI
 
 **MCP server**
-- 31 tools covering history, context, undo, diffs, pipes, tab orchestration, token saving, error extraction, live awareness, SOI query, coordination, and health
+- 33 tools covering history, context, undo, diffs, pipes, tab orchestration, token saving, error extraction, live awareness, SOI query, coordination, scripting, and health
 - stdio transport
 
 ---
@@ -354,6 +364,16 @@ completion_artifact = ".glass/done"
 # Feedback loop
 feedback_llm = false          # Enable LLM qualitative analysis after each run (opt-in)
 # max_prompt_hints = 10       # Max Tier 3 prompt hints per project
+
+[scripting]
+# Enable Rhai scripting engine
+enabled = true
+# Maximum operations per script execution
+max_operations = 10000
+# Maximum script timeout in milliseconds
+max_timeout_ms = 5000
+# Maximum scripts per hook point
+max_scripts_per_hook = 10
 ```
 
 Default fonts: Consolas (Windows), Menlo (macOS), Monospace (Linux).
@@ -515,15 +535,17 @@ Start the MCP server with `glass mcp serve`. Connect using any MCP-compatible cl
 | Coordination | `glass_agent_broadcast` | Broadcast a message to all agents |
 | Coordination | `glass_agent_send` | Send a directed message to a specific agent |
 | Coordination | `glass_agent_messages` | Read pending messages for this agent |
+| Scripting | `glass_list_script_tools` | List available Rhai scripts and their hook points |
+| Scripting | `glass_script_tool` | Execute a registered Rhai script by name |
 | Health | `glass_ping` | Verify MCP server connectivity |
 
-**Total: 31 tools**
+**Total: 33 tools**
 
 ---
 
 ## Architecture
 
-Glass is a Rust workspace with 14 crates plus the root binary.
+Glass is a Rust workspace with 16 crates plus the root binary.
 
 ```
 glass (binary)
@@ -546,10 +568,14 @@ crates/
   glass_coordination/      Multi-agent coordination: agent registry, advisory locks,
                            inter-agent messaging (SQLite WAL)
   glass_soi/               Structured Output Intelligence: output classifier,
-                           12 format parsers, SQLite storage (schema v3),
+                           19 format parsers, SQLite storage (schema v3),
                            4-level compression engine
   glass_agent/             Activity stream, worktree manager, session DB,
                            approval pipeline, budget tracking
+  glass_feedback/          Self-improving feedback loop: run analysis, rule engine,
+                           config tuning, regression guard, LLM prompts
+  glass_scripting/         Rhai scripting: engine, hook registry, lifecycle,
+                           sandboxing, profiles, MCP integration
   glass_protocol/          Shared protocol types
   glass_config/            Shared config types
 ```
