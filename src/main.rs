@@ -406,6 +406,10 @@ struct Processor {
     script_gen_project_root: Option<String>,
     /// Bridge to the Rhai scripting engine for hook-based automation.
     script_bridge: script_bridge::ScriptBridge,
+    /// Consecutive Tier 4 script generation parse failures. When >= 3,
+    /// new Tier 4 ephemeral agents are suppressed to avoid wasting resources.
+    /// Reset to 0 on any successful parse.
+    script_gen_parse_failures: u32,
 }
 
 impl Drop for AgentRuntime {
@@ -1883,6 +1887,13 @@ impl Processor {
                 result.config_changes.len(),
             );
 
+            // Apply script lifecycle transitions based on regression result.
+            let regressed = matches!(
+                result.regression,
+                Some(glass_feedback::regression::RegressionResult::Regressed { .. })
+            );
+            self.script_bridge.on_feedback_run_end(regressed);
+
             // Spawn LLM analysis if prompt was generated
             if let Some(prompt) = result.llm_prompt {
                 // Capture project root and max_prompt_hints NOW so the response
@@ -1911,6 +1922,14 @@ impl Processor {
 
             // Tier 4: spawn ephemeral agent for script generation
             if let Some(script_prompt) = result.script_prompt {
+                // Suppress Tier 4 after too many consecutive parse failures
+                // to avoid wasting ephemeral agent resources.
+                if self.script_gen_parse_failures >= 3 {
+                    tracing::warn!(
+                        "Tier 4: suppressing script generation — {} consecutive parse failures",
+                        self.script_gen_parse_failures
+                    );
+                } else {
                 tracing::info!(
                     "Tier 4: spawning ephemeral agent for script generation ({} chars)",
                     script_prompt.len()
@@ -1927,6 +1946,7 @@ impl Processor {
                 {
                     tracing::warn!("Tier 4 script generation: ephemeral spawn failed: {e:?}");
                 }
+                } // end else (not suppressed)
             }
         }
     }
@@ -4320,6 +4340,9 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                                     // Load scripts for the project now that we know its root.
                                     self.script_bridge.load_for_project(&current_cwd);
+
+                                    // Reset per-run script tracking for the new orchestrator run.
+                                    self.script_bridge.reset_run_tracking();
 
                                     // Fire scripting OrchestratorRunStart hook
                                     fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
@@ -9266,6 +9289,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 match parse_script_response(&resp.text) {
                                     Some((name, hooks, source)) => {
+                                        // Successful parse — reset consecutive failure counter.
+                                        self.script_gen_parse_failures = 0;
                                         let scripts_dir = std::path::Path::new(&project_root)
                                             .join(".glass")
                                             .join("scripts")
@@ -9314,8 +9339,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         }
                                     }
                                     None => {
+                                        self.script_gen_parse_failures += 1;
                                         tracing::warn!(
-                                            "Tier 4: could not parse script from LLM response"
+                                            "Tier 4: could not parse script from LLM response (consecutive failures: {})",
+                                            self.script_gen_parse_failures
                                         );
                                     }
                                 }
@@ -9766,6 +9793,7 @@ fn main() {
                 feedback_llm_max_hints: 10,
                 script_gen_project_root: None,
                 script_bridge,
+                script_gen_parse_failures: 0,
             };
 
             event_loop

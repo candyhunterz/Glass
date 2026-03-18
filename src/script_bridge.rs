@@ -137,6 +137,126 @@ impl ScriptBridge {
     }
 
     // -------------------------------------------------------------------
+    // Lifecycle integration
+    // -------------------------------------------------------------------
+
+    /// Apply lifecycle transitions for feedback-origin scripts at the end
+    /// of an orchestrator run.
+    ///
+    /// For each loaded script with `origin == Feedback`:
+    /// - Errored >= 3 times this run: `record_failure` (may auto-archive)
+    /// - Provisional + regressed: `reject_script`
+    /// - Provisional + not regressed + triggered: `promote_script`
+    /// - Confirmed/Stale + triggered: `record_trigger`
+    /// - Confirmed/Stale + NOT triggered: `increment_stale(5, 10)`
+    ///
+    /// User-origin scripts are skipped entirely (they don't go through the
+    /// automated lifecycle). After processing, tracking counters are reset
+    /// and scripts are reloaded so status changes take effect immediately.
+    pub fn on_feedback_run_end(&mut self, regressed: bool) {
+        if !self.enabled {
+            return;
+        }
+
+        let infos = self.system.all_script_infos();
+
+        for info in &infos {
+            // Skip user-origin scripts — they aren't lifecycle-managed.
+            if info.origin == glass_scripting::ScriptOrigin::User {
+                continue;
+            }
+
+            let name = &info.name;
+            let path = &info.manifest_path;
+
+            // Check error count for this run.
+            let error_count = self.scripts_errored.get(name).copied().unwrap_or(0);
+            let was_triggered = self.scripts_triggered.contains(name);
+
+            // 1. Errored >= 3 times this run -> record_failure (may auto-archive)
+            if error_count >= 3 {
+                match glass_scripting::lifecycle::record_failure(path) {
+                    Ok(archived) => {
+                        if archived {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: script '{name}' auto-archived after {error_count} errors"
+                            );
+                        } else {
+                            tracing::info!(
+                                "ScriptBridge lifecycle: recorded failure for '{name}' ({error_count} errors)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "ScriptBridge lifecycle: record_failure for '{name}' failed: {e}"
+                        );
+                    }
+                }
+                continue;
+            }
+
+            match info.status {
+                glass_scripting::ScriptStatus::Provisional => {
+                    if regressed {
+                        // 2. Provisional + regressed -> reject
+                        if let Err(e) = glass_scripting::lifecycle::reject_script(path) {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: reject_script '{name}' failed: {e}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "ScriptBridge lifecycle: rejected provisional script '{name}' (regression detected)"
+                            );
+                        }
+                    } else if was_triggered {
+                        // 3. Provisional + not regressed + triggered -> promote
+                        if let Err(e) = glass_scripting::lifecycle::promote_script(path) {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: promote_script '{name}' failed: {e}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "ScriptBridge lifecycle: promoted script '{name}' to confirmed"
+                            );
+                        }
+                    }
+                    // Provisional + not regressed + not triggered: no action needed
+                }
+
+                glass_scripting::ScriptStatus::Confirmed
+                | glass_scripting::ScriptStatus::Stale => {
+                    if was_triggered {
+                        // 4. Confirmed/Stale + triggered -> record_trigger
+                        if let Err(e) = glass_scripting::lifecycle::record_trigger(path) {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: record_trigger '{name}' failed: {e}"
+                            );
+                        }
+                    } else {
+                        // 5. Confirmed/Stale + NOT triggered -> increment_stale
+                        if let Err(e) =
+                            glass_scripting::lifecycle::increment_stale(path, 5, 10)
+                        {
+                            tracing::warn!(
+                                "ScriptBridge lifecycle: increment_stale '{name}' failed: {e}"
+                            );
+                        }
+                    }
+                }
+
+                // Archived/Rejected scripts are already filtered out by the hook
+                // registry, but if they somehow appear here, skip them.
+                _ => {}
+            }
+        }
+
+        // Reset tracking and reload scripts so status changes take effect.
+        self.reset_run_tracking();
+        self.reload();
+    }
+
+    // -------------------------------------------------------------------
     // MCP script tool methods
     // -------------------------------------------------------------------
 
