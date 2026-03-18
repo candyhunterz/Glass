@@ -125,7 +125,7 @@ pub fn start_polling(
 
                 match poll_usage(&token) {
                     Ok(data) => {
-                        let mut st = state_clone.lock().unwrap();
+                        let mut st = state_clone.lock().unwrap_or_else(|e| e.into_inner());
                         let five_hour = data.five_hour_utilization;
                         st.data = Some(data);
                         st.consecutive_failures = 0;
@@ -160,7 +160,7 @@ pub fn start_polling(
                         }
                     }
                     Err(e) => {
-                        let mut st = state_clone.lock().unwrap();
+                        let mut st = state_clone.lock().unwrap_or_else(|e| e.into_inner());
                         st.consecutive_failures += 1;
                         if st.consecutive_failures <= 3 {
                             tracing::warn!(

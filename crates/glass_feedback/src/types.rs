@@ -187,6 +187,8 @@ pub struct FeedbackConfig {
     pub project_root: String,
     pub feedback_llm: bool,
     pub max_prompt_hints: usize,
+    pub silence_timeout_secs: Option<u64>,
+    pub max_retries_before_stuck: Option<u32>,
 }
 
 impl Default for FeedbackConfig {
@@ -195,6 +197,8 @@ impl Default for FeedbackConfig {
             project_root: String::new(),
             feedback_llm: false,
             max_prompt_hints: 10,
+            silence_timeout_secs: None,
+            max_retries_before_stuck: None,
         }
     }
 }
@@ -474,5 +478,7 @@ mod tests {
         assert_eq!(cfg.project_root, "");
         assert!(!cfg.feedback_llm);
         assert_eq!(cfg.max_prompt_hints, 10);
+        assert!(cfg.silence_timeout_secs.is_none());
+        assert!(cfg.max_retries_before_stuck.is_none());
     }
 }

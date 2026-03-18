@@ -215,10 +215,40 @@ pub struct AgentHandoffData {
     pub previous_session_id: Option<String>,
 }
 
+/// Find the end of a top-level JSON object in `slice`, respecting string boundaries.
+///
+/// Returns the byte index one past the closing `}`, or `None` if unbalanced.
+/// Handles escaped quotes (`\"`) inside strings so that braces within string
+/// values don't confuse the depth tracker.
+pub fn find_json_object_end(slice: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, ch) in slice.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Attempt to extract a structured handoff from the assistant's response text.
 ///
 /// Searches for a `GLASS_HANDOFF:` prefix followed by a JSON object `{...}`.
-/// Uses the same brace-depth walker as `extract_proposal`.
+/// Uses a string-aware brace walker so braces inside JSON values are handled.
 /// Returns `Some((handoff_data, raw_json_string))` on success, `None` on failure.
 pub fn extract_handoff(assistant_text: &str) -> Option<(AgentHandoffData, String)> {
     let marker = "GLASS_HANDOFF:";
@@ -228,22 +258,8 @@ pub fn extract_handoff(assistant_text: &str) -> Option<(AgentHandoffData, String
     let brace_start = after_marker.find('{')?;
     let json_slice = &after_marker[brace_start..];
 
-    let mut depth = 0usize;
-    let mut end = None;
-    for (i, ch) in json_slice.char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    end = Some(i + 1);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let json_str = &json_slice[..end?];
+    let end = find_json_object_end(json_slice)?;
+    let json_str = &json_slice[..end];
     let handoff: AgentHandoffData = serde_json::from_str(json_str).ok()?;
     Some((handoff, json_str.to_string()))
 }
@@ -280,27 +296,11 @@ pub fn extract_proposal(assistant_text: &str) -> Option<AgentProposalData> {
     let start = assistant_text.find(marker)?;
     let after_marker = &assistant_text[start + marker.len()..].trim_start();
 
-    // Find matching braces
+    // Find matching braces (string-aware)
     let brace_start = after_marker.find('{')?;
     let json_slice = &after_marker[brace_start..];
-
-    // Walk through to find the matching closing brace
-    let mut depth = 0usize;
-    let mut end = None;
-    for (i, ch) in json_slice.char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    end = Some(i + 1);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let json_str = &json_slice[..end?];
+    let end = find_json_object_end(json_slice)?;
+    let json_str = &json_slice[..end];
     let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
 
     // Parse optional files array: [{"path": "...", "content": "..."}]

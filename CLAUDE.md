@@ -19,6 +19,9 @@ crates/glass_mcp/        - MCP server for AI tool integration (history, context,
 crates/glass_coordination/ - Multi-agent coordination: agent registry, advisory file locks, inter-agent messaging (SQLite)
 ```
 
+## Important: Orchestrator Reference
+**Read `ORCHESTRATOR.md` for complete orchestrator architecture** — state machine, event flow, kickoff, silence detection, checkpoint synthesis, metric guard, feedback loop, file locations, config reference. Do NOT ask the user to re-explain orchestrator concepts documented there.
+
 ## Key Design Decisions
 - **Orchestrator**: Silence-triggered feedback loop between Glass Agent (reviewer) and Claude Code (implementer). State machine in `src/orchestrator.rs`, event handling in `src/main.rs`, silence detection via `SilenceTracker` in `crates/glass_terminal/src/silence.rs`. Checkpoint cycle kills/respawns agent with fresh context.
 - **VTE layer**: Embeds `alacritty_terminal` crate (pinned =0.25.1) — we don't rewrite terminal emulation

@@ -40,6 +40,8 @@ pub struct FeedbackState {
     pub archived_path: PathBuf,
     pub snapshot: ConfigSnapshot,
     pub engine: rules::RuleEngine,
+    pub feedback_llm: bool,
+    pub max_prompt_hints: usize,
 }
 
 /// Result of `on_run_end`.
@@ -49,6 +51,10 @@ pub struct FeedbackResult {
     pub rules_promoted: Vec<String>,
     pub rules_rejected: Vec<String>,
     pub config_changes: Vec<(String, String, String)>, // (field, old, new)
+    /// LLM analysis prompt — None if feedback_llm is disabled.
+    /// The caller should send this to an ephemeral agent and pass
+    /// the response to `apply_llm_findings`.
+    pub llm_prompt: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +100,12 @@ pub fn on_run_start(project_root: &str, config: &FeedbackConfig) -> FeedbackStat
         "max_prompt_hints".to_string(),
         config.max_prompt_hints.to_string(),
     );
+    if let Some(v) = config.silence_timeout_secs {
+        config_values.insert("silence_timeout_secs".to_string(), v.to_string());
+    }
+    if let Some(v) = config.max_retries_before_stuck {
+        config_values.insert("max_retries_before_stuck".to_string(), v.to_string());
+    }
 
     // IDs of currently-provisional rules become part of the snapshot.
     let project_rules = load_rules_file(&rules_path);
@@ -117,6 +129,8 @@ pub fn on_run_start(project_root: &str, config: &FeedbackConfig) -> FeedbackStat
         archived_path,
         snapshot,
         engine,
+        feedback_llm: config.feedback_llm,
+        max_prompt_hints: config.max_prompt_hints,
     }
 }
 
@@ -235,6 +249,13 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         .take(1)
         .collect();
 
+    // --- Step 9b: build LLM analysis prompt if enabled ---
+    let llm_prompt = if state.feedback_llm {
+        Some(llm::build_analysis_prompt(&data, &findings))
+    } else {
+        None
+    };
+
     // --- Step 10: persist ---
     metrics_file.runs.push(current_metrics);
     let _ = save_metrics_file(&state.metrics_path, &metrics_file);
@@ -290,6 +311,7 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         rules_promoted,
         rules_rejected,
         config_changes,
+        llm_prompt,
     }
 }
 
@@ -307,6 +329,53 @@ pub fn check_rules(state: &mut FeedbackState, run_state: &RunState) -> Vec<RuleA
 /// `Provisional`.  Delegates to the [`rules::RuleEngine`] stored in `state`.
 pub fn prompt_hints(state: &FeedbackState) -> Vec<String> {
     state.engine.prompt_hints()
+}
+
+/// Apply LLM-generated findings to the project's rules file.
+///
+/// Called asynchronously after `on_run_end` when the ephemeral agent
+/// returns its analysis. Parses the response, deduplicates against
+/// existing prompt_hint rules, and persists to rules.toml.
+pub fn apply_llm_findings(project_root: &str, llm_response: &str, max_prompt_hints: usize) {
+    let project_dir = PathBuf::from(project_root).join(".glass");
+    let rules_path = project_dir.join("rules.toml");
+
+    let raw_findings = llm::parse_llm_response(llm_response);
+    if raw_findings.is_empty() {
+        return;
+    }
+
+    // Load current rules to get existing prompt_hint rules for dedup
+    let rules_file = load_rules_file(&rules_path);
+    let existing_hints: Vec<_> = rules_file
+        .rules
+        .iter()
+        .filter(|r| r.action == "prompt_hint")
+        .cloned()
+        .collect();
+
+    let deduped = llm::dedup_findings(raw_findings, &existing_hints, max_prompt_hints);
+    if deduped.is_empty() {
+        return;
+    }
+
+    // Apply as new findings — they enter as Provisional
+    let mut rules_file = load_rules_file(&rules_path);
+    let run_id = format!(
+        "llm-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    lifecycle::apply_findings(&mut rules_file.rules, &deduped, &run_id, false);
+    let _ = save_rules_file(&rules_path, &rules_file);
+
+    tracing::info!(
+        "Feedback LLM: applied {} prompt hint(s) to {}",
+        deduped.len(),
+        rules_path.display()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -349,7 +418,11 @@ fn metrics_from_run_data(run_id: &str, data: &RunData) -> RunMetrics {
         waste_rate,
         checkpoint_rate,
         completion: data.completion_reason.clone(),
-        prd_items_completed: data.commit_count,
+        prd_items_completed: data.prd_content.as_deref()
+            .map(|p| p.lines()
+                .filter(|l| l.trim_start().starts_with("- [x]"))
+                .count() as u32)
+            .unwrap_or(0),
         prd_items_total: prd_total,
         kickoff_duration_secs: data.kickoff_duration_secs,
     }
@@ -439,6 +512,8 @@ mod tests {
             metrics_path,
             history_path,
             archived_path,
+            feedback_llm: false,
+            max_prompt_hints: 10,
             snapshot,
             engine,
         }

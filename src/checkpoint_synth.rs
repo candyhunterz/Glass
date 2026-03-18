@@ -174,7 +174,7 @@ pub fn build_metric_summary(baseline: Option<&orchestrator::MetricBaseline>) -> 
 /// Gather git state for checkpoint synthesis.
 /// Returns (git_log, git_diff_stat, git_diff_names).
 pub fn gather_git_state(project_root: &str) -> (String, String, String) {
-    let git_log = std::process::Command::new("git")
+    let git_log = crate::git_cmd()
         .args(["log", "--oneline", "-20"])
         .current_dir(project_root)
         .output()
@@ -182,7 +182,7 @@ pub fn gather_git_state(project_root: &str) -> (String, String, String) {
         .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
         .unwrap_or_default();
 
-    let git_diff_stat = std::process::Command::new("git")
+    let git_diff_stat = crate::git_cmd()
         .args(["diff", "--stat"])
         .current_dir(project_root)
         .output()
@@ -190,7 +190,7 @@ pub fn gather_git_state(project_root: &str) -> (String, String, String) {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default();
 
-    let git_diff_names = std::process::Command::new("git")
+    let git_diff_names = crate::git_cmd()
         .args(["diff", "--name-only"])
         .current_dir(project_root)
         .output()

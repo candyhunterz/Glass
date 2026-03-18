@@ -358,6 +358,11 @@ struct Processor {
     /// Suppress config reload agent restarts until this instant.
     /// Set when the orchestrator enable handler writes to config.toml.
     config_write_suppress_until: Option<std::time::Instant>,
+    /// Captured at feedback LLM spawn time so the response handler uses the
+    /// correct project root even if the user switches projects before it completes.
+    feedback_llm_project_root: Option<String>,
+    /// Max prompt hints captured at spawn time for the same reason.
+    feedback_llm_max_hints: usize,
 }
 
 impl Drop for AgentRuntime {
@@ -1800,6 +1805,34 @@ impl Processor {
                 result.rules_rejected.len(),
                 result.config_changes.len(),
             );
+
+            // Spawn LLM analysis if prompt was generated
+            if let Some(prompt) = result.llm_prompt {
+                // Capture project root and max_prompt_hints NOW so the response
+                // handler uses the correct values even if the user switches
+                // projects before the ephemeral agent completes.
+                self.feedback_llm_project_root =
+                    Some(self.orchestrator.project_root.clone());
+                self.feedback_llm_max_hints = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.orchestrator.as_ref())
+                    .map(|o| o.max_prompt_hints)
+                    .unwrap_or(10);
+
+                let request = ephemeral_agent::EphemeralAgentRequest {
+                    system_prompt: "You are analyzing an orchestrator run for qualitative issues. Respond ONLY in the structured format requested.".to_string(),
+                    user_message: prompt,
+                    timeout: std::time::Duration::from_secs(60),
+                    purpose: glass_core::event::EphemeralPurpose::FeedbackAnalysis,
+                };
+                if let Err(e) =
+                    ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
+                {
+                    tracing::warn!("Feedback LLM: ephemeral spawn failed: {e:?}");
+                }
+            }
         }
     }
 
@@ -4252,6 +4285,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                         });
 
+                                    // Regenerate checkpoint.md from current git state so the
+                                    // agent sees accurate context — not a stale checkpoint from
+                                    // a previous run that the user may have worked past manually.
+                                    {
+                                        let cp_dir = std::path::Path::new(&current_cwd).join(".glass");
+                                        let _ = std::fs::create_dir_all(&cp_dir);
+                                        let git_diff = git_cmd()
+                                            .args(["diff", "--stat"])
+                                            .current_dir(&current_cwd)
+                                            .output()
+                                            .ok()
+                                            .and_then(|o| if o.status.success() {
+                                                String::from_utf8(o.stdout).ok()
+                                            } else {
+                                                None
+                                            });
+                                        let prd_status = if prd_path.exists() {
+                                            "PRD exists"
+                                        } else {
+                                            "No PRD yet"
+                                        };
+                                        let checkpoint = format!(
+                                            "# Checkpoint (auto-generated on re-enable)\n\n\
+                                             ## Status\n{prd_status}\n\n\
+                                             ## Recent Commits\n{}\n\n\
+                                             ## Uncommitted Changes\n{}\n\n\
+                                             ## Next\nReview terminal context and PRD, then continue.\n",
+                                            git_log.as_deref().unwrap_or("(no git history)"),
+                                            git_diff.as_deref().unwrap_or("(clean working tree)"),
+                                        );
+                                        let _ = std::fs::write(cp_dir.join("checkpoint.md"), &checkpoint);
+                                    }
+
                                     let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
                                     if let Some(ref note) = handoff_note {
                                         content
@@ -4381,6 +4447,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .and_then(|a| a.orchestrator.as_ref())
                                             .map(|o| o.max_prompt_hints)
                                             .unwrap_or(10),
+                                        silence_timeout_secs: self.config.agent.as_ref()
+                                            .and_then(|a| a.orchestrator.as_ref())
+                                            .map(|o| o.silence_timeout_secs),
+                                        max_retries_before_stuck: self.config.agent.as_ref()
+                                            .and_then(|a| a.orchestrator.as_ref())
+                                            .map(|o| o.max_retries_before_stuck),
                                     };
 
                                     self.feedback_state = Some(glass_feedback::on_run_start(
@@ -4403,6 +4475,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.orchestrator.last_known_head = None;
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
+                                    self.orchestrator.feedback_completion_reason =
+                                        "user_cancelled".to_string();
                                     // Handle active synthesis: write fallback checkpoint
                                     if matches!(
                                         self.orchestrator.checkpoint_phase,
@@ -6481,6 +6555,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .and_then(|a| a.orchestrator.as_ref())
                                     .map(|o| o.max_prompt_hints)
                                     .unwrap_or(10),
+                                silence_timeout_secs: self.config.agent.as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.silence_timeout_secs),
+                                max_retries_before_stuck: self.config.agent.as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.max_retries_before_stuck),
                             };
                             self.feedback_state = Some(glass_feedback::on_run_start(
                                 &cwd_for_feedback,
@@ -7697,7 +7777,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     0.0
                                 },
-                                stuck_rate: 0.0,
+                                stuck_rate: if self.orchestrator.iteration > 0 {
+                                    self.orchestrator.feedback_stuck_count as f64
+                                        / self.orchestrator.iteration as f64
+                                } else {
+                                    0.0
+                                },
                                 waste_rate: if self.orchestrator.iteration > 0 {
                                     self.orchestrator.feedback_waste_iterations as f64
                                         / self.orchestrator.iteration as f64
@@ -7708,7 +7793,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .orchestrator
                                     .feedback_reverted_files
                                     .clone(),
-                                verify_alternations: 0,
+                                verify_alternations: self.orchestrator.feedback_verify_sequence
+                                    .windows(2)
+                                    .filter(|w| w[0] != w[1])
+                                    .count() as u32,
                             };
                             let actions = glass_feedback::check_rules(feedback_state, &run_state);
                             for action in &actions {
@@ -8769,6 +8857,33 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
                     }
+                    glass_core::event::EphemeralPurpose::FeedbackAnalysis => {
+                        // Use the project root captured at spawn time, not the
+                        // current one — the user may have switched projects.
+                        let project_root = self
+                            .feedback_llm_project_root
+                            .take()
+                            .unwrap_or_else(|| self.orchestrator.project_root.clone());
+                        let max_hints = self.feedback_llm_max_hints;
+                        match result {
+                            Ok(resp) => {
+                                if let Some(cost) = resp.cost_usd {
+                                    tracing::info!(
+                                        "Feedback LLM cost: ${:.4}",
+                                        cost
+                                    );
+                                }
+                                glass_feedback::apply_llm_findings(
+                                    &project_root,
+                                    &resp.text,
+                                    max_hints,
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("Feedback LLM failed: {e:?}");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -9169,6 +9284,8 @@ fn main() {
                 feedback_state: None,
                 feedback_write_pending: false,
                 config_write_suppress_until: None,
+                feedback_llm_project_root: None,
+                feedback_llm_max_hints: 10,
             };
 
             event_loop

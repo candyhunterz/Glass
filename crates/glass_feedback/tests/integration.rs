@@ -12,6 +12,8 @@ fn three_run_lifecycle() {
         project_root: project_root.clone(),
         feedback_llm: false,
         max_prompt_hints: 10,
+        silence_timeout_secs: None,
+        max_retries_before_stuck: None,
     };
 
     // === Run 1: Cold start with high revert rate ===
@@ -114,6 +116,8 @@ fn check_rules_with_active_rules() {
         project_root: project_root.clone(),
         feedback_llm: false,
         max_prompt_hints: 10,
+        silence_timeout_secs: None,
+        max_retries_before_stuck: None,
     };
 
     // Do a run to create rules
