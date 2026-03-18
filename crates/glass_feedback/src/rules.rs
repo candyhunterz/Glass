@@ -184,7 +184,7 @@ mod tests {
 
     use super::*;
     use crate::io::save_rules_file;
-    use crate::types::{RulesFile, Scope, Severity};
+    use crate::types::{AblationResult, RulesFile, Scope, Severity};
 
     // -----------------------------------------------------------------------
     // Helper: build a minimal Rule with a specific action and status.
@@ -210,6 +210,8 @@ mod tests {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         }
     }
 

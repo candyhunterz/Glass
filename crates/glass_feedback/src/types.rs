@@ -56,6 +56,55 @@ impl RuleStatus {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AblationResult {
+    #[default]
+    Untested,
+    Needed,
+    Passenger,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricDeltas {
+    #[serde(default)]
+    pub revert_rate: f64,
+    #[serde(default)]
+    pub stuck_rate: f64,
+    #[serde(default)]
+    pub waste_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuleFiring {
+    pub rule_id: String,
+    pub action: String,
+    pub firing_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AttributionScore {
+    pub rule_id: String,
+    #[serde(default)]
+    pub runs_fired: u32,
+    #[serde(default)]
+    pub runs_not_fired: u32,
+    #[serde(default)]
+    pub avg_delta_when_fired: MetricDeltas,
+    #[serde(default)]
+    pub avg_delta_when_not_fired: MetricDeltas,
+    #[serde(default)]
+    pub passenger_score: f64,
+    #[serde(default)]
+    pub last_updated_run: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AttributionFile {
+    #[serde(default)]
+    pub scores: Vec<AttributionScore>,
+}
+
 // ---------------------------------------------------------------------------
 // FindingAction — tagged serde enum
 // ---------------------------------------------------------------------------
@@ -118,6 +167,10 @@ pub struct Rule {
     pub cooldown_remaining: u32,
     #[serde(default)]
     pub stale_runs: u32,
+    #[serde(default)]
+    pub last_ablation_run: String,
+    #[serde(default)]
+    pub ablation_result: AblationResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -150,6 +203,8 @@ pub struct RunMetrics {
     pub prd_items_completed: u32,
     pub prd_items_total: u32,
     pub kickoff_duration_secs: u64,
+    #[serde(default)]
+    pub rule_firings: Vec<RuleFiring>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -334,6 +389,7 @@ mod tests {
             prd_items_completed: 8,
             prd_items_total: 10,
             kickoff_duration_secs: 120,
+            rule_firings: vec![],
         };
         assert!((metrics.revert_rate - 0.15).abs() < f64::EPSILON);
         assert!((metrics.stuck_rate - 0.05).abs() < f64::EPSILON);
@@ -480,5 +536,78 @@ mod tests {
         assert_eq!(cfg.max_prompt_hints, 10);
         assert!(cfg.silence_timeout_secs.is_none());
         assert!(cfg.max_retries_before_stuck.is_none());
+    }
+
+    #[test]
+    fn ablation_result_default_is_untested() {
+        let result = AblationResult::default();
+        assert_eq!(result, AblationResult::Untested);
+    }
+
+    #[test]
+    fn metric_deltas_default_is_zero() {
+        let deltas = MetricDeltas::default();
+        assert!((deltas.revert_rate - 0.0).abs() < f64::EPSILON);
+        assert!((deltas.stuck_rate - 0.0).abs() < f64::EPSILON);
+        assert!((deltas.waste_rate - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_firing_construction() {
+        let firing = RuleFiring {
+            rule_id: "force-commit".to_string(),
+            action: "force_commit".to_string(),
+            firing_count: 3,
+        };
+        assert_eq!(firing.rule_id, "force-commit");
+        assert_eq!(firing.firing_count, 3);
+    }
+
+    #[test]
+    fn attribution_score_default() {
+        let score = AttributionScore::default();
+        assert_eq!(score.runs_fired, 0);
+        assert_eq!(score.runs_not_fired, 0);
+        assert!((score.passenger_score - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_ablation_fields_default() {
+        let rule_toml = r#"
+id = "test"
+trigger = "behavioral"
+trigger_params = {}
+action = "force_commit"
+action_params = {}
+status = "confirmed"
+severity = "medium"
+scope = "project"
+tags = []
+added_run = "run-001"
+added_metric = ""
+"#;
+        let rule: Rule = toml::from_str(rule_toml).unwrap();
+        assert_eq!(rule.ablation_result, AblationResult::Untested);
+        assert_eq!(rule.last_ablation_run, "");
+    }
+
+    #[test]
+    fn run_metrics_rule_firings_default_empty() {
+        let metrics_toml = r#"
+run_id = "run-001"
+project_root = "/tmp"
+iterations = 10
+duration_secs = 600
+revert_rate = 0.1
+stuck_rate = 0.05
+waste_rate = 0.08
+checkpoint_rate = 0.2
+completion = "success"
+prd_items_completed = 5
+prd_items_total = 10
+kickoff_duration_secs = 60
+"#;
+        let metrics: RunMetrics = toml::from_str(metrics_toml).unwrap();
+        assert!(metrics.rule_firings.is_empty());
     }
 }

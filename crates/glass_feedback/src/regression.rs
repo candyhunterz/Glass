@@ -186,6 +186,7 @@ mod tests {
             prd_items_completed: 8,
             prd_items_total: 10,
             kickoff_duration_secs: 60,
+            rule_firings: vec![],
         }
     }
 

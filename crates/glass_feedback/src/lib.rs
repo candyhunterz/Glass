@@ -537,6 +537,7 @@ fn metrics_from_run_data(run_id: &str, data: &RunData) -> RunMetrics {
             .unwrap_or(0),
         prd_items_total: prd_total,
         kickoff_duration_secs: data.kickoff_duration_secs,
+        rule_firings: vec![],
     }
 }
 
@@ -573,7 +574,8 @@ mod tests {
     use super::*;
     use crate::io::{save_rules_file, save_tuning_history};
     use crate::types::{
-        ConfigSnapshot, Rule, RuleStatus, RulesFile, RulesMeta, Scope, Severity, TuningHistoryFile,
+        AblationResult, ConfigSnapshot, Rule, RuleStatus, RulesFile, RulesMeta, Scope, Severity,
+        TuningHistoryFile,
     };
 
     // -----------------------------------------------------------------------
@@ -651,6 +653,8 @@ mod tests {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         }
     }
 

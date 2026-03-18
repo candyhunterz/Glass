@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::io::{load_rules_file, save_rules_file};
-use crate::types::{Rule, RuleStatus, RulesFile, Scope, Severity};
+use crate::types::{AblationResult, Rule, RuleStatus, RulesFile, Scope, Severity};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,6 +46,8 @@ pub fn default_rules() -> Vec<Rule> {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         },
         Rule {
             id: "default-hot-file".to_string(),
@@ -66,6 +68,8 @@ pub fn default_rules() -> Vec<Rule> {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         },
         Rule {
             id: "default-instruction-overload".to_string(),
@@ -86,6 +90,8 @@ pub fn default_rules() -> Vec<Rule> {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         },
         Rule {
             id: "default-flaky-verify".to_string(),
@@ -106,6 +112,8 @@ pub fn default_rules() -> Vec<Rule> {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         },
         Rule {
             id: "default-revert-rate".to_string(),
@@ -126,6 +134,8 @@ pub fn default_rules() -> Vec<Rule> {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         },
         Rule {
             id: "default-waste-rate".to_string(),
@@ -146,6 +156,8 @@ pub fn default_rules() -> Vec<Rule> {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         },
     ]
 }
@@ -226,7 +238,7 @@ mod tests {
 
     use super::*;
     use crate::io::load_rules_file;
-    use crate::types::RulesMeta;
+    use crate::types::{AblationResult, RulesMeta};
 
     // -----------------------------------------------------------------------
     // 1. default_rules_count
@@ -325,6 +337,8 @@ mod tests {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         };
 
         let mut project = RulesFile {

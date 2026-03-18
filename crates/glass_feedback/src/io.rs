@@ -140,7 +140,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::types::{ConfigSnapshot, Rule, RuleStatus, RulesMeta, RunMetrics, Scope, Severity};
+    use crate::types::{
+        AblationResult, ConfigSnapshot, Rule, RuleStatus, RulesMeta, RunMetrics, Scope, Severity,
+    };
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -166,6 +168,8 @@ mod tests {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         }
     }
 
@@ -183,6 +187,7 @@ mod tests {
             prd_items_completed: 5,
             prd_items_total: 8,
             kickoff_duration_secs: 60,
+            rule_firings: vec![],
         }
     }
 

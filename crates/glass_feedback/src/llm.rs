@@ -212,7 +212,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::types::{Rule, RuleStatus};
+    use crate::types::{AblationResult, Rule, RuleStatus};
 
     // Helper: build a minimal RunData with the given iteration count / revert count.
     fn make_run_data(iterations: u32, revert_count: u32) -> RunData {
@@ -246,6 +246,8 @@ mod tests {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         }
     }
 

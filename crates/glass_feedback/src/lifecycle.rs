@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::types::{Finding, FindingAction, Rule, RuleStatus, RunMetrics};
+use crate::types::{AblationResult, Finding, FindingAction, Rule, RuleStatus, RunMetrics};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,6 +117,8 @@ pub fn apply_findings(
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         };
 
         new_rules.push(rule);
@@ -308,7 +310,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::types::{FindingCategory, Scope, Severity};
+    use crate::types::{AblationResult, FindingCategory, Scope, Severity};
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -334,6 +336,8 @@ mod tests {
             trigger_count: 0,
             cooldown_remaining: 0,
             stale_runs: 0,
+            last_ablation_run: String::new(),
+            ablation_result: AblationResult::Untested,
         }
     }
 
@@ -365,6 +369,7 @@ mod tests {
             prd_items_completed: 5,
             prd_items_total: 10,
             kickoff_duration_secs: 30,
+            rule_firings: vec![],
         }
     }
 
