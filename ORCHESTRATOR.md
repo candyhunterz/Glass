@@ -18,6 +18,8 @@ The orchestrator drives Claude Code sessions autonomously. It spawns a separate 
 | `src/usage_tracker.rs` | OAuth usage polling, auto-pause at 80%/hard-stop at 95% |
 | `crates/glass_terminal/src/silence.rs` | SmartTrigger — 4-mode silence detection that drives the loop |
 | `crates/glass_feedback/src/` | Self-improvement feedback loop (analyzer, rules, lifecycle, regression) |
+| `crates/glass_scripting/src/` | Rhai scripting engine, hook registry, action API, script lifecycle, MCP tools, profiles |
+| `src/script_bridge.rs` | Bridge: routes events to scripts, executes actions, tracks lifecycle per run |
 | `crates/glass_core/src/agent_runtime.rs` | Agent command args, system prompt building, activity stream |
 
 ## The Main Loop
@@ -211,11 +213,12 @@ While the orchestrator is running, the user can write `.glass/nudge.md` in the p
 
 ## Overview
 
-The feedback loop analyzes each orchestrator run and produces findings that tune future runs. It operates across three tiers:
+The feedback loop analyzes each orchestrator run and produces findings that tune future runs. It operates across four tiers:
 
 1. **Tier 1: Config Tuning** — adjusts `config.toml` values (silence timeout, max retries, etc.)
 2. **Tier 2: Behavioral Rules** — adds rules to `rules.toml` (force_commit, split_instructions, etc.)
 3. **Tier 3: Prompt Hints** — injects text into the agent's context
+4. **Tier 4: Rhai Scripts** — LLM-generated scripts that hook into Glass events and execute actions at runtime via the embedded scripting engine (`glass_scripting` crate)
 
 ## Files Created
 
@@ -233,6 +236,12 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `nudge.md` | User course correction (read and deleted per iteration) | User-created |
 | `handoff.md` | User notes for next orchestrator activation (read and deleted) | User-created |
 | `done` | Completion artifact signal (configurable path) | Agent creates, orchestrator deletes |
+| `scripts/hooks/*.toml` | Script manifests (name, hooks, status, origin) | Tier 4 generation or user-created |
+| `scripts/hooks/*.rhai` | Rhai script source files | Tier 4 generation or user-created |
+| `scripts/tools/*.toml` | MCP tool script manifests | Tier 4 generation or user-created |
+| `scripts/tools/*.rhai` | MCP tool script source | Tier 4 generation or user-created |
+| `scripts/feedback/*.toml` | Auto-generated script manifests (provisional) | Tier 4 ephemeral agent |
+| `scripts/feedback/*.rhai` | Auto-generated script source | Tier 4 ephemeral agent |
 
 ### Global (`~/.glass/`)
 
@@ -242,6 +251,8 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `agent-system-prompt.txt` | Last-written Glass Agent system prompt |
 | `agent-mcp.json` | MCP config pointing to `glass mcp serve` |
 | `agent-diag.txt` | Spawn diagnostics (PATH, args, success/failure) |
+| `scripts/hooks/*.toml+.rhai` | Global hook scripts (shared across projects) |
+| `scripts/tools/*.toml+.rhai` | Global MCP tool scripts |
 
 ## Feedback Lifecycle
 
@@ -280,8 +291,10 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 7. **Drift** — detect worsening trends over last 3 runs
 8. **Config tuning** — extract Tier 1 findings → write to config.toml (max 1 per run)
 9. **Build LLM prompt** — if `feedback_llm = true`, build analysis prompt from run data + existing findings (returned in `FeedbackResult.llm_prompt`)
-10. **Persist** — save rules.toml, run-metrics.toml, archived-rules.toml
-11. **Sync global** — copy global-scoped rules to `~/.glass/global-rules.toml`; remove rejected/stale ones
+10. **Build script prompt** — if `script_generation = true` and findings are empty but waste/stuck rates are high, build Tier 4 prompt (returned in `FeedbackResult.script_prompt`)
+11. **Persist** — save rules.toml, run-metrics.toml, archived-rules.toml
+12. **Sync global** — copy global-scoped rules to `~/.glass/global-rules.toml`; remove rejected/stale ones
+13. **Script lifecycle** — `ScriptBridge::on_feedback_run_end(regressed)` promotes/rejects/ages scripts based on regression result (see Script Lifecycle below)
 
 ### Feedback LLM (Tier 3 — async, after on_run_end)
 
@@ -300,6 +313,155 @@ When `feedback_llm = true` in config:
 **Fire-and-forget:** If the LLM call fails or times out, Tier 1+2 findings are already persisted. Tier 3 is additive.
 
 **Race condition handling:** If the user re-enables the orchestrator (potentially in a different project) before the ephemeral agent completes, the response handler uses the `project_root` captured at spawn time — NOT `self.orchestrator.project_root` which may have changed. The LLM findings go to the correct project's `rules.toml`. The in-memory RuleEngine for the new run won't see these findings; they take effect on the next `on_run_start()`.
+
+### Script Generation (Tier 4 — async, after on_run_end)
+
+When `script_generation = true` in config (default) and Tier 1-3 findings are empty but waste/stuck rates exceed 33%:
+
+1. `on_run_end` returns `script_prompt = Some(...)` containing run metrics, all 20 hook points, the full GlassApi reference, and instructions to write a Rhai script
+2. `run_feedback_on_end` captures `project_root` at spawn time, then spawns an ephemeral agent (60s timeout) with `EphemeralPurpose::ScriptGeneration`
+3. The LLM responds with structured blocks: `SCRIPT_NAME:`, `SCRIPT_HOOKS:`, and fenced `\`\`\`rhai` source
+4. `EphemeralAgentComplete` handler calls `parse_script_response()` which extracts name, hooks, and source
+5. The handler writes a `.toml` manifest + `.rhai` source to `<project>/.glass/scripts/feedback/` with `status = "provisional"`
+6. `script_bridge.reload()` picks up the new script for the next run
+7. The script's lifecycle follows the same promotion/rejection path as rules (see Script Lifecycle below)
+
+**Deduplication:** Before writing, the handler checks if a script with the same name already exists. If the existing script is not archived, the new one is skipped. Archived scripts are safe to overwrite.
+
+**Parse failure suppression:** If `parse_script_response` fails 3 consecutive times, Tier 4 generation is suppressed until a successful parse resets the counter.
+
+**Fire-and-forget:** Same pattern as Tier 3. If the ephemeral agent fails or times out, Tier 1-3 findings are already persisted.
+
+## Scripting Engine (`glass_scripting` crate)
+
+### Overview
+
+The scripting layer lets Glass improve itself at runtime through Rhai scripts. Scripts hook into 20 event points across every Glass component and interact through a curated action API.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `crates/glass_scripting/src/engine.rs` | Rhai engine setup, GlassApi custom type, sandbox config |
+| `crates/glass_scripting/src/hooks.rs` | HookRegistry: maps HookPoint → sorted scripts |
+| `crates/glass_scripting/src/loader.rs` | Load .toml manifest + .rhai source pairs from disk |
+| `crates/glass_scripting/src/lifecycle.rs` | Promote, reject, record_failure, record_trigger, increment_stale |
+| `crates/glass_scripting/src/mcp.rs` | ScriptToolRegistry for dynamic MCP tools |
+| `crates/glass_scripting/src/profile.rs` | Export/import shareable profiles |
+| `src/script_bridge.rs` | Bridge: owns ScriptSystem, routes events, executes actions, tracks lifecycle |
+
+### Hook Points
+
+Scripts subscribe to events via their `.toml` manifest's `hooks` array:
+
+| Hook | Fires When | Event Data |
+|------|-----------|------------|
+| `CommandStart` | Command begins executing | command |
+| `CommandComplete` | Command finishes | command, exit_code, duration_ms |
+| `BlockStateChange` | Block state transition | — |
+| `SnapshotBefore` | About to snapshot (can veto) | command |
+| `SnapshotAfter` | Snapshot taken | — |
+| `HistoryQuery` | Search executed | — |
+| `HistoryInsert` | Command record stored | — |
+| `PipelineComplete` | All pipe stages finished | — |
+| `ConfigReload` | config.toml changed | — |
+| `OrchestratorRunStart` | Ctrl+Shift+O on | — |
+| `OrchestratorRunEnd` | Deactivation | iterations |
+| `OrchestratorIteration` | Each silence→response cycle | iteration |
+| `OrchestratorCheckpoint` | Checkpoint fired | — |
+| `OrchestratorStuck` | Stuck detected | — |
+| `McpRequest` | MCP tool call received | — |
+| `McpResponse` | MCP tool result returned | — |
+| `TabCreate` | New tab opened | tab_index |
+| `TabClose` | Tab closed | tab_index |
+| `SessionStart` | Glass launched | — |
+| `SessionEnd` | Glass shutting down | — |
+
+### GlassApi (the `glass` object in scripts)
+
+Read-only methods (from per-hook snapshot, no DB queries):
+- `glass.cwd()`, `glass.git_branch()`, `glass.git_dirty_files()`, `glass.config(key)`, `glass.active_rules()`
+
+Action methods (queued, executed after script completes):
+- `glass.commit(msg)`, `glass.log(level, msg)`, `glass.notify(msg)`, `glass.set_config(key, value)`, `glass.inject_prompt_hint(text)`, `glass.force_snapshot(paths)`, `glass.trigger_checkpoint(reason)`, `glass.extend_silence(secs)`
+
+### Execution Model
+
+1. Scripts sorted by priority: confirmed > user > provisional (reversed for McpRequest: user > confirmed > provisional)
+2. Each script runs in its own Rhai Scope — no shared state
+3. Actions collected into `Vec<Action>`, executed by bridge after all scripts complete
+4. Failed scripts logged and skipped — other scripts still run
+5. **SnapshotBefore:** AND aggregation — any confirmed/user script returning false vetoes
+6. **McpRequest:** First-responder-wins — first script with non-empty actions stops the loop
+
+### Sandbox Limits
+
+```rust
+engine.set_max_operations(100_000);     // primary computation bound
+engine.set_max_string_size(1_048_576);  // 1MB per string
+engine.set_max_array_size(10_000);
+engine.set_max_map_size(10_000);
+```
+
+Configurable via `[scripting]` section with hard ceilings (compiled constants):
+- `max_operations`: default 100,000, ceiling 1,000,000
+- `max_timeout_ms`: default 2,000, ceiling 10,000
+- `max_scripts_per_hook`: default 10, ceiling 25
+- `max_total_scripts`: default 100, ceiling 500
+- `max_mcp_tools`: default 20, ceiling 50
+
+### Script Lifecycle
+
+Mirrors the rule lifecycle. The ScriptBridge tracks per-run execution and calls lifecycle functions on run end:
+
+```
+Tier 4 generates script
+    → Provisional (runs for one cycle)
+        ↓ next run improved/neutral + script fired
+      Confirmed (permanent, runs every session)
+        ↓ no triggers for 5 runs
+      Stale → (re-triggered) → Confirmed
+        ↓ no triggers for 10 runs
+      Archived (status in manifest, file stays in place)
+
+      Provisional → (regression detected) → Archived
+      Any status → (3 consecutive errors) → Archived
+```
+
+**Per-run tracking:** `ScriptBridge` maintains `scripts_triggered: HashSet` and `scripts_errored: HashMap` during each orchestrator run. Reset on run start.
+
+**on_feedback_run_end(regressed):**
+1. For each feedback-origin script (skip user-origin):
+   - Errored ≥3 times this run → `lifecycle::record_failure` (auto-archive)
+   - Provisional + regressed → `lifecycle::reject_script`
+   - Provisional + not regressed + triggered → `lifecycle::promote_script`
+   - Confirmed/Stale + triggered → `lifecycle::record_trigger` (resets failure count, resets stale)
+   - Confirmed/Stale + not triggered → `lifecycle::increment_stale(path, 5, 10)`
+2. Reset tracking counters
+3. Reload scripts from disk
+
+### Dynamic MCP Tools
+
+Scripts with `type = "mcp_tool"` in their manifest register as MCP tools:
+- `glass_script_tool` — static MCP tool that forwards to the Glass binary via IPC, which runs the named script
+- `glass_list_script_tools` — returns all confirmed script tool definitions (name, description, params_schema)
+- Provisional tools are registered but not advertised
+
+### Profile Export/Import
+
+```bash
+glass profile export --name rust-backend    # bundles confirmed scripts + rules
+glass profile import --path rust-backend.glassprofile  # imports as provisional
+```
+
+Imported profiles enter as provisional. The local feedback loop validates and promotes/rejects them.
+
+### Safety Guards
+
+- **ConfigReload loop guard:** `config_reload_guard` flag prevents ConfigReload → SetConfig → ConfigReload infinite recursion. Set on SetConfig, cleared on any non-ConfigReload hook.
+- **Tier 4 deduplication:** New scripts are skipped if a non-archived script with the same name exists.
+- **Parse failure suppression:** After 3 consecutive `parse_script_response` failures, Tier 4 ephemeral agent spawn is suppressed.
+- **Scripts cannot:** access filesystem directly, spawn processes, write to PTY, modify renderer, delete history/snapshots. All side effects go through the curated Action API.
 
 ## Rule Status Lifecycle
 
@@ -354,6 +516,15 @@ max_iterations = 120               # Bounded run limit (0 = unlimited)
 agent_prompt_pattern = ""          # Regex for instant prompt detection
 feedback_llm = false               # Enable LLM qualitative analysis (Tier 3 prompt hints)
 max_prompt_hints = 10              # Max Tier 3 prompt hint rules per project
+
+[scripting]
+enabled = true                     # Master switch for scripting engine
+max_operations = 100000            # Per script operation limit (hard ceiling: 1000000)
+max_timeout_ms = 2000              # Wall-clock safety net (hard ceiling: 10000)
+max_scripts_per_hook = 10          # Per hook point (hard ceiling: 25)
+max_total_scripts = 100            # Across all hooks (hard ceiling: 500)
+max_mcp_tools = 20                 # Dynamic MCP tools (hard ceiling: 50)
+script_generation = true           # Allow feedback loop to generate Tier 4 scripts
 ```
 
 ## Constants
@@ -380,4 +551,8 @@ max_prompt_hints = 10              # Max Tier 3 prompt hint rules per project
 - **Global rules sync is bidirectional:** confirmed/provisional global rules are upserted to `~/.glass/global-rules.toml`; rejected/stale ones are removed.
 - **`trigger_count` is reset to 0 at the start of each run** in `on_run_start`. It tracks per-run firing for accurate staleness detection.
 - **Feedback LLM is fire-and-forget.** The ephemeral agent runs in the background after deactivation. If the user re-enables orchestrator before it completes, the response handler uses the project root captured at spawn time, not the current one. LLM findings take effect on the next `on_run_start`, not the current run.
-- **Three finding tiers:** Tier 1 = config tuning (adjusts config.toml), Tier 2 = behavioral rules (force_commit, split_instructions, etc.), Tier 3 = LLM prompt hints (qualitative advice injected into agent context). Tiers 1+2 are synchronous in `on_run_end`. Tier 3 is async via ephemeral agent.
+- **Four finding tiers:** Tier 1 = config tuning (adjusts config.toml), Tier 2 = behavioral rules (force_commit, split_instructions, etc.), Tier 3 = LLM prompt hints (qualitative advice injected into agent context), Tier 4 = LLM-generated Rhai scripts (new logic loaded at runtime). Tiers 1+2 are synchronous in `on_run_end`. Tiers 3+4 are async via ephemeral agents.
+- **Script lifecycle mirrors rule lifecycle.** Provisional → Confirmed (on improvement) or → Archived (on regression/errors/staleness). The `ScriptBridge` tracks per-run triggers/errors and calls `glass_scripting::lifecycle` functions in `on_feedback_run_end`.
+- **Scripts run on the main thread.** The Rhai `max_operations` limit is the primary bound. A `max_timeout_ms` wall-clock safety net is configured but execution is synchronous — heavy scripts could briefly block rendering.
+- **Project scripts override global scripts** with the same name. `load_all_scripts` loads project-local first, then global, skipping name duplicates.
+- **ConfigReload loop guard** prevents scripts from causing infinite config reload cycles. The `config_reload_guard` flag is set when `SetConfig` executes and cleared on the next non-ConfigReload hook.
