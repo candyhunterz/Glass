@@ -10,6 +10,8 @@ mod history;
 #[allow(dead_code)]
 mod orchestrator;
 mod orchestrator_events;
+#[allow(dead_code)]
+mod script_bridge;
 mod usage_tracker;
 
 use std::borrow::Cow;
@@ -363,6 +365,8 @@ struct Processor {
     feedback_llm_project_root: Option<String>,
     /// Max prompt hints captured at spawn time for the same reason.
     feedback_llm_max_hints: usize,
+    /// Bridge to the Rhai scripting engine for hook-based automation.
+    script_bridge: script_bridge::ScriptBridge,
 }
 
 impl Drop for AgentRuntime {
@@ -1091,15 +1095,16 @@ Session Continuity:
         use std::io::Write;
         // Always send an initial message — Claude CLI 2.1.77+ won't complete
         // initialization without one. Use the handoff if provided, else GLASS_WAIT.
-        let content = initial_message
-            .as_deref()
-            .unwrap_or("GLASS_WAIT");
+        let content = initial_message.as_deref().unwrap_or("GLASS_WAIT");
         let json_msg = serde_json::json!({
             "type": "user",
             "message": { "role": "user", "content": content }
-        }).to_string();
+        })
+        .to_string();
         match writeln!(stdin, "{json_msg}") {
-            Ok(()) => { let _ = stdin.flush(); }
+            Ok(()) => {
+                let _ = stdin.flush();
+            }
             Err(e) => {
                 tracing::warn!("AgentRuntime: failed to write initial message: {}", e);
             }
@@ -1778,6 +1783,24 @@ impl Processor {
             })
     }
 
+    /// Build a default [`glass_scripting::HookContext`] for script hooks.
+    #[allow(dead_code)]
+    ///
+    /// Uses the orchestrator project root if available, otherwise the focused
+    /// session CWD. Git info and recent commands are not populated here --
+    /// callers should enrich the context if they have more data.
+    fn build_hook_context(&self) -> glass_scripting::HookContext {
+        let cwd = if !self.orchestrator.project_root.is_empty() {
+            self.orchestrator.project_root.clone()
+        } else {
+            self.get_focused_cwd()
+        };
+        glass_scripting::HookContext {
+            cwd,
+            ..Default::default()
+        }
+    }
+
     /// Run the feedback loop on_run_end, applying any config changes and logging results.
     fn run_feedback_on_end(&mut self) {
         if let Some(feedback_state) = self.feedback_state.take() {
@@ -1811,8 +1834,7 @@ impl Processor {
                 // Capture project root and max_prompt_hints NOW so the response
                 // handler uses the correct values even if the user switches
                 // projects before the ephemeral agent completes.
-                self.feedback_llm_project_root =
-                    Some(self.orchestrator.project_root.clone());
+                self.feedback_llm_project_root = Some(self.orchestrator.project_root.clone());
                 self.feedback_llm_max_hints = self
                     .config
                     .agent
@@ -1827,8 +1849,7 @@ impl Processor {
                     timeout: std::time::Duration::from_secs(60),
                     purpose: glass_core::event::EphemeralPurpose::FeedbackAnalysis,
                 };
-                if let Err(e) =
-                    ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
+                if let Err(e) = ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
                 {
                     tracing::warn!("Feedback LLM: ephemeral spawn failed: {e:?}");
                 }
@@ -1843,7 +1864,8 @@ impl Processor {
         // Compute avg idle time from iteration timestamps
         let avg_idle = if self.orchestrator.feedback_iteration_timestamps.len() >= 2 {
             let ts = &self.orchestrator.feedback_iteration_timestamps;
-            let total: f64 = ts.windows(2)
+            let total: f64 = ts
+                .windows(2)
                 .map(|w| w[1].duration_since(w[0]).as_secs_f64())
                 .sum();
             total / (ts.len() - 1) as f64
@@ -1852,13 +1874,18 @@ impl Processor {
         };
 
         // Collect fingerprint hashes for sequence analysis
-        let fingerprint_seq: Vec<u64> = self.orchestrator.recent_fingerprints
+        let fingerprint_seq: Vec<u64> = self
+            .orchestrator
+            .recent_fingerprints
             .iter()
             .map(|fp| fp.terminal_hash)
             .collect();
 
         // Read PRD content for scope creep detection
-        let prd_content = self.config.agent.as_ref()
+        let prd_content = self
+            .config
+            .agent
+            .as_ref()
             .and_then(|a| a.orchestrator.as_ref())
             .and_then(|o| {
                 let prd_path = std::path::Path::new(root).join(&o.prd_path);
@@ -1871,10 +1898,12 @@ impl Processor {
             .current_dir(root)
             .output()
             .ok()
-            .and_then(|o| if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok()
+                } else {
+                    None
+                }
             });
 
         // Get git log for post-mortem
@@ -1883,26 +1912,40 @@ impl Processor {
             .current_dir(root)
             .output()
             .ok()
-            .and_then(|o| if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok()
+                } else {
+                    None
+                }
             });
 
         glass_feedback::RunData {
             project_root: root.clone(),
             iterations: self.orchestrator.iteration,
-            duration_secs: self.orchestrator_activated_at
+            duration_secs: self
+                .orchestrator_activated_at
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0),
             kickoff_duration_secs: 0,
             iterations_tsv: std::fs::read_to_string(
-                std::path::Path::new(root).join(".glass").join("iterations.tsv"),
-            ).unwrap_or_default(),
-            revert_count: self.orchestrator.metric_baseline.as_ref()
-                .map(|m| m.revert_count).unwrap_or(0),
-            keep_count: self.orchestrator.metric_baseline.as_ref()
-                .map(|m| m.keep_count).unwrap_or(0),
+                std::path::Path::new(root)
+                    .join(".glass")
+                    .join("iterations.tsv"),
+            )
+            .unwrap_or_default(),
+            revert_count: self
+                .orchestrator
+                .metric_baseline
+                .as_ref()
+                .map(|m| m.revert_count)
+                .unwrap_or(0),
+            keep_count: self
+                .orchestrator
+                .metric_baseline
+                .as_ref()
+                .map(|m| m.keep_count)
+                .unwrap_or(0),
             stuck_count: self.orchestrator.feedback_stuck_count,
             checkpoint_count: self.orchestrator.feedback_checkpoint_count,
             waste_count: self.orchestrator.feedback_waste_iterations,
@@ -1918,11 +1961,17 @@ impl Processor {
             fast_trigger_during_output: self.orchestrator.feedback_fast_trigger_during_output,
             avg_idle_between_iterations_secs: avg_idle,
             fingerprint_sequence: fingerprint_seq,
-            config_silence_timeout: self.config.agent.as_ref()
+            config_silence_timeout: self
+                .config
+                .agent
+                .as_ref()
                 .and_then(|a| a.orchestrator.as_ref())
                 .map(|o| o.silence_timeout_secs)
                 .unwrap_or(30),
-            config_max_retries: self.config.agent.as_ref()
+            config_max_retries: self
+                .config
+                .agent
+                .as_ref()
                 .and_then(|a| a.orchestrator.as_ref())
                 .map(|o| o.max_retries_before_stuck)
                 .unwrap_or(3),
@@ -2016,9 +2065,8 @@ impl Processor {
         let cwd = self.orchestrator.project_root.clone();
         let (git_log, git_diff_stat, git_diff_names) = checkpoint_synth::gather_git_state(&cwd);
         let iterations_tsv = orchestrator::read_iterations_log_truncated(&cwd, 50);
-        let metric_summary = checkpoint_synth::build_metric_summary(
-            self.orchestrator.metric_baseline.as_ref(),
-        );
+        let metric_summary =
+            checkpoint_synth::build_metric_summary(self.orchestrator.metric_baseline.as_ref());
 
         let data = checkpoint_synth::CheckpointData {
             soi_errors: Vec::new(),
@@ -2034,8 +2082,7 @@ impl Processor {
         };
 
         let fallback = checkpoint_synth::build_fallback_checkpoint(&data);
-        self.orchestrator
-            .begin_synthesis(completed, next, fallback);
+        self.orchestrator.begin_synthesis(completed, next, fallback);
 
         // Check usage before spawning ephemeral agent
         let usage_ok = self
@@ -2295,8 +2342,9 @@ impl ApplicationHandler<AppEvent> for Processor {
 
             // Spawn coordination poller for agent/lock status
             let focused_cwd = self.get_focused_cwd();
-            let project_root = glass_coordination::canonicalize_path(std::path::Path::new(&focused_cwd))
-                .unwrap_or(focused_cwd);
+            let project_root =
+                glass_coordination::canonicalize_path(std::path::Path::new(&focused_cwd))
+                    .unwrap_or(focused_cwd);
             glass_core::coordination_poller::spawn_coordination_poller(
                 project_root,
                 self.proxy.clone(),
@@ -2379,7 +2427,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-
                 // Clear toast if agent is no longer active (agent_runtime was dropped).
                 if self.agent_runtime.is_none() {
                     self.active_toast = None;
@@ -4160,6 +4207,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Claude Code starts, so we capture it here.
                                     self.orchestrator.project_root = current_cwd.clone();
 
+                                    // Load scripts for the project now that we know its root.
+                                    self.script_bridge.load_for_project(&current_cwd);
+
                                     // Kickoff flow: check PRD existence
                                     let prd_rel = self
                                         .config
@@ -4289,17 +4339,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // agent sees accurate context — not a stale checkpoint from
                                     // a previous run that the user may have worked past manually.
                                     {
-                                        let cp_dir = std::path::Path::new(&current_cwd).join(".glass");
+                                        let cp_dir =
+                                            std::path::Path::new(&current_cwd).join(".glass");
                                         let _ = std::fs::create_dir_all(&cp_dir);
                                         let git_diff = git_cmd()
                                             .args(["diff", "--stat"])
                                             .current_dir(&current_cwd)
                                             .output()
                                             .ok()
-                                            .and_then(|o| if o.status.success() {
-                                                String::from_utf8(o.stdout).ok()
-                                            } else {
-                                                None
+                                            .and_then(|o| {
+                                                if o.status.success() {
+                                                    String::from_utf8(o.stdout).ok()
+                                                } else {
+                                                    None
+                                                }
                                             });
                                         let prd_status = if prd_path.exists() {
                                             "PRD exists"
@@ -4315,7 +4368,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             git_log.as_deref().unwrap_or("(no git history)"),
                                             git_diff.as_deref().unwrap_or("(clean working tree)"),
                                         );
-                                        let _ = std::fs::write(cp_dir.join("checkpoint.md"), &checkpoint);
+                                        let _ = std::fs::write(
+                                            cp_dir.join("checkpoint.md"),
+                                            &checkpoint,
+                                        );
                                     }
 
                                     let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
@@ -4447,10 +4503,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .and_then(|a| a.orchestrator.as_ref())
                                             .map(|o| o.max_prompt_hints)
                                             .unwrap_or(10),
-                                        silence_timeout_secs: self.config.agent.as_ref()
+                                        silence_timeout_secs: self
+                                            .config
+                                            .agent
+                                            .as_ref()
                                             .and_then(|a| a.orchestrator.as_ref())
                                             .map(|o| o.silence_timeout_secs),
-                                        max_retries_before_stuck: self.config.agent.as_ref()
+                                        max_retries_before_stuck: self
+                                            .config
+                                            .agent
+                                            .as_ref()
                                             .and_then(|a| a.orchestrator.as_ref())
                                             .map(|o| o.max_retries_before_stuck),
                                     };
@@ -4491,9 +4553,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         let cp_path = std::path::Path::new(&cwd)
                                             .join(".glass")
                                             .join("checkpoint.md");
-                                        let _ = std::fs::create_dir_all(
-                                            cp_path.parent().unwrap(),
-                                        );
+                                        let _ = std::fs::create_dir_all(cp_path.parent().unwrap());
                                         if let Some(fallback) =
                                             self.orchestrator.cached_checkpoint_fallback.take()
                                         {
@@ -6382,6 +6442,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         font_changed
                     );
 
+                    // Update scripting bridge enabled state from new config.
+                    self.script_bridge.update_config(&self.config);
+
                     // AGTC-01: Restart agent runtime when [agent] section changes.
                     let agent_config_changed = old_agent != self.config.agent;
                     if agent_config_changed {
@@ -6486,8 +6549,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|o| o.enabled)
                             .unwrap_or(false);
 
-                        if orch_enabled && !was_enabled
-                            && self.orchestrator_activated_at.is_some()
+                        if orch_enabled && !was_enabled && self.orchestrator_activated_at.is_some()
                         {
                             // Activating via settings overlay toggle — only when the user
                             // has previously used the orchestrator (activated_at is set by
@@ -6555,10 +6617,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .and_then(|a| a.orchestrator.as_ref())
                                     .map(|o| o.max_prompt_hints)
                                     .unwrap_or(10),
-                                silence_timeout_secs: self.config.agent.as_ref()
+                                silence_timeout_secs: self
+                                    .config
+                                    .agent
+                                    .as_ref()
                                     .and_then(|a| a.orchestrator.as_ref())
                                     .map(|o| o.silence_timeout_secs),
-                                max_retries_before_stuck: self.config.agent.as_ref()
+                                max_retries_before_stuck: self
+                                    .config
+                                    .agent
+                                    .as_ref()
                                     .and_then(|a| a.orchestrator.as_ref())
                                     .map(|o| o.max_retries_before_stuck),
                             };
@@ -6983,11 +7051,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.activity_stream_tx = Some(new_tx);
 
                     // Use stored project_root if orchestrator is active, else terminal CWD
-                    let cwd = if self.orchestrator.active && !self.orchestrator.project_root.is_empty() {
-                        self.orchestrator.project_root.clone()
-                    } else {
-                        self.get_focused_cwd()
-                    };
+                    let cwd =
+                        if self.orchestrator.active && !self.orchestrator.project_root.is_empty() {
+                            self.orchestrator.project_root.clone()
+                        } else {
+                            self.get_focused_cwd()
+                        };
 
                     // On crash restart, provide checkpoint context so the agent
                     // can resume instead of starting blind with GLASS_WAIT.
@@ -7110,7 +7179,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
                 self.orchestrator.iterations_since_checkpoint += 1;
-                self.orchestrator.feedback_iteration_timestamps.push(std::time::Instant::now());
+                self.orchestrator
+                    .feedback_iteration_timestamps
+                    .push(std::time::Instant::now());
 
                 // Check bounded iteration limit — but let Done/Checkpoint through
                 // so the current response isn't silently dropped.
@@ -7196,7 +7267,9 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Cap at 50 most recent responses for instruction overload analysis
                         if self.orchestrator.feedback_agent_responses.len() < 50 {
-                            self.orchestrator.feedback_agent_responses.push(text.clone());
+                            self.orchestrator
+                                .feedback_agent_responses
+                                .push(text.clone());
                         }
 
                         // Instruction splitting enforcement: if the
@@ -7231,7 +7304,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::debug!(
                                 "Orchestrator: deferring TypeText — kickoff not complete"
                             );
-                            self.orchestrator.deferred_type_text.push(text_to_type.clone());
+                            self.orchestrator
+                                .deferred_type_text
+                                .push(text_to_type.clone());
                         } else if let Some(ctx) = self.windows.values().next() {
                             // Type the text into the active PTY — but only if a command
                             // isn't actively executing (avoid interrupting Claude Code mid-turn)
@@ -7250,7 +7325,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     tracing::debug!(
                                         "Orchestrator: deferring TypeText — command is executing"
                                     );
-                                    self.orchestrator.deferred_type_text.push(text_to_type.clone());
+                                    self.orchestrator
+                                        .deferred_type_text
+                                        .push(text_to_type.clone());
                                 } else {
                                     let bytes = format!("{}\n", text_to_type).into_bytes();
                                     let _ = session
@@ -7427,12 +7504,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .block_manager
                                 .current_block_index()
                                 .and_then(|idx| session.block_manager.blocks().get(idx))
-                                .map(|b| b.state == glass_terminal::block_manager::BlockState::Executing)
+                                .map(|b| {
+                                    b.state == glass_terminal::block_manager::BlockState::Executing
+                                })
                                 .unwrap_or(false);
                             if !block_executing {
                                 let deferred = self.orchestrator.deferred_type_text.remove(0);
                                 let bytes = format!("{}\n", deferred).into_bytes();
-                                let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                let _ = session
+                                    .pty_sender
+                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
                                 self.orchestrator.mark_pty_write();
                                 tracing::info!("Orchestrator: flushed deferred TypeText ({} chars, {} remaining)", deferred.len(), self.orchestrator.deferred_type_text.len());
                                 return; // Let the typed text be processed before next silence
@@ -7666,7 +7747,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             Some(self.orchestrator.iteration);
                                         return;
                                     } else {
-                                        tracing::warn!("Orchestrator: failed to spawn verify thread");
+                                        tracing::warn!(
+                                            "Orchestrator: failed to spawn verify thread"
+                                        );
                                     }
                                 }
                             }
@@ -7793,10 +7876,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .orchestrator
                                     .feedback_reverted_files
                                     .clone(),
-                                verify_alternations: self.orchestrator.feedback_verify_sequence
+                                verify_alternations: self
+                                    .orchestrator
+                                    .feedback_verify_sequence
                                     .windows(2)
                                     .filter(|w| w[0] != w[1])
-                                    .count() as u32,
+                                    .count()
+                                    as u32,
                             };
                             let actions = glass_feedback::check_rules(feedback_state, &run_state);
                             for action in &actions {
@@ -7825,23 +7911,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .output();
                                             if let Ok(o) = result {
                                                 if o.status.success() {
-                                                    self.orchestrator.last_good_commit =
-                                                        git_cmd()
-                                                            .args(["rev-parse", "HEAD"])
-                                                            .current_dir(&cwd)
-                                                            .output()
-                                                            .ok()
-                                                            .and_then(|o2| {
-                                                                if o2.status.success() {
-                                                                    String::from_utf8(o2.stdout)
-                                                                        .ok()
-                                                                        .map(|s| {
-                                                                            s.trim().to_string()
-                                                                        })
-                                                                } else {
-                                                                    None
-                                                                }
-                                                            });
+                                                    self.orchestrator.last_good_commit = git_cmd()
+                                                        .args(["rev-parse", "HEAD"])
+                                                        .current_dir(&cwd)
+                                                        .output()
+                                                        .ok()
+                                                        .and_then(|o2| {
+                                                            if o2.status.success() {
+                                                                String::from_utf8(o2.stdout)
+                                                                    .ok()
+                                                                    .map(|s| s.trim().to_string())
+                                                            } else {
+                                                                None
+                                                            }
+                                                        });
                                                     self.orchestrator
                                                         .iterations_since_last_commit = 0;
                                                     self.orchestrator.feedback_commit_count += 1;
@@ -7873,23 +7956,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .output();
                                             if let Ok(o) = result {
                                                 if o.status.success() {
-                                                    self.orchestrator.last_good_commit =
-                                                        git_cmd()
-                                                            .args(["rev-parse", "HEAD"])
-                                                            .current_dir(&cwd)
-                                                            .output()
-                                                            .ok()
-                                                            .and_then(|o2| {
-                                                                if o2.status.success() {
-                                                                    String::from_utf8(o2.stdout)
-                                                                        .ok()
-                                                                        .map(|s| {
-                                                                            s.trim().to_string()
-                                                                        })
-                                                                } else {
-                                                                    None
-                                                                }
-                                                            });
+                                                    self.orchestrator.last_good_commit = git_cmd()
+                                                        .args(["rev-parse", "HEAD"])
+                                                        .current_dir(&cwd)
+                                                        .output()
+                                                        .ok()
+                                                        .and_then(|o2| {
+                                                            if o2.status.success() {
+                                                                String::from_utf8(o2.stdout)
+                                                                    .ok()
+                                                                    .map(|s| s.trim().to_string())
+                                                            } else {
+                                                                None
+                                                            }
+                                                        });
                                                     self.orchestrator
                                                         .iterations_since_last_commit = 0;
                                                     tracing::info!(
@@ -8778,10 +8858,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         match result {
                             Ok(resp) => {
                                 if let Some(cost) = resp.cost_usd {
-                                    tracing::info!(
-                                        "Checkpoint synthesis cost: ${:.4}",
-                                        cost
-                                    );
+                                    tracing::info!("Checkpoint synthesis cost: ${:.4}", cost);
                                 }
                                 orchestrator::append_iteration_log(
                                     &cwd,
@@ -8827,8 +8904,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     quality_ctx.push_str(&verdict.gaps.join("; "));
                                 }
                                 if verdict.regressed {
-                                    quality_ctx
-                                        .push_str(" [REGRESSED from previous checkpoint]");
+                                    quality_ctx.push_str(" [REGRESSED from previous checkpoint]");
                                 }
                                 quality_ctx.push('\n');
                                 self.orchestrator
@@ -8868,10 +8944,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         match result {
                             Ok(resp) => {
                                 if let Some(cost) = resp.cost_usd {
-                                    tracing::info!(
-                                        "Feedback LLM cost: ${:.4}",
-                                        cost
-                                    );
+                                    tracing::info!("Feedback LLM cost: ${:.4}", cost);
                                 }
                                 glass_feedback::apply_llm_findings(
                                     &project_root,
@@ -9221,6 +9294,8 @@ fn main() {
                 .map(|o| o.max_retries_before_stuck)
                 .unwrap_or(3);
 
+            let script_bridge = script_bridge::ScriptBridge::new(&config);
+
             let mut processor = Processor {
                 windows: HashMap::new(),
                 proxy,
@@ -9286,6 +9361,7 @@ fn main() {
                 config_write_suppress_until: None,
                 feedback_llm_project_root: None,
                 feedback_llm_max_hints: 10,
+                script_bridge,
             };
 
             event_loop
