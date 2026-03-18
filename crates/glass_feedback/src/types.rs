@@ -245,6 +245,7 @@ pub struct FeedbackConfig {
     pub silence_timeout_secs: Option<u64>,
     pub max_retries_before_stuck: Option<u32>,
     pub ablation_enabled: bool,
+    pub ablation_sweep_interval: u32,
 }
 
 impl Default for FeedbackConfig {
@@ -256,6 +257,7 @@ impl Default for FeedbackConfig {
             silence_timeout_secs: None,
             max_retries_before_stuck: None,
             ablation_enabled: true,
+            ablation_sweep_interval: 20,
         }
     }
 }
@@ -539,6 +541,7 @@ mod tests {
         assert!(cfg.silence_timeout_secs.is_none());
         assert!(cfg.max_retries_before_stuck.is_none());
         assert!(cfg.ablation_enabled);
+        assert_eq!(cfg.ablation_sweep_interval, 20);
     }
 
     #[test]

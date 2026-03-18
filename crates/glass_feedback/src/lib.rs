@@ -4,9 +4,10 @@
 //! (config tuning, behavioral rules, prompt hints), applies changes
 //! through a guarded lifecycle, and auto-rolls back regressions.
 
-pub mod analyzer;
 pub mod ablation;
+pub mod analyzer;
 pub mod attribution;
+pub mod coverage;
 pub mod defaults;
 pub mod io;
 pub mod lifecycle;
@@ -14,7 +15,6 @@ pub mod llm;
 pub mod quality;
 pub mod regression;
 pub mod rules;
-pub mod coverage;
 pub mod types;
 
 #[allow(unused_imports)]
@@ -288,6 +288,14 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     );
     lifecycle::process_cooldowns(&mut project_rules_file.rules);
 
+    // Prune attribution scores for archived rules
+    let active_ids: Vec<String> = project_rules_file
+        .rules
+        .iter()
+        .map(|r| r.id.clone())
+        .collect();
+    attribution::prune(&mut attribution_scores, &active_ids);
+
     // --- Step 8: drift check ---
     let recent_metrics: Vec<RunMetrics> = metrics_file
         .runs
@@ -366,8 +374,7 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     let script_generation = true;
     let script_prompt = if script_generation
         && findings.is_empty()
-        && (data.stuck_count > data.iterations / 3
-            || data.waste_count > data.iterations / 3)
+        && (data.stuck_count > data.iterations / 3 || data.waste_count > data.iterations / 3)
     {
         Some(build_script_prompt(&data))
     } else {
@@ -451,7 +458,9 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
 ///
 /// The ablation target rule (if any) is silently skipped this run.
 pub fn check_rules(state: &mut FeedbackState, run_state: &RunState) -> Vec<RuleAction> {
-    state.engine.check_rules(run_state, state.ablation_target.as_deref())
+    state
+        .engine
+        .check_rules(run_state, state.ablation_target.as_deref())
 }
 
 /// Return the text of all `prompt_hint` rules that are `Confirmed` or
@@ -637,10 +646,14 @@ fn metrics_from_run_data(run_id: &str, data: &RunData) -> RunMetrics {
         waste_rate,
         checkpoint_rate,
         completion: data.completion_reason.clone(),
-        prd_items_completed: data.prd_content.as_deref()
-            .map(|p| p.lines()
-                .filter(|l| l.trim_start().starts_with("- [x]"))
-                .count() as u32)
+        prd_items_completed: data
+            .prd_content
+            .as_deref()
+            .map(|p| {
+                p.lines()
+                    .filter(|l| l.trim_start().starts_with("- [x]"))
+                    .count() as u32
+            })
             .unwrap_or(0),
         prd_items_total: prd_total,
         kickoff_duration_secs: data.kickoff_duration_secs,

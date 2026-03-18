@@ -61,7 +61,11 @@ impl RuleEngine {
     ///
     /// `ablation_target` — when `Some(id)`, that rule is silently skipped so
     /// its absence can be measured without removing it from the rule set.
-    pub fn check_rules(&mut self, state: &RunState, ablation_target: Option<&str>) -> Vec<RuleAction> {
+    pub fn check_rules(
+        &mut self,
+        state: &RunState,
+        ablation_target: Option<&str>,
+    ) -> Vec<RuleAction> {
         let mut actions = Vec::new();
 
         for rule in &mut self.rules {
@@ -666,6 +670,35 @@ mod tests {
         } else {
             panic!("expected TextInjection for verify_progress");
         }
+    }
+
+    #[test]
+    fn check_rules_skips_ablation_target() {
+        let mut engine = RuleEngine {
+            rules: vec![
+                make_test_rule("r1", "force_commit", RuleStatus::Confirmed),
+                make_test_rule("r2", "extend_silence", RuleStatus::Confirmed),
+            ],
+        };
+
+        let state = RunState {
+            iterations_since_last_commit: 6,
+            ..Default::default()
+        };
+
+        // Without ablation: both fire
+        let result = engine.check_rules(&state, None);
+        assert_eq!(result.len(), 2);
+
+        // Reset trigger counts
+        for r in &mut engine.rules {
+            r.trigger_count = 0;
+        }
+
+        // With ablation on r1: only r2 fires
+        let result = engine.check_rules(&state, Some("r1"));
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0], RuleAction::ExtendSilence { .. }));
     }
 
     #[test]

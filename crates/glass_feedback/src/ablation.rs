@@ -54,10 +54,7 @@ pub fn sweep_complete(rules: &[Rule], last_sweep_run: &str) -> bool {
 /// - revert_rate increase > 0.10
 /// - stuck_rate increase > 0.05
 /// - waste_rate increase > 0.10
-pub fn evaluate(
-    metrics_history: &[RunMetrics],
-    current_metrics: &RunMetrics,
-) -> AblationResult {
+pub fn evaluate(metrics_history: &[RunMetrics], current_metrics: &RunMetrics) -> AblationResult {
     if metrics_history.is_empty() {
         return AblationResult::Needed; // Conservative: can't determine, assume needed
     }
@@ -230,5 +227,21 @@ mod tests {
     fn evaluate_conservative_on_empty_history() {
         let current = make_metrics("run-1", 0.10, 0.05, 0.08);
         assert_eq!(evaluate(&[], &current), AblationResult::Needed);
+    }
+
+    #[test]
+    fn passenger_rule_can_be_demoted_to_stale() {
+        let rule = make_rule("r1", RuleStatus::Confirmed);
+        // Verify the transition is valid
+        assert!(rule.status.can_transition_to(&RuleStatus::Stale));
+    }
+
+    #[test]
+    fn needed_rule_stays_confirmed_with_updated_ablation_run() {
+        let mut rule = make_rule("r1", RuleStatus::Confirmed);
+        rule.last_ablation_run = "run-100".to_string();
+        rule.ablation_result = AblationResult::Needed;
+        assert_eq!(rule.status, RuleStatus::Confirmed);
+        assert_eq!(rule.last_ablation_run, "run-100");
     }
 }
