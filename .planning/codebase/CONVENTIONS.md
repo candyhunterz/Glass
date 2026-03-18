@@ -1,223 +1,227 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-03-15
+**Analysis Date:** 2026-03-18
 
 ## Naming Patterns
 
 **Files:**
-- Snake case for source files: `block_manager.rs`, `pty.rs`, `osc_scanner.rs`
-- Test files in same crate (no separate `tests/` directory): inline `#[cfg(test)] mod tests`
-- Public modules exposed via `pub mod module_name` in `lib.rs` or `main.rs`
+- Lowercase with underscores: `block_manager.rs`, `session_db.rs`
+- Module file names match public struct/module names: `session_mux.rs` exports `SessionMux`
+- Test modules within source: `tests.rs`, `*_test.rs` for integration tests (e.g., `cargo_test.rs`, `go_test.rs`)
 
 **Functions:**
-- Snake case: `parse_command()`, `encode_key()`, `query_git_status()`
-- Private helpers prefixed with intent: `tokenize_powershell()`, `strip_redirects()`, `contains_unparseable_syntax()`
-- Constructor functions named `new()` or specific to type: `open()`, `open_default()`, `resolve_db_path()`
-- Methods on impl blocks follow snake case convention
+- snake_case for all functions: `handle_event()`, `focused_session()`, `load_validated()`
+- Getter methods use `fn name()` not `get_name()`: `focused_session()`, `current()`
+- Mutable getters append `_mut`: `focused_session_mut()`, `session_mut()`
+- Builder methods use `with_*` or `set_*`: `set_expanded_stage()`, `toggle_pipeline_expanded()`
+- Test functions prefixed with `test_`: `test_no_subcommand_is_none()`, `test_register()`
 
 **Variables:**
-- Snake case for local bindings: `let prompt_line = line`, `let redirect_targets = vec![]`
-- Single-letter for loop counters and iteration: `for (id, name, pid, last_heartbeat) in &agents`
-- Temporary mutable variables: `let mut result = ParseResult { ... }`
-- Underscore prefix for intentionally unused: `let (mut db, _dir) = test_db()`
+- Local variables: snake_case: `prompt_start_line`, `exit_code`, `block_manager`
+- Constants: SCREAMING_SNAKE_CASE: `MAX_BLOCKS`, `SCROLLBAR_WIDTH`
+- Private fields in structs: snake_case: `blocks`, `current`, `sessions`
 
 **Types:**
-- PascalCase for structs, enums, traits: `Block`, `BlockState`, `BlockManager`, `CoordinationDb`
-- SCREAMING_SNAKE_CASE for constants: `READ_BUFFER_SIZE`, `MAX_LOCKED_READ`, `PTY_READ_WRITE_TOKEN`
-- Short uppercase for enum variants: `PromptActive`, `InputActive`, `Complete`, `Header`, `StageRow`
+- Struct names: PascalCase: `Block`, `BlockState`, `SessionMux`, `Pipeline`
+- Enum names: PascalCase: `BlockState`, `Commands`, `OscEvent`
+- Enum variants: PascalCase: `PromptActive`, `InputActive`, `Executing`, `Complete`
+- Type aliases: PascalCase if new concept, lowercase if wrapper: `type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>`
 
 ## Code Style
 
 **Formatting:**
-- Enforced by `cargo fmt` in CI
-- 4-space indentation
-- Max line length enforced via clippy rules
-- Brace style: opening brace on same line (Rust convention)
+- Tool: `rustfmt` (enforced in CI)
+- Check: `cargo fmt --all -- --check` (must pass in CI)
+- All code must be formatted before commit
+- Line length: default rustfmt settings (100 char soft limit)
 
 **Linting:**
-- Clippy with `-D warnings` — all warnings are errors in CI
-- Configuration enforced in CI at `.github/workflows/ci.yml` (remote only)
-- Warnings must be fixed, not suppressed, except:
-  - `#[allow(dead_code)]` on orchestrator module (`src/orchestrator.rs` line 7)
-  - Platform-specific dead code gated with `#[cfg(target_os = "...")]`
+- Tool: `clippy` with `-D warnings` (all warnings are errors)
+- Command: `cargo clippy --workspace -- -D warnings` (must pass in CI)
+- Suppression: Use `#[allow(dead_code)]` or `#[allow(...)]` for false positives only
+- Example from `src/main.rs`: `#[allow(dead_code)]` decorates orchestrator-related modules when not in use
 
-**Module Organization:**
-- Crate root (`lib.rs` or `main.rs`) declares public modules
-- Submodules in separate files: `crate::module_name` resolves to `crate/module_name.rs`
-- Barrel file pattern: `lib.rs` re-exports public types: `pub use compress::...`, `pub use db::CommandRecord`
-- Example: `crates/glass_history/src/lib.rs` exports types from submodules
+**Edition:**
+- Rust 2021 edition (workspace-wide in `Cargo.toml`)
 
 ## Import Organization
 
 **Order:**
 1. Standard library imports: `use std::...`
-2. External crate imports: `use anyhow::Result`, `use rusqlite::...`
-3. Workspace crate imports: `use glass_core::...`, `use crate::...`
-4. Module-level (optional): items from same crate submodules
-
-**Pattern Example** (from `src/main.rs`):
-```rust
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::io::Write as _;
-use std::sync::Arc;
-
-use alacritty_terminal::event::WindowSize;
-use clap::{Parser, Subcommand};
-use glass_core::config::GlassConfig;
-use glass_history::{
-    db::{CommandRecord, HistoryDb},
-    resolve_db_path,
-};
-```
+2. External crates: `use tokio::`, `use serde::`, `use anyhow::`
+3. Workspace crates: `use glass_core::`, `use glass_terminal::`
+4. Local module imports: `use crate::...`
+5. Re-exports in pub files: Listed after `pub mod` declarations
 
 **Path Aliases:**
-- No explicit path aliases in `Cargo.toml`
-- Imports use full qualified paths: `use glass_terminal::...`
-- Workspace members referenced by full path
+- No path aliases configured (no `#[path = "..."]`)
+- Direct relative imports: `use crate::types::`, `use super::*`
+
+**Module Exports:**
+- Explicit re-exports in lib.rs: `pub use config::GlassConfig;`, `pub use db::HistoryDb;`
+- Glob exports for convenience: `pub use types::*;` (in `glass_pipes/src/lib.rs`)
+- Barrel files: Each crate has a `lib.rs` or `main.rs` that re-exports public interfaces
+
+**Example from `glass_core/src/lib.rs`:**
+```rust
+pub mod activity_stream;
+pub mod agent_runtime;
+pub mod config;
+pub mod config_watcher;
+pub mod coordination_poller;
+pub mod error;
+pub mod event;
+pub mod ipc;
+pub mod updater;
+```
 
 ## Error Handling
 
 **Patterns:**
-- Primary error type: `anyhow::Result<T>` (wraps any error via `?` operator)
-- File: `crates/glass_core/src/error.rs` provides error definitions
-- Error propagation via `?` operator preferred over `match` on `Err`
-- SQLite errors wrapped automatically by `anyhow::Result`
+- **Custom Result type**: `pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>` in `glass_core/src/error.rs`
+- **anyhow::Result**: Used in functions that need flexible error handling: `anyhow::Result<()>` for IPC, updater
+- **Custom error structs**: `ConfigError` with context (file, line, column, snippet) in `glass_core/src/config.rs`
+- **Option vs Result**: Use `Option<T>` when value may not exist (return `None`), use `Result<T>` when operation can fail with error context
 
-**Example Pattern** (from `crates/glass_history/src/db.rs`):
+**Error Construction:**
+- Use `?` operator liberally: errors propagate through layers
+- Wrap errors with context: `self.store.db().get_latest_parser_snapshot()?` in `glass_snapshot/src/undo.rs`
+- Custom error creation: `ConfigError { message: String, line: Option<usize>, column: Option<usize>, snippet: Option<String> }`
+
+**Example from `glass_snapshot/src/undo.rs`:**
 ```rust
-pub fn open(path: &Path) -> Result<Self> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;  // Propagate via ?
-    }
-    let conn = Connection::open(path)?;
-    // ... setup ...
-    Ok(Self { conn, path: path.to_path_buf() })
+pub fn undo_latest(&self) -> Result<Option<UndoResult>> {
+    let snapshot = match self.store.db().get_latest_parser_snapshot()? {
+        Some(s) => s,
+        None => return Ok(None),  // No snapshot exists — not an error
+    };
+    let result = self.restore_snapshot(&snapshot)?;
+    Ok(Some(result))
 }
 ```
 
-**Panic Usage (Limited):**
-- Panic acceptable in:
-  - Main thread initialization (e.g., font system startup in `src/main.rs` line 1569)
-  - Test assertion failures
-  - Orchestrator state machine invariant violations (`src/orchestrator.rs` lines 723, 735, 744, 808, 1060)
-- Orchestrator panics intentional for impossible state detection during agent control loop
-
 ## Logging
 
-**Framework:** `tracing` crate (workspace dependency)
+**Framework:** `tracing` crate (tokio-owned structured logging)
 
-**Patterns:**
-- Structured logging with field syntax: `tracing::info!(agent_id = %id, reason = %reason, "Pruning stale agent")`
-- Levels: `trace!`, `debug!`, `info!`, `warn!`, `error!`
-- Usage in critical paths: agent registration, database operations, coordinate multiplexing
-- Example (from `crates/glass_coordination/src/db.rs` line 813):
+**Usage:**
+- `tracing::info!()` for important events: `tracing::info!("Auto-injecting shell integration: {}", path.display())`
+- `tracing::warn!()` for recoverable issues: `tracing::warn!("Unexpected CommandExecuted in {:?} state", block.state)`
+- `tracing::debug!()` for diagnostic info (not yet observed in codebase)
+- `eprintln!()` for CLI errors (history subcommand): `eprintln!("Error: {}", e)`
+- `println!()` for CLI output (history results): `println!("No matching commands found.")`
+
+**Levels:**
+- info: Startup events, integration points
+- warn: State violations, fallbacks, non-critical failures
+- debug: (implied pattern, not heavily used)
+- error: Via `eprintln!` in CLI
+
+**Example from `src/orchestrator.rs`:**
 ```rust
-tracing::info!(
-    agent_id = %id,
-    agent_name = %name,
-    reason = %reason,
-    "Pruning stale agent"
+tracing::warn!(
+    "Orchestrator: exceeded max retries ({}), triggering stuck detection",
+    self.max_retries_before_stuck
 );
 ```
-
-**Environment Control:**
-- Tracing subscriber initialized in main binary
-- Filter configuration via environment variables (tracing-subscriber feature `env-filter`)
-- Feature flag `perf` enables `tracing-chrome` instrumentation: `cargo build --features perf`
 
 ## Comments
 
 **When to Comment:**
-- Module-level documentation: `//!` doc comments at top of file
-- Function documentation: `///` doc comments above public functions
-- Non-obvious logic: inline comments `// Explanation` before complex code blocks
-- Invariant assertions: comments explaining why a specific approach was needed
+- Document public APIs with `///` doc comments (observed in all public modules)
+- Explain non-obvious logic (state machine transitions, buffer overflow handling)
+- Warn about invariants: "Each tab holds a `SplitNode` tree of panes"
+- Mark limitations: "Shell integration only re-emits OSC 133 for the current prompt"
 
-**JSDoc/TSDoc Style:**
-- Rust uses markdown in doc comments: `/// Text describing the function`
-- Parameter descriptions in doc comment text
-- Example: `crates/glass_terminal/src/block_manager.rs` line 86:
+**Doc Comments (Triple Slash):**
+- Used extensively on public structs: `/// Multiplexer that manages terminal sessions organized into tabs.`
+- Used on public functions: `/// Create a new `SessionMux` with a single session.`
+- Describe parameters with inline comments or expanded descriptions
+- Example from `glass_mux/src/session_mux.rs`:
 ```rust
-/// Calculate the duration of command execution.
-pub fn duration(&self) -> Option<Duration> {
+/// Add a new tab with the given session.
+///
+/// When `background` is false, the tab is inserted after the active tab
+/// and becomes active. When `background` is true, the tab is appended
+/// to the end without changing focus (used for MCP-created tabs during
+/// orchestration).
+pub fn add_tab(&mut self, session: Session, background: bool) -> TabId
 ```
 
-**Module Documentation Example** (from `crates/glass_history/src/lib.rs`):
+**Module-Level Comments:**
+- Markdown-style module docs with `//!` at file top:
 ```rust
-//! glass_history -- SQLite-backed command history with FTS5 search.
+//! Block manager for shell integration command lifecycle tracking.
 //!
-//! Provides a database for storing, searching, and managing command execution
-//! history. Supports project-local databases (`.glass/history.db`) with
-//! global fallback (`~/.glass/global-history.db`).
+//! Tracks commands through PromptActive -> InputActive -> Executing -> Complete
+//! states, recording line ranges, exit codes, and timing for duration display.
 ```
+
+**Inline Comments:**
+- Rare; code is self-documenting where possible
+- Used to explain state machine edge cases and buffer policies
 
 ## Function Design
 
 **Size:**
-- Median function length: 20-50 lines
-- Longer functions (100+ lines) typically database operations with transaction management
-- Helper functions extracted for readability: `tokenize()`, `strip_redirects()`, `dispatch_command()`
+- Most public functions are 20-50 lines (getters, simple mutations)
+- Complex functions (e.g., `handle_event`) are 100+ lines but remain readable via clear branching
+- No formal line limit enforced, but readability is prioritized
 
 **Parameters:**
-- Pass by reference for borrowed data: `fn parse_command(command_text: &str, cwd: &Path)`
-- Move semantics for owned data: `fn new(prompt_line: usize) -> Self`
-- Return types explicit: `Result<T>` for fallible operations, `Option<T>` for nullable
+- Use `&self` for read operations, `&mut self` for mutations
+- Owned values for types that need to be consumed: `session: Session`
+- References for large types: `&OscEvent`, `&Path`, `&str`
+- Option parameters for optional values: `Option<usize>`, `Option<i64>`
 
 **Return Values:**
-- Success paths return `Ok(value)` via early returns
-- Fallible operations return `Result<T>` with `anyhow::Result` wrapper
-- Null-like values use `Option<T>`: `Option<i32>` for exit codes, `Option<String>` for output
-- None-type for pure state changes: no return value needed
+- Unit `()` for operations that mutate state or have side effects
+- `Option<T>` when result may not exist (no error context needed)
+- `Result<T>` when operation can fail with error context
+- Multiple return values via tuple: Not observed; use structs instead (e.g., `UndoResult`)
+
+**Example from `glass_mux/src/session_mux.rs`:**
+```rust
+/// Look up a session by its ID.
+pub fn session(&self, id: SessionId) -> Option<&Session> {
+    self.sessions.get(&id)
+}
+
+/// Get a mutable reference to the focused session.
+pub fn focused_session_mut(&mut self) -> Option<&mut Session> {
+    let focused_pane = self.tabs.get(self.active_tab)?.focused_pane;
+    self.sessions.get_mut(&focused_pane)
+}
+```
 
 ## Module Design
 
 **Exports:**
-- Public types re-exported in crate root via barrel file pattern
-- Example (`crates/glass_history/src/lib.rs`):
-```rust
-pub use compress::{diff_compress, CompressedOutput, DiffSummary, RecordFingerprint};
-pub use config::HistoryConfig;
-pub use db::{CommandRecord, HistoryDb, PipeStageRow};
-```
+- Public types explicitly re-exported in `lib.rs`: `pub use db::HistoryDb;`, `pub use config::HistoryConfig;`
+- Glob exports for type packages: `pub use types::*;` in `glass_pipes/src/lib.rs`
+- All public APIs available at crate root
 
-**Barrel Files:**
-- Crate root (`lib.rs`) imports and re-exports submodule public types
-- Consumers use: `use glass_history::{CommandRecord, HistoryDb}`
-- No deep paths required: modules are implementation detail
+**Organization:**
+- One main concept per file: `session_mux.rs` contains `SessionMux`, `block_manager.rs` contains `BlockManager`
+- Internal types in separate `types.rs` module: `glass_pipes/src/types.rs` defines `Pipeline`, `PipeStage`, `BufferPolicy`
+- Separate modules for variants of a concern: `glass_errors/src/` has `rust_json.rs`, `rust_human.rs`, `generic.rs` parsers
 
 **Visibility:**
-- Default private (`fn`, `struct`, `impl` without `pub`)
-- Explicit `pub` for public API surface
-- Private helper functions with leading underscore optional (not convention)
-- Test modules always gated with `#[cfg(test)]`
+- Private by default: `struct Block` without `pub` is private to module
+- Explicitly public: `pub struct BlockManager`, `pub fn handle_event(&mut self, ...)`
+- Module re-exports create public API surface: `pub use types::*;`
 
-## Type Definitions
-
-**Struct Design:**
-- Pub fields acceptable for simple data holders (e.g., `Block` struct in `crates/glass_terminal/src/block_manager.rs`)
-- Private fields with getter methods for encapsulation when invariants must be maintained
-- Derived traits: `#[derive(Debug, Clone)]` for most public structs
-- Constructor patterns: `new()` for zero-state, `open()` for resource initialization
-
-**Enum Design:**
-- Variants without associated data for state machines: `BlockState::PromptActive`
-- Variants with data for heterogeneous results: `PipelineHit::StageRow(usize)`
-- Example (`crates/glass_terminal/src/block_manager.rs`):
+**Barrel Files:**
+Example from `crates/glass_coordination/src/lib.rs`:
 ```rust
-pub enum BlockState {
-    PromptActive,
-    InputActive,
-    Executing,
-    Complete,
-}
+pub mod db;
+pub mod event_log;
+pub mod types;
 
-pub enum PipelineHit {
-    Header,
-    StageRow(usize),
-}
+pub use db::CoordinationDb;
+pub use types::{AgentInfo, FileLock, LockConflict, Message};
 ```
 
 ---
 
-*Convention analysis: 2026-03-15*
+*Convention analysis: 2026-03-18*

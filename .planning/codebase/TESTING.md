@@ -1,72 +1,69 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-03-15
+**Analysis Date:** 2026-03-18
 
 ## Test Framework
 
 **Runner:**
-- Built-in Rust test harness (no external test runner)
-- Compile: `cargo test --workspace --no-run`
-- Execute: `cargo test --workspace --no-fail-fast` or `cargo test --lib` (unit tests only)
-
-**Assertion Library:**
-- Standard Rust `assert!`, `assert_eq!`, `assert_ne!` macros
-- No external assertion crate dependency
+- `cargo test --workspace` (runs all tests across all crates)
+- Rust built-in test harness (no external test runner)
+- Unit tests: compile into main binary with `#[cfg(test)]`
+- No separate test files (tests live inline with source)
 
 **Run Commands:**
 ```bash
-cargo test --workspace              # Run all tests (unit + integration + doc tests)
-cargo test --workspace --lib        # Unit tests only
-cargo test --workspace --test       # Integration tests only
-cargo test --workspace --doc        # Doc tests only
-cargo test --workspace --no-fail-fast  # Continue on first failure
-cargo test -- --nocapture          # Show println! output during tests
-cargo test -- --ignored             # Run ignored tests only
+cargo test --workspace              # Run all tests
+cargo test --workspace -- --nocapture   # Show println! output
+cargo test crate_name               # Run tests in specific crate
+cargo test function_name            # Run test by name
 ```
 
-**Test Count:**
-- Total: 118 tests across all crates (as of 2026-03-15)
-- Main binary tests: 57 tests
-- Remaining: distributed across 11 crates
-- Doc tests: 1 (in `glass_soi`)
-- Status: all passing (0 failures)
+**CI:**
+- GitHub Actions in `.github/workflows/ci.yml`
+- Matrix: Linux (ubuntu-latest), macOS (aarch64), Windows (x86_64)
+- Runs `cargo test --workspace` on all platforms
+- Format check: `cargo fmt --all -- --check` (ubuntu)
+- Lint check: `cargo clippy --workspace -- -D warnings` (windows)
 
 ## Test File Organization
 
 **Location:**
-- Inline with source code, NOT in separate `tests/` directory
-- Pattern: `#[cfg(test)] mod tests { ... }` at bottom of each `.rs` file
-- Exception: `tests/mcp_integration.rs` for MCP integration testing (at workspace root)
+- Co-located tests: Tests live in same file as implementation (pattern: `#[cfg(test)] mod tests { ... }`)
+- Separate test files for integration tests: `crates/glass_terminal/src/tests.rs`, `src/tests.rs` (main binary)
+- Example: `crates/glass_core/src/config.rs` line 548 has `#[cfg(test)] mod tests { ... }` with 100+ test cases
 
 **Naming:**
-- Test modules named `tests` (convention): `#[cfg(test)] mod tests`
-- Test functions use test name as description: `test_register()`, `test_deregister()`
-- Descriptive names follow pattern: `test_{subject}_{condition}_{expected}`
-  - Example: `test_resolve_db_path_ancestor()` — tests path resolution when .glass/ is in ancestor
-  - Example: `test_deregister_cascades_locks()` — tests cascading delete behavior
+- Test modules: `mod tests { ... }`
+- Test functions: `#[test] fn test_*` prefix (e.g., `test_no_subcommand_is_none`, `test_register`)
+- Test groups: Nested modules for related tests (e.g., within outer `mod tests`)
 
 **Structure:**
 ```
-crates/
-  glass_coordination/src/
-    db.rs                         # Public API
-    └── #[cfg(test)] mod tests    # Tests inline
-         └── fn test_register()
-         └── fn test_deregister()
-  glass_history/src/
-    lib.rs                        # Barrel file + basic tests
-    db.rs                         # Database implementation + tests
+crates/glass_core/src/
+  config.rs           # Line 548: #[cfg(test)] mod tests
+  ipc.rs             # Tests for IPC functionality
+  updater.rs         # Tests for update checking
+  error.rs           # (Error type only, minimal tests)
+
+crates/glass_coordination/src/
+  db.rs              # Coordination database tests
+  event_log.rs       # Event logging tests
+  lib.rs             # Registry tests
+  pid.rs             # PID validation tests
 ```
 
 ## Test Structure
 
-**Suite Organization** (from `crates/glass_coordination/src/db.rs`):
+**Suite Organization:**
+
+Tests are grouped by functionality within `mod tests`:
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // Helper function
     fn test_db() -> (CoordinationDb, TempDir) {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test-agents.db");
@@ -74,55 +71,33 @@ mod tests {
         (db, dir)
     }
 
+    // Test case
     #[test]
     fn test_register() {
         let (mut db, _dir) = test_db();
-        // Test body
+        let id = db.register("agent-1", "claude-code", ".", "/tmp", Some(1234)).unwrap();
+        assert_eq!(id.len(), 36); // UUID v4 format
     }
 }
 ```
 
 **Patterns:**
-
-1. **Setup Helper** (test_db pattern):
-   - Private function returning `(Instance, TempDir)` tuple
-   - TempDir held in tuple so cleanup happens on test end
-   - Used by `#[test]` functions: `let (mut db, _dir) = test_db()`
-
-2. **Assertion Structure**:
-   ```rust
-   // Arrange
-   let (mut db, _dir) = test_db();
-
-   // Act
-   let id = db.register("agent-1", "claude-code", ".", "/tmp", None).unwrap();
-
-   // Assert
-   assert_eq!(id.len(), 36);
-   let agents = db.list_agents(".").unwrap();
-   assert_eq!(agents.len(), 1);
-   ```
-
-3. **Comments in Tests**:
-   - Inline comments explain non-obvious test logic
-   - Example (from `crates/glass_agent/src/session_db.rs` line 283):
-   ```rust
-   assert_eq!(
-       loaded.id, "id-new",
-       "should return the record with highest created_at"
-   );
-   ```
+- **Setup**: Helper functions (e.g., `test_db()`) create fixtures and return reusable state
+- **Teardown**: Automatic (fixtures dropped at end of test scope)
+- **Assertion**: Standard Rust assertions: `assert!()`, `assert_eq!()`, `assert_ne!()`
 
 ## Mocking
 
-**Framework:** `tempfile` crate for temporary filesystem/database mocking
+**Framework:** Not used (tests prefer real implementations or in-memory doubles)
+
+**Approach:**
+- **Fixtures**: Use `tempfile::TempDir` for ephemeral filesystem operations
+- **In-memory storage**: Tests create real SQLite databases in temp directories
+- **Test helpers**: Custom setup functions like `test_db()` that yield usable fixtures
 
 **Patterns:**
-- Database tests use `TempDir::new().unwrap()` to create isolated test databases
-- No explicit mocking library (mockall, etc.) — manual setup/assertion approach
-- Database state verified via direct query after operations
 
-**Example Mock Database** (from `crates/glass_coordination/src/db.rs` lines 835-860):
+Test helper pattern from `glass_coordination/src/db.rs`:
 ```rust
 fn test_db() -> (CoordinationDb, TempDir) {
     let dir = TempDir::new().unwrap();
@@ -133,181 +108,255 @@ fn test_db() -> (CoordinationDb, TempDir) {
 
 #[test]
 fn test_register() {
-    let (mut db, _dir) = test_db();
+    let (mut db, _dir) = test_db();  // _dir keeps temp directory alive
     let id = db.register("agent-1", "claude-code", ".", "/tmp", Some(1234)).unwrap();
-
-    // Verify via query
-    let agents = db.list_agents(".").unwrap();
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents[0].id, id);
+    assert_eq!(id.len(), 36);
 }
 ```
 
 **What to Mock:**
-- Temporary filesystems: `tempfile::TempDir`
-- Temporary databases: in-memory or temp file SQLite via `TempDir`
-- SQL state: verified via direct query assertions
+- Nothing: Tests use real implementations
+- Network calls are avoided by testing at API level (not HTTP client)
+- Example: IPC tests use localhost TCP connections, not actual file descriptors
 
 **What NOT to Mock:**
-- Actual database open/migration logic — use real temp database
-- SQL operations — execute real queries to verify behavior
-- Platform-specific code — use conditional compilation, don't mock
+- Database operations: Create real SQLite DBs
+- Filesystem operations: Use `tempfile` crate for real directories
+- State machines: Test state transitions with real structs
 
 ## Fixtures and Factories
 
-**Test Data** (from `crates/glass_agent/src/session_db.rs`):
+**Test Data:**
+
+Configuration fixture from `glass_core/src/config.rs`:
 ```rust
-fn make_record(
-    id: &str,
-    root: &str,
-    session_id: &str,
-    prev: Option<&str>,
-    created_at: i64,
-) -> AgentSessionRecord {
-    AgentSessionRecord {
-        id: id.to_string(),
-        project_root: root.to_string(),
-        session_id: session_id.to_string(),
-        handoff: HandoffData {
-            work_completed: "Implemented feature X".to_string(),
-            work_remaining: "Write tests for Y".to_string(),
-            key_decisions: "Used approach Z".to_string(),
-            previous_session_id: prev.map(|s| s.to_string()),
-        },
-        raw_handoff: r#"{"work_completed":"Implemented feature X"..."#.to_string(),
-        created_at,
-    }
+#[test]
+fn load_validated_valid_toml_returns_ok() {
+    let result = GlassConfig::load_validated("font_family = \"Cascadia\"\nfont_size = 16.0");
+    assert!(result.is_ok());
+    let config = result.unwrap();
+    assert_eq!(config.font_family, "Cascadia");
+    assert_eq!(config.font_size, 16.0);
+}
+```
+
+CLI argument fixture from `src/tests.rs`:
+```rust
+#[test]
+fn test_history_list_with_all_filters() {
+    let cli = Cli::try_parse_from([
+        "glass", "history", "list", "--exit", "1", "--after", "1h", "--cwd", "/project", "-n", "10",
+    ])
+    .unwrap();
+    assert_eq!(cli.command, Some(Commands::History { action: Some(...) }));
+}
+```
+
+Pipeline parsing fixture from `glass_pipes/src/parser.rs`:
+```rust
+#[test]
+fn split_pipes_basic_multi_stage() {
+    let result = split_pipes("cat file | grep foo | wc -l");
+    assert_eq!(result, vec!["cat file", "grep foo", "wc -l"]);
 }
 ```
 
 **Location:**
-- Factory functions defined in same test module: `fn make_record(...)`
-- Helper functions defined at module level: `fn test_db() -> (Instance, TempDir)`
-- Inline data construction acceptable for simple cases: `TempDir::new().unwrap()`
+- In-test data: Inline in test function
+- Helper functions: Same `mod tests` block, before test functions
+- Tempfile fixtures: Created in helper (e.g., `test_db()`)
+- No external fixture files (no factory crates or data directories)
 
 ## Coverage
 
-**Requirements:**
-- No enforced coverage target in CI
-- All public APIs expected to have unit tests
-- Core logic (database, state machines, parsers) have high coverage (>90%)
-- Rendering and GUI code coverage lower (integration tested via orchestrator)
+**Requirements:** No coverage enforcement in CI (not configured)
 
-**View Coverage:**
-```bash
-# Install tarpaulin
-cargo install cargo-tarpaulin
+**Tools:** No coverage metrics configured in `Cargo.toml` or CI
 
-# Generate coverage report
-cargo tarpaulin --workspace --out Html --output-dir coverage/
-
-# View report
-open coverage/index.html
-```
-
-**Coverage Gaps:**
-- Orchestrator integration with Glass agent (tested via e2e)
-- Windows-specific PTY code (gated with `#[cfg(target_os = "windows")]`)
-- Rendering framebuffer logic (visual regression tested manually)
+**Approach:**
+- Tests are written for critical paths and edge cases
+- Database operations: 100+ tests across coordination, history, snapshot crates
+- Error handling: Extensive tests for malformed input, validation failures
+- State machines: Comprehensive block lifecycle tests
 
 ## Test Types
 
 **Unit Tests:**
-- Scope: single function or small group of functions
-- Approach: pure function testing (no side effects)
-- Location: inline `#[cfg(test)]` module in source file
-- Assertions: exact behavior validation
-- Examples:
-  - `crates/glass_history/src/lib.rs` — path resolution unit tests
-  - `crates/glass_terminal/src/osc_scanner.rs` — OSC sequence parsing tests
+- Scope: Single function or struct method
+- Approach: Direct function calls with simple inputs
+- Example: `test_split_pipes_basic_multi_stage()` tests `split_pipes()` function
+- Location: Inline in source file with `#[cfg(test)] mod tests`
 
 **Integration Tests:**
-- Scope: multi-component interaction (database + parser, pty + terminal)
-- Approach: real resources (temp databases, actual file I/O)
-- Location: `tests/mcp_integration.rs` (at workspace root)
-- Assertions: end-to-end behavior
-- Examples:
-  - Session handoff roundtrip: insert → load → verify state persists
-  - Worktree lifecycle: create → diff → apply → delete
+- Scope: Multi-component workflows (e.g., database + schema + migrations)
+- Approach: Create full database in temp directory, exercise multiple operations
+- Example: `test_register()` calls `CoordinationDb::open()`, schema creation, insert, and verification
+- Location: Separate files like `src/tests.rs`, `crates/glass_terminal/src/tests.rs`
 
 **E2E Tests:**
-- NOT automated in CI (too complex for headless)
-- Manual: orchestrator spawns Glass subprocess, verifies agent loop
-- Scope: full system from Glass UI through agent coordination layer
-- Testing approach: crash log inspection, manual verification
+- Not found: No end-to-end tests (no external service interaction tests)
+- Architecture: Tests focus on library correctness, not full app workflows
 
 ## Common Patterns
 
 **Async Testing:**
-- No async test attribute (`#[tokio::test]`) used in current codebase
-- Async code tested via `block_on()` in regular synchronous tests
-- Pattern: call `.unwrap()` on blocking operations, no spawning within tests
+
+From `glass_core/src/ipc.rs`:
+```rust
+#[tokio::test]
+async fn ipc_round_trip_over_tcp() {
+    // Test body can use .await
+}
+```
+
+Async pattern:
+- Decorator: `#[tokio::test]` instead of `#[test]`
+- Runtime: tokio runtime spawned automatically
+- Async/await: Full async syntax available in test
 
 **Error Testing:**
+
+From `glass_core/src/config.rs`:
 ```rust
-// From crates/glass_agent/src/worktree_manager.rs
 #[test]
-fn test_dismiss_removes_pending() {
-    let (mut manager, _dir) = test_manager();
-    let pending = manager.create_pending(...).unwrap();
-    let handle = pending.handle();
-
-    // Act: dismiss should succeed
-    manager.dismiss(&handle).unwrap();
-
-    // Assert: handle no longer valid
-    let err = manager.apply(&handle, root_changes).unwrap_err();
-    assert!(err.to_string().contains("not found"));
+fn load_validated_malformed_toml_returns_error() {
+    let result = GlassConfig::load_validated("invalid {{{{");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(!err.message.is_empty());
 }
 ```
 
-**Platform-Specific Testing:**
-- Conditional compilation: `#[cfg(target_os = "windows")]` on test functions
-- Example: ConPTY-specific escape sequence tests gated for Windows only
-- Pattern: run same test logic on platform where feature is available
+Pattern:
+- Check `is_err()` or `is_ok()`
+- Unwrap and inspect error details
+- Verify error fields (message, line, column, etc.)
 
-**Resource Cleanup:**
-- Automatic via `TempDir` drop when test function returns
-- No explicit cleanup needed for database — temp file deleted on drop
-- Pattern: `let (db, _dir) = test_db()` — underscore signals "not used in test body"
+**Option Testing:**
 
-## Test Conventions
-
-**Naming Style:**
-- Snake case function names: `test_register()`, `test_deregister_cascades_locks()`
-- Descriptive predicate in name: `test_{action}_{condition}_{result}`
-  - `test_load_prior_handoff_returns_most_recent_by_created_at()`
-  - `test_session_record_survives_connection_close_and_reopen()`
-
-**Assertion Messages:**
-- Use assert_eq! third parameter for context: `assert_eq!(loaded.id, "id-new", "should return the record with highest created_at")`
-- Keep messages short and specific to failure context
-
-**Test Isolation:**
-- Each test creates fresh temp database via `test_db()` helper
-- No shared state between tests
-- Database files auto-deleted when `TempDir` drops at function exit
-
-**Edge Cases:**
-- Boundary conditions tested: empty collections, None values, default states
-- Example (from `crates/glass_history/src/lib.rs` line 52):
+From `glass_snapshot/src/undo.rs` (implied by undo logic):
 ```rust
-#[test]
-fn test_resolve_db_path_project() {
-    // Tests when .glass/ dir exists (success path)
-}
-
-#[test]
-fn test_resolve_db_path_ancestor() {
-    // Tests when .glass/ is in ancestor directory
-}
-
-#[test]
-fn test_resolve_db_path_global_fallback() {
-    // Tests when .glass/ not found (fallback path)
+pub fn undo_latest(&self) -> Result<Option<UndoResult>> {
+    let snapshot = match self.store.db().get_latest_parser_snapshot()? {
+        Some(s) => s,
+        None => return Ok(None),  // No snapshot — not an error
+    };
+    // ... restore ...
 }
 ```
+
+Test pattern (not explicitly shown but implied):
+```rust
+#[test]
+fn undo_latest_returns_none_when_no_snapshot() {
+    let engine = UndoEngine::new(&store);
+    let result = engine.undo_latest().unwrap();
+    assert!(result.is_none());
+}
+```
+
+**Boolean Assertions:**
+
+From `glass_core/src/config.rs`:
+```rust
+#[test]
+fn font_changed_different_font_size() {
+    let a = GlassConfig::default();
+    let b = GlassConfig {
+        font_size: 18.0,
+        ..GlassConfig::default()
+    };
+    assert!(a.font_changed(&b));  // Positive assertion
+}
+
+#[test]
+fn font_changed_same_font_different_shell() {
+    let a = GlassConfig {
+        shell: Some("bash".to_string()),
+        ..GlassConfig::default()
+    };
+    let b = GlassConfig {
+        shell: Some("zsh".to_string()),
+        ..GlassConfig::default()
+    };
+    assert!(!a.font_changed(&b));  // Negative assertion
+}
+```
+
+**Enum Matching:**
+
+From `glass_errors/src/lib.rs`:
+```rust
+#[test]
+fn extract_errors_windows_path() {
+    let output = r"C:\Users\foo\main.rs:10:5: warning: unused";
+    let errors = extract_errors(output, None);
+    assert_eq!(errors[0].severity, Severity::Warning);
+}
+```
+
+Pattern:
+- Extract enum variant
+- Compare with `assert_eq!()`
+- Verify variant values
+
+**String Comparisons:**
+
+From `glass_pipes/src/parser.rs`:
+```rust
+#[test]
+fn split_pipes_basic_multi_stage() {
+    let result = split_pipes("cat file | grep foo | wc -l");
+    assert_eq!(result, vec!["cat file", "grep foo", "wc -l"]);
+}
+```
+
+## Command Parsing Tests
+
+Tests for CLI argument parsing use `clap` derive:
+
+From `src/tests.rs`:
+```rust
+#[test]
+fn test_history_search_with_limit() {
+    let cli = Cli::try_parse_from([
+        "glass", "history", "search", "deploy", "--limit", "5"
+    ]).unwrap();
+    assert_eq!(cli.command, Some(Commands::History { action: Some(...) }));
+}
+```
+
+Pattern:
+- Use `Cli::try_parse_from()` to simulate command-line args as array
+- Verify parsed struct matches expected `Commands` enum variant
+- Check nested action and filter fields
+
+## Platform-Specific Tests
+
+**Windows-Only Tests:**
+
+Marked with `#[cfg(target_os = "windows")]`:
+```rust
+#[cfg(target_os = "windows")]
+#[test]
+fn conpty_specific_test() {
+    // Test ConPTY behavior
+}
+```
+
+Usage:
+- ConPTY tests gated to Windows
+- `escape_args` field in `PTY options` is Windows-only
+- Tests skip on Unix platforms automatically in CI
+
+## Test Statistics
+
+**Scale:**
+- ~114 files with `#[cfg(test)]` blocks across crates
+- ~420 total tests (from MEMORY.md)
+- Heavy coverage in: coordination, history, config, errors, pipes
+- Light/no coverage in: rendering (GPU-specific), main event loop
 
 ---
 
-*Testing analysis: 2026-03-15*
+*Testing analysis: 2026-03-18*

@@ -1,158 +1,147 @@
 # Technology Stack
 
-**Analysis Date:** 2026-03-15
+**Analysis Date:** 2026-03-18
 
 ## Languages
 
 **Primary:**
-- Rust 2021 edition - All source code and workspaces
+- Rust 2021 edition - Core application, all crates, and binary (`src/main.rs`)
 
-**Secondary:**
-- Shell scripts - Shell integration for bash, zsh, fish, PowerShell (injected at runtime)
+**Build scripts:**
+- Rust build.rs (`build.rs`) - Windows resource compilation via `winresource`
 
 ## Runtime
 
 **Environment:**
-- Tokio async runtime 1.50.0 - Async task execution
+- Tokio 1.50.0 - Async runtime (full features)
+- Rust standard library (no stable version pinning beyond edition)
 
 **Package Manager:**
-- Cargo - Rust package management
-- Lockfile: Cargo.lock present (locked dependencies)
+- Cargo - Workspace manager (resolver = "2")
+- Lockfile: `Cargo.lock` - Present and pinned for reproducible builds
 
 ## Frameworks
 
-**Core:**
+**Core Application:**
 - winit 0.30.13 - Window management and event loop
-- tokio 1.50.0 (full features) - Async runtime
-- alacritty_terminal 0.25.1 (pinned exact) - VTE parsing and terminal emulation
+- wgpu 28.0.0 - GPU rendering (Metal on macOS, Vulkan/OpenGL on Linux, DX12 on Windows)
+- glyphon 0.10.0 - GPU-accelerated text rendering
 
-**Rendering:**
-- wgpu 28.0.0 - GPU rendering via Direct3D/Vulkan/Metal
-- glyphon 0.10.0 - GPU-accelerated glyph rendering
-- bytemuck 1.25.0 (with derive) - GPU memory layout serialization
+**Terminal Emulation:**
+- alacritty_terminal 0.25.1 - Exact version pin (=0.25.1, no ^ or ~). VTE parsing, PTY integration
+- vte 0.15 - Virtual terminal emulator (used by alacritty_terminal)
 
-**Terminal/PTY:**
-- rustix (via alacritty_terminal) - PTY spawning and control
-- polling 3 - Cross-platform I/O readiness
+**Testing:**
+- Criterion 0.5 - Benchmarking with HTML reports
+- tempfile 3 - Temporary test fixtures
 
-**Config & Data:**
-- serde 1.0.228 (with derive) - Serialization/deserialization
-- toml 1.0.4 - TOML config parsing
-- rusqlite 0.38.0 (bundled SQLite) - Local database with FTS5
-
-**History & Snapshots:**
-- blake3 1.8.3 - Content-addressed blob hashing
-- notify 8.0/8.2 - Filesystem event watching
-- ignore 0.4 - .gitignore-aware file traversal
-
-**UI & Interaction:**
-- arboard 3 - Clipboard access
-- url 2 - URL/URI parsing (OSC 7 file:// paths)
-
-**CLI & Utilities:**
-- clap 4.5 (with derive) - Command-line argument parsing
-- chrono 0.4 - Date/time handling
-- tracing 0.1.44 - Structured logging
-- tracing-subscriber 0.3 (with env-filter) - Log filtering
-- anyhow 1.0.102 - Error handling
-- uuid 1 (with v4 feature) - UUID generation
-
-**Development Tools:**
-- git2 0.20 - Git operations (worktree isolation)
-- diffy 0.4 - Diff calculation
-
-**Performance & Debugging:**
-- memory-stats 1.2 - Memory measurement
-- criterion 0.5 (dev-only) - Benchmarking with HTML reports
-- tracing-chrome 0.7 (optional, perf feature) - Chrome DevTools timeline export
+**Build/Dev:**
+- Pollster 0.4.0 - Async runtime polling for rendering loop
+- Bytemuck 1.25.0 - Derive-based GPU data serialization
 
 ## Key Dependencies
 
-**Critical:**
-- alacritty_terminal 0.25.1 - EXACT pinned version, no ^ or ~ substitution allowed. Handles all VT escape sequence parsing and PTY state machine.
-- rusqlite 0.38.0 - Bundled SQLite with FTS5 full-text search. Stores command history, pipe stages, and coordination data.
-- wgpu 28.0.0 - GPU rendering backend. Abstracts across Direct3D (Windows), Metal (macOS), Vulkan/OpenGL (Linux).
+**Critical (core functionality):**
+- tokio 1.50.0 - Async/concurrent operations, process spawning, IPC
+- alacritty_terminal =0.25.1 - Terminal emulation (exact pin prevents silent breakage)
+- wgpu 28.0.0 - GPU rendering pipeline
+- glyphon 0.10.0 - Text rendering on GPU
+- rusqlite 0.38.0 - SQLite database with bundled SQLite + FTS5 full-text search
+- notify 8.0/8.2 - Cross-platform filesystem watching (config hot-reload, snapshot detection)
 
-**Infrastructure:**
-- blake3 - Content-addressed blob storage for file snapshots
-- notify - Platform-native filesystem watching (inotify/FSEvents/ReadDirectoryChangesW)
-- git2 - Agent worktree isolation and diff operations
+**Configuration & Serialization:**
+- serde 1.0.228 - Serialization framework (derive, used by config + JSON)
+- toml 1.0.4 - TOML parsing for config files
+- serde_json 1.0 - JSON serialization (usage API responses, MCP payloads)
 
-## Platform-Specific Dependencies
+**Data Processing:**
+- blake3 1.8.3 - Content-addressed hashing for snapshot blob store
+- regex 1 - Regular expression parsing (command detection, SOI classification)
+- strip-ansi-escapes 0.2 - ANSI escape stripping for history storage
 
-**Windows:**
-- windows-sys 0.59 (features: Win32_System_Console, Win32_System_JobObjects, Win32_Foundation, Win32_System_Threading) - ConPTY API, UTF-8 console code page, Job Object orphan prevention
-- winresource 0.1 (build-only) - Embedding resources in executable
+**Utilities:**
+- anyhow 1.0.102 - Ergonomic error handling (Result<T, Box<dyn Error>>)
+- tracing 0.1.44 - Structured logging
+- tracing-subscriber 0.3 - Log filtering and output formatting
+- tracing-chrome 0.7 - Optional Chrome tracing instrumentation (feature: perf)
+- dirs 6 - Cross-platform home/config directory resolution
+- chrono 0.4 - Date/time parsing and formatting
+- arboard 3 - Cross-platform clipboard
+- shlex 1.3.0 - Shell command tokenization
+- url 2 - OSC 7 file:// URI parsing
 
-**Unix (macOS/Linux):**
-- libc 0.2 - POSIX process control (prctl for orphan prevention)
-- rustix (via alacritty_terminal) - forkpty and Unix PTY handling
+**Platform Abstraction:**
+- windows-sys 0.59 - Windows API bindings (UTF-8 console, Job Objects, Threading)
+- libc 0.2 - Unix syscall bindings (forkpty, prctl for orphan prevention)
 
-**macOS specific:**
-- FSEvents support (via notify) - Native filesystem watching
+**System Monitoring:**
+- memory-stats 1.2 - Memory usage reporting for status bar
 
-**Linux specific:**
-- System dependencies (not in Cargo.toml): libxkbcommon-dev, libx11-dev, libxi-dev, libxtst-dev, libwayland-dev
-- inotify support (via notify) - Kernel filesystem watching
+**CLI & Scripting:**
+- clap 4.5 - Command-line argument parsing (derive macros)
+- rhai 1 - Embedded scripting language (custom Rhai scripts for app automation)
+- schemars 1 - JSON Schema generation for MCP tool parameters
+
+**External Integration:**
+- ureq 3 - Synchronous HTTP client (usage API polling, update checks)
+- rmcp 1 - MCP (Model Context Protocol) server framework with transport-io and server features
+- git2 0.20 - Git operations (repository discovery, worktree management)
+- diffy 0.4 - Diff computation for file comparisons
+- uuid 1 - UUID v4 generation for agent sessions
+- similar 2 - Diff/patch computation (MCP file diff tool)
+
+**Performance:**
+- criterion 0.5 - Benchmarking harness (dev-only)
+- image 0.25 - PNG loading (default features disabled except png)
 
 ## Configuration
 
 **Environment:**
-- Config file: `~/.glass/config.toml` (TOML format, hot-reloaded via notify watcher)
-- Databases: `.glass/history.db` (project-local) or `~/.glass/global-history.db` (fallback)
-- Snapshots: `.glass/snapshots/` (blob store with blake3 content addressing)
-- Coordination: `~/.glass/agents.db` (SQLite WAL mode, shared by all agents)
-- OAuth token: `~/.claude/.credentials.json` (read by usage tracker)
+- No .env files required - credentials stored in:
+  - OAuth token: `~/.claude/.credentials.json` (read from `claudeAiOauth.accessToken`)
+  - Agent coordination: `~/.glass/agents.db` (SQLite, WAL mode)
+  - Project-specific history: `~/.glass/[project-hash]/history.db` (SQLite with FTS5)
+  - Snapshots: `~/.glass/[project-hash]/blobs/` (content-addressed blob store)
 
-**Build:**
-- Workspace resolver: version 2
-- Feature flags:
-  - `perf` - Enables tracing-chrome instrumentation for performance profiling
-- Release binary at: `target/release/glass`
-- Debian packaging config at: `[package.metadata.deb]`
+**Config file:**
+- Location: `~/.glass/config.toml` - Hot-reloaded via notify watcher
+- Sections: font, shell, history, snapshot, pipes, soi, agent (with orchestrator subsection), scripting
+- Defaults applied for missing sections or malformed TOML (silent fallback)
 
-## Workspace Structure
+**Key config options:**
+- `font_family` - Platform defaults: Consolas (Windows), Menlo (macOS), Monospace (Linux)
+- `shell` - Fallback shell if not set in environment
+- `[history]` max_output_capture_kb (default 50)
+- `[snapshot]` enabled, max_count (1000), max_size_mb (500), retention_days (30)
+- `[pipes]` enabled, max_capture_mb (10), auto_expand (true)
+- `[soi]` enabled, shell_summary (false), format (oneline)
+- `[agent]` mode (Off), max_budget_usd (1.0), cooldown_secs (30), allowed_tools
+- `[agent.orchestrator]` enabled (false), silence_timeout_secs (60), prd_path (PRD.md), checkpoint_path (.glass/checkpoint.md)
+- `[scripting]` enabled (true), max_operations, max_timeout_ms, max_scripts_per_hook
 
-Nine internal crates plus main binary:
+**Build configuration:**
+- Feature flag `perf` - Enables tracing-chrome instrumentation for profiling
+- Platform-specific: Windows build uses `winresource` for icon embedding
 
-1. `crates/glass_core` - Config loading, event loop integration, update checker, agent runtime
-2. `crates/glass_terminal` - PTY spawning, shell integration, VT parsing, block manager, OSC scanner
-3. `crates/glass_renderer` - wgpu rendering, frame composition, grid/blocks/tabs/search UI
-4. `crates/glass_mux` - Session/tab/pane multiplexing, binary split tree layout
-5. `crates/glass_history` - SQLite command history DB with FTS5, output compression, query engine
-6. `crates/glass_snapshot` - File snapshotting, blob store, undo engine, command safety parsing
-7. `crates/glass_pipes` - Pipeline parsing and visualization
-8. `crates/glass_mcp` - MCP server exposing Glass tools over stdio/JSON-RPC 2.0
-9. `crates/glass_coordination` - Multi-agent registry, advisory locks, inter-agent messaging (SQLite)
-10. `crates/glass_agent` - Agent worktree isolation, git operations
-11. `crates/glass_soi` - Structured Output Intelligence: command output classification
-12. `crates/glass_errors` - Shared error types
+## Platform Requirements
 
-## Build & Test
+**Development:**
+- Rust 1.70+ (2021 edition)
+- Cargo
+- Platform-specific build tools:
+  - Windows: MSVC toolchain (via Visual Studio)
+  - macOS: Xcode with metal support
+  - Linux: libxkbcommon, libwayland-dev, libxcb-render0-dev (see CI for full list)
 
-```bash
-cargo build --release          # Release binary (~5-10 MB)
-cargo test --workspace         # ~420 tests (cross-platform gated)
-cargo fmt --all -- --check     # Formatting check (enforced)
-cargo clippy --workspace -- -D warnings  # Linting (all warnings = errors)
-cargo bench                    # Criterion benchmarks with HTML reports
-cargo build --features perf    # Build with tracing instrumentation for profiling
-```
+**Production:**
+- Linux: x86_64 architecture, X11 or Wayland
+- macOS: aarch64 or x86_64, Metal GPU support
+- Windows: x86_64, ConPTY support (Windows 10+)
 
-## Minimum Dependency Versions
-
-All dependencies locked in Cargo.lock. Key pinned:
-- `alacritty_terminal = "=0.25.1"` (exact, no range)
-- `rusqlite = "0.38.0"` (FTS5 bundled)
-- `wgpu = "28.0.0"` (API stability)
-
-## CI/CD
-
-**GitHub Actions** (`.github/workflows/ci.yml`):
-- Runs on: Ubuntu (fmt), Windows (clippy), macOS + Linux + Windows (build+test matrix)
-- Passes all checks before merge to main
-- Artifact upload via release workflow
+**Network:**
+- Optional: GitHub API access for update checks (api.github.com)
+- Optional: Anthropic usage API for token tracking (api.anthropic.com/api/oauth/usage)
 
 ---
 
-*Stack analysis: 2026-03-15*
+*Stack analysis: 2026-03-18*
