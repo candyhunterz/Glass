@@ -37,6 +37,8 @@ pub enum EphemeralPurpose {
     QualityVerification,
     /// Qualitative LLM analysis of orchestrator run for Tier 3 findings.
     FeedbackAnalysis,
+    /// Generate a Tier 4 Rhai script from feedback analysis.
+    ScriptGeneration,
 }
 
 /// Result from a successful ephemeral agent session.
