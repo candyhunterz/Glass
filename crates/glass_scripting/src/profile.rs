@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::loader::load_scripts_from_dir;
-use crate::types::{ScriptManifest, ScriptStatus};
+use crate::types::ScriptStatus;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -268,6 +268,7 @@ fn is_leap(y: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ScriptManifest;
     use tempfile::TempDir;
 
     /// Helper: write a manifest + source pair into `dir`.

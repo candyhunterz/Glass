@@ -78,6 +78,42 @@ enum Commands {
         /// The command ID to undo
         command_id: i64,
     },
+    /// Script profile management (export/import bundles)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+}
+
+#[derive(Subcommand, Debug, PartialEq)]
+enum ProfileAction {
+    /// Export confirmed scripts as a shareable profile bundle
+    Export {
+        /// Profile name
+        #[arg(long)]
+        name: String,
+        /// Path to scripts directory (default: ~/.glass/scripts)
+        #[arg(long)]
+        scripts_dir: Option<String>,
+        /// Output directory for the profile bundle
+        #[arg(long)]
+        output: String,
+        /// Glass version to embed in profile metadata
+        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        glass_version: String,
+        /// Tech stack tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tech_stack: Vec<String>,
+    },
+    /// Import scripts from a profile bundle
+    Import {
+        /// Path to the profile bundle directory
+        #[arg(long)]
+        path: String,
+        /// Target scripts directory (default: ~/.glass/scripts)
+        #[arg(long)]
+        target: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -9461,6 +9497,69 @@ fn main() {
             if let Err(e) = rt.block_on(glass_mcp::run_mcp_server()) {
                 eprintln!("MCP server error: {}", e);
                 std::process::exit(1);
+            }
+        }
+        Some(Commands::Profile { action }) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .init();
+
+            match action {
+                ProfileAction::Export {
+                    name,
+                    scripts_dir,
+                    output,
+                    glass_version,
+                    tech_stack,
+                } => {
+                    let scripts_path = match scripts_dir {
+                        Some(p) => std::path::PathBuf::from(p),
+                        None => dirs::home_dir()
+                            .expect("Could not determine home directory")
+                            .join(".glass")
+                            .join("scripts"),
+                    };
+                    let output_path = std::path::PathBuf::from(&output);
+
+                    match glass_scripting::profile::export_profile(
+                        &name,
+                        &scripts_path,
+                        &output_path,
+                        &glass_version,
+                        tech_stack,
+                    ) {
+                        Ok(()) => {
+                            println!("Profile '{}' exported to {}", name, output);
+                        }
+                        Err(e) => {
+                            eprintln!("Export failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                ProfileAction::Import { path, target } => {
+                    let profile_path = std::path::PathBuf::from(&path);
+                    let target_path = match target {
+                        Some(p) => std::path::PathBuf::from(p),
+                        None => dirs::home_dir()
+                            .expect("Could not determine home directory")
+                            .join(".glass")
+                            .join("scripts"),
+                    };
+
+                    match glass_scripting::profile::import_profile(&profile_path, &target_path) {
+                        Ok(result) => {
+                            println!(
+                                "Import complete: {} imported, {} skipped",
+                                result.scripts_imported, result.scripts_skipped
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Import failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
             }
         }
     }
