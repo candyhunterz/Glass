@@ -4,6 +4,7 @@ pub mod engine;
 pub mod hooks;
 pub mod lifecycle;
 pub mod loader;
+pub mod mcp;
 pub mod sandbox;
 pub mod types;
 
@@ -12,6 +13,7 @@ pub use context::{CommandSnapshot, HookContext, HookEventData};
 pub use engine::{ScriptEngine, ScriptRunResult};
 pub use hooks::HookRegistry;
 pub use loader::{load_all_scripts, load_scripts_from_dir};
+pub use mcp::ScriptToolRegistry;
 pub use sandbox::*;
 pub use types::{HookPoint, LoadedScript, ScriptManifest, ScriptOrigin, ScriptStatus};
 
