@@ -11,7 +11,7 @@ use anyhow::Context as _;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::types::{RulesFile, RunMetricsFile, TuningHistoryFile};
+use crate::types::{AttributionFile, RulesFile, RunMetricsFile, TuningHistoryFile};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -130,6 +130,21 @@ pub fn save_archived_rules(path: &Path, file: &RulesFile) -> anyhow::Result<()> 
 }
 
 // ---------------------------------------------------------------------------
+// Attribution file
+// ---------------------------------------------------------------------------
+
+/// Load the rule-attribution file at `path`. Returns an empty
+/// [`AttributionFile`] if the file is missing or corrupted.
+pub fn load_attribution_file(path: &Path) -> AttributionFile {
+    load_toml_or_default(path)
+}
+
+/// Persist an [`AttributionFile`] to `path`.
+pub fn save_attribution_file(path: &Path, file: &AttributionFile) -> anyhow::Result<()> {
+    save_toml(path, file)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -141,7 +156,8 @@ mod tests {
 
     use super::*;
     use crate::types::{
-        AblationResult, ConfigSnapshot, Rule, RuleStatus, RulesMeta, RunMetrics, Scope, Severity,
+        AblationResult, AttributionFile, AttributionScore, ConfigSnapshot, MetricDeltas, Rule,
+        RuleStatus, RulesMeta, RunMetrics, Scope, Severity,
     };
 
     // -----------------------------------------------------------------------
@@ -347,5 +363,47 @@ mod tests {
             Some("5")
         );
         assert_eq!(s.provisional_rules, vec!["rule-001"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Attribution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn save_and_load_attribution_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("attribution.toml");
+
+        let score = AttributionScore {
+            rule_id: "force-commit".to_string(),
+            runs_fired: 5,
+            runs_not_fired: 3,
+            avg_delta_when_fired: MetricDeltas {
+                revert_rate: -0.04,
+                stuck_rate: -0.01,
+                waste_rate: -0.02,
+            },
+            avg_delta_when_not_fired: MetricDeltas::default(),
+            passenger_score: 0.25,
+            last_updated_run: "run-100".to_string(),
+        };
+        let file = AttributionFile {
+            scores: vec![score],
+        };
+        save_attribution_file(&path, &file).unwrap();
+        let loaded = load_attribution_file(&path);
+
+        assert_eq!(loaded.scores.len(), 1);
+        assert_eq!(loaded.scores[0].rule_id, "force-commit");
+        assert_eq!(loaded.scores[0].runs_fired, 5);
+        assert!((loaded.scores[0].passenger_score - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn load_attribution_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("attribution.toml");
+        let loaded = load_attribution_file(&path);
+        assert!(loaded.scores.is_empty());
     }
 }
