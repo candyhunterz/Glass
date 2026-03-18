@@ -20,6 +20,8 @@ The orchestrator drives Claude Code sessions autonomously. It spawns a separate 
 | `crates/glass_feedback/src/` | Self-improvement feedback loop (analyzer, rules, lifecycle, regression) |
 | `crates/glass_scripting/src/` | Rhai scripting engine, hook registry, action API, script lifecycle, MCP tools, profiles |
 | `src/script_bridge.rs` | Bridge: routes events to scripts, executes actions, tracks lifecycle per run |
+| `crates/glass_feedback/src/attribution.rs` | Per-rule metric attribution — correlates rule firings with metric deltas to identify passengers |
+| `crates/glass_feedback/src/ablation.rs` | Ablation testing — disables one confirmed rule per run to definitively test if it's needed |
 | `crates/glass_core/src/agent_runtime.rs` | Agent command args, system prompt building, activity stream |
 
 ## The Main Loop
@@ -227,7 +229,8 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | File | Purpose | Created By |
 |------|---------|------------|
 | `rules.toml` | Active behavioral rules (provisional/confirmed) | `on_run_end()` |
-| `run-metrics.toml` | Historical run metrics (one entry per run) | `on_run_end()` |
+| `run-metrics.toml` | Historical run metrics (one entry per run, includes per-rule firings) | `on_run_end()` |
+| `rule-attribution.toml` | Per-rule attribution scores (passenger scores, firing correlations) | `on_run_end()` |
 | `tuning-history.toml` | Config snapshots at each run start | `on_run_start()` |
 | `archived-rules.toml` | Rules that were rejected or went stale | `on_run_end()` |
 | `iterations.tsv` | Per-iteration log (TSV: iteration, commit, feature, metric, status, description) | `append_iteration_log()` during run |
@@ -261,10 +264,13 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 2. Load merged rule engine from project `rules.toml` + global `global-rules.toml`
 3. Reset all `trigger_count` to 0 (per-run firing tracking)
 4. Snapshot current config values to `tuning-history.toml`
-5. Return `FeedbackState` handle
+5. Load attribution data from `rule-attribution.toml`
+6. Check ablation conditions: if `ablation_enabled` and no provisional rules exist, select an ablation target (highest passenger score first) via `ablation::select_target()`
+7. Return `FeedbackState` handle (includes `ablation_target`, `attribution_scores`)
 
 ### check_rules (called every iteration during OrchestratorSilence)
 - `RuleEngine` evaluates all active rules against live `RunState`
+- If an ablation target is set, that rule is skipped (exists but doesn't fire this run)
 - Returns `Vec<RuleAction>` — actions enforced by the orchestrator:
 
 | Action | What It Does |
@@ -282,8 +288,13 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 ### on_run_end (called when orchestrator deactivates)
 1. **Analyze** — run all 11 detectors on `RunData` → produce `Finding`s (Tier 1 + 2)
 2. **Compute metrics** — iterations, duration, revert_rate, stuck_rate, waste_rate, checkpoint_rate
-3. **Regression check** — compare current metrics vs previous run's baseline
-4. **Promote or reject** provisional rules:
+3. **Load baseline** — previous run's metrics for regression comparison
+3b. **Record rule firings** — collect each rule's `trigger_count` into `RunMetrics.rule_firings`
+3c. **Update attribution** — compute metric deltas vs baseline, call `attribution::update()` to correlate rule firings with improvements/regressions, update passenger scores
+3d. **Evaluate ablation** — if ablation target was set, compare current metrics against 3-run rolling average. If regressed → rule is "needed" (stays Confirmed). If same/improved → rule is a "passenger" (demoted to Stale)
+3e. **Prune attribution** — remove scores for rules that were archived by staleness
+4. **Regression check** — compare current metrics vs previous run's baseline
+4b. **Promote or reject** provisional rules:
    - Improved/Neutral → promote to Confirmed
    - Regressed → reject all provisionals, archive them
 5. **Apply new findings** — create new Provisional rules from detector findings
@@ -292,7 +303,7 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 8. **Config tuning** — extract Tier 1 findings → write to config.toml (max 1 per run)
 9. **Build LLM prompt** — if `feedback_llm = true`, build analysis prompt from run data + existing findings (returned in `FeedbackResult.llm_prompt`)
 10. **Build script prompt** — if `script_generation = true` and findings are empty but waste/stuck rates are high, build Tier 4 prompt (returned in `FeedbackResult.script_prompt`)
-11. **Persist** — save rules.toml, run-metrics.toml, archived-rules.toml
+11. **Persist** — save rules.toml, run-metrics.toml (with rule_firings), archived-rules.toml, rule-attribution.toml
 12. **Sync global** — copy global-scoped rules to `~/.glass/global-rules.toml`; remove rejected/stale ones
 13. **Script lifecycle** — `ScriptBridge::on_feedback_run_end(regressed)` promotes/rejects/ages scripts based on regression result (see Script Lifecycle below)
 
@@ -478,6 +489,49 @@ Finding detected
                  Provisional → (regression detected) → Rejected → Archived
 ```
 
+## Attribution & Ablation Testing
+
+### Problem
+Single-run before/after comparison can't establish causation. Rules that are present during a good run get promoted even if they didn't contribute ("passengers"). Over many runs, the confirmed set bloats with passengers that add overhead without benefit.
+
+### Attribution Engine (`crates/glass_feedback/src/attribution.rs`)
+Runs every run (cheap). Tracks which rules fired per run and correlates with metric deltas:
+
+1. For each active rule, bucket the run into "fired" (`trigger_count > 0`) or "didn't fire"
+2. Update rolling averages for metric deltas in each bucket
+3. For rules with 5+ data points, compute `passenger_score`:
+   - `benefit = avg_delta_when_not_fired - avg_delta_when_fired` (positive when rule helps)
+   - `passenger_score = 1.0 - (benefit * 5.0).clamp(0.0, 1.0)`
+   - 0.0 = clearly helpful, 1.0 = no detectable benefit
+
+Scores persist to `.glass/rule-attribution.toml`. Pruned when rules are archived.
+
+### Ablation Engine (`crates/glass_feedback/src/ablation.rs`)
+Activates only when the system has converged (no provisional rules/scripts). Disables one confirmed rule per run and measures impact.
+
+**Trigger conditions** (all must be true):
+1. `ablation_enabled = true` in config
+2. No provisional rules exist
+3. At least one confirmed rule hasn't been tested this sweep (or `ablation_sweep_interval` runs since last sweep)
+
+**Target selection:** Confirmed rules sorted by `passenger_score` descending (most suspicious first). Pinned rules are excluded.
+
+**Evaluation:** Compare current metrics against 3-run rolling average. Same regression thresholds as the main guard (revert > 0.10, stuck > 0.05, waste > 0.10).
+
+**Results:**
+- **Needed** → rule stays Confirmed, `last_ablation_run` updated
+- **Passenger** → rule demoted to Stale (5 more runs to resurrect before archival)
+- **Concurrent regression** (unrelated cause) → conservatively marked "needed" (re-tested next sweep)
+
+**Sweep lifecycle:**
+1. System converges → ablation begins
+2. One rule tested per run, ordered by passenger_score
+3. After all confirmed rules tested → sweep idle
+4. Re-sweep trigger: new rule confirmed, or `ablation_sweep_interval` runs elapsed (default 20)
+
+### Design Principle
+Attribution informs, ablation confirms. Attribution is too noisy to act on alone, but useful for prioritizing ablation targets. Only ablation can demote rules.
+
 ## Analyzer Detectors
 
 | Detector | Fires When | Data Needed | Finding |
@@ -516,6 +570,8 @@ max_iterations = 120               # Bounded run limit (0 = unlimited)
 agent_prompt_pattern = ""          # Regex for instant prompt detection
 feedback_llm = false               # Enable LLM qualitative analysis (Tier 3 prompt hints)
 max_prompt_hints = 10              # Max Tier 3 prompt hint rules per project
+ablation_enabled = true            # Enable automatic ablation testing of confirmed rules
+ablation_sweep_interval = 20       # Runs between re-sweeps after full ablation coverage
 
 [scripting]
 enabled = true                     # Master switch for scripting engine
@@ -556,3 +612,7 @@ script_generation = true           # Allow feedback loop to generate Tier 4 scri
 - **Scripts run on the main thread.** The Rhai `max_operations` limit is the primary bound. A `max_timeout_ms` wall-clock safety net is configured but execution is synchronous — heavy scripts could briefly block rendering.
 - **Project scripts override global scripts** with the same name. `load_all_scripts` loads project-local first, then global, skipping name duplicates.
 - **ConfigReload loop guard** prevents scripts from causing infinite config reload cycles. The `config_reload_guard` flag is set when `SetConfig` executes and cleared on the next non-ConfigReload hook.
+- **Attribution runs every run, ablation only when converged.** Attribution is cheap (just logging + math). Ablation only activates when no provisional rules exist, preventing confounded results.
+- **Ablation uses 3-run rolling average** for evaluation, not single-run comparison. This reduces noise from anomalous runs.
+- **Ablation passengers are demoted to Stale, not archived immediately.** This gives 5 runs for the rule to resurrect if project conditions change (e.g., different phase of development).
+- **Run IDs are lexicographically comparable** (`run-{unix_timestamp}`) because Unix timestamps have consistent digit counts. Ablation sweep tracking relies on this for `last_ablation_run` comparisons.
