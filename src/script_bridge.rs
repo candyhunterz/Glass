@@ -6,7 +6,9 @@
 // they will be connected incrementally in future tasks.
 
 use glass_core::config::GlassConfig;
-use glass_scripting::{Action, HookContext, HookEventData, HookPoint, LogLevel, ScriptSystem};
+use glass_scripting::{
+    Action, HookContext, HookEventData, HookPoint, LogLevel, ScriptSystem, ScriptToolRegistry,
+};
 
 /// Bridge between the Glass event loop and the scripting engine.
 ///
@@ -17,6 +19,7 @@ use glass_scripting::{Action, HookContext, HookEventData, HookPoint, LogLevel, S
 /// the caller to execute.
 pub struct ScriptBridge {
     system: ScriptSystem,
+    tool_registry: ScriptToolRegistry,
     enabled: bool,
     project_root: Option<String>,
 }
@@ -37,6 +40,7 @@ impl ScriptBridge {
         };
         Self {
             system: ScriptSystem::new(sandbox),
+            tool_registry: ScriptToolRegistry::new(),
             enabled,
             project_root: None,
         }
@@ -59,6 +63,21 @@ impl ScriptBridge {
             for (name, err) in &errors {
                 tracing::warn!("ScriptBridge: compile error in script '{name}': {err}");
             }
+        }
+
+        // Rebuild the MCP tool registry from loaded scripts.
+        self.tool_registry = ScriptToolRegistry::new();
+        let all_scripts: Vec<glass_scripting::LoadedScript> = self
+            .system
+            .all_scripts()
+            .into_iter()
+            .cloned()
+            .collect();
+        self.tool_registry
+            .register_from_scripts(&all_scripts, false);
+        let tool_count = self.tool_registry.list_confirmed().len();
+        if tool_count > 0 {
+            tracing::info!("ScriptBridge: registered {tool_count} MCP script tool(s)");
         }
     }
 
@@ -93,6 +112,91 @@ impl ScriptBridge {
     /// Return the stored project root, if any.
     pub fn project_root(&self) -> Option<&str> {
         self.project_root.as_deref()
+    }
+
+    // -------------------------------------------------------------------
+    // MCP script tool methods
+    // -------------------------------------------------------------------
+
+    /// Return all registered script tool definitions as JSON values.
+    pub fn list_script_tools(&self) -> Vec<serde_json::Value> {
+        self.tool_registry
+            .list_confirmed()
+            .iter()
+            .map(|def| {
+                serde_json::json!({
+                    "name": def.name,
+                    "description": def.description,
+                    "params_schema": def.params_schema,
+                    "script_name": def.script_name,
+                })
+            })
+            .collect()
+    }
+
+    /// Look up and run a script-backed MCP tool by name.
+    ///
+    /// The `params` JSON object is flattened into the `event` map so the
+    /// script can access individual parameters via `event.param_name`.
+    pub fn run_script_tool(
+        &self,
+        name: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let tool_def = self
+            .tool_registry
+            .get(name)
+            .ok_or_else(|| format!("Unknown script tool: {name}"))?;
+
+        // Build a HookContext with whatever we have.
+        let ctx = HookContext {
+            cwd: self
+                .project_root
+                .clone()
+                .unwrap_or_else(|| ".".to_string()),
+            ..Default::default()
+        };
+
+        // Build event data from the JSON params so the script can read them.
+        let mut event_data = HookEventData::new();
+        event_data.set("tool_name", name.to_string());
+        if let serde_json::Value::Object(map) = &params {
+            for (key, value) in map {
+                set_json_field(&mut event_data, key, value);
+            }
+        }
+
+        // Run the tool's backing script via the engine.
+        let script_name = &tool_def.script_name;
+        match self
+            .system
+            .run_hook(HookPoint::McpRequest, &ctx, &event_data)
+        {
+            ref result if !result.errors.is_empty() => {
+                let errs: Vec<String> = result
+                    .errors
+                    .iter()
+                    .map(|(n, e)| format!("{n}: {e}"))
+                    .collect();
+                Err(format!(
+                    "Script tool '{script_name}' error: {}",
+                    errs.join("; ")
+                ))
+            }
+            ref result => {
+                // Convert actions to a JSON summary for the MCP response.
+                let action_summaries: Vec<serde_json::Value> = result
+                    .actions
+                    .iter()
+                    .map(action_to_json)
+                    .collect();
+                Ok(serde_json::json!({
+                    "tool": name,
+                    "actions": action_summaries,
+                    "action_count": result.actions.len(),
+                }))
+            }
+        }
     }
 
     // -------------------------------------------------------------------
@@ -420,6 +524,53 @@ impl ScriptBridge {
             Err(e) => {
                 tracing::warn!("[script] failed to run git checkout: {e}");
             }
+        }
+    }
+}
+
+/// Set a JSON value as a field on `HookEventData`.
+///
+/// Primitive types (string, int, float, bool) are set natively so scripts
+/// can use them directly. Complex types (arrays, objects, null) are
+/// serialized to a JSON string.
+fn set_json_field(event_data: &mut HookEventData, key: &str, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => event_data.set(key, s.clone()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                event_data.set(key, i);
+            } else if let Some(f) = n.as_f64() {
+                event_data.set(key, f);
+            } else {
+                event_data.set(key, n.to_string());
+            }
+        }
+        serde_json::Value::Bool(b) => event_data.set(key, *b),
+        // Null, arrays, and objects are serialized as JSON strings.
+        _ => event_data.set(key, value.to_string()),
+    }
+}
+
+/// Convert a script [`Action`] to a JSON value for MCP responses.
+fn action_to_json(action: &Action) -> serde_json::Value {
+    match action {
+        Action::Log { level, message } => {
+            serde_json::json!({"type": "log", "level": format!("{level:?}").to_lowercase(), "message": message})
+        }
+        Action::Notify { message, title } => {
+            serde_json::json!({"type": "notify", "message": message, "title": title})
+        }
+        Action::Commit { message } => {
+            serde_json::json!({"type": "commit", "message": message})
+        }
+        Action::InjectPromptHint { hint } => {
+            serde_json::json!({"type": "inject_prompt_hint", "hint": hint})
+        }
+        Action::SetConfig { key, value } => {
+            serde_json::json!({"type": "set_config", "key": key, "value": format!("{value:?}")})
+        }
+        _ => {
+            serde_json::json!({"type": format!("{action:?}").split('{').next().unwrap_or("unknown").trim()})
         }
     }
 }

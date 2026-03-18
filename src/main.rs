@@ -9098,19 +9098,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                     "script_tool" => {
-                        // Placeholder: script tool execution will be fully wired
-                        // once the ScriptSystem is integrated into the app event loop.
-                        glass_core::ipc::McpResponse::ok(
-                            request.id,
-                            serde_json::json!({"error": "script tools not yet fully wired"}),
-                        )
+                        let tool_name = request
+                            .params
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let tool_params = request
+                            .params
+                            .get("params")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({}));
+                        match self.script_bridge.run_script_tool(tool_name, tool_params) {
+                            Ok(result) => {
+                                glass_core::ipc::McpResponse::ok(request.id, result)
+                            }
+                            Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                        }
                     }
                     "list_script_tools" => {
-                        // Placeholder: returns empty list until ScriptToolRegistry
-                        // is populated from loaded scripts.
+                        let tools = self.script_bridge.list_script_tools();
                         glass_core::ipc::McpResponse::ok(
                             request.id,
-                            serde_json::json!({"tools": []}),
+                            serde_json::json!({"tools": tools}),
                         )
                     }
                     _ => glass_core::ipc::McpResponse::err(
