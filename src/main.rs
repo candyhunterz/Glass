@@ -436,6 +436,38 @@ impl Drop for AgentRuntime {
     }
 }
 
+/// Fire a scripting hook on the given bridge. This is a free function so it can
+/// be called while other fields of `Processor` are mutably borrowed (e.g.
+/// `self.windows`). Short-circuits if no scripts match the hook.
+fn fire_hook_on_bridge(
+    bridge: &script_bridge::ScriptBridge,
+    orchestrator_project_root: &str,
+    hook: glass_scripting::HookPoint,
+    event: &glass_scripting::HookEventData,
+) {
+    if !bridge.has_scripts_for(hook.clone()) {
+        return;
+    }
+    let cwd = if orchestrator_project_root.is_empty() {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    } else {
+        orchestrator_project_root.to_string()
+    };
+    let ctx = glass_scripting::HookContext {
+        cwd,
+        ..Default::default()
+    };
+    let actions = bridge.run_hook(hook, &ctx, event);
+    if !actions.is_empty() {
+        if let Some(root) = bridge.project_root() {
+            bridge.execute_actions(&actions, root);
+        }
+    }
+}
+
 /// Convert a ShellEvent (from glass_core) back to OscEvent (from glass_terminal)
 /// so BlockManager.handle_event() can process it.
 fn shell_event_to_osc(event: &ShellEvent) -> OscEvent {
@@ -1819,46 +1851,6 @@ impl Processor {
             })
     }
 
-    /// Build a default [`glass_scripting::HookContext`] for script hooks.
-    #[allow(dead_code)]
-    ///
-    /// Uses the orchestrator project root if available, otherwise the focused
-    /// session CWD. Git info and recent commands are not populated here --
-    /// callers should enrich the context if they have more data.
-    fn build_hook_context(&self) -> glass_scripting::HookContext {
-        let cwd = if !self.orchestrator.project_root.is_empty() {
-            self.orchestrator.project_root.clone()
-        } else {
-            self.get_focused_cwd()
-        };
-        glass_scripting::HookContext {
-            cwd,
-            ..Default::default()
-        }
-    }
-
-    /// Fire a scripting hook with the given event data, executing any returned actions.
-    ///
-    /// Short-circuits if no scripts are registered for the hook or if scripting
-    /// is disabled. This avoids the cost of building a context when there are
-    /// no subscribers.
-    fn fire_script_hook(
-        &self,
-        hook: glass_scripting::HookPoint,
-        event: &glass_scripting::HookEventData,
-    ) {
-        if !self.script_bridge.has_scripts_for(hook.clone()) {
-            return;
-        }
-        let ctx = self.build_hook_context();
-        let actions = self.script_bridge.run_hook(hook, &ctx, event);
-        if !actions.is_empty() {
-            if let Some(root) = self.script_bridge.project_root() {
-                self.script_bridge.execute_actions(&actions, root);
-            }
-        }
-    }
-
     /// Run the feedback loop on_run_end, applying any config changes and logging results.
     fn run_feedback_on_end(&mut self) {
         if let Some(feedback_state) = self.feedback_state.take() {
@@ -2105,6 +2097,14 @@ impl Processor {
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
         if self.agent_runtime.is_none() {
             tracing::error!("Orchestrator: agent respawn failed — deactivating orchestrator");
+            {
+                let mut event = glass_scripting::HookEventData::new();
+                event.set("iterations", self.orchestrator.iteration as i64);
+                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    glass_scripting::HookPoint::OrchestratorRunEnd,
+                    &event,
+                );
+            }
             self.run_feedback_on_end();
             self.orchestrator.active = false;
             self.orchestrator.response_pending = false;
@@ -2490,6 +2490,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         match event {
             WindowEvent::CloseRequested => {
+                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    glass_scripting::HookPoint::SessionEnd,
+                    &glass_scripting::HookEventData::new(),
+                );
                 self.windows.remove(&window_id);
                 event_loop.exit();
             }
@@ -3887,6 +3891,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     1,
                                 );
                                 ctx.session_mux.add_tab(session, false);
+                                {
+                                    let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("tab_index", tab_idx as i64);
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::TabCreate,
+                                        &event,
+                                    );
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -3905,6 +3918,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         if ctx.session_mux.tab_count() < tab_count_before
                                             && ctx.session_mux.tab_count() == 0
                                         {
+                                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                                glass_scripting::HookPoint::SessionEnd,
+                                                &glass_scripting::HookEventData::new(),
+                                            );
                                             self.windows.remove(&window_id);
                                             event_loop.exit();
                                             return;
@@ -3921,11 +3938,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     // Single pane: close the entire tab
                                     let idx = ctx.session_mux.active_tab_index();
+                                    {
+                                        let mut event = glass_scripting::HookEventData::new();
+                                        event.set("tab_index", idx as i64);
+                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            glass_scripting::HookPoint::TabClose,
+                                            &event,
+                                        );
+                                    }
                                     if let Some(session) = ctx.session_mux.close_tab(idx) {
                                         cleanup_session(session);
                                     }
                                     ctx.tab_bar_hovered_tab = None;
                                     if ctx.session_mux.tab_count() == 0 {
+                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            glass_scripting::HookPoint::SessionEnd,
+                                            &glass_scripting::HookEventData::new(),
+                                        );
                                         self.windows.remove(&window_id);
                                         event_loop.exit();
                                         return;
@@ -4277,6 +4306,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Load scripts for the project now that we know its root.
                                     self.script_bridge.load_for_project(&current_cwd);
 
+                                    // Fire scripting OrchestratorRunStart hook
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::OrchestratorRunStart,
+                                        &glass_scripting::HookEventData::new(),
+                                    );
+
                                     // Kickoff flow: check PRD existence
                                     let prd_rel = self
                                         .config
@@ -4604,6 +4639,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.orchestrator.last_known_head = None;
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
+                                    // Fire scripting OrchestratorRunEnd hook
+                                    {
+                                        let mut event = glass_scripting::HookEventData::new();
+                                        event.set(
+                                            "iterations",
+                                            self.orchestrator.iteration as i64,
+                                        );
+                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            glass_scripting::HookPoint::OrchestratorRunEnd,
+                                            &event,
+                                        );
+                                    }
                                     self.orchestrator.feedback_completion_reason =
                                         "user_cancelled".to_string();
                                     // Handle active synthesis: write fallback checkpoint
@@ -5292,11 +5339,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 });
                             }
                             Some(TabHitResult::CloseButton(tab_idx)) => {
+                                {
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("tab_index", tab_idx as i64);
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::TabClose,
+                                        &event,
+                                    );
+                                }
                                 if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
                                     cleanup_session(session);
                                 }
                                 ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::SessionEnd,
+                                        &glass_scripting::HookEventData::new(),
+                                    );
                                     self.windows.remove(&window_id);
                                     event_loop.exit();
                                     return;
@@ -5321,6 +5380,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     1,
                                 );
                                 ctx.session_mux.add_tab(session, false);
+                                {
+                                    let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("tab_index", tab_idx as i64);
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::TabCreate,
+                                        &event,
+                                    );
+                                }
                                 ctx.window.request_redraw();
                             }
                             None => {}
@@ -5654,11 +5722,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                         ) {
                             Some(TabHitResult::Tab(tab_idx))
                             | Some(TabHitResult::CloseButton(tab_idx)) => {
+                                {
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("tab_index", tab_idx as i64);
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::TabClose,
+                                        &event,
+                                    );
+                                }
                                 if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
                                     cleanup_session(session);
                                 }
                                 ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
+                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::SessionEnd,
+                                        &glass_scripting::HookEventData::new(),
+                                    );
                                     self.windows.remove(&window_id);
                                     event_loop.exit();
                                     return;
@@ -5794,6 +5874,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if ctx.session_mux.tab_count() < tab_count_before
                                 && ctx.session_mux.tab_count() == 0
                             {
+                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    glass_scripting::HookPoint::SessionEnd,
+                                    &glass_scripting::HookEventData::new(),
+                                );
                                 self.windows.remove(&window_id);
                                 event_loop.exit();
                                 return;
@@ -5808,6 +5892,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             );
                         } else {
                             // Single pane: close the entire tab
+                            {
+                                let mut event = glass_scripting::HookEventData::new();
+                                event.set("tab_index", idx as i64);
+                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    glass_scripting::HookPoint::TabClose,
+                                    &event,
+                                );
+                            }
                             if let Some(session) = ctx.session_mux.close_tab(idx) {
                                 cleanup_session(session);
                             }
@@ -5816,6 +5908,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     if ctx.session_mux.tab_count() == 0 {
                         tracing::info!("Last tab closed -- exiting");
+                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            glass_scripting::HookPoint::SessionEnd,
+                            &glass_scripting::HookEventData::new(),
+                        );
                         self.windows.remove(&window_id);
                         event_loop.exit();
                     } else {
@@ -5829,6 +5925,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 event: shell_event,
                 line,
             } => {
+                // Holds data for scripting hooks (fired outside windows borrow).
+                let mut hook_command_start_text: Option<String> = None;
+                let mut hook_command_complete_data: Option<(String, Option<i32>, i64)> = None;
+
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Route to session by session_id
                     if ctx.session_mux.session(session_id).is_none() {
@@ -6080,6 +6180,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 format!("command started: {}", command_text),
                             ));
 
+                            // Capture for scripting CommandStart hook (fired outside borrow).
+                            hook_command_start_text = Some(command_text.clone());
+
                             session.pending_command_text = Some(command_text);
 
                             // Start filesystem watcher for this command's CWD.
@@ -6141,6 +6244,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         &command_text, exit_str, duration_secs
                                     ),
                                 ));
+
+                                // Capture for scripting CommandComplete hook (fired outside borrow).
+                                hook_command_complete_data =
+                                    Some((command_text.clone(), *exit_code, duration_ms));
 
                                 let record = CommandRecord {
                                     id: None,
@@ -6347,6 +6454,22 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Request redraw to reflect block state changes
                     ctx.window.request_redraw();
+                }
+                // Fire scripting hooks (outside windows borrow)
+                if let Some(cmd_text) = hook_command_start_text {
+                    let mut event = glass_scripting::HookEventData::new();
+                    event.set("command", cmd_text);
+                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,glass_scripting::HookPoint::CommandStart, &event);
+                }
+                if let Some((cmd_text, exit_code, duration_ms)) = hook_command_complete_data {
+                    let mut event = glass_scripting::HookEventData::new();
+                    event.set("command", cmd_text);
+                    event.set("exit_code", exit_code.unwrap_or(-1) as i64);
+                    event.set("duration_ms", duration_ms);
+                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                        glass_scripting::HookPoint::CommandComplete,
+                        &event,
+                    );
                 }
             }
             AppEvent::CommandOutput {
@@ -6728,6 +6851,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 "Orchestrator: activated via config reload (settings overlay)"
                             );
                         } else if !orch_enabled && was_enabled {
+                            {
+                                let mut event = glass_scripting::HookEventData::new();
+                                event.set("iterations", self.orchestrator.iteration as i64);
+                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    glass_scripting::HookPoint::OrchestratorRunEnd,
+                                    &event,
+                                );
+                            }
                             self.run_feedback_on_end();
                             self.orchestrator.active = false;
                             tracing::info!(
@@ -7167,6 +7298,14 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // If orchestrating, deactivate — can't orchestrate without an agent
                     if self.orchestrator.active {
+                        {
+                            let mut event = glass_scripting::HookEventData::new();
+                            event.set("iterations", self.orchestrator.iteration as i64);
+                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                glass_scripting::HookPoint::OrchestratorRunEnd,
+                                &event,
+                            );
+                        }
                         self.run_feedback_on_end();
                         self.orchestrator.active = false;
                         self.orchestrator.response_pending = false;
@@ -7468,6 +7607,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             &prd_path,
                         );
 
+                        {
+                            let mut event = glass_scripting::HookEventData::new();
+                            event.set("iterations", self.orchestrator.iteration as i64);
+                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                glass_scripting::HookPoint::OrchestratorRunEnd,
+                                &event,
+                            );
+                        }
                         self.run_feedback_on_end();
                         self.orchestrator.active = false;
                         if let Some(handle) = self.artifact_watcher_thread.take() {
@@ -8105,6 +8252,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
+                        // Fire scripting OrchestratorIteration hook
+                        {
+                            let mut event = glass_scripting::HookEventData::new();
+                            event.set("iteration", self.orchestrator.iteration as i64);
+                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                glass_scripting::HookPoint::OrchestratorIteration,
+                                &event,
+                            );
+                        }
+
                         // If no verification needed, proceed with normal context send
                         let has_nudge = nudge.is_some();
                         let mut content = String::from("[TERMINAL_CONTEXT]\n");
@@ -8470,6 +8627,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::UsagePause => {
                 tracing::info!("Orchestrator: usage pause triggered (>=80%)");
+                {
+                    let mut event = glass_scripting::HookEventData::new();
+                    event.set("iterations", self.orchestrator.iteration as i64);
+                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                        glass_scripting::HookPoint::OrchestratorRunEnd,
+                        &event,
+                    );
+                }
                 self.run_feedback_on_end();
                 self.orchestrator.active = false;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
@@ -8481,6 +8646,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::UsageHardStop => {
                 tracing::warn!("Orchestrator: usage hard stop (>=95%)");
+                {
+                    let mut event = glass_scripting::HookEventData::new();
+                    event.set("iterations", self.orchestrator.iteration as i64);
+                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                        glass_scripting::HookPoint::OrchestratorRunEnd,
+                        &event,
+                    );
+                }
                 self.run_feedback_on_end();
                 self.orchestrator.active = false;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
@@ -8657,6 +8830,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             );
                             let tab_id = ctx.session_mux.add_tab(session, self.orchestrator.active);
                             let new_tab_index = ctx.session_mux.tab_count() - 1;
+                            {
+                                let mut event = glass_scripting::HookEventData::new();
+                                event.set("tab_index", new_tab_index as i64);
+                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    glass_scripting::HookPoint::TabCreate,
+                                    &event,
+                                );
+                            }
                             ctx.window.request_redraw();
                             glass_core::ipc::McpResponse::ok(
                                 request.id,
@@ -8796,6 +8977,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                             } else {
                                 match resolve_tab_index(&ctx.session_mux, &request.params) {
                                     Ok(tab_idx) => {
+                                        {
+                                            let mut event =
+                                                glass_scripting::HookEventData::new();
+                                            event.set("tab_index", tab_idx as i64);
+                                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                                glass_scripting::HookPoint::TabClose,
+                                                &event,
+                                            );
+                                        }
                                         if let Some(session) = ctx.session_mux.close_tab(tab_idx) {
                                             cleanup_session(session);
                                         }
