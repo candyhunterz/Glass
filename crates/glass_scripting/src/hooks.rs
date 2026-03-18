@@ -58,10 +58,7 @@ impl HookRegistry {
             }
 
             for hook in &script.manifest.hooks {
-                hooks
-                    .entry(hook.clone())
-                    .or_default()
-                    .push(script.clone());
+                hooks.entry(hook.clone()).or_default().push(script.clone());
             }
         }
 
@@ -87,9 +84,7 @@ impl HookRegistry {
 
     /// Check whether any scripts are registered for a given hook point.
     pub fn has_scripts_for(&self, hook: HookPoint) -> bool {
-        self.hooks
-            .get(&hook)
-            .map_or(false, |v| !v.is_empty())
+        self.hooks.get(&hook).is_some_and(|v| !v.is_empty())
     }
 
     /// Return all unique scripts across every hook, deduplicated by
@@ -100,10 +95,7 @@ impl HookRegistry {
 
         for list in self.hooks.values() {
             for script in list {
-                let key = (
-                    script.manifest.name.clone(),
-                    script.source_path.clone(),
-                );
+                let key = (script.manifest.name.clone(), script.source_path.clone());
                 if seen.insert(key) {
                     result.push(script);
                 }
@@ -175,12 +167,18 @@ mod tests {
         let reg = HookRegistry::new(scripts, 10);
 
         assert_eq!(reg.scripts_for(HookPoint::CommandStart).len(), 1);
-        assert_eq!(reg.scripts_for(HookPoint::CommandStart)[0].manifest.name, "snap");
+        assert_eq!(
+            reg.scripts_for(HookPoint::CommandStart)[0].manifest.name,
+            "snap"
+        );
 
         assert_eq!(reg.scripts_for(HookPoint::CommandComplete).len(), 2);
 
         assert_eq!(reg.scripts_for(HookPoint::TabCreate).len(), 1);
-        assert_eq!(reg.scripts_for(HookPoint::TabCreate)[0].manifest.name, "tab-hook");
+        assert_eq!(
+            reg.scripts_for(HookPoint::TabCreate)[0].manifest.name,
+            "tab-hook"
+        );
 
         assert!(!reg.has_scripts_for(HookPoint::SessionStart));
     }

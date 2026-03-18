@@ -1449,6 +1449,7 @@ dependencies = [
 name = "glass_scripting"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dirs",
  "glass_core",
  "rhai",

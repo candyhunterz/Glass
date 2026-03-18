@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod hooks;
+pub mod lifecycle;
 pub mod loader;
 pub mod sandbox;
 pub mod types;

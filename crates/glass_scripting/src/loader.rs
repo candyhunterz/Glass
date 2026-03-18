@@ -73,11 +73,7 @@ pub fn load_scripts_from_dir(base: &Path) -> Vec<LoadedScript> {
             let source = match fs::read_to_string(&rhai_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(
-                        "Failed to read source file {}: {}",
-                        rhai_path.display(),
-                        e
-                    );
+                    warn!("Failed to read source file {}: {}", rhai_path.display(), e);
                     continue;
                 }
             };
@@ -189,7 +185,11 @@ type = "hook"
         write_source(&hooks_dir, "rejected-hook");
 
         let scripts = load_scripts_from_dir(tmp.path());
-        assert_eq!(scripts.len(), 0, "Archived and rejected scripts should be skipped");
+        assert_eq!(
+            scripts.len(),
+            0,
+            "Archived and rejected scripts should be skipped"
+        );
     }
 
     #[test]
@@ -202,7 +202,11 @@ type = "hook"
         write_manifest(&hooks_dir, "orphan-hook", "confirmed");
 
         let scripts = load_scripts_from_dir(tmp.path());
-        assert_eq!(scripts.len(), 0, "Manifest without .rhai source should be skipped");
+        assert_eq!(
+            scripts.len(),
+            0,
+            "Manifest without .rhai source should be skipped"
+        );
     }
 
     #[test]

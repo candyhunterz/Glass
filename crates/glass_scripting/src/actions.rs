@@ -28,9 +28,7 @@ pub enum ConfigValue {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
     /// Commit current changes (standard git commit).
-    Commit {
-        message: String,
-    },
+    Commit { message: String },
     /// Commit using an isolated worktree.
     IsolateCommit {
         message: String,
@@ -38,24 +36,16 @@ pub enum Action {
         files: Vec<String>,
     },
     /// Revert specified files to their last snapshot state.
-    RevertFiles {
-        paths: Vec<String>,
-    },
+    RevertFiles { paths: Vec<String> },
     /// Set a configuration value at a dotted key path.
-    SetConfig {
-        key: String,
-        value: ConfigValue,
-    },
+    SetConfig { key: String, value: ConfigValue },
     /// Force an immediate snapshot of specified paths.
     ForceSnapshot {
         #[serde(default)]
         paths: Vec<String>,
     },
     /// Change the snapshot policy for a path pattern.
-    SetSnapshotPolicy {
-        pattern: String,
-        policy: String,
-    },
+    SetSnapshotPolicy { pattern: String, policy: String },
     /// Tag a command block with metadata.
     TagCommand {
         #[serde(default)]
@@ -63,31 +53,23 @@ pub enum Action {
         tag: String,
     },
     /// Inject a hint into the next orchestrator prompt.
-    InjectPromptHint {
-        hint: String,
-    },
+    InjectPromptHint { hint: String },
     /// Trigger an orchestrator checkpoint.
     TriggerCheckpoint {
         #[serde(default)]
         reason: Option<String>,
     },
     /// Extend the silence timeout by a duration.
-    ExtendSilence {
-        duration_ms: u64,
-    },
+    ExtendSilence { duration_ms: u64 },
     /// Block the current orchestrator iteration (e.g., rate limiting).
     BlockIteration {
         #[serde(default)]
         reason: Option<String>,
     },
     /// Enable a script by name.
-    EnableScript {
-        name: String,
-    },
+    EnableScript { name: String },
     /// Disable a script by name.
-    DisableScript {
-        name: String,
-    },
+    DisableScript { name: String },
     /// Register a new MCP tool.
     RegisterTool {
         name: String,
@@ -95,14 +77,9 @@ pub enum Action {
         description: Option<String>,
     },
     /// Unregister an MCP tool by name.
-    UnregisterTool {
-        name: String,
-    },
+    UnregisterTool { name: String },
     /// Emit a log message at the given level.
-    Log {
-        level: LogLevel,
-        message: String,
-    },
+    Log { level: LogLevel, message: String },
     /// Display a notification to the user.
     Notify {
         message: String,

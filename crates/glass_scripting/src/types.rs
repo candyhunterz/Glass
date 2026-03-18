@@ -160,10 +160,7 @@ mod tests {
             table.get("input_schema").and_then(|v| v.as_str()),
             Some("string")
         );
-        assert_eq!(
-            table.get("required").and_then(|v| v.as_bool()),
-            Some(true)
-        );
+        assert_eq!(table.get("required").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
             table.get("timeout_ms").and_then(|v| v.as_integer()),
             Some(5000)
