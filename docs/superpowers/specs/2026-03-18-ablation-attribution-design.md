@@ -65,22 +65,54 @@ last_updated_run = "run-1709716000"
 
 `passenger_score`: 0.0 = definitely helpful, 1.0 = definitely passenger. Computed from difference in metric improvement between "fired" and "didn't fire" buckets.
 
-### Rule extensions
+### Attribution score struct
 
-Add to `Rule` struct in `types.rs`:
+Add to `types.rs`:
 
 ```rust
-pub last_ablation_run: String,      // run_id when last ablation-tested
-pub ablation_result: String,        // "needed", "passenger", "" (untested)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AttributionScore {
+    pub rule_id: String,
+    pub runs_fired: u32,
+    pub runs_not_fired: u32,
+    pub avg_delta_when_fired: MetricDeltas,
+    pub avg_delta_when_not_fired: MetricDeltas,
+    #[serde(default)]
+    pub passenger_score: f64,
+    #[serde(default)]
+    pub last_updated_run: String,
+}
+```
+
+### Rule extensions
+
+Add to `Rule` struct in `types.rs`. Both fields use `#[serde(default)]` for backward compatibility with existing `rules.toml` files:
+
+```rust
+#[serde(default)]
+pub last_ablation_run: String,          // run_id when last ablation-tested
+#[serde(default)]
+pub ablation_result: AblationResult,    // Untested, Needed, or Passenger
+```
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum AblationResult {
+    #[default]
+    Untested,
+    Needed,
+    Passenger,
+}
 ```
 
 ### FeedbackState extensions
 
-Add to `FeedbackState`:
+`FeedbackState` is defined in `lib.rs` (not `types.rs`). Add:
 
 ```rust
 pub ablation_target: Option<String>,  // rule_id being ablated this run
 pub last_sweep_run: String,           // run_id when last full sweep completed
+pub attribution_scores: Vec<AttributionScore>,
 ```
 
 ---
@@ -106,7 +138,15 @@ Called at end of every run after metrics are computed:
 
 1. For each rule present this run, bucket into "fired" (`firing_count > 0`) or "didn't fire"
 2. Update rolling averages for metric deltas in each bucket
-3. For rules with 5+ data points, recompute: `passenger_score = 1.0 - (improvement_when_fired - improvement_when_not_fired).clamp(0.0, 1.0)`
+3. For rules with 5+ data points, recompute passenger score. Since metric deltas use the convention negative = improved, a helpful rule has more negative deltas when fired:
+   ```
+   benefit = avg_delta_when_not_fired - avg_delta_when_fired
+   ```
+   `benefit` is positive when the rule helps (firing correlates with better metrics). Aggregate across all three rates (average), clamp to [0.0, 1.0]:
+   ```
+   passenger_score = 1.0 - benefit.clamp(0.0, 1.0)
+   ```
+   So: `passenger_score` near 0.0 = rule clearly helps, near 1.0 = no detectable benefit.
 
 Below 5 data points, `passenger_score` stays at 0.0 (benefit of the doubt).
 
@@ -156,7 +196,7 @@ Ablation activates when ALL are true:
 
 ### Target selection
 
-1. Gather confirmed rules not yet tested this sweep
+1. Gather Confirmed rules not yet tested this sweep (exclude Pinned rules — they are never ablated)
 2. Sort by `passenger_score` descending (most suspicious first)
 3. Pick top candidate
 4. Store in `FeedbackState.ablation_target`
@@ -206,13 +246,15 @@ After existing rule engine load:
 
 ### on_run_end additions
 
-After step 2 (compute metrics), before step 4 (regression compare):
+After step 3 (load previous metrics / compute baseline), before step 4 (regression compare). The new steps need the baseline to compute deltas:
 
 1. **Record rule firings** — collect each rule's `trigger_count` into `RunMetrics.rule_firings`
-2. **Update attribution** — call `attribution::update()` with firings and metric deltas
-3. **Evaluate ablation** — if `ablation_target` is set, call `ablation::evaluate()`, update rule's `ablation_result` and `last_ablation_run`, demote if passenger
+2. **Compute metric deltas** — diff current metrics against baseline: `MetricDeltas { revert_rate: current - baseline, ... }`
+3. **Update attribution** — call `attribution::update()` with firings and metric deltas
+4. **Evaluate ablation** — if `ablation_target` is set, call `ablation::evaluate()` using 3-run rolling average from metrics history, update rule's `ablation_result` and `last_ablation_run`, demote if passenger
+5. **Save attribution** — persist updated scores to `.glass/rule-attribution.toml`
 
-Steps 4-10 continue unchanged.
+Steps 4-10 (original numbering) continue unchanged.
 
 ---
 
@@ -248,12 +290,13 @@ Same write-back pattern as existing orchestrator fields — changes go to `~/.gl
 |---|---|
 | `crates/glass_feedback/src/attribution.rs` | **New** — attribution engine |
 | `crates/glass_feedback/src/ablation.rs` | **New** — ablation engine |
-| `crates/glass_feedback/src/types.rs` | Add `RuleFiring`, `AttributionScore`, `MetricDeltas`, `AblationResult`; extend `Rule` and `FeedbackState` |
-| `crates/glass_feedback/src/io.rs` | Add load/save for `rule-attribution.toml`; extend `RunMetrics` serialization |
-| `crates/glass_feedback/src/lib.rs` | Wire attribution and ablation into `on_run_start` / `on_run_end`; export new modules |
+| `crates/glass_feedback/src/types.rs` | Add `RuleFiring`, `AttributionScore`, `MetricDeltas`, `AblationResult` enum; extend `Rule` with `#[serde(default)]` ablation fields |
+| `crates/glass_feedback/src/io.rs` | Add load/save for `rule-attribution.toml`; extend `RunMetrics` serialization with `rule_firings` |
+| `crates/glass_feedback/src/lib.rs` | Extend `FeedbackState` with ablation/attribution fields; wire into `on_run_start` / `on_run_end`; export new modules |
+| `crates/glass_feedback/src/lifecycle.rs` | Clean up attribution scores when rules are archived in `update_staleness()` |
 | `crates/glass_feedback/src/rules.rs` | `check_rules` skips ablation target |
 | `crates/glass_core/src/config.rs` | Add `ablation_enabled`, `ablation_sweep_interval` to orchestrator config |
-| `crates/glass_renderer/src/settings_overlay.rs` | Add ablation fields to Orchestrator section |
+| `crates/glass_renderer/src/settings_overlay.rs` | Add ablation fields to Orchestrator section in `SettingsConfigSnapshot` and `fields_for_section()` |
 | `src/orchestrator.rs` | Pass ablation config to feedback init |
 
 No changes to scripting, MCP, coordination, or terminal layers.
