@@ -14,6 +14,7 @@ fn three_run_lifecycle() {
         max_prompt_hints: 10,
         silence_timeout_secs: None,
         max_retries_before_stuck: None,
+        ablation_enabled: true,
     };
 
     // === Run 1: Cold start with high revert rate ===
@@ -118,6 +119,7 @@ fn check_rules_with_active_rules() {
         max_prompt_hints: 10,
         silence_timeout_secs: None,
         max_retries_before_stuck: None,
+        ablation_enabled: true,
     };
 
     // Do a run to create rules

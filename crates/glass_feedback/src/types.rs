@@ -244,6 +244,7 @@ pub struct FeedbackConfig {
     pub max_prompt_hints: usize,
     pub silence_timeout_secs: Option<u64>,
     pub max_retries_before_stuck: Option<u32>,
+    pub ablation_enabled: bool,
 }
 
 impl Default for FeedbackConfig {
@@ -254,6 +255,7 @@ impl Default for FeedbackConfig {
             max_prompt_hints: 10,
             silence_timeout_secs: None,
             max_retries_before_stuck: None,
+            ablation_enabled: true,
         }
     }
 }
@@ -536,6 +538,7 @@ mod tests {
         assert_eq!(cfg.max_prompt_hints, 10);
         assert!(cfg.silence_timeout_secs.is_none());
         assert!(cfg.max_retries_before_stuck.is_none());
+        assert!(cfg.ablation_enabled);
     }
 
     #[test]

@@ -58,12 +58,22 @@ impl RuleEngine {
 
     /// Evaluate each active rule against `state` and return the list of
     /// `RuleAction`s whose preconditions are satisfied.
-    pub fn check_rules(&mut self, state: &RunState) -> Vec<RuleAction> {
+    ///
+    /// `ablation_target` — when `Some(id)`, that rule is silently skipped so
+    /// its absence can be measured without removing it from the rule set.
+    pub fn check_rules(&mut self, state: &RunState, ablation_target: Option<&str>) -> Vec<RuleAction> {
         let mut actions = Vec::new();
 
         for rule in &mut self.rules {
             if !is_active(&rule.status) {
                 continue;
+            }
+
+            // Skip the ablation target — it exists but doesn't fire this run.
+            if let Some(target) = ablation_target {
+                if rule.id == target {
+                    continue;
+                }
             }
 
             match rule.action.as_str() {
@@ -297,7 +307,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         assert!(
             matches!(result[0], RuleAction::ForceCommit),
@@ -320,7 +330,7 @@ mod tests {
         };
 
         let state = RunState::default();
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
 
         assert_eq!(result.len(), 1);
         if let RuleAction::ExtendSilence { extra_secs } = result[0] {
@@ -353,7 +363,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
 
         // Only rules r1 (extend_silence), r2 (smaller_instructions), r3 (restrict_scope)
         // should fire. Rejected, Stale, and Proposed are skipped.
@@ -375,7 +385,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert!(result.is_empty());
     }
 
@@ -397,13 +407,13 @@ mod tests {
             waste_rate: 0.10,
             ..Default::default()
         };
-        assert!(engine.check_rules(&below).is_empty());
+        assert!(engine.check_rules(&below, None).is_empty());
 
         let above = RunState {
             waste_rate: 0.20,
             ..Default::default()
         };
-        let result = engine.check_rules(&above);
+        let result = engine.check_rules(&above, None);
         assert_eq!(result.len(), 1);
         if let RuleAction::TextInjection(text) = &result[0] {
             assert!(text.contains("Verify progress"));
@@ -461,14 +471,14 @@ mod tests {
             recent_reverted_files: vec!["src/main.rs".to_string()],
             ..Default::default()
         };
-        assert!(engine.check_rules(&state_no_match).is_empty());
+        assert!(engine.check_rules(&state_no_match, None).is_empty());
 
         // File present — should fire.
         let state_match = RunState {
             recent_reverted_files: vec!["src/lib.rs".to_string()],
             ..Default::default()
         };
-        let result = engine.check_rules(&state_match);
+        let result = engine.check_rules(&state_match, None);
         assert_eq!(result.len(), 1);
         if let RuleAction::IsolateCommit { file } = &result[0] {
             assert_eq!(file, "src/lib.rs");
@@ -495,13 +505,13 @@ mod tests {
             verify_alternations: 1,
             ..Default::default()
         };
-        assert!(engine.check_rules(&below).is_empty());
+        assert!(engine.check_rules(&below, None).is_empty());
 
         let at = RunState {
             verify_alternations: 2,
             ..Default::default()
         };
-        let result = engine.check_rules(&at);
+        let result = engine.check_rules(&at, None);
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0], RuleAction::RunVerifyTwice));
     }
@@ -544,7 +554,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         assert!(
             matches!(result[0], RuleAction::ForceCommit),
@@ -565,7 +575,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         if let RuleAction::IsolateCommit { file } = &result[0] {
             assert_eq!(file, "src/hot.rs");
@@ -585,7 +595,7 @@ mod tests {
         };
 
         let state = RunState::default();
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         assert!(
             matches!(result[0], RuleAction::SplitInstructions),
@@ -604,7 +614,7 @@ mod tests {
         };
 
         let state = RunState::default();
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         if let RuleAction::RevertOutOfScope { files } = &result[0] {
             // Signal variant — files vec is empty (caller computes actual files).
@@ -625,7 +635,7 @@ mod tests {
         let mut engine = RuleEngine { rules: vec![rule] };
 
         let state = RunState::default();
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         if let RuleAction::BlockUntilResolved { message } = &result[0] {
             assert_eq!(message, "Fix the linker error first");
@@ -649,7 +659,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = engine.check_rules(&state);
+        let result = engine.check_rules(&state, None);
         assert_eq!(result.len(), 1);
         if let RuleAction::TextInjection(text) = &result[0] {
             assert!(text.contains("Verify progress"));

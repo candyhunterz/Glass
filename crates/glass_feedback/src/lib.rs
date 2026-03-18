@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use io::{
-    load_archived_rules, load_metrics_file, load_rules_file, save_archived_rules,
-    save_metrics_file, save_rules_file,
+    load_archived_rules, load_attribution_file, load_metrics_file, load_rules_file,
+    save_archived_rules, save_attribution_file, save_metrics_file, save_rules_file,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,6 +44,11 @@ pub struct FeedbackState {
     pub engine: rules::RuleEngine,
     pub feedback_llm: bool,
     pub max_prompt_hints: usize,
+    pub ablation_target: Option<String>,
+    pub last_sweep_run: String,
+    pub attribution_scores: Vec<types::AttributionScore>,
+    pub attribution_path: std::path::PathBuf,
+    pub ablation_enabled: bool,
 }
 
 /// Result of `on_run_end`.
@@ -127,7 +132,9 @@ pub fn on_run_start(project_root: &str, config: &FeedbackConfig) -> FeedbackStat
     let snapshot =
         regression::take_snapshot(config_values, provisional_rules, &run_id, &history_path);
 
-    FeedbackState {
+    let attribution_path = project_dir.join("rule-attribution.toml");
+
+    let mut state = FeedbackState {
         project_root: project_root.to_string(),
         rules_path,
         global_rules_path,
@@ -138,7 +145,33 @@ pub fn on_run_start(project_root: &str, config: &FeedbackConfig) -> FeedbackStat
         engine,
         feedback_llm: config.feedback_llm,
         max_prompt_hints: config.max_prompt_hints,
+        ablation_target: None,
+        last_sweep_run: String::new(),
+        attribution_scores: vec![],
+        attribution_path,
+        ablation_enabled: config.ablation_enabled,
+    };
+
+    // Load attribution data.
+    state.attribution_scores = load_attribution_file(&state.attribution_path).scores;
+
+    // Check ablation conditions: only when enabled and no provisionals.
+    if state.ablation_enabled {
+        let has_provisionals = state
+            .engine
+            .rules
+            .iter()
+            .any(|r| r.status == types::RuleStatus::Provisional);
+        if !has_provisionals {
+            state.ablation_target = ablation::select_target(
+                &state.engine.rules,
+                &state.attribution_scores,
+                &state.last_sweep_run,
+            );
+        }
     }
+
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +201,36 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     // --- Step 3: load previous metrics ---
     let mut metrics_file = load_metrics_file(&state.metrics_path);
     let baseline: Option<RunMetrics> = metrics_file.runs.last().cloned();
+
+    // --- Step 3b: record rule firings ---
+    let rule_firings: Vec<types::RuleFiring> = state
+        .engine
+        .rules
+        .iter()
+        .map(|r| types::RuleFiring {
+            rule_id: r.id.clone(),
+            action: r.action.clone(),
+            firing_count: r.trigger_count,
+        })
+        .collect();
+
+    // --- Step 3c: compute metric deltas and update attribution ---
+    let mut attribution_scores = state.attribution_scores;
+    if let Some(ref base) = baseline {
+        let deltas = types::MetricDeltas {
+            revert_rate: current_metrics.revert_rate - base.revert_rate,
+            stuck_rate: current_metrics.stuck_rate - base.stuck_rate,
+            waste_rate: current_metrics.waste_rate - base.waste_rate,
+        };
+        let all_rule_ids: Vec<String> = state.engine.rules.iter().map(|r| r.id.clone()).collect();
+        attribution::update(
+            &mut attribution_scores,
+            &rule_firings,
+            &all_rule_ids,
+            &deltas,
+            &state.snapshot.run_id,
+        );
+    }
 
     // --- Step 4: regression comparison ---
     let regression = regression::compare(&current_metrics, baseline.as_ref());
@@ -238,6 +301,38 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         .collect();
     lifecycle::check_drift(&mut project_rules_file.rules, &recent_metrics);
 
+    // --- Step 3d: evaluate ablation ---
+    if let Some(ref target_id) = state.ablation_target.clone() {
+        let recent: Vec<_> = metrics_file
+            .runs
+            .iter()
+            .rev()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let ablation_result = ablation::evaluate(&recent, &current_metrics);
+
+        if let Some(rule) = project_rules_file
+            .rules
+            .iter_mut()
+            .find(|r| r.id == *target_id)
+        {
+            rule.last_ablation_run = state.snapshot.run_id.clone();
+            rule.ablation_result = ablation_result.clone();
+            if ablation_result == types::AblationResult::Passenger {
+                if rule.status.can_transition_to(&types::RuleStatus::Stale) {
+                    rule.status = types::RuleStatus::Stale;
+                    tracing::info!(rule_id = %rule.id, "ablation: rule is a passenger, demoting to Stale");
+                }
+            } else {
+                tracing::info!(rule_id = %rule.id, "ablation: rule is needed, keeping Confirmed");
+            }
+        }
+    }
+
     // --- Step 9: extract ConfigTuning findings (max 1 per run) ---
     let config_changes: Vec<(String, String, String)> = findings
         .iter()
@@ -280,6 +375,8 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     };
 
     // --- Step 10: persist ---
+    let mut current_metrics = current_metrics;
+    current_metrics.rule_firings = rule_firings;
     metrics_file.runs.push(current_metrics);
     let _ = save_metrics_file(&state.metrics_path, &metrics_file);
     let _ = save_rules_file(&state.rules_path, &project_rules_file);
@@ -328,6 +425,12 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         let _ = save_rules_file(&state.global_rules_path, &global_file);
     }
 
+    // --- Step 10c: persist attribution ---
+    let attribution_file = types::AttributionFile {
+        scores: attribution_scores,
+    };
+    let _ = save_attribution_file(&state.attribution_path, &attribution_file);
+
     FeedbackResult {
         findings,
         regression,
@@ -345,8 +448,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
 
 /// Evaluate active rules against the live run state and return any triggered
 /// [`RuleAction`]s.  Delegates to the [`rules::RuleEngine`] stored in `state`.
+///
+/// The ablation target rule (if any) is silently skipped this run.
 pub fn check_rules(state: &mut FeedbackState, run_state: &RunState) -> Vec<RuleAction> {
-    state.engine.check_rules(run_state)
+    state.engine.check_rules(run_state, state.ablation_target.as_deref())
 }
 
 /// Return the text of all `prompt_hint` rules that are `Confirmed` or
@@ -632,6 +737,11 @@ mod tests {
             max_prompt_hints: 10,
             snapshot,
             engine,
+            ablation_target: None,
+            last_sweep_run: String::new(),
+            attribution_scores: vec![],
+            attribution_path: glass_dir.join("rule-attribution.toml"),
+            ablation_enabled: true,
         }
     }
 
