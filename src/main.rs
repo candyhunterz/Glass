@@ -401,6 +401,9 @@ struct Processor {
     feedback_llm_project_root: Option<String>,
     /// Max prompt hints captured at spawn time for the same reason.
     feedback_llm_max_hints: usize,
+    /// Captured at Tier 4 script generation spawn time so the response handler
+    /// writes scripts to the correct project even if the user switches.
+    script_gen_project_root: Option<String>,
     /// Bridge to the Rhai scripting engine for hook-based automation.
     script_bridge: script_bridge::ScriptBridge,
 }
@@ -1905,13 +1908,24 @@ impl Processor {
                 }
             }
 
-            // Tier 4: script generation prompt
+            // Tier 4: spawn ephemeral agent for script generation
             if let Some(script_prompt) = result.script_prompt {
                 tracing::info!(
-                    "Feedback loop generated Tier 4 script prompt ({} chars)",
+                    "Tier 4: spawning ephemeral agent for script generation ({} chars)",
                     script_prompt.len()
                 );
-                // TODO: spawn ephemeral agent for script generation
+                self.script_gen_project_root = Some(self.orchestrator.project_root.clone());
+                let request = ephemeral_agent::EphemeralAgentRequest {
+                    system_prompt: "You are generating a Rhai script for the Glass terminal emulator's self-improvement system. Respond ONLY in the structured format requested.".to_string(),
+                    user_message: script_prompt,
+                    timeout: std::time::Duration::from_secs(60),
+                    purpose: glass_core::event::EphemeralPurpose::ScriptGeneration,
+                };
+                if let Err(e) =
+                    ephemeral_agent::spawn_ephemeral_agent(request, self.proxy.clone())
+                {
+                    tracing::warn!("Tier 4 script generation: ephemeral spawn failed: {e:?}");
+                }
             }
         }
     }
@@ -9239,6 +9253,56 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
                     }
+                    glass_core::event::EphemeralPurpose::ScriptGeneration => {
+                        let project_root = self
+                            .script_gen_project_root
+                            .take()
+                            .unwrap_or_else(|| self.orchestrator.project_root.clone());
+                        match result {
+                            Ok(resp) => {
+                                if let Some(cost) = resp.cost_usd {
+                                    tracing::info!("Tier 4 script generation cost: ${:.4}", cost);
+                                }
+                                match parse_script_response(&resp.text) {
+                                    Some((name, hooks, source)) => {
+                                        let scripts_dir = std::path::Path::new(&project_root)
+                                            .join(".glass")
+                                            .join("scripts")
+                                            .join("feedback");
+                                        let _ = std::fs::create_dir_all(&scripts_dir);
+                                        // Write TOML manifest
+                                        let now_secs = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        let manifest = format!(
+                                            "name = \"{name}\"\nhooks = [{hooks}]\nstatus = \"provisional\"\norigin = \"feedback\"\nversion = 1\napi_version = \"1\"\ncreated = \"{now_secs}\"\ntype = \"hook\"\n"
+                                        );
+                                        let _ = std::fs::write(
+                                            scripts_dir.join(format!("{name}.toml")),
+                                            &manifest,
+                                        );
+                                        let _ = std::fs::write(
+                                            scripts_dir.join(format!("{name}.rhai")),
+                                            &source,
+                                        );
+                                        tracing::info!(
+                                            "Tier 4: wrote provisional script '{name}'"
+                                        );
+                                        self.script_bridge.reload();
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            "Tier 4: could not parse script from LLM response"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Tier 4 script generation failed: {e:?}");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -9246,6 +9310,41 @@ impl ApplicationHandler<AppEvent> for Processor {
 
     /// Called when the event queue is drained. No-op for Phase 1.
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
+}
+
+/// Parse a Tier 4 script generation response from an ephemeral LLM agent.
+///
+/// Expected format:
+/// ```text
+/// SCRIPT_NAME: my-script-name
+/// SCRIPT_HOOKS: command_complete, orchestrator_iteration
+/// ```rhai
+/// // ... Rhai source code ...
+/// ```
+/// ```
+///
+/// Returns `(name, hooks_csv_quoted, source)` on success.
+fn parse_script_response(text: &str) -> Option<(String, String, String)> {
+    let name = text
+        .lines()
+        .find(|l| l.starts_with("SCRIPT_NAME:"))
+        .map(|l| l.trim_start_matches("SCRIPT_NAME:").trim().to_string())?;
+    let hooks_raw = text
+        .lines()
+        .find(|l| l.starts_with("SCRIPT_HOOKS:"))
+        .map(|l| l.trim_start_matches("SCRIPT_HOOKS:").trim().to_string())?;
+    let hooks = hooks_raw
+        .split(',')
+        .map(|h| format!("\"{}\"", h.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source_start = text.find("```rhai").map(|i| i + 7)?;
+    let source_end = text[source_start..].find("```").map(|i| source_start + i)?;
+    let source = text[source_start..source_end].trim().to_string();
+    if name.is_empty() || source.is_empty() {
+        return None;
+    }
+    Some((name, hooks, source))
 }
 
 /// Copy the current terminal selection to the system clipboard.
@@ -9643,6 +9742,7 @@ fn main() {
                 config_write_suppress_until: None,
                 feedback_llm_project_root: None,
                 feedback_llm_max_hints: 10,
+                script_gen_project_root: None,
                 script_bridge,
             };
 
