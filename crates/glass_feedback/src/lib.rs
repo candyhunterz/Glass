@@ -5,6 +5,7 @@
 //! through a guarded lifecycle, and auto-rolls back regressions.
 
 pub mod analyzer;
+pub mod ablation;
 pub mod attribution;
 pub mod defaults;
 pub mod io;
