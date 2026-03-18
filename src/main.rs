@@ -1854,6 +1854,15 @@ impl Processor {
                     tracing::warn!("Feedback LLM: ephemeral spawn failed: {e:?}");
                 }
             }
+
+            // Tier 4: script generation prompt
+            if let Some(script_prompt) = result.script_prompt {
+                tracing::info!(
+                    "Feedback loop generated Tier 4 script prompt ({} chars)",
+                    script_prompt.len()
+                );
+                // TODO: spawn ephemeral agent for script generation
+            }
         }
     }
 
@@ -8839,6 +8848,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 "No windows available".into(),
                             )
                         }
+                    }
+                    "script_tool" => {
+                        // Placeholder: script tool execution will be fully wired
+                        // once the ScriptSystem is integrated into the app event loop.
+                        glass_core::ipc::McpResponse::ok(
+                            request.id,
+                            serde_json::json!({"error": "script tools not yet fully wired"}),
+                        )
+                    }
+                    "list_script_tools" => {
+                        // Placeholder: returns empty list until ScriptToolRegistry
+                        // is populated from loaded scripts.
+                        glass_core::ipc::McpResponse::ok(
+                            request.id,
+                            serde_json::json!({"tools": []}),
+                        )
                     }
                     _ => glass_core::ipc::McpResponse::err(
                         request.id,
