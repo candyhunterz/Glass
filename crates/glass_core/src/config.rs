@@ -162,6 +162,12 @@ pub struct OrchestratorSection {
     /// Maximum number of prompt hints (Tier 3) stored per project.
     #[serde(default = "default_max_prompt_hints")]
     pub max_prompt_hints: usize,
+    /// Enable automatic ablation testing of confirmed rules. Default true.
+    #[serde(default = "default_ablation_enabled")]
+    pub ablation_enabled: bool,
+    /// Runs between re-sweeps after full ablation coverage. Default 20.
+    #[serde(default = "default_ablation_sweep_interval")]
+    pub ablation_sweep_interval: u32,
 }
 
 fn default_orch_silence_timeout() -> u64 {
@@ -190,6 +196,12 @@ fn default_orch_mode() -> String {
 }
 fn default_max_prompt_hints() -> usize {
     10
+}
+fn default_ablation_enabled() -> bool {
+    true
+}
+fn default_ablation_sweep_interval() -> u32 {
+    20
 }
 
 fn default_agent_max_budget_usd() -> f64 {
@@ -993,6 +1005,24 @@ verify_files = ["plan.md", "site/index.html"]"#;
         let config = GlassConfig::load_from_str(toml);
         let orch = config.agent.unwrap().orchestrator.unwrap();
         assert_eq!(orch.verify_files, vec!["plan.md", "site/index.html"]);
+    }
+
+    #[test]
+    fn test_orchestrator_ablation_defaults() {
+        let toml = "[agent.orchestrator]\nenabled = true";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert!(orch.ablation_enabled);
+        assert_eq!(orch.ablation_sweep_interval, 20);
+    }
+
+    #[test]
+    fn test_orchestrator_ablation_custom() {
+        let toml = "[agent.orchestrator]\nenabled = true\nablation_enabled = false\nablation_sweep_interval = 50";
+        let config = GlassConfig::load_from_str(toml);
+        let orch = config.agent.unwrap().orchestrator.unwrap();
+        assert!(!orch.ablation_enabled);
+        assert_eq!(orch.ablation_sweep_interval, 50);
     }
 
     #[test]
