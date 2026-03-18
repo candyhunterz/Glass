@@ -355,6 +355,9 @@ struct Processor {
     feedback_state: Option<glass_feedback::FeedbackState>,
     /// Guard to prevent config reload from overwriting feedback-written values.
     feedback_write_pending: bool,
+    /// Suppress config reload agent restarts until this instant.
+    /// Set when the orchestrator enable handler writes to config.toml.
+    config_write_suppress_until: Option<std::time::Instant>,
 }
 
 impl Drop for AgentRuntime {
@@ -760,6 +763,7 @@ fn try_spawn_agent(
     restart_count: u32,
     last_crash: Option<std::time::Instant>,
     project_root: String,
+    initial_message: Option<String>,
 ) -> Option<AgentRuntime> {
     use std::io::{BufRead, BufReader, BufWriter, Write};
     use std::process::{Command, Stdio};
@@ -889,9 +893,33 @@ You CANNOT implement code yourself — you must instruct Claude Code to do it."#
 
         let prd_missing = prd_content.starts_with("(PRD not found");
         let kickoff_instructions = if prd_missing {
-            "\n\nKICKOFF MODE:\nNo PRD file exists yet. Your FIRST instruction to Claude Code must be:\n\"Generate a detailed PRD file. Name it descriptively based on the project goal (e.g., PRD-japan-vacation.md). Include:\n- ## Deliverables (list each output file with path)\n- ## Requirements (specific constraints)\n- ## Research Areas (if applicable)\nWrite it to disk, then start executing it.\"\n\nAfter Claude Code writes the PRD, continue with normal orchestration."
+            "\n\nKICKOFF MODE:\n\
+             No PRD file exists yet. The user has been chatting with Claude Code to \
+             describe what they want to build. Glass suppressed the orchestration loop \
+             while the user was typing. Now the user has gone idle — it's your turn.\n\n\
+             Read the terminal context carefully. Pick up from where the conversation \
+             left off and push it forward:\n\
+             - If the user's goals are clear enough, instruct Claude Code to write the PRD.\n\
+             - If critical details are missing, ask ONE clarifying question.\n\
+             - Do NOT repeat greetings or re-ask questions the user already answered.\n\n\
+             Once the project goals are established, instruct Claude Code to:\n\
+             \"Generate a detailed PRD file. Name it descriptively based on the project \
+             goal (e.g., PRD-japan-vacation.md). Include:\n\
+             - ## Deliverables (list each output file with path)\n\
+             - ## Requirements (specific constraints)\n\
+             - ## Research Areas (if applicable)\n\
+             Write it to disk, then start executing it.\"\n\n\
+             After Claude Code writes the PRD, continue with normal orchestration."
         } else {
-            ""
+            "\n\nKICKOFF MODE:\n\
+             An existing PRD was found. Glass prompted the user: \"Continue with \
+             existing PRD? (y/n)\". Your FIRST instruction to Claude Code: ask the \
+             user what they would like to do.\n\
+             - If the user wants to continue: proceed with the existing PRD plan.\n\
+             - If the user wants to start fresh: ask what they want to build instead. \
+             Gather their goals, requirements, and preferences through conversation. \
+             Then generate a new PRD and begin execution.\n\n\
+             Do NOT start autonomous work until the user has responded."
         };
 
         format!(
@@ -973,7 +1001,7 @@ Session Continuity:
     }
 
     // Generate MCP config JSON so the agent subprocess can discover Glass MCP tools.
-    // Gracefully degrade to empty path (no --mcp-config flag) if exe path or write fails.
+    // Always pass --mcp-config to override the user's global ~/.mcp.json.
     let mcp_config_path = (|| -> Option<String> {
         let exe_path = std::env::current_exe().ok()?;
         let mcp_json_path = glass_dir.join("agent-mcp.json");
@@ -1004,11 +1032,14 @@ Session Continuity:
     // Build the command
     let mut cmd = Command::new("claude");
     cmd.args(&args);
+    // Pipe stdout for stream-json. Stderr MUST be null — piping stderr causes
+    // a deadlock: the Claude CLI writes to stderr during initialization, fills
+    // the pipe buffer before Glass starts reading, and blocks forever.
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    // Windows: suppress the console window
+    // Windows: suppress the console window for the claude subprocess.
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1044,11 +1075,34 @@ Session Continuity:
         }
     };
 
-    // Extract stdin/stdout before storing child
+    // Extract stdin/stdout before storing child (stderr is null).
     let stdout = child.stdout.take().expect("stdout was piped");
-    let stdin = child.stdin.take().expect("stdin was piped");
+    let mut stdin = child.stdin.take().expect("stdin was piped");
 
-    // Load prior handoff for this project and inject as first user message
+    // Claude CLI 2.1.77+ requires a message on stdin before it completes
+    // initialization (MCP servers, plugins, init event). Write the initial
+    // message immediately so the CLI can proceed.
+    {
+        use std::io::Write;
+        // Always send an initial message — Claude CLI 2.1.77+ won't complete
+        // initialization without one. Use the handoff if provided, else GLASS_WAIT.
+        let content = initial_message
+            .as_deref()
+            .unwrap_or("GLASS_WAIT");
+        let json_msg = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        }).to_string();
+        match writeln!(stdin, "{json_msg}") {
+            Ok(()) => { let _ = stdin.flush(); }
+            Err(e) => {
+                tracing::warn!("AgentRuntime: failed to write initial message: {}", e);
+            }
+        }
+    }
+
+    // Now safe to do slower I/O.
+    // Load prior handoff for this project and inject as first user message.
     let prior_handoff_msg = {
         match glass_agent::AgentSessionDb::open_default() {
             Ok(db) => {
@@ -1098,18 +1152,14 @@ Session Continuity:
     std::thread::Builder::new()
         .name("glass-agent-reader".into())
         .spawn(move || {
-            let reader = BufReader::new(stdout);
             let mut current_session_id = String::new();
             // Buffer the last assistant text so we only emit OrchestratorResponse
             // on "result" (end of conversation turn), not on intermediate tool-loop text.
             let mut buffered_response: Option<String> = None;
             let mut tool_id_to_name: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -1268,7 +1318,7 @@ Session Continuity:
                     _ => {}
                 }
             }
-            // EOF or error -- signal crash
+            // stdout closed -- signal crash
             let _ = proxy_reader.send_event(glass_core::event::AppEvent::AgentCrashed);
         })
         .ok();
@@ -1432,6 +1482,17 @@ fn resolve_tab_index(mux: &SessionMux, params: &serde_json::Value) -> Result<usi
 }
 
 /// Extract the last `n` text lines from a terminal grid.
+/// Create a `git` command with `CREATE_NO_WINDOW` on Windows to prevent console flashing.
+fn git_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 fn extract_term_lines(term: &Arc<FairMutex<Term<EventProxy>>>, n: usize) -> Vec<String> {
     let term = term.lock();
     let grid = term.grid();
@@ -1550,16 +1611,27 @@ fn parse_numbered_instructions(text: &str) -> Vec<String> {
     let mut current = String::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.len() >= 2 {
-            let first = trimmed.chars().next().unwrap_or(' ');
-            let second = trimmed.chars().nth(1).unwrap_or(' ');
-            if first.is_ascii_digit() && (second == '.' || second == ')') {
-                if !current.trim().is_empty() {
-                    items.push(current.trim().to_string());
+        // Match "N.", "N)", "NN.", "NN)" etc. — handle multi-digit numbered items
+        let is_numbered = {
+            let mut chars = trimmed.chars();
+            let mut has_digit = false;
+            let mut found = false;
+            for ch in chars.by_ref() {
+                if ch.is_ascii_digit() {
+                    has_digit = true;
+                } else {
+                    found = has_digit && (ch == '.' || ch == ')');
+                    break;
                 }
-                current = trimmed.to_string();
-                continue;
             }
+            found
+        };
+        if is_numbered {
+            if !current.trim().is_empty() {
+                items.push(current.trim().to_string());
+            }
+            current = trimmed.to_string();
+            continue;
         }
         if !current.is_empty() {
             current.push('\n');
@@ -1733,58 +1805,91 @@ impl Processor {
 
     /// Build a RunData snapshot from the current orchestrator state for the feedback loop.
     fn build_feedback_run_data(&self) -> glass_feedback::RunData {
+        let root = &self.orchestrator.project_root;
+
+        // Compute avg idle time from iteration timestamps
+        let avg_idle = if self.orchestrator.feedback_iteration_timestamps.len() >= 2 {
+            let ts = &self.orchestrator.feedback_iteration_timestamps;
+            let total: f64 = ts.windows(2)
+                .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+                .sum();
+            total / (ts.len() - 1) as f64
+        } else {
+            0.0
+        };
+
+        // Collect fingerprint hashes for sequence analysis
+        let fingerprint_seq: Vec<u64> = self.orchestrator.recent_fingerprints
+            .iter()
+            .map(|fp| fp.terminal_hash)
+            .collect();
+
+        // Read PRD content for scope creep detection
+        let prd_content = self.config.agent.as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .and_then(|o| {
+                let prd_path = std::path::Path::new(root).join(&o.prd_path);
+                std::fs::read_to_string(prd_path).ok()
+            });
+
+        // Get git diff stat for scope creep detection
+        let git_diff_stat = git_cmd()
+            .args(["diff", "--stat"])
+            .current_dir(root)
+            .output()
+            .ok()
+            .and_then(|o| if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            });
+
+        // Get git log for post-mortem
+        let git_log = git_cmd()
+            .args(["log", "--oneline", "-20"])
+            .current_dir(root)
+            .output()
+            .ok()
+            .and_then(|o| if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            });
+
         glass_feedback::RunData {
-            project_root: self.get_focused_cwd(),
+            project_root: root.clone(),
             iterations: self.orchestrator.iteration,
-            duration_secs: self
-                .orchestrator_activated_at
+            duration_secs: self.orchestrator_activated_at
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0),
             kickoff_duration_secs: 0,
             iterations_tsv: std::fs::read_to_string(
-                std::path::Path::new(&self.get_focused_cwd())
-                    .join(".glass")
-                    .join("iterations.tsv"),
-            )
-            .unwrap_or_default(),
-            revert_count: self
-                .orchestrator
-                .metric_baseline
-                .as_ref()
-                .map(|m| m.revert_count)
-                .unwrap_or(0),
-            keep_count: self
-                .orchestrator
-                .metric_baseline
-                .as_ref()
-                .map(|m| m.keep_count)
-                .unwrap_or(0),
-            stuck_count: 0,
-            checkpoint_count: 0,
+                std::path::Path::new(root).join(".glass").join("iterations.tsv"),
+            ).unwrap_or_default(),
+            revert_count: self.orchestrator.metric_baseline.as_ref()
+                .map(|m| m.revert_count).unwrap_or(0),
+            keep_count: self.orchestrator.metric_baseline.as_ref()
+                .map(|m| m.keep_count).unwrap_or(0),
+            stuck_count: self.orchestrator.feedback_stuck_count,
+            checkpoint_count: self.orchestrator.feedback_checkpoint_count,
             waste_count: self.orchestrator.feedback_waste_iterations,
             commit_count: self.orchestrator.feedback_commit_count,
-            completion_reason: String::new(),
-            prd_content: None,
-            git_log: None,
-            git_diff_stat: None,
+            completion_reason: self.orchestrator.feedback_completion_reason.clone(),
+            prd_content,
+            git_log,
+            git_diff_stat,
             reverted_files: self.orchestrator.feedback_reverted_files.clone(),
-            verify_pass_fail_sequence: Vec::new(),
-            agent_responses: Vec::new(),
+            verify_pass_fail_sequence: self.orchestrator.feedback_verify_sequence.clone(),
+            agent_responses: self.orchestrator.feedback_agent_responses.clone(),
             silence_interruptions: 0,
             fast_trigger_during_output: self.orchestrator.feedback_fast_trigger_during_output,
-            avg_idle_between_iterations_secs: 0.0,
-            fingerprint_sequence: Vec::new(),
-            config_silence_timeout: self
-                .config
-                .agent
-                .as_ref()
+            avg_idle_between_iterations_secs: avg_idle,
+            fingerprint_sequence: fingerprint_seq,
+            config_silence_timeout: self.config.agent.as_ref()
                 .and_then(|a| a.orchestrator.as_ref())
                 .map(|o| o.silence_timeout_secs)
                 .unwrap_or(30),
-            config_max_retries: self
-                .config
-                .agent
-                .as_ref()
+            config_max_retries: self.config.agent.as_ref()
                 .and_then(|a| a.orchestrator.as_ref())
                 .map(|o| o.max_retries_before_stuck)
                 .unwrap_or(3),
@@ -1836,7 +1941,8 @@ impl Processor {
             })
             .unwrap_or_default();
 
-        // Spawn new agent with fresh system prompt (reads updated checkpoint.md)
+        // Spawn new agent with handoff as the initial stdin message.
+        // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
         self.agent_runtime = try_spawn_agent(
             agent_config,
             new_rx,
@@ -1844,6 +1950,7 @@ impl Processor {
             0,
             None,
             cwd.to_string(),
+            Some(handoff_content),
         );
 
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
@@ -1855,27 +1962,9 @@ impl Processor {
             return;
         }
 
-        // Send handoff to new agent
-        if let Some(ref runtime) = self.agent_runtime {
-            if let Some(ref writer) = runtime.orchestrator_writer {
-                let msg = serde_json::json!({
-                    "type": "user",
-                    "message": {
-                        "role": "user",
-                        "content": handoff_content
-                    }
-                })
-                .to_string();
-
-                if let Ok(mut w) = writer.lock() {
-                    use std::io::Write;
-                    let _ = writeln!(w, "{msg}");
-                    let _ = w.flush();
-                    // Suppress silence trigger until the agent responds to the handoff
-                    self.orchestrator.response_pending = true;
-                }
-            }
-        }
+        // Handoff was sent as initial_message in try_spawn_agent.
+        // Suppress silence trigger until the agent responds.
+        self.orchestrator.response_pending = true;
 
         // Tag with current generation so stale AgentCrashed events are ignored
         if let Some(ref mut rt) = self.agent_runtime {
@@ -1890,7 +1979,8 @@ impl Processor {
 
     /// Gather data and start checkpoint synthesis (or fallback).
     fn trigger_checkpoint_synthesis(&mut self, completed: &str, next: &str) {
-        let cwd = self.get_focused_cwd();
+        self.orchestrator.feedback_checkpoint_count += 1;
+        let cwd = self.orchestrator.project_root.clone();
         let (git_log, git_diff_stat, git_diff_names) = checkpoint_synth::gather_git_state(&cwd);
         let iterations_tsv = orchestrator::read_iterations_log_truncated(&cwd, 50);
         let metric_summary = checkpoint_synth::build_metric_summary(
@@ -2171,14 +2261,9 @@ impl ApplicationHandler<AppEvent> for Processor {
             );
 
             // Spawn coordination poller for agent/lock status
-            let project_root = std::env::current_dir()
-                .ok()
-                .and_then(|cwd| glass_coordination::canonicalize_path(&cwd).ok())
-                .unwrap_or_else(|| {
-                    std::env::current_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                });
+            let focused_cwd = self.get_focused_cwd();
+            let project_root = glass_coordination::canonicalize_path(std::path::Path::new(&focused_cwd))
+                .unwrap_or(focused_cwd);
             glass_core::coordination_poller::spawn_coordination_poller(
                 project_root,
                 self.proxy.clone(),
@@ -2213,10 +2298,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.proxy.clone(),
                     0,
                     None,
-                    std::env::current_dir()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
+                    self.get_focused_cwd(),
+                    None,
                 );
                 // Start usage polling if orchestrator is configured
                 if self
@@ -2263,6 +2346,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+
                 // Clear toast if agent is no longer active (agent_runtime was dropped).
                 if self.agent_runtime.is_none() {
                     self.active_toast = None;
@@ -4025,8 +4109,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .and_then(|a| a.orchestrator.as_ref())
                                         .and_then(|o| o.max_iterations);
 
-                                    // Fix #1: Respawn agent with fresh system prompt
-                                    // using the terminal's current CWD (not Glass's CWD)
+                                    // Respawn agent with fresh system prompt using the
+                                    // terminal's current CWD (not Glass's CWD)
                                     let current_cwd = ctx
                                         .session_mux
                                         .focused_session()
@@ -4037,6 +4121,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .to_string_lossy()
                                                 .to_string()
                                         });
+
+                                    // Store project root for all subsequent orchestrator
+                                    // operations. The shell's OSC 7 CWD stops updating once
+                                    // Claude Code starts, so we capture it here.
+                                    self.orchestrator.project_root = current_cwd.clone();
 
                                     // Kickoff flow: check PRD existence
                                     let prd_rel = self
@@ -4065,6 +4154,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             prd_path.display()
                                         );
                                     } else {
+                                        // No PRD — tell user to describe what they want
+                                        if let Some(session) = ctx.session_mux.focused_session() {
+                                            let msg = "\r\n[GLASS] Orchestrator active. No PRD found — describe what you want to build, then wait for the loop to start.\r\n";
+                                            let _ = session.pty_sender.send(PtyMsg::Input(
+                                                std::borrow::Cow::Owned(msg.as_bytes().to_vec()),
+                                            ));
+                                        }
                                         tracing::info!(
                                             "Orchestrator: no PRD at {} — kickoff mode",
                                             prd_path.display()
@@ -4083,6 +4179,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         detected_mode,
                                         detected_verify,
                                         detected_files
+                                    );
+
+                                    // Suppress config reload agent restarts for 2 seconds.
+                                    // We're about to write 3 values to config.toml, which
+                                    // triggers ConfigReloaded events that would kill the
+                                    // agent we just spawned.
+                                    self.config_write_suppress_until = Some(
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(2),
                                     );
 
                                     // Write auto-detected values to config.toml
@@ -4134,7 +4239,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .join("handoff.md");
                                     let handoff_note = std::fs::read_to_string(&handoff_path).ok();
 
-                                    let git_log = std::process::Command::new("git")
+                                    let git_log = git_cmd()
                                         .args(["log", "--oneline", "-10"])
                                         .current_dir(&current_cwd)
                                         .output()
@@ -4250,6 +4355,11 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                                     // Initialize feedback loop
                                     self.orchestrator.feedback_waste_iterations = 0;
+                                    self.orchestrator.feedback_stuck_count = 0;
+                                    self.orchestrator.feedback_checkpoint_count = 0;
+                                    self.orchestrator.feedback_verify_sequence.clear();
+                                    self.orchestrator.feedback_agent_responses.clear();
+                                    self.orchestrator.feedback_completion_reason.clear();
                                     self.orchestrator.feedback_commit_count = 0;
                                     self.orchestrator.feedback_reverted_files.clear();
                                     self.orchestrator.feedback_fast_trigger_during_output = 0;
@@ -4272,6 +4382,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .map(|o| o.max_prompt_hints)
                                             .unwrap_or(10),
                                     };
+
                                     self.feedback_state = Some(glass_feedback::on_run_start(
                                         &current_cwd,
                                         &feedback_config,
@@ -4323,7 +4434,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Stop artifact watcher
                                     if let Some(handle) = self.artifact_watcher_thread.take() {
                                         handle.thread().unpark();
-                                        let _ = handle.join();
                                     }
                                 }
                                 if let Some(ctx) = self.windows.get(&window_id) {
@@ -6201,6 +6311,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // AGTC-01: Restart agent runtime when [agent] section changes.
                     let agent_config_changed = old_agent != self.config.agent;
                     if agent_config_changed {
+                        // Skip agent restart when we wrote to config ourselves.
+                        // The orchestrator enable handler and feedback loop both write
+                        // to config.toml, triggering ConfigReloaded events. These must
+                        // NOT kill/respawn the agent we just set up.
+                        // feedback_write_pending covers single writes; config_write_suppress
+                        // covers bursts (3 writes during orchestrator enable).
+                        if self.feedback_write_pending
+                            || self
+                                .config_write_suppress_until
+                                .map(|t| std::time::Instant::now() < t)
+                                .unwrap_or(false)
+                        {
+                            self.feedback_write_pending = false;
+                            tracing::debug!(
+                                "Skipping agent restart — config change was self-initiated"
+                            );
+                            for ctx in self.windows.values() {
+                                ctx.window.request_redraw();
+                            }
+                            return;
+                        }
+
                         // Flush any pending collapsed event before dropping the runtime.
                         if let Some(event) = self.activity_filter.flush_collapsed() {
                             if let Some(tx) = &self.activity_stream_tx {
@@ -6242,10 +6374,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.proxy.clone(),
                                 0,
                                 None,
-                                std::env::current_dir()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
+                                self.get_focused_cwd(),
+                                None,
                             );
                             // AGTC-04: Show hint if mode != Off but spawn failed.
                             if self.agent_runtime.is_none() {
@@ -6263,19 +6393,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         tracing::info!("Agent config reloaded: mode={:?}", new_agent_config.mode);
 
-                        // If feedback just wrote config values, skip the orchestrator
-                        // sync this cycle to avoid overwriting them.
-                        if self.feedback_write_pending {
-                            self.feedback_write_pending = false;
-                            tracing::debug!(
-                                "Feedback: skipping orchestrator config reload (feedback write pending)"
-                            );
-                            // Skip orchestrator sync entirely — only feedback values changed
-                            for ctx in self.windows.values() {
-                                ctx.window.request_redraw();
-                            }
-                            return;
-                        }
+                        // (feedback_write_pending guard moved to top of agent_config_changed block)
 
                         // Sync orchestrator.active with config.agent.orchestrator.enabled
                         // so the settings overlay toggle actually activates orchestration.
@@ -6294,8 +6412,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|o| o.enabled)
                             .unwrap_or(false);
 
-                        if orch_enabled && !was_enabled {
-                            // Activating via settings — same setup as Ctrl+Shift+O
+                        if orch_enabled && !was_enabled
+                            && self.orchestrator_activated_at.is_some()
+                        {
+                            // Activating via settings overlay toggle — only when the user
+                            // has previously used the orchestrator (activated_at is set by
+                            // Ctrl+Shift+O). Prevents auto-activation on first config load
+                            // when enabled=true in config.toml — Ctrl+Shift+O is required
+                            // to start the orchestration loop with a proper handoff.
                             self.orchestrator.active = true;
                             self.orchestrator_activated_at = Some(std::time::Instant::now());
                             self.orchestrator.reset_stuck();
@@ -6320,7 +6444,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .unwrap_or("floor");
                             if verify_mode == "floor" && self.orchestrator.metric_baseline.is_none()
                             {
-                                let cwd = self.get_focused_cwd();
+                                let cwd = self.orchestrator.project_root.clone();
                                 let commands = orchestrator::auto_detect_verify_commands(&cwd);
                                 if !commands.is_empty() {
                                     let mut baseline = orchestrator::MetricBaseline::new();
@@ -6330,12 +6454,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             // Initialize feedback loop
                             self.orchestrator.feedback_waste_iterations = 0;
+                            self.orchestrator.feedback_stuck_count = 0;
+                            self.orchestrator.feedback_checkpoint_count = 0;
+                            self.orchestrator.feedback_verify_sequence.clear();
+                            self.orchestrator.feedback_agent_responses.clear();
+                            self.orchestrator.feedback_completion_reason.clear();
                             self.orchestrator.feedback_commit_count = 0;
                             self.orchestrator.feedback_reverted_files.clear();
                             self.orchestrator.feedback_fast_trigger_during_output = 0;
                             self.orchestrator.feedback_iteration_timestamps.clear();
 
-                            let cwd_for_feedback = self.get_focused_cwd();
+                            let cwd_for_feedback = self.orchestrator.project_root.clone();
                             let feedback_config = glass_feedback::FeedbackConfig {
                                 project_root: cwd_for_feedback.clone(),
                                 feedback_llm: self
@@ -6396,7 +6525,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if self.orchestrator.active {
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
-                            let _ = handle.join();
+                            // Don't join() here — notify watcher Drop on Windows can
+                            // block on ReadDirectoryChangesW I/O completion, freezing
+                            // the event loop. Let the thread exit on its own.
                         }
                         let artifact_path = self
                             .config
@@ -6405,7 +6536,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .and_then(|a| a.orchestrator.as_ref())
                             .map(|o| o.completion_artifact.clone())
                             .unwrap_or_else(|| ".glass/done".to_string());
-                        let cwd = self.get_focused_cwd();
+                        let cwd = self.orchestrator.project_root.clone();
                         if let Some((wid, sid)) =
                             self.windows.iter().next().and_then(|(wid, ctx)| {
                                 ctx.session_mux.focused_session().map(|s| (*wid, s.id))
@@ -6771,16 +6902,40 @@ impl ApplicationHandler<AppEvent> for Processor {
                         glass_core::activity_stream::create_channel(&activity_config);
                     self.activity_stream_tx = Some(new_tx);
 
+                    // Use stored project_root if orchestrator is active, else terminal CWD
+                    let cwd = if self.orchestrator.active && !self.orchestrator.project_root.is_empty() {
+                        self.orchestrator.project_root.clone()
+                    } else {
+                        self.get_focused_cwd()
+                    };
+
+                    // On crash restart, provide checkpoint context so the agent
+                    // can resume instead of starting blind with GLASS_WAIT.
+                    let restart_msg = if self.orchestrator.active {
+                        let cp_path = std::path::Path::new(&cwd)
+                            .join(".glass")
+                            .join("checkpoint.md");
+                        let checkpoint = std::fs::read_to_string(&cp_path).unwrap_or_default();
+                        if checkpoint.is_empty() {
+                            None
+                        } else {
+                            Some(format!(
+                                "[ORCHESTRATOR_RESTART]\nAgent crashed and restarted (attempt #{}).\nResume from checkpoint:\n{}\n",
+                                restart_count, checkpoint
+                            ))
+                        }
+                    } else {
+                        None
+                    };
+
                     self.agent_runtime = try_spawn_agent(
                         config,
                         new_rx,
                         self.proxy.clone(),
                         restart_count,
                         Some(std::time::Instant::now()),
-                        std::env::current_dir()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
+                        cwd,
+                        restart_msg,
                     );
                 } else {
                     tracing::error!(
@@ -6804,7 +6959,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
-                            let _ = handle.join();
+                            // Don't join — notify Drop on Windows blocks on I/O completion.
                         }
                         for ctx in self.windows.values() {
                             ctx.window.request_redraw();
@@ -6875,16 +7030,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
                 self.orchestrator.iterations_since_checkpoint += 1;
+                self.orchestrator.feedback_iteration_timestamps.push(std::time::Instant::now());
 
-                // Check bounded iteration limit
+                // Check bounded iteration limit — but let Done/Checkpoint through
+                // so the current response isn't silently dropped.
                 if self.orchestrator.should_stop_bounded()
                     && !self.orchestrator.bounded_stop_pending
+                    && !matches!(parsed, orchestrator::AgentResponse::Checkpoint { .. })
+                    && !matches!(parsed, orchestrator::AgentResponse::Done { .. })
                 {
                     self.orchestrator.bounded_stop_pending = true;
                     tracing::info!(
                         "Orchestrator: bounded limit reached at iteration {}",
                         self.orchestrator.iteration
                     );
+                    self.orchestrator.feedback_completion_reason = "bounded_limit".to_string();
                     self.trigger_checkpoint_synthesis("bounded limit reached", "N/A");
                     for ctx in self.windows.values() {
                         ctx.window.request_redraw();
@@ -6917,6 +7077,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let stuck = text_stuck || self.orchestrator.fingerprint_stuck;
                         if stuck {
                             self.orchestrator.fingerprint_stuck = false;
+                            self.orchestrator.feedback_stuck_count += 1;
 
                             tracing::warn!(
                                 "Orchestrator: stuck detected (text_stuck={}, fingerprint_stuck={}) after {} identical",
@@ -6927,7 +7088,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                             // Log stuck iteration
                             orchestrator::append_iteration_log(
-                                &self.get_focused_cwd(),
+                                &self.orchestrator.project_root,
                                 self.orchestrator.iteration,
                                 "stuck",
                                 "stuck",
@@ -6951,6 +7112,11 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                             self.orchestrator.reset_stuck();
                             return;
+                        }
+
+                        // Cap at 50 most recent responses for instruction overload analysis
+                        if self.orchestrator.feedback_agent_responses.len() < 50 {
+                            self.orchestrator.feedback_agent_responses.push(text.clone());
                         }
 
                         // Instruction splitting enforcement: if the
@@ -6979,9 +7145,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                             text.clone()
                         };
 
-                        // Type the text into the active PTY — but only if a command
-                        // isn't actively executing (avoid interrupting Claude Code mid-turn)
-                        if let Some(ctx) = self.windows.values().next() {
+                        // During kickoff, defer all TypeText — the user is still
+                        // chatting with Claude Code and must not be interrupted.
+                        if !self.orchestrator.kickoff_complete {
+                            tracing::debug!(
+                                "Orchestrator: deferring TypeText — kickoff not complete"
+                            );
+                            self.orchestrator.deferred_type_text.push(text_to_type.clone());
+                        } else if let Some(ctx) = self.windows.values().next() {
+                            // Type the text into the active PTY — but only if a command
+                            // isn't actively executing (avoid interrupting Claude Code mid-turn)
                             if let Some(session) = ctx.session_mux.focused_session() {
                                 let block_executing = session
                                     .block_manager
@@ -6997,7 +7170,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     tracing::debug!(
                                         "Orchestrator: deferring TypeText — command is executing"
                                     );
-                                    // Don't type; next silence event will re-evaluate
+                                    self.orchestrator.deferred_type_text.push(text_to_type.clone());
                                 } else {
                                     let bytes = format!("{}\n", text_to_type).into_bytes();
                                     let _ = session
@@ -7017,7 +7190,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Log the checkpoint iteration
                         orchestrator::append_iteration_log(
-                            &self.get_focused_cwd(),
+                            &self.orchestrator.project_root,
                             self.orchestrator.iteration,
                             &completed,
                             "checkpoint",
@@ -7029,9 +7202,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     orchestrator::AgentResponse::Done { summary } => {
                         tracing::info!("Orchestrator: project complete — {}", summary);
+                        self.orchestrator.feedback_completion_reason = if summary.is_empty() {
+                            "complete".to_string()
+                        } else {
+                            format!("complete: {}", summary)
+                        };
 
                         orchestrator::append_iteration_log(
-                            &self.get_focused_cwd(),
+                            &self.orchestrator.project_root,
                             self.orchestrator.iteration,
                             "done",
                             "complete",
@@ -7051,7 +7229,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|o| o.prd_path.clone())
                             .unwrap_or_default();
                         orchestrator::generate_postmortem(
-                            &self.get_focused_cwd(),
+                            &self.orchestrator.project_root,
                             self.orchestrator.iteration,
                             self.orchestrator_activated_at.map(|t| t.elapsed()),
                             self.orchestrator.metric_baseline.as_ref(),
@@ -7070,7 +7248,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.orchestrator.active = false;
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
-                            let _ = handle.join();
+                            // Don't join — notify Drop on Windows blocks on I/O completion.
                         }
 
                         // Tell Claude Code to do a final commit
@@ -7113,6 +7291,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if !self.orchestrator.active {
                     return;
                 }
+
                 if self.agent_runtime.is_none() {
                     return;
                 }
@@ -7159,13 +7338,36 @@ impl ApplicationHandler<AppEvent> for Processor {
                     tracing::info!("Orchestrator: kickoff complete (user and terminal both idle)");
                 }
 
+                // Flush deferred text if a previous TypeText was blocked during
+                // kickoff or while a command was executing.
+                if !self.orchestrator.deferred_type_text.is_empty() {
+                    if let Some(ctx) = self.windows.values().next() {
+                        if let Some(session) = ctx.session_mux.focused_session() {
+                            let block_executing = session
+                                .block_manager
+                                .current_block_index()
+                                .and_then(|idx| session.block_manager.blocks().get(idx))
+                                .map(|b| b.state == glass_terminal::block_manager::BlockState::Executing)
+                                .unwrap_or(false);
+                            if !block_executing {
+                                let deferred = self.orchestrator.deferred_type_text.remove(0);
+                                let bytes = format!("{}\n", deferred).into_bytes();
+                                let _ = session.pty_sender.send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                self.orchestrator.mark_pty_write();
+                                tracing::info!("Orchestrator: flushed deferred TypeText ({} chars, {} remaining)", deferred.len(), self.orchestrator.deferred_type_text.len());
+                                return; // Let the typed text be processed before next silence
+                            }
+                        }
+                    }
+                }
+
                 // Check if we're in a checkpoint synthesis cycle
                 if let orchestrator::CheckpointPhase::Synthesizing { started_at, .. } =
                     &self.orchestrator.checkpoint_phase
                 {
                     if started_at.elapsed().as_secs() >= orchestrator::SYNTHESIS_TIMEOUT_SECS {
                         tracing::warn!("Checkpoint synthesis timed out — using fallback");
-                        let cwd = self.get_focused_cwd();
+                        let cwd = self.orchestrator.project_root.clone();
                         self.write_checkpoint_and_respawn(&cwd);
                     }
                     return; // Don't send context while synthesizing
@@ -7189,7 +7391,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Build environment fingerprint for stuck detection
                         let cwd = session.status.cwd().to_string();
-                        let git_diff = std::process::Command::new("git")
+                        let git_diff = git_cmd()
                             .args(["diff", "--stat"])
                             .current_dir(&cwd)
                             .output()
@@ -7218,7 +7420,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             self.orchestrator.record_fingerprint(fingerprint);
 
                         // Commit detection: track HEAD changes
-                        let current_head = std::process::Command::new("git")
+                        let current_head = git_cmd()
                             .args(["rev-parse", "HEAD"])
                             .current_dir(&cwd)
                             .output()
@@ -7263,22 +7465,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
 
-                        // Record current commit for metric guard revert (only when proceeding with iteration)
+                        // Record current commit for metric guard revert (reuse HEAD from commit detection above)
                         if self.orchestrator.metric_baseline.is_some() {
-                            self.orchestrator.last_good_commit = std::process::Command::new("git")
-                                .args(["rev-parse", "HEAD"])
-                                .current_dir(&cwd)
-                                .output()
-                                .ok()
-                                .and_then(|o| {
-                                    if o.status.success() {
-                                        String::from_utf8(o.stdout)
-                                            .ok()
-                                            .map(|s| s.trim().to_string())
-                                    } else {
-                                        None
-                                    }
-                                });
+                            self.orchestrator.last_good_commit = current_head.clone();
                         }
 
                         // Metric guard: run verification on background thread
@@ -7302,7 +7491,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let commands = baseline.commands.clone();
                                     let verify_cwd = cwd.clone();
                                     let proxy = self.proxy.clone();
-                                    std::thread::Builder::new()
+                                    let spawn_result = std::thread::Builder::new()
                                         .name("Glass verify".into())
                                         .spawn(move || {
                                             let deadline = std::time::Instant::now()
@@ -7389,13 +7578,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 session_id,
                                                 results,
                                             });
-                                        })
-                                        .ok();
-                                    // Block sending context until verification completes
-                                    self.orchestrator.response_pending = true;
-                                    self.orchestrator.last_verified_iteration =
-                                        Some(self.orchestrator.iteration);
-                                    return;
+                                        });
+                                    if spawn_result.is_ok() {
+                                        // Block sending context until verification completes
+                                        self.orchestrator.response_pending = true;
+                                        self.orchestrator.last_verified_iteration =
+                                            Some(self.orchestrator.iteration);
+                                        return;
+                                    } else {
+                                        tracing::warn!("Orchestrator: failed to spawn verify thread");
+                                    }
                                 }
                             }
                         }
@@ -7424,7 +7616,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 );
                                 if regressed {
                                     if let Some(ref commit) = self.orchestrator.last_good_commit {
-                                        let _ = std::process::Command::new("git")
+                                        let _ = git_cmd()
                                             .args(["reset", "--hard", commit])
                                             .current_dir(&cwd)
                                             .output();
@@ -7535,7 +7727,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             })
                                             .unwrap_or(false);
                                         if !last_regressed {
-                                            let result = std::process::Command::new("git")
+                                            let result = git_cmd()
                                                 .args([
                                                     "commit",
                                                     "-am",
@@ -7546,7 +7738,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             if let Ok(o) = result {
                                                 if o.status.success() {
                                                     self.orchestrator.last_good_commit =
-                                                        std::process::Command::new("git")
+                                                        git_cmd()
                                                             .args(["rev-parse", "HEAD"])
                                                             .current_dir(&cwd)
                                                             .output()
@@ -7581,20 +7773,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             })
                                             .unwrap_or(false);
                                         if in_diff {
-                                            let _ = std::process::Command::new("git")
+                                            let _ = git_cmd()
                                                 .args(["add", file])
                                                 .current_dir(&cwd)
                                                 .output();
                                             let msg =
                                                 format!("checkpoint: isolate-commit {}", file);
-                                            let result = std::process::Command::new("git")
+                                            let result = git_cmd()
                                                 .args(["commit", "-m", &msg])
                                                 .current_dir(&cwd)
                                                 .output();
                                             if let Ok(o) = result {
                                                 if o.status.success() {
                                                     self.orchestrator.last_good_commit =
-                                                        std::process::Command::new("git")
+                                                        git_cmd()
                                                             .args(["rev-parse", "HEAD"])
                                                             .current_dir(&cwd)
                                                             .output()
@@ -7639,7 +7831,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 .collect();
                                             if out_of_scope.len() >= 3 {
                                                 for oos_file in &out_of_scope {
-                                                    let _ = std::process::Command::new("git")
+                                                    let _ = git_cmd()
                                                         .args(["checkout", "--", oos_file])
                                                         .current_dir(&cwd)
                                                         .output();
@@ -7794,8 +7986,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let first_verify_failed = verify_results.first().and_then(|r| r.tests_failed);
 
                 // Get CWD and commit before mutable borrow of orchestrator
-                let revert_cwd = self.get_focused_cwd();
+                let revert_cwd = self.orchestrator.project_root.clone();
                 let revert_commit = self.orchestrator.last_good_commit.clone();
+
+                // Record pass/fail for flaky verification detection
+                let all_passed = verify_results.iter().all(|r| r.exit_code == 0);
+                self.orchestrator.feedback_verify_sequence.push(all_passed);
 
                 if let Some(ref mut baseline) = self.orchestrator.metric_baseline {
                     // If baseline_results is empty, this is the first run — establish baseline
@@ -7837,7 +8033,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if regressed {
                             // Revert via git
                             if let Some(ref commit) = revert_commit {
-                                let _ = std::process::Command::new("git")
+                                let _ = git_cmd()
                                     .args(["reset", "--hard", commit])
                                     .current_dir(&revert_cwd)
                                     .output();
@@ -7956,7 +8152,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Compute coverage gaps from test output and git diff
                 {
-                    let changed_files_output = std::process::Command::new("git")
+                    let changed_files_output = git_cmd()
                         .args(["diff", "--name-only"])
                         .current_dir(&revert_cwd)
                         .output()
@@ -8014,6 +8210,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Ok(mut w) = writer.lock() {
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
+                                    // Context was sent — mark pending so we wait for the
+                                    // agent's response before the next silence fires.
+                                    self.orchestrator.response_pending = true;
                                 }
                             }
                         }
@@ -8022,7 +8221,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
-                self.orchestrator.response_pending = false;
+                // Only clear response_pending if no context was sent above
+                // (i.e., window/session lookup failed). If context was sent,
+                // response_pending was already set to true inside the block.
+                if !self.orchestrator.response_pending {
+                    self.orchestrator.response_pending = false;
+                }
 
                 // Request redraw for status bar update
                 for ctx in self.windows.values() {
@@ -8035,7 +8239,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                 self.orchestrator.active = false;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
-                    let _ = handle.join();
                 }
                 for ctx in self.windows.values() {
                     ctx.window.request_redraw();
@@ -8047,7 +8250,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                 self.orchestrator.active = false;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
-                    let _ = handle.join();
                 }
 
                 // Write emergency checkpoint from Rust (no AI)
@@ -8484,7 +8686,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 );
                 match purpose {
                     glass_core::event::EphemeralPurpose::CheckpointSynthesis => {
-                        let cwd = self.get_focused_cwd();
+                        let cwd = self.orchestrator.project_root.clone();
                         match result {
                             Ok(resp) => {
                                 if let Some(cost) = resp.cost_usd {
@@ -8546,7 +8748,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .push_str(&quality_ctx);
 
                                 // Log to iterations.tsv
-                                let cwd = self.get_focused_cwd();
+                                let cwd = self.orchestrator.project_root.clone();
                                 let status = if verdict.regressed {
                                     "quality_regressed"
                                 } else {
@@ -8966,6 +9168,7 @@ fn main() {
                 artifact_watcher_thread: None,
                 feedback_state: None,
                 feedback_write_pending: false,
+                config_write_suppress_until: None,
             };
 
             event_loop

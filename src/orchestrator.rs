@@ -5,6 +5,17 @@
 
 use std::hash::{Hash, Hasher};
 
+/// Create a `git` command with `CREATE_NO_WINDOW` on Windows to prevent console flashing.
+fn git_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// A verification command with its name and command string.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifyCommand {
@@ -44,8 +55,10 @@ impl MetricBaseline {
     }
 
     /// Check if current results represent a regression from baseline.
-    /// Regression = pass count dropped, fail count increased, or exit code went from 0 to non-zero.
+    /// Regression = pass count dropped, fail count increased, exit code went
+    /// from 0 to non-zero, or a newly-added command failed.
     pub fn check_regression(baseline: &[VerifyResult], current: &[VerifyResult]) -> bool {
+        // Check paired results (commands present in both baseline and current)
         for (b, c) in baseline.iter().zip(current.iter()) {
             // Build broke (exit code regressed)
             if b.exit_code == 0 && c.exit_code != 0 {
@@ -62,6 +75,12 @@ impl MetricBaseline {
                 if cf > bf {
                     return true;
                 }
+            }
+        }
+        // Check extra commands added since baseline — a failing new command is a regression
+        for extra in current.iter().skip(baseline.len()) {
+            if extra.exit_code != 0 {
+                return true;
             }
         }
         false
@@ -295,23 +314,7 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
         let after = trimmed[start + checkpoint_marker.len()..].trim();
         if let Some(json_start) = after.find('{') {
             let json_slice = &after[json_start..];
-            // Find matching closing brace
-            let mut depth = 0usize;
-            let mut end = None;
-            for (i, ch) in json_slice.char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            end = Some(i + 1);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(end_idx) = end {
+            if let Some(end_idx) = glass_core::agent_runtime::find_json_object_end(json_slice) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_slice[..end_idx]) {
                     let completed = val
                         .get("completed")
@@ -334,22 +337,7 @@ pub fn parse_agent_response(raw: &str) -> AgentResponse {
         let after = trimmed[start + verify_marker.len()..].trim();
         if let Some(json_start) = after.find('{') {
             let json_slice = &after[json_start..];
-            let mut depth = 0usize;
-            let mut end = None;
-            for (i, ch) in json_slice.char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            end = Some(i + 1);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(end_idx) = end {
+            if let Some(end_idx) = glass_core::agent_runtime::find_json_object_end(json_slice) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_slice[..end_idx]) {
                     if let Some(cmds) = val.get("commands").and_then(|c| c.as_array()) {
                         let commands: Vec<VerifyCommand> = cmds
@@ -500,8 +488,21 @@ pub struct OrchestratorState {
     pub feedback_fast_trigger_during_output: u32,
     /// Feedback loop: timestamps for each iteration (for pacing analysis).
     pub feedback_iteration_timestamps: Vec<std::time::Instant>,
+    /// Feedback loop: count of stuck events during this run.
+    pub feedback_stuck_count: u32,
+    /// Feedback loop: count of checkpoint refreshes during this run.
+    pub feedback_checkpoint_count: u32,
+    /// Feedback loop: verify pass/fail sequence (true=pass, false=fail).
+    pub feedback_verify_sequence: Vec<bool>,
+    /// Feedback loop: agent response texts for instruction overload analysis.
+    pub feedback_agent_responses: Vec<String>,
+    /// Completion reason captured from GLASS_DONE or bounded stop.
+    pub feedback_completion_reason: String,
     /// Buffered split instructions (one-at-a-time enforcement).
     pub instruction_buffer: Vec<String>,
+    /// Text deferred because a block was executing when the response arrived.
+    /// Flushed to PTY (one at a time) when the block finishes.
+    pub deferred_type_text: Vec<String>,
     /// Active dependency block message (None = not blocked).
     pub dependency_block: Option<String>,
     /// Iterations spent while dependency-blocked.
@@ -518,6 +519,10 @@ pub struct OrchestratorState {
     pub coverage_gaps_context: String,
     /// Last quality verdict score (for regression comparison in general mode).
     pub last_quality_score: Option<u32>,
+    /// Project root directory captured at orchestrator activation (Ctrl+Shift+O).
+    /// Used for all file operations instead of get_focused_cwd() because the
+    /// shell's OSC 7 CWD stops updating once Claude Code starts.
+    pub project_root: String,
 }
 
 impl OrchestratorState {
@@ -547,7 +552,13 @@ impl OrchestratorState {
             feedback_reverted_files: Vec::new(),
             feedback_fast_trigger_during_output: 0,
             feedback_iteration_timestamps: Vec::new(),
+            feedback_stuck_count: 0,
+            feedback_checkpoint_count: 0,
+            feedback_verify_sequence: Vec::new(),
+            feedback_agent_responses: Vec::new(),
+            feedback_completion_reason: String::new(),
             instruction_buffer: Vec::new(),
+            deferred_type_text: Vec::new(),
             dependency_block: None,
             dependency_block_iterations: 0,
             prd_deliverable_files: Vec::new(),
@@ -556,6 +567,7 @@ impl OrchestratorState {
             cached_checkpoint_fallback: None,
             coverage_gaps_context: String::new(),
             last_quality_score: None,
+            project_root: String::new(),
         }
     }
 
@@ -697,7 +709,7 @@ pub fn append_iteration_log(
     }
 
     // Get current git commit hash (short)
-    let commit = std::process::Command::new("git")
+    let commit = git_cmd()
         .args(["rev-parse", "--short", "HEAD"])
         .current_dir(project_root)
         .output()
@@ -779,7 +791,9 @@ pub fn generate_postmortem(
     for line in iterations_content.lines().skip(1) {
         let cols: Vec<&str> = line.split('\t').collect();
         if cols.len() >= 5 {
-            match cols[3].trim() {
+            // TSV format: iteration\tcommit\tfeature\t(metric)\tstatus\tdescription
+            // Status is in column 4 (0-indexed), not column 3
+            match cols[4].trim() {
                 "stuck" => stuck_count += 1,
                 "keep" => verify_keep_count += 1,
                 "revert" => verify_revert_count += 1,
@@ -791,7 +805,7 @@ pub fn generate_postmortem(
     }
 
     // Get git log for commits made during the run
-    let git_log = std::process::Command::new("git")
+    let git_log = git_cmd()
         .args(["log", "--oneline", &format!("-{}", iteration.max(10))])
         .current_dir(project_root)
         .output()
@@ -911,23 +925,47 @@ pub fn generate_postmortem(
 }
 
 fn chrono_free_timestamp() -> String {
-    // Use SystemTime for a rough timestamp without chrono dependency
+    // Use SystemTime for a timestamp without chrono dependency
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Format as YYYYMMDD-HHMMSS (approximate from epoch)
-    let days = secs / 86400;
     let time_of_day = secs % 86400;
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
-    // Rough date calc (good enough for filenames)
-    let years = 1970 + days / 365;
-    let day_of_year = days % 365;
-    let month = day_of_year / 30 + 1;
-    let day = day_of_year % 30 + 1;
-    format!("{years:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
+
+    // Correct date calculation accounting for leap years
+    let mut remaining_days = (secs / 86400) as i64;
+    let mut year: i64 = 1970;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap_year(year);
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month: i64 = 1;
+    for &md in &month_days {
+        if remaining_days < md {
+            break;
+        }
+        remaining_days -= md;
+        month += 1;
+    }
+    let day = remaining_days + 1;
+    format!("{year:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
+}
+
+fn is_leap_year(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 fn build_observations(
@@ -1721,8 +1759,8 @@ mod tests {
     }
 
     #[test]
-    fn check_regression_mismatched_lengths_ignores_extra() {
-        // Baseline has 1 entry, current has 2 — the extra entry is silently ignored by zip
+    fn check_regression_mismatched_lengths_detects_failing_extra() {
+        // Baseline has 1 entry, current has 2 — the extra failing entry is detected
         let baseline = vec![VerifyResult {
             command_name: "test".to_string(),
             exit_code: 0,
@@ -1740,13 +1778,41 @@ mod tests {
             },
             VerifyResult {
                 command_name: "lint".to_string(),
-                exit_code: 1, // This failure is silently ignored!
+                exit_code: 1, // Extra failing command is now caught
                 tests_passed: None,
                 tests_failed: None,
                 errors: vec!["error".to_string()],
             },
         ];
-        // This documents the current behavior: extra entries are ignored
+        assert!(MetricBaseline::check_regression(&baseline, &current));
+    }
+
+    #[test]
+    fn check_regression_mismatched_lengths_passing_extra_ok() {
+        // Extra command that passes should not trigger regression
+        let baseline = vec![VerifyResult {
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(10),
+            tests_failed: Some(0),
+            errors: vec![],
+        }];
+        let current = vec![
+            VerifyResult {
+                command_name: "test".to_string(),
+                exit_code: 0,
+                tests_passed: Some(10),
+                tests_failed: Some(0),
+                errors: vec![],
+            },
+            VerifyResult {
+                command_name: "lint".to_string(),
+                exit_code: 0,
+                tests_passed: None,
+                tests_failed: None,
+                errors: vec![],
+            },
+        ];
         assert!(!MetricBaseline::check_regression(&baseline, &current));
     }
 
@@ -1906,5 +1972,40 @@ mod tests {
     fn checkpoint_path_uses_default() {
         let p = checkpoint_path("/project", None);
         assert_eq!(p, std::path::PathBuf::from("/project/.glass/checkpoint.md"));
+    }
+
+    #[test]
+    fn chrono_free_timestamp_produces_valid_date() {
+        let ts = chrono_free_timestamp();
+        // Should be 15 chars: YYYYMMDD-HHMMSS
+        assert_eq!(ts.len(), 15);
+        assert_eq!(&ts[8..9], "-");
+        // Year should be >= 2025
+        let year: u32 = ts[..4].parse().unwrap();
+        assert!(year >= 2025);
+        // Month should be 01-12
+        let month: u32 = ts[4..6].parse().unwrap();
+        assert!((1..=12).contains(&month));
+        // Day should be 01-31
+        let day: u32 = ts[6..8].parse().unwrap();
+        assert!((1..=31).contains(&day));
+    }
+
+    #[test]
+    fn is_leap_year_checks() {
+        assert!(is_leap_year(2000)); // divisible by 400
+        assert!(!is_leap_year(1900)); // divisible by 100 but not 400
+        assert!(is_leap_year(2024)); // divisible by 4
+        assert!(!is_leap_year(2025)); // not divisible by 4
+    }
+
+    #[test]
+    fn postmortem_tsv_column_index_reads_status() {
+        // Verify that our TSV format puts status in the column we read.
+        // TSV: iteration\tcommit\tfeature\t(metric)\tstatus\tdescription
+        let line = "1\tabc123\tstuck\t\tstuck\tStuck after 3 identical responses";
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert!(cols.len() >= 5);
+        assert_eq!(cols[4].trim(), "stuck"); // status is in column 4
     }
 }
