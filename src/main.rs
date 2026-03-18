@@ -443,7 +443,7 @@ impl Drop for AgentRuntime {
 /// be called while other fields of `Processor` are mutably borrowed (e.g.
 /// `self.windows`). Short-circuits if no scripts match the hook.
 fn fire_hook_on_bridge(
-    bridge: &script_bridge::ScriptBridge,
+    bridge: &mut script_bridge::ScriptBridge,
     orchestrator_project_root: &str,
     hook: glass_scripting::HookPoint,
     event: &glass_scripting::HookEventData,
@@ -466,7 +466,8 @@ fn fire_hook_on_bridge(
     let actions = bridge.run_hook(hook, &ctx, event);
     if !actions.is_empty() {
         if let Some(root) = bridge.project_root() {
-            bridge.execute_actions(&actions, root);
+            let root = root.to_string();
+            bridge.execute_actions(&actions, &root);
         }
     }
 }
@@ -2114,7 +2115,7 @@ impl Processor {
             {
                 let mut event = glass_scripting::HookEventData::new();
                 event.set("iterations", self.orchestrator.iteration as i64);
-                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                     glass_scripting::HookPoint::OrchestratorRunEnd,
                     &event,
                 );
@@ -2504,7 +2505,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         match event {
             WindowEvent::CloseRequested => {
-                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                     glass_scripting::HookPoint::SessionEnd,
                     &glass_scripting::HookEventData::new(),
                 );
@@ -3909,7 +3910,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabCreate,
                                         &event,
                                     );
@@ -3932,7 +3933,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         if ctx.session_mux.tab_count() < tab_count_before
                                             && ctx.session_mux.tab_count() == 0
                                         {
-                                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                                 glass_scripting::HookPoint::SessionEnd,
                                                 &glass_scripting::HookEventData::new(),
                                             );
@@ -3955,7 +3956,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     {
                                         let mut event = glass_scripting::HookEventData::new();
                                         event.set("tab_index", idx as i64);
-                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                             glass_scripting::HookPoint::TabClose,
                                             &event,
                                         );
@@ -3965,7 +3966,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                     ctx.tab_bar_hovered_tab = None;
                                     if ctx.session_mux.tab_count() == 0 {
-                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                             glass_scripting::HookPoint::SessionEnd,
                                             &glass_scripting::HookEventData::new(),
                                         );
@@ -4321,7 +4322,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.script_bridge.load_for_project(&current_cwd);
 
                                     // Fire scripting OrchestratorRunStart hook
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::OrchestratorRunStart,
                                         &glass_scripting::HookEventData::new(),
                                     );
@@ -4660,7 +4661,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             "iterations",
                                             self.orchestrator.iteration as i64,
                                         );
-                                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                             glass_scripting::HookPoint::OrchestratorRunEnd,
                                             &event,
                                         );
@@ -5356,7 +5357,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 {
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabClose,
                                         &event,
                                     );
@@ -5366,7 +5367,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::SessionEnd,
                                         &glass_scripting::HookEventData::new(),
                                     );
@@ -5398,7 +5399,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabCreate,
                                         &event,
                                     );
@@ -5739,7 +5740,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 {
                                     let mut event = glass_scripting::HookEventData::new();
                                     event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::TabClose,
                                         &event,
                                     );
@@ -5749,7 +5750,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 ctx.tab_bar_hovered_tab = None;
                                 if ctx.session_mux.tab_count() == 0 {
-                                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                         glass_scripting::HookPoint::SessionEnd,
                                         &glass_scripting::HookEventData::new(),
                                     );
@@ -5888,7 +5889,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if ctx.session_mux.tab_count() < tab_count_before
                                 && ctx.session_mux.tab_count() == 0
                             {
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::SessionEnd,
                                     &glass_scripting::HookEventData::new(),
                                 );
@@ -5909,7 +5910,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 let mut event = glass_scripting::HookEventData::new();
                                 event.set("tab_index", idx as i64);
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::TabClose,
                                     &event,
                                 );
@@ -5922,7 +5923,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     if ctx.session_mux.tab_count() == 0 {
                         tracing::info!("Last tab closed -- exiting");
-                        fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                        fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                             glass_scripting::HookPoint::SessionEnd,
                             &glass_scripting::HookEventData::new(),
                         );
@@ -6473,14 +6474,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if let Some(cmd_text) = hook_command_start_text {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("command", cmd_text);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,glass_scripting::HookPoint::CommandStart, &event);
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,glass_scripting::HookPoint::CommandStart, &event);
                 }
                 if let Some((cmd_text, exit_code, duration_ms)) = hook_command_complete_data {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("command", cmd_text);
                     event.set("exit_code", exit_code.unwrap_or(-1) as i64);
                     event.set("duration_ms", duration_ms);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                         glass_scripting::HookPoint::CommandComplete,
                         &event,
                     );
@@ -6868,7 +6869,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 let mut event = glass_scripting::HookEventData::new();
                                 event.set("iterations", self.orchestrator.iteration as i64);
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::OrchestratorRunEnd,
                                     &event,
                                 );
@@ -7315,7 +7316,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         {
                             let mut event = glass_scripting::HookEventData::new();
                             event.set("iterations", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                 glass_scripting::HookPoint::OrchestratorRunEnd,
                                 &event,
                             );
@@ -7624,7 +7625,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         {
                             let mut event = glass_scripting::HookEventData::new();
                             event.set("iterations", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                 glass_scripting::HookPoint::OrchestratorRunEnd,
                                 &event,
                             );
@@ -8270,7 +8271,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         {
                             let mut event = glass_scripting::HookEventData::new();
                             event.set("iteration", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                 glass_scripting::HookPoint::OrchestratorIteration,
                                 &event,
                             );
@@ -8644,7 +8645,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("iterations", self.orchestrator.iteration as i64);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                         glass_scripting::HookPoint::OrchestratorRunEnd,
                         &event,
                     );
@@ -8663,7 +8664,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 {
                     let mut event = glass_scripting::HookEventData::new();
                     event.set("iterations", self.orchestrator.iteration as i64);
-                    fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                    fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                         glass_scripting::HookPoint::OrchestratorRunEnd,
                         &event,
                     );
@@ -8847,7 +8848,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 let mut event = glass_scripting::HookEventData::new();
                                 event.set("tab_index", new_tab_index as i64);
-                                fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                     glass_scripting::HookPoint::TabCreate,
                                     &event,
                                 );
@@ -8995,7 +8996,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             let mut event =
                                                 glass_scripting::HookEventData::new();
                                             event.set("tab_index", tab_idx as i64);
-                                            fire_hook_on_bridge(&self.script_bridge, &self.orchestrator.project_root,
+                                            fire_hook_on_bridge(&mut self.script_bridge, &self.orchestrator.project_root,
                                                 glass_scripting::HookPoint::TabClose,
                                                 &event,
                                             );
