@@ -5,6 +5,7 @@ pub mod hooks;
 pub mod lifecycle;
 pub mod loader;
 pub mod mcp;
+pub mod profile;
 pub mod sandbox;
 pub mod types;
 
