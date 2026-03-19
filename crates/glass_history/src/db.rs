@@ -202,13 +202,17 @@ impl HistoryDb {
     }
 
     /// Insert a command record into the database. Returns the row id.
+    ///
+    /// Command text is automatically redacted to strip sensitive values
+    /// (passwords, tokens, API keys) before storage.
     pub fn insert_command(&self, record: &CommandRecord) -> Result<i64> {
+        let redacted_command = redact_sensitive(&record.command);
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO commands (command, cwd, exit_code, started_at, finished_at, duration_ms, output)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                record.command,
+                redacted_command,
                 record.cwd,
                 record.exit_code,
                 record.started_at,
@@ -220,7 +224,7 @@ impl HistoryDb {
         let rowid = tx.last_insert_rowid();
         tx.execute(
             "INSERT INTO commands_fts (rowid, command) VALUES (?1, ?2)",
-            params![rowid, record.command],
+            params![rowid, redacted_command],
         )?;
         tx.commit()?;
         Ok(rowid)
@@ -468,6 +472,19 @@ impl HistoryDb {
             crate::soi::get_output_records(&self.conn, command_id, None, None, None, 10000)?;
         Ok(Some(crate::compress::compress(&records, &summary, budget)))
     }
+}
+
+/// Redact sensitive values (passwords, tokens, API keys, secrets) from command text
+/// before storing in history. Replaces the value portion while preserving the key name
+/// so users can still see what kind of credential was used.
+fn redact_sensitive(text: &str) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)(password|passwd|token|secret|api[_-]?key|bearer)\s*[=:]\s*\S+").unwrap()
+    });
+    re.replace_all(text, "$1=[REDACTED]").to_string()
 }
 
 #[cfg(test)]
@@ -1510,5 +1527,37 @@ mod tests {
 
         let cmd_text = db.get_command_text(cmd_id).unwrap();
         assert_eq!(cmd_text, Some("cat binary.bin".to_string()));
+    }
+
+    #[test]
+    fn test_redact_sensitive() {
+        assert_eq!(
+            redact_sensitive("mysql -p password=secret123"),
+            "mysql -p password=[REDACTED]"
+        );
+        assert_eq!(redact_sensitive("normal command"), "normal command");
+        // Bearer: value gets redacted (note: \S+ consumes trailing quote)
+        let redacted = redact_sensitive("curl -H 'Bearer: abc123'");
+        assert!(redacted.contains("Bearer=[REDACTED]"));
+        assert!(!redacted.contains("abc123"));
+        // API_KEY gets redacted, original case of capture group is preserved
+        let redacted = redact_sensitive("export API_KEY=sk-12345");
+        assert!(redacted.contains("API_KEY=[REDACTED]"));
+        assert!(!redacted.contains("sk-12345"));
+        // Multiple sensitive values get redacted
+        let redacted = redact_sensitive("TOKEN=foo SECRET=bar");
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("foo"));
+        assert!(!redacted.contains("bar"));
+    }
+
+    #[test]
+    fn test_insert_redacts_command() {
+        let (db, _dir) = test_db();
+        let record = sample_record("mysql -p password=secret123");
+        let id = db.insert_command(&record).unwrap();
+        let retrieved = db.get_command(id).unwrap().unwrap();
+        assert_eq!(retrieved.command, "mysql -p password=[REDACTED]");
+        assert!(!retrieved.command.contains("secret123"));
     }
 }
