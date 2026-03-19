@@ -35,9 +35,11 @@
 //! Uses rmcp's `#[tool_router]` and `#[tool_handler]` macros for
 //! zero-boilerplate MCP tool registration and dispatch.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use glass_core::config::{self as core_config, PermissionLevel, PermissionMatrix};
 use glass_history::db::{CommandRecord, HistoryDb};
 use glass_history::query::{self, QueryFilter};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -523,17 +525,25 @@ pub struct GlassServer {
     /// `None` only if explicitly disabled; the client itself handles connection
     /// failures gracefully (returns clear error messages).
     ipc_client: Option<Arc<ipc_client::IpcClient>>,
+    /// Set of tool names the agent is allowed to invoke. Empty = all allowed.
+    allowed_tools: HashSet<String>,
+    /// Per-category permission levels for gating dangerous operations.
+    permissions: PermissionMatrix,
 }
 
 #[tool_router]
 impl GlassServer {
     /// Create a new GlassServer pointing at the given history database, glass directory,
     /// and coordination database. Optionally accepts an IPC client for live GUI communication.
+    /// `allowed_tools` restricts which tools the agent may invoke (empty = all allowed).
+    /// `permissions` gates dangerous tool categories (RunCommands, EditFiles).
     pub fn new(
         db_path: PathBuf,
         glass_dir: PathBuf,
         coord_db_path: PathBuf,
         ipc_client: Option<ipc_client::IpcClient>,
+        allowed_tools: HashSet<String>,
+        permissions: PermissionMatrix,
     ) -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -541,6 +551,53 @@ impl GlassServer {
             glass_dir,
             coord_db_path,
             ipc_client: ipc_client.map(Arc::new),
+            allowed_tools,
+            permissions,
+        }
+    }
+
+    /// Check whether the given tool is permitted under the current configuration.
+    ///
+    /// Returns `Some(error_result)` if the tool is denied, `None` if allowed.
+    /// - Empty `allowed_tools` set means all tools are allowed.
+    /// - `PermissionLevel::Never` blocks the tool outright.
+    /// - `PermissionLevel::Approve` is treated as allowed at the MCP layer
+    ///   (the GUI handles the interactive approval prompt).
+    fn check_permission(&self, tool_name: &str) -> Option<CallToolResult> {
+        // 1. Check allowed_tools whitelist
+        if !self.allowed_tools.is_empty() && !self.allowed_tools.contains(tool_name) {
+            tracing::warn!(tool = tool_name, "MCP tool blocked: not in allowed_tools");
+            return Some(CallToolResult::error(vec![Content::text(format!(
+                "Tool '{}' is not in the allowed_tools list. Update [agent].allowed_tools in config to permit it.",
+                tool_name
+            ))]));
+        }
+
+        // 2. Check permission level for the tool's category
+        let category = core_config::tool_category(tool_name);
+        let level = match category {
+            core_config::ToolCategory::RunCommands => self.permissions.run_commands,
+            core_config::ToolCategory::EditFiles => self.permissions.edit_files,
+            core_config::ToolCategory::ReadOnly | core_config::ToolCategory::Coordination => {
+                // Read-only and coordination tools are always allowed
+                return None;
+            }
+        };
+
+        match level {
+            PermissionLevel::Never => {
+                tracing::warn!(
+                    tool = tool_name,
+                    category = ?category,
+                    "MCP tool blocked: permission level is Never"
+                );
+                Some(CallToolResult::error(vec![Content::text(format!(
+                    "Tool '{}' is blocked: {:?} permission is set to 'never' in [agent.permissions].",
+                    tool_name, category
+                ))]))
+            }
+            // Approve and Auto both pass through at the MCP layer
+            PermissionLevel::Approve | PermissionLevel::Auto => None,
         }
     }
 
@@ -553,6 +610,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<HistoryParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_history", "MCP tool invoked");
         let db_path = self.db_path.clone();
 
         let records = tokio::task::spawn_blocking(move || {
@@ -600,6 +658,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<ContextParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_context", "MCP tool invoked");
         let db_path = self.db_path.clone();
 
         let summary = tokio::task::spawn_blocking(move || {
@@ -630,6 +689,10 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<UndoParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_undo", command_id = params.command_id, "MCP tool invoked");
+        if let Some(denied) = self.check_permission("glass_undo") {
+            return Ok(denied);
+        }
         let glass_dir = self.glass_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
             let store = glass_snapshot::SnapshotStore::open(&glass_dir).map_err(internal_err)?;
@@ -685,6 +748,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<FileDiffParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_file_diff", "MCP tool invoked");
         let glass_dir = self.glass_dir.clone();
         let result =
             tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, McpError> {
@@ -746,6 +810,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<PipeInspectParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_pipe_inspect", "MCP tool invoked");
         let db_path = self.db_path.clone();
         let stage_filter = params.stage;
 
@@ -800,6 +865,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<RegisterParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_register", agent_name = %params.name, "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -835,6 +901,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<DeregisterParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_deregister", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -858,6 +925,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<ListAgentsParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_list", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -882,6 +950,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<StatusParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_status", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -907,6 +976,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<HeartbeatParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_heartbeat", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -930,6 +1000,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<LockParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_lock", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -978,6 +1049,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<UnlockParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_unlock", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -1013,6 +1085,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<ListLocksParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_locks", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -1035,6 +1108,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<BroadcastParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_broadcast", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -1062,6 +1136,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<SendParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_send", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -1089,6 +1164,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<MessagesParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_agent_messages", "MCP tool invoked");
         let coord_path = self.coord_db_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
@@ -1111,6 +1187,7 @@ impl GlassServer {
         description = "Check if the Glass GUI process is running and responsive. Returns status 'ok' if the GUI is reachable via IPC, or an error if not."
     )]
     async fn glass_ping(&self) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_ping", "MCP tool invoked");
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1135,6 +1212,7 @@ impl GlassServer {
         description = "List all open tabs with their state: name, working directory, session ID, and whether a command is running."
     )]
     async fn glass_tab_list(&self) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_tab_list", "MCP tool invoked");
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1162,6 +1240,10 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<TabCreateParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_tab_create", shell = ?input.shell, "MCP tool invoked");
+        if let Some(denied) = self.check_permission("glass_tab_create") {
+            return Ok(denied);
+        }
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1196,6 +1278,10 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<TabSendParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_tab_send", command = %input.command, "MCP tool invoked");
+        if let Some(denied) = self.check_permission("glass_tab_send") {
+            return Ok(denied);
+        }
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1230,6 +1316,7 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<TabOutputParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_tab_output", "MCP tool invoked");
         // If command_id is provided, bypass IPC and read from history DB directly.
         if let Some(cmd_id) = input.command_id {
             let db_path = self.db_path.clone();
@@ -1334,6 +1421,7 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<TabCloseParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_tab_close", "MCP tool invoked");
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1368,6 +1456,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<CacheCheckParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_cache_check", "MCP tool invoked");
         let db_path = self.db_path.clone();
         let glass_dir = self.glass_dir.clone();
         let command_id = params.command_id;
@@ -1465,6 +1554,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<CommandDiffParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_command_diff", "MCP tool invoked");
         let glass_dir = self.glass_dir.clone();
         let command_id = params.command_id;
 
@@ -1567,6 +1657,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<CompressedContextParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_compressed_context", "MCP tool invoked");
         let db_path = self.db_path.clone();
         let glass_dir = self.glass_dir.clone();
 
@@ -1658,6 +1749,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<ExtractErrorsParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_extract_errors", "MCP tool invoked");
         let json = build_extract_errors_json(&params.output, params.command_hint.as_deref());
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -1672,6 +1764,7 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<HasRunningCommandParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_has_running_command", "MCP tool invoked");
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1708,6 +1801,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_query", "MCP tool invoked");
         let db_path = self.db_path.clone();
 
         let result = tokio::task::spawn_blocking(move || -> Result<CallToolResult, McpError> {
@@ -1743,6 +1837,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<QueryTrendParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_query_trend", "MCP tool invoked");
         let db_path = self.db_path.clone();
 
         let result = tokio::task::spawn_blocking(move || -> Result<CallToolResult, McpError> {
@@ -1848,6 +1943,7 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<QueryDrillParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_query_drill", "MCP tool invoked");
         let db_path = self.db_path.clone();
 
         let result = tokio::task::spawn_blocking(move || -> Result<CallToolResult, McpError> {
@@ -1913,6 +2009,10 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<CancelCommandParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_cancel_command", "MCP tool invoked");
+        if let Some(denied) = self.check_permission("glass_cancel_command") {
+            return Ok(denied);
+        }
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1949,6 +2049,10 @@ impl GlassServer {
         &self,
         Parameters(input): Parameters<ScriptToolParams>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_script_tool", script = %input.tool_name, "MCP tool invoked");
+        if let Some(denied) = self.check_permission("glass_script_tool") {
+            return Ok(denied);
+        }
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -1979,6 +2083,7 @@ impl GlassServer {
         description = "List available script-defined MCP tools. Returns names, descriptions, and parameter schemas of all registered script tools."
     )]
     async fn glass_list_script_tools(&self) -> Result<CallToolResult, McpError> {
+        tracing::info!(tool = "glass_list_script_tools", "MCP tool invoked");
         let client = match self.ipc_client.as_ref() {
             Some(c) => c,
             None => {
@@ -2273,6 +2378,8 @@ mod tests {
             glass_dir.clone(),
             coord_db_path.clone(),
             None,
+            HashSet::new(),
+            PermissionMatrix::default(),
         );
         assert_eq!(server.db_path, db_path);
         assert_eq!(server.glass_dir, glass_dir);
@@ -3182,5 +3289,124 @@ mod tests {
             regression,
             "Regression must be detected when test_alpha goes from pass to fail"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // check_permission tests
+    // ---------------------------------------------------------------------------
+
+    fn make_server_with_perms(
+        allowed_tools: HashSet<String>,
+        permissions: PermissionMatrix,
+    ) -> GlassServer {
+        GlassServer::new(
+            PathBuf::from("/tmp/history.db"),
+            PathBuf::from("/tmp/.glass"),
+            PathBuf::from("/tmp/agents.db"),
+            None,
+            allowed_tools,
+            permissions,
+        )
+    }
+
+    #[test]
+    fn check_permission_allows_readonly_always() {
+        let perms = PermissionMatrix {
+            run_commands: PermissionLevel::Never,
+            edit_files: PermissionLevel::Never,
+            git_operations: PermissionLevel::Never,
+        };
+        let server = make_server_with_perms(HashSet::new(), perms);
+        // Read-only tools should pass even when everything is Never
+        assert!(server.check_permission("glass_history").is_none());
+        assert!(server.check_permission("glass_context").is_none());
+        assert!(server.check_permission("glass_tab_list").is_none());
+        assert!(server.check_permission("glass_ping").is_none());
+    }
+
+    #[test]
+    fn check_permission_blocks_run_commands_when_never() {
+        let perms = PermissionMatrix {
+            run_commands: PermissionLevel::Never,
+            edit_files: PermissionLevel::Auto,
+            git_operations: PermissionLevel::Approve,
+        };
+        let server = make_server_with_perms(HashSet::new(), perms);
+        assert!(server.check_permission("glass_tab_send").is_some());
+        assert!(server.check_permission("glass_tab_create").is_some());
+        assert!(server.check_permission("glass_cancel_command").is_some());
+        assert!(server.check_permission("glass_script_tool").is_some());
+    }
+
+    #[test]
+    fn check_permission_blocks_edit_files_when_never() {
+        let perms = PermissionMatrix {
+            run_commands: PermissionLevel::Auto,
+            edit_files: PermissionLevel::Never,
+            git_operations: PermissionLevel::Approve,
+        };
+        let server = make_server_with_perms(HashSet::new(), perms);
+        assert!(server.check_permission("glass_undo").is_some());
+        // run_commands should still pass
+        assert!(server.check_permission("glass_tab_send").is_none());
+    }
+
+    #[test]
+    fn check_permission_allows_approve_level() {
+        let perms = PermissionMatrix {
+            run_commands: PermissionLevel::Approve,
+            edit_files: PermissionLevel::Approve,
+            git_operations: PermissionLevel::Approve,
+        };
+        let server = make_server_with_perms(HashSet::new(), perms);
+        assert!(server.check_permission("glass_tab_send").is_none());
+        assert!(server.check_permission("glass_undo").is_none());
+    }
+
+    #[test]
+    fn check_permission_allows_auto_level() {
+        let perms = PermissionMatrix {
+            run_commands: PermissionLevel::Auto,
+            edit_files: PermissionLevel::Auto,
+            git_operations: PermissionLevel::Auto,
+        };
+        let server = make_server_with_perms(HashSet::new(), perms);
+        assert!(server.check_permission("glass_tab_send").is_none());
+        assert!(server.check_permission("glass_undo").is_none());
+    }
+
+    #[test]
+    fn check_permission_allowed_tools_whitelist() {
+        let mut allowed = HashSet::new();
+        allowed.insert("glass_history".to_string());
+        allowed.insert("glass_context".to_string());
+        let server = make_server_with_perms(allowed, PermissionMatrix::default());
+        // Allowed tools pass
+        assert!(server.check_permission("glass_history").is_none());
+        assert!(server.check_permission("glass_context").is_none());
+        // Non-listed tools are blocked
+        assert!(server.check_permission("glass_tab_send").is_some());
+        assert!(server.check_permission("glass_undo").is_some());
+        assert!(server.check_permission("glass_ping").is_some());
+    }
+
+    #[test]
+    fn check_permission_empty_allowed_tools_allows_all() {
+        let server = make_server_with_perms(HashSet::new(), PermissionMatrix::default());
+        assert!(server.check_permission("glass_tab_send").is_none());
+        assert!(server.check_permission("glass_history").is_none());
+    }
+
+    #[test]
+    fn check_permission_coordination_always_passes() {
+        let perms = PermissionMatrix {
+            run_commands: PermissionLevel::Never,
+            edit_files: PermissionLevel::Never,
+            git_operations: PermissionLevel::Never,
+        };
+        let server = make_server_with_perms(HashSet::new(), perms);
+        assert!(server.check_permission("glass_agent_register").is_none());
+        assert!(server.check_permission("glass_agent_lock").is_none());
+        assert!(server.check_permission("glass_agent_messages").is_none());
     }
 }

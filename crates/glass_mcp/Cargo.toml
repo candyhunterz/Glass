@@ -20,6 +20,7 @@ rusqlite = { workspace = true }
 regex = "1"
 similar = "2"
 glass_errors = { path = "../glass_errors" }
+glass_core = { path = "../glass_core" }
 
 [dev-dependencies]
 tempfile = "3"

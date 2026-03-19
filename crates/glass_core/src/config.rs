@@ -25,6 +25,35 @@ pub enum PermissionKind {
     GitOperations,
 }
 
+/// Category of an MCP tool for permission gating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCategory {
+    /// Tools that execute commands in a terminal (e.g. `glass_tab_send`).
+    RunCommands,
+    /// Tools that modify files on disk (e.g. `glass_undo`).
+    EditFiles,
+    /// Read-only observation tools (e.g. `glass_history`, `glass_context`).
+    ReadOnly,
+    /// Multi-agent coordination tools (e.g. `glass_agent_*`).
+    Coordination,
+}
+
+/// Map an MCP tool name to its permission category.
+pub fn tool_category(tool_name: &str) -> ToolCategory {
+    match tool_name {
+        // Command-executing tools
+        "glass_tab_send" | "glass_tab_create" | "glass_cancel_command" | "glass_script_tool" => {
+            ToolCategory::RunCommands
+        }
+        // File-modifying tools
+        "glass_undo" => ToolCategory::EditFiles,
+        // Agent coordination tools
+        _ if tool_name.starts_with("glass_agent_") => ToolCategory::Coordination,
+        // Everything else is read-only
+        _ => ToolCategory::ReadOnly,
+    }
+}
+
 /// Per-category permission levels for the agent runtime.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PermissionMatrix {
@@ -1338,5 +1367,56 @@ orchestrator_mode = "audit"
             args_str.contains("--disable-slash-commands"),
             "must disable slash commands"
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_category_tests {
+    use super::*;
+
+    #[test]
+    fn run_commands_tools() {
+        assert_eq!(tool_category("glass_tab_send"), ToolCategory::RunCommands);
+        assert_eq!(tool_category("glass_tab_create"), ToolCategory::RunCommands);
+        assert_eq!(
+            tool_category("glass_cancel_command"),
+            ToolCategory::RunCommands
+        );
+        assert_eq!(
+            tool_category("glass_script_tool"),
+            ToolCategory::RunCommands
+        );
+    }
+
+    #[test]
+    fn edit_files_tools() {
+        assert_eq!(tool_category("glass_undo"), ToolCategory::EditFiles);
+    }
+
+    #[test]
+    fn coordination_tools() {
+        assert_eq!(
+            tool_category("glass_agent_register"),
+            ToolCategory::Coordination
+        );
+        assert_eq!(
+            tool_category("glass_agent_lock"),
+            ToolCategory::Coordination
+        );
+        assert_eq!(
+            tool_category("glass_agent_send"),
+            ToolCategory::Coordination
+        );
+    }
+
+    #[test]
+    fn readonly_tools() {
+        assert_eq!(tool_category("glass_history"), ToolCategory::ReadOnly);
+        assert_eq!(tool_category("glass_context"), ToolCategory::ReadOnly);
+        assert_eq!(tool_category("glass_ping"), ToolCategory::ReadOnly);
+        assert_eq!(tool_category("glass_tab_list"), ToolCategory::ReadOnly);
+        assert_eq!(tool_category("glass_tab_output"), ToolCategory::ReadOnly);
+        assert_eq!(tool_category("glass_query"), ToolCategory::ReadOnly);
+        assert_eq!(tool_category("unknown_tool"), ToolCategory::ReadOnly);
     }
 }
