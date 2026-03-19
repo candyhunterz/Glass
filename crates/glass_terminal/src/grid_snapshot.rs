@@ -11,7 +11,14 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{RenderableCursor, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
+use std::sync::atomic::AtomicU64;
+
 use crate::event_proxy::EventProxy;
+
+/// Monotonically increasing counter for snapshot generations.
+/// Each call to `snapshot_term` bumps this, allowing the renderer to detect
+/// when the terminal content has actually changed between frames.
+static SNAPSHOT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Default foreground and background colors for the terminal.
 #[derive(Debug, Clone)]
@@ -58,7 +65,10 @@ pub struct RenderedCell {
     pub fg: Rgb,
     pub bg: Rgb,
     pub flags: Flags,
-    pub zerowidth: Vec<char>,
+    /// Zero-width combining characters following the base character.
+    /// `None` for the common case (99%+ of cells have no combiners), avoiding
+    /// a heap-allocated empty Vec per cell.
+    pub zerowidth: Option<Vec<char>>,
 }
 
 /// A snapshot of the terminal grid for rendering.
@@ -71,6 +81,10 @@ pub struct GridSnapshot {
     pub columns: usize,
     pub screen_lines: usize,
     pub selection: Option<SelectionRange>,
+    /// Monotonically increasing generation counter.
+    /// Changes each time a new snapshot is taken, allowing the renderer
+    /// to skip expensive buffer rebuilds when content hasn't changed.
+    pub generation: u64,
 }
 
 /// Resolve a `Color` to an `Rgb` value using the terminal color palette.
@@ -307,9 +321,11 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
             fg,
             bg,
             flags: cell.flags,
-            zerowidth: cell.zerowidth().map(|z| z.to_vec()).unwrap_or_default(),
+            zerowidth: cell.zerowidth().map(|z| z.to_vec()),
         });
     }
+
+    let generation = SNAPSHOT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     GridSnapshot {
         cells,
@@ -320,6 +336,7 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
         columns: term.columns(),
         screen_lines: term.screen_lines(),
         selection: content.selection,
+        generation,
     }
 }
 

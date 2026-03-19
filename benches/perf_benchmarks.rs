@@ -80,6 +80,90 @@ fn bench_cold_start(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark RenderedCell construction with the Option<Vec<char>> zerowidth field.
+///
+/// This measures the hot path of building a GridSnapshot's cell vec, which is
+/// the core of `snapshot_term`. We use synthetic data because constructing a
+/// real `Term<EventProxy>` requires a PTY and event loop.
+fn bench_rendered_cell_construction(c: &mut Criterion) {
+    use alacritty_terminal::index::{Column, Line, Point};
+    use glass_terminal::RenderedCell;
+
+    let mut group = c.benchmark_group("snapshot_term");
+
+    // Simulate a 120x40 grid (4800 cells) — typical terminal size
+    let cols = 120usize;
+    let rows = 40usize;
+
+    group.bench_function("build_4800_cells", |b| {
+        b.iter(|| {
+            let mut cells = Vec::with_capacity(cols * rows);
+            for row in 0..rows {
+                for col in 0..cols {
+                    cells.push(RenderedCell {
+                        point: Point {
+                            line: Line(row as i32),
+                            column: Column(col),
+                        },
+                        c: if col % 2 == 0 { 'A' } else { ' ' },
+                        fg: black_box(Rgb {
+                            r: 204,
+                            g: 204,
+                            b: 204,
+                        }),
+                        bg: black_box(Rgb {
+                            r: 26,
+                            g: 26,
+                            b: 26,
+                        }),
+                        flags: Flags::empty(),
+                        zerowidth: None, // 99%+ of cells have no zero-width chars
+                    });
+                }
+            }
+            black_box(cells)
+        })
+    });
+
+    // Benchmark with 1% of cells having zero-width combining chars
+    group.bench_function("build_4800_cells_1pct_zerowidth", |b| {
+        b.iter(|| {
+            let mut cells = Vec::with_capacity(cols * rows);
+            for row in 0..rows {
+                for col in 0..cols {
+                    let idx = row * cols + col;
+                    cells.push(RenderedCell {
+                        point: Point {
+                            line: Line(row as i32),
+                            column: Column(col),
+                        },
+                        c: 'e',
+                        fg: black_box(Rgb {
+                            r: 204,
+                            g: 204,
+                            b: 204,
+                        }),
+                        bg: black_box(Rgb {
+                            r: 26,
+                            g: 26,
+                            b: 26,
+                        }),
+                        flags: Flags::empty(),
+                        zerowidth: if idx % 100 == 0 {
+                            Some(vec!['\u{0301}']) // combining acute accent
+                        } else {
+                            None
+                        },
+                    });
+                }
+            }
+            black_box(cells)
+        })
+    });
+
+    group.finish();
+}
+
 fn bench_input_processing(c: &mut Criterion) {
     // Generate a realistic 50 KB output buffer (simulates large cargo build output)
     let line = "error[E0308]: mismatched types --> src/main.rs:42:5\n";
@@ -101,6 +185,7 @@ criterion_group!(
     bench_resolve_color,
     bench_osc_scanner,
     bench_cold_start,
-    bench_input_processing
+    bench_input_processing,
+    bench_rendered_cell_construction
 );
 criterion_main!(benches);

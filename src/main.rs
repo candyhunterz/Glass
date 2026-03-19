@@ -254,6 +254,11 @@ struct WindowContext {
     tab_bar_hovered_tab: Option<usize>,
     /// Tab drag reorder tracking state (active when a tab is being dragged).
     tab_drag_state: Option<TabDragState>,
+    /// Dirty flag: true when visual state has changed and a redraw is needed.
+    /// Avoids running the full GPU render pipeline when nothing changed.
+    render_dirty: bool,
+    /// Timestamp of the last completed redraw, used for frame-rate throttling.
+    last_redraw: std::time::Instant,
 }
 
 impl WindowContext {
@@ -265,6 +270,14 @@ impl WindowContext {
     /// Get a mutable reference to the focused session (if any).
     fn session_mut(&mut self) -> Option<&mut Session> {
         self.session_mux.focused_session_mut()
+    }
+
+    /// Mark the window as needing a redraw and request one from the event loop.
+    /// Centralizes dirty-flag bookkeeping so every call site that previously
+    /// called `window.request_redraw()` now also sets the dirty flag.
+    fn mark_dirty_and_redraw(&mut self) {
+        self.render_dirty = true;
+        self.window.request_redraw();
     }
 }
 
@@ -701,6 +714,7 @@ fn create_session(
         .as_ref()
         .and_then(|a| a.orchestrator.as_ref())
         .and_then(|o| o.agent_prompt_pattern.clone());
+    let scrollback = config.terminal.as_ref().map(|t| t.scrollback);
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
         proxy.clone(),
@@ -712,6 +726,7 @@ fn create_session(
         orchestrator_silence_secs,
         fast_trigger,
         prompt_pattern,
+        scrollback,
     )?;
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
@@ -2581,6 +2596,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 scrollbar_hovered_pane: None,
                 tab_bar_hovered_tab: None,
                 tab_drag_state: None,
+                render_dirty: true,
+                last_redraw: std::time::Instant::now(),
             },
         );
 
@@ -2698,7 +2715,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.active_toast = None;
                     } else {
                         // Keep render loop spinning so toast countdown eventually expires.
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                 }
 
@@ -2727,10 +2744,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if let Some(session) = ctx.session() {
                     if let Some(ref overlay) = session.search_overlay {
                         if overlay.search_pending {
-                            ctx.window.request_redraw();
+                            ctx.mark_dirty_and_redraw();
                         }
                     }
                 }
+
+                // PERF-R02: Skip render when nothing has changed.
+                if !ctx.render_dirty {
+                    return;
+                }
+
+                // PERF-L01: Frame-rate throttle (~1000 fps cap).
+                // VSync provides additional backpressure, but during output
+                // floods with mailbox present mode this prevents wasted GPU work.
+                let now = std::time::Instant::now();
+                if now.duration_since(ctx.last_redraw) < std::time::Duration::from_millis(1) {
+                    // Too soon — the next natural redraw will pick it up.
+                    return;
+                }
+                ctx.last_redraw = now;
+                ctx.render_dirty = false;
 
                 // Determine if we have multiple panes in the active tab
                 let pane_count = ctx
@@ -2773,6 +2806,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                         snapshot_term(&term, &session.default_colors)
                     };
 
+                    // PERF-M01: Evict pipeline data from blocks far from viewport
+                    {
+                        if let Some(session) = ctx.session_mux.focused_session_mut() {
+                            let viewport_abs_start = snapshot
+                                .history_size
+                                .saturating_sub(snapshot.display_offset);
+                            session
+                                .block_manager
+                                .evict_distant_blocks(viewport_abs_start, snapshot.screen_lines);
+                        }
+                    }
+
                     let (visible_blocks, search_overlay_data, status_clone) = {
                         let Some(session) = ctx.session_mux.focused_session() else {
                             return;
@@ -2780,6 +2825,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let viewport_abs_start = snapshot
                             .history_size
                             .saturating_sub(snapshot.display_offset);
+                        // PERF-A01: cloned() is required here because the session borrow
+                        // is released at the end of this block, but visible_block_refs
+                        // are used later in draw_frame. Eliminating this clone would
+                        // require restructuring to hold the session borrow across the
+                        // entire draw call, which conflicts with other mutable borrows.
                         let vb: Vec<_> = session
                             .block_manager
                             .visible_blocks(viewport_abs_start, snapshot.screen_lines)
@@ -3900,7 +3950,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Request a redraw after resize so the surface is repainted immediately
-                ctx.window.request_redraw();
+                ctx.mark_dirty_and_redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let scale = scale_factor as f32;
@@ -3982,7 +4032,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
-                ctx.window.request_redraw();
+                ctx.mark_dirty_and_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
@@ -4070,7 +4120,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     match overlay_action {
                         OverlayAction::None => {} // No overlay open, continue to normal key handling
                         OverlayAction::Handled | OverlayAction::Close => {
-                            ctx.window.request_redraw();
+                            ctx.mark_dirty_and_redraw();
                             return;
                         }
                     }
@@ -4122,7 +4172,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         &event,
                                     );
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
@@ -4188,7 +4238,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         return;
                                     }
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
@@ -4235,7 +4285,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                 );
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
@@ -4279,7 +4329,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                 );
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             _ => {} // Fall through to existing Ctrl+Shift shortcuts
@@ -4297,7 +4347,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         self.proposal_review_selected = 0;
                                         self.proposal_diff_cache = None;
                                     }
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                     return;
                                 }
                             }
@@ -4309,7 +4359,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.activity_scroll_offset = 0;
                                     self.activity_verbose = false;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             // Ctrl+Shift+,: Toggle settings overlay.
@@ -4323,7 +4373,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.settings_edit_buffer.clear();
                                     self.settings_shortcuts_scroll = 0;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
@@ -4352,7 +4402,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         self.agent_review_open = false;
                                     }
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             // Ctrl+Shift+N: Reject selected proposal (only when overlay open).
@@ -4381,7 +4431,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         self.agent_review_open = false;
                                     }
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
@@ -4400,7 +4450,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(session) = ctx.session_mut() {
                                     session.search_overlay = Some(SearchOverlay::new());
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
@@ -4491,7 +4541,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         tracing::debug!("Undo unavailable -- no snapshot store");
                                     }
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("u") => {
@@ -4517,7 +4567,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         block.toggle_pipeline_expanded();
                                     }
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("o") => {
@@ -4962,8 +5012,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         handle.thread().unpark();
                                     }
                                 }
-                                if let Some(ctx) = self.windows.get(&window_id) {
-                                    ctx.window.request_redraw();
+                                if let Some(ctx) = self.windows.get_mut(&window_id) {
+                                    ctx.mark_dirty_and_redraw();
                                 }
                                 return;
                             }
@@ -4978,14 +5028,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(session) = ctx.session() {
                                     session.term.lock().scroll_display(Scroll::PageUp);
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::PageDown) => {
                                 if let Some(session) = ctx.session() {
                                     session.term.lock().scroll_display(Scroll::PageDown);
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             _ => {}
@@ -5000,7 +5050,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             } else {
                                 ctx.session_mux.next_tab();
                             }
-                            ctx.window.request_redraw();
+                            ctx.mark_dirty_and_redraw();
                             return;
                         }
                     }
@@ -5013,7 +5063,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             {
                                 if (1..=9).contains(&digit) {
                                     ctx.session_mux.activate_tab((digit as usize) - 1);
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                     return;
                                 }
                             }
@@ -5049,7 +5099,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                 );
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             } else {
                                 // Alt+Arrow: move focus
@@ -5068,7 +5118,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 root.find_neighbor(focused, dir, &container)
                                             {
                                                 ctx.session_mux.set_focused_pane(target);
-                                                ctx.window.request_redraw();
+                                                ctx.mark_dirty_and_redraw();
                                                 return;
                                             }
                                         }
@@ -5093,21 +5143,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.settings_field_index = 0;
                                     self.settings_shortcuts_scroll = 0;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
                                 self.settings_overlay_tab = self.settings_overlay_tab.prev();
                                 self.settings_field_index = 0;
                                 self.settings_shortcuts_scroll = 0;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::Tab) => {
                                 self.settings_overlay_tab = self.settings_overlay_tab.next();
                                 self.settings_field_index = 0;
                                 self.settings_shortcuts_scroll = 0;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowUp) => {
@@ -5126,7 +5176,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                     _ => {}
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowDown) => {
@@ -5140,7 +5190,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                     _ => {}
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowLeft) => {
@@ -5148,7 +5198,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.settings_section_index -= 1;
                                     self.settings_field_index = 0;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowRight) => {
@@ -5158,7 +5208,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     self.settings_section_index += 1;
                                     self.settings_field_index = 0;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
@@ -5187,7 +5237,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                         }
                                     }
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                 }
                                 return;
                             }
@@ -5218,7 +5268,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                         }
                                     }
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                 }
                                 return;
                             }
@@ -5249,7 +5299,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                         }
                                     }
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                 }
                                 return;
                             }
@@ -5268,19 +5318,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.activity_scroll_offset = 0;
                                 self.orchestrator_scroll_offset = 0;
                                 self.activity_verbose = false;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
                                 self.activity_view_filter = self.activity_view_filter.prev();
                                 self.activity_scroll_offset = 0;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::Tab) => {
                                 self.activity_view_filter = self.activity_view_filter.next();
                                 self.activity_scroll_offset = 0;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp)
@@ -5295,7 +5345,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     };
                                 self.orchestrator_scroll_offset =
                                     self.orchestrator_scroll_offset.saturating_add(step);
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::PageDown)
@@ -5312,23 +5362,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 };
                                 self.orchestrator_scroll_offset =
                                     self.orchestrator_scroll_offset.saturating_sub(step);
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowUp) => {
                                 self.activity_scroll_offset =
                                     self.activity_scroll_offset.saturating_sub(1);
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowDown) => {
                                 self.activity_scroll_offset += 1;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
                                 self.activity_verbose = !self.activity_verbose;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             _ => {} // Fall through to PTY
@@ -5343,7 +5393,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.proposal_review_selected =
                                     self.proposal_review_selected.saturating_sub(1);
                                 self.proposal_diff_cache = None;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::ArrowDown) => {
@@ -5351,12 +5401,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.proposal_review_selected =
                                     (self.proposal_review_selected + 1).min(max);
                                 self.proposal_diff_cache = None;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::Escape) => {
                                 self.agent_review_open = false;
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                                 return;
                             }
                             _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
@@ -5414,7 +5464,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             drop(term);
                         }
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                     return;
                 }
@@ -5517,7 +5567,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     if new_hovered != ctx.scrollbar_hovered_pane {
                         ctx.scrollbar_hovered_pane = new_hovered;
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                 }
 
@@ -5534,7 +5584,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             viewport_w,
                         );
                         drag.drop_index = Some(drop_idx);
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                     return; // Consume event during drag
                 }
@@ -5554,7 +5604,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     };
                     if new_tab_hovered != ctx.tab_bar_hovered_tab {
                         ctx.tab_bar_hovered_tab = new_tab_hovered;
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                 }
 
@@ -5591,7 +5641,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 sel.update(point, side);
                             }
                             drop(term);
-                            ctx.window.request_redraw();
+                            ctx.mark_dirty_and_redraw();
                         }
                     }
                 }
@@ -5649,7 +5699,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     event_loop.exit();
                                     return;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                             }
                             Some(TabHitResult::NewTabButton) => {
                                 let cwd = ctx
@@ -5689,7 +5739,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         &event,
                                     );
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                             }
                             None => {}
                         }
@@ -5847,7 +5897,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             ctx.session_mux.set_focused_pane(sid);
                         }
 
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                         return;
                     }
                 }
@@ -5879,7 +5929,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some((target_id, _)) = clicked_pane {
                                 if focused_id != Some(*target_id) {
                                     ctx.session_mux.set_focused_pane(*target_id);
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                     // Don't return -- still allow pipeline hit test below
                                 }
                             }
@@ -5919,7 +5969,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             term.selection =
                                 Some(Selection::new(SelectionType::Simple, point, side));
                             drop(term);
-                            ctx.window.request_redraw();
+                            ctx.mark_dirty_and_redraw();
                         }
                     }
                 }
@@ -5971,7 +6021,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     false
                 };
                 if needs_redraw {
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             WindowEvent::MouseInput {
@@ -5999,13 +6049,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Was a click, not a drag -- activate the tab
                         ctx.session_mux.activate_tab(drag.source_index);
                     }
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                     return;
                 }
                 // If scrollbar was being dragged, just release it (no clipboard copy)
                 if ctx.scrollbar_dragging.is_some() {
                     ctx.scrollbar_dragging = None;
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                     return;
                 }
                 ctx.mouse_left_pressed = false;
@@ -6055,7 +6105,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     event_loop.exit();
                                     return;
                                 }
-                                ctx.window.request_redraw();
+                                ctx.mark_dirty_and_redraw();
                             }
                             Some(TabHitResult::NewTabButton) | None => {}
                         }
@@ -6094,7 +6144,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.activity_scroll_offset += (-lines) as usize;
                             }
                         }
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     } else if self.settings_overlay_visible {
                         if lines > 0 {
                             self.settings_shortcuts_scroll = self
@@ -6103,14 +6153,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             self.settings_shortcuts_scroll += (-lines) as usize;
                         }
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     } else {
                         // Normal terminal scroll
                         // Positive delta = scroll up (into history), negative = scroll down
                         if let Some(session) = ctx.session() {
                             session.term.lock().scroll_display(Scroll::Delta(lines));
                         }
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                 }
             }
@@ -6138,9 +6188,9 @@ impl ApplicationHandler<AppEvent> for Processor {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::TerminalDirty { window_id } => {
-                if let Some(ctx) = self.windows.get(&window_id) {
+                if let Some(ctx) = self.windows.get_mut(&window_id) {
                     tracing::trace!("Terminal output received — requesting redraw");
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::SetTitle {
@@ -6241,7 +6291,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.windows.remove(&window_id);
                         event_loop.exit();
                     } else {
-                        ctx.window.request_redraw();
+                        ctx.mark_dirty_and_redraw();
                     }
                 }
             }
@@ -6780,7 +6830,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
 
                     // Request redraw to reflect block state changes
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                 }
                 // Fire scripting hooks (outside windows borrow)
                 if let Some(cmd_text) = hook_command_start_text {
@@ -6927,8 +6977,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     tracing::warn!("Config reload error: {}", err);
                     self.config_error = Some(err);
                     // Request redraw on all windows to show error overlay
-                    for ctx in self.windows.values() {
-                        ctx.window.request_redraw();
+                    for ctx in self.windows.values_mut() {
+                        ctx.mark_dirty_and_redraw();
                     }
                 } else {
                     // Clear any previous error
@@ -6953,7 +7003,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 size.width,
                                 size.height,
                             );
-                            ctx.window.request_redraw();
+                            ctx.mark_dirty_and_redraw();
                         }
                     }
 
@@ -6988,8 +7038,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             tracing::debug!(
                                 "Skipping agent restart — config change was self-initiated"
                             );
-                            for ctx in self.windows.values() {
-                                ctx.window.request_redraw();
+                            for ctx in self.windows.values_mut() {
+                                ctx.mark_dirty_and_redraw();
                             }
                             return;
                         }
@@ -7250,8 +7300,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Request redraw to clear error overlay even if font didn't change
                     if !font_changed {
-                        for ctx in self.windows.values() {
-                            ctx.window.request_redraw();
+                        for ctx in self.windows.values_mut() {
+                            ctx.mark_dirty_and_redraw();
                         }
                     }
                 }
@@ -7272,7 +7322,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             session.status.set_git_info(git_info);
                         }
                     }
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::UpdateAvailable(info) => {
@@ -7284,8 +7334,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 );
                 self.update_info = Some(info);
                 // Request redraw on all windows to show notification
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::CoordinationUpdate(state) => {
@@ -7305,8 +7355,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 self.coordination_state = state;
                 // Request redraw on all windows to show updated coordination info
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::SoiReady {
@@ -7366,7 +7416,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                         }
                     }
-                    ctx.window.request_redraw();
+                    ctx.mark_dirty_and_redraw();
                 }
 
                 // Emit observation events for the activity stream overlay.
@@ -7525,8 +7575,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         });
                     }
 
-                    for ctx in self.windows.values() {
-                        ctx.window.request_redraw();
+                    for ctx in self.windows.values_mut() {
+                        ctx.mark_dirty_and_redraw();
                     }
                 }
             }
@@ -7543,8 +7593,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                     }
                 }
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::AgentCrashed => {
@@ -7671,8 +7721,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             handle.thread().unpark();
                             // Don't join — notify Drop on Windows blocks on I/O completion.
                         }
-                        for ctx in self.windows.values() {
-                            ctx.window.request_redraw();
+                        for ctx in self.windows.values_mut() {
+                            ctx.mark_dirty_and_redraw();
                         }
                     }
                 }
@@ -7758,8 +7808,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                     self.orchestrator.feedback_completion_reason = "bounded_limit".to_string();
                     self.trigger_checkpoint_synthesis("bounded limit reached", "N/A");
-                    for ctx in self.windows.values() {
-                        ctx.window.request_redraw();
+                    for ctx in self.windows.values_mut() {
+                        ctx.mark_dirty_and_redraw();
                     }
                     return;
                 }
@@ -7774,8 +7824,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.orchestrator.iterations_since_checkpoint
                     );
                     self.trigger_checkpoint_synthesis("auto-refresh", "continue from PRD");
-                    for ctx in self.windows.values() {
-                        ctx.window.request_redraw();
+                    for ctx in self.windows.values_mut() {
+                        ctx.mark_dirty_and_redraw();
                     }
                     return;
                 }
@@ -8011,8 +8061,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Request redraw for status bar update
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::OrchestratorSilence {
@@ -8411,8 +8461,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 self.orchestrator.response_pending = true;
-                                for ctx_ref in self.windows.values() {
-                                    ctx_ref.window.request_redraw();
+                                for ctx_ref in self.windows.values_mut() {
+                                    ctx_ref.mark_dirty_and_redraw();
                                 }
                                 return;
                             }
@@ -8990,8 +9040,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Request redraw for status bar update
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::UsagePause => {
@@ -9011,8 +9061,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
                 }
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::UsageHardStop => {
@@ -9055,15 +9105,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::UsageResume => {
                 tracing::info!("Orchestrator: usage resume triggered (<20%)");
                 // Don't auto-enable orchestrator — user must toggle with Ctrl+Shift+O
-                for ctx in self.windows.values() {
-                    ctx.window.request_redraw();
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::OrchestratorThinking { text } => {
@@ -9222,7 +9272,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             &event,
                                         );
                                     }
-                                    ctx.window.request_redraw();
+                                    ctx.mark_dirty_and_redraw();
                                     glass_core::ipc::McpResponse::ok(
                                         request.id,
                                         serde_json::json!({
@@ -9378,7 +9428,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             cleanup_session(session);
                                         }
                                         let remaining = ctx.session_mux.tab_count();
-                                        ctx.window.request_redraw();
+                                        ctx.mark_dirty_and_redraw();
                                         glass_core::ipc::McpResponse::ok(
                                             request.id,
                                             serde_json::json!({

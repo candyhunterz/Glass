@@ -134,10 +134,12 @@ impl GridRenderer {
         let cursor_color = [0.8, 0.8, 0.8, 0.7]; // semi-transparent light gray
 
         // Determine if cursor is on a wide char cell for double-width cursor
+        // Direct O(1) lookup instead of O(n) scan: cells are row-major in the snapshot
         let cursor_is_wide = snapshot
             .cells
-            .iter()
-            .any(|c| c.point == cursor.point && c.flags.contains(Flags::WIDE_CHAR));
+            .get(cursor.point.line.0 as usize * snapshot.columns + cursor.point.column.0)
+            .map(|c| c.flags.contains(Flags::WIDE_CHAR))
+            .unwrap_or(false);
         let cursor_cell_width = if cursor_is_wide {
             self.cell_width * 2.0
         } else {
@@ -358,7 +360,7 @@ impl GridRenderer {
                 continue;
             }
             // Skip empty/space-only cells (no Buffer needed)
-            if cell.c == ' ' && cell.zerowidth.is_empty() {
+            if cell.c == ' ' && cell.zerowidth.is_none() {
                 continue;
             }
 
@@ -387,16 +389,16 @@ impl GridRenderer {
             }
 
             // Zero-alloc path for single chars, String only for zero-width combiners
-            if cell.zerowidth.is_empty() {
-                let s = cell.c.encode_utf8(&mut char_buf);
-                buffer.set_text(font_system, s, &attrs, Shaping::Advanced, None);
-            } else {
-                let mut text = String::with_capacity(4 + cell.zerowidth.len() * 4);
+            if let Some(ref zw_chars) = cell.zerowidth {
+                let mut text = String::with_capacity(4 + zw_chars.len() * 4);
                 text.push(cell.c);
-                for &zw in &cell.zerowidth {
+                for &zw in zw_chars {
                     text.push(zw);
                 }
                 buffer.set_text(font_system, &text, &attrs, Shaping::Advanced, None);
+            } else {
+                let s = cell.c.encode_utf8(&mut char_buf);
+                buffer.set_text(font_system, s, &attrs, Shaping::Advanced, None);
             }
 
             buffer.shape_until_scroll(font_system, false);
@@ -534,7 +536,7 @@ mod tests {
                 },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::empty(),
-                zerowidth: vec![],
+                zerowidth: None,
             },
             glass_terminal::RenderedCell {
                 point: Point {
@@ -549,7 +551,7 @@ mod tests {
                 },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::empty(),
-                zerowidth: vec![],
+                zerowidth: None,
             },
             glass_terminal::RenderedCell {
                 point: Point {
@@ -564,7 +566,7 @@ mod tests {
                 },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::empty(),
-                zerowidth: vec![],
+                zerowidth: None,
             },
             // WIDE_CHAR_SPACER cell -- should be skipped
             glass_terminal::RenderedCell {
@@ -580,7 +582,7 @@ mod tests {
                 },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::WIDE_CHAR_SPACER,
-                zerowidth: vec![],
+                zerowidth: None,
             },
             // LEADING_WIDE_CHAR_SPACER cell -- should also be skipped
             glass_terminal::RenderedCell {
@@ -596,7 +598,7 @@ mod tests {
                 },
                 bg: Rgb { r: 0, g: 0, b: 0 },
                 flags: Flags::LEADING_WIDE_CHAR_SPACER,
-                zerowidth: vec![],
+                zerowidth: None,
             },
         ];
 
@@ -615,6 +617,7 @@ mod tests {
             columns: 5,
             screen_lines: 1,
             selection: None,
+            generation: 0,
         };
 
         let mut buffers = Vec::new();
@@ -718,7 +721,7 @@ mod tests {
             },
             bg: Rgb { r: 0, g: 0, b: 0 },
             flags,
-            zerowidth: vec![],
+            zerowidth: None,
         }
     }
 
@@ -740,6 +743,7 @@ mod tests {
             columns,
             screen_lines: 1,
             selection: None,
+            generation: 0,
         }
     }
 
@@ -766,6 +770,7 @@ mod tests {
             columns,
             screen_lines: 1,
             selection: None,
+            generation: 0,
         }
     }
 
@@ -791,7 +796,7 @@ mod tests {
             },
             bg,
             flags,
-            zerowidth: vec![],
+            zerowidth: None,
         }
     }
 

@@ -283,6 +283,36 @@ impl BlockManager {
             .collect()
     }
 
+    /// Evict heavyweight data (pipeline stages, stage commands) from blocks
+    /// that are far from the current viewport. This prevents unbounded memory
+    /// growth when many pipeline-heavy commands have scrolled off-screen.
+    ///
+    /// Blocks within `margin` lines of the viewport are left intact.
+    pub fn evict_distant_blocks(&mut self, display_offset: usize, screen_lines: usize) {
+        const EVICTION_MARGIN: usize = 1000;
+        let viewport_start = display_offset.saturating_sub(EVICTION_MARGIN);
+        let viewport_end = display_offset
+            .saturating_add(screen_lines)
+            .saturating_add(EVICTION_MARGIN);
+
+        for block in &mut self.blocks {
+            let block_end = block
+                .output_end_line
+                .or(block.output_start_line)
+                .unwrap_or(block.command_start_line);
+            // Block is distant if it ends before the extended viewport starts
+            // or starts after the extended viewport ends
+            if block_end < viewport_start || block.prompt_start_line > viewport_end {
+                if !block.pipeline_stages.is_empty() {
+                    block.pipeline_stages = Vec::new();
+                }
+                if !block.pipeline_stage_commands.is_empty() {
+                    block.pipeline_stage_commands = Vec::new();
+                }
+            }
+        }
+    }
+
     /// Get all blocks.
     pub fn blocks(&self) -> &[Block] {
         &self.blocks

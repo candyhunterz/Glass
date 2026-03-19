@@ -27,29 +27,27 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
     };
 
     if !ids_to_delete.is_empty() {
+        let placeholders: String = ids_to_delete
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let tx = conn.unchecked_transaction()?;
-        for &id in &ids_to_delete {
-            tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
-        }
-        // Belt-and-suspenders: explicitly delete SOI rows before CASCADE
-        for &id in &ids_to_delete {
-            tx.execute(
-                "DELETE FROM output_records WHERE command_id = ?1",
-                params![id],
-            )?;
-        }
-        for &id in &ids_to_delete {
-            tx.execute(
-                "DELETE FROM command_output_records WHERE command_id = ?1",
-                params![id],
-            )?;
-        }
-        for &id in &ids_to_delete {
-            // Delete from FTS table (standard FTS5 -- just DELETE by rowid)
-            tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
-        }
-        for &id in &ids_to_delete {
-            tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
+        // Batch DELETE for each dependent table, then the main table.
+        // Order: dependents first (pipe_stages, output_records, command_output_records, FTS), then commands.
+        for &(table, col) in &[
+            ("pipe_stages", "command_id"),
+            ("output_records", "command_id"),
+            ("command_output_records", "command_id"),
+            ("commands_fts", "rowid"),
+            ("commands", "id"),
+        ] {
+            let sql = format!("DELETE FROM {} WHERE {} IN ({})", table, col, placeholders);
+            let params: Vec<&dyn rusqlite::types::ToSql> = ids_to_delete
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            tx.execute(&sql, params.as_slice())?;
         }
         tx.commit()?;
         total_deleted += ids_to_delete.len() as u64;
@@ -79,28 +77,21 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
         };
 
         if !old_ids.is_empty() {
+            let placeholders: String = old_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let tx = conn.unchecked_transaction()?;
-            for &id in &old_ids {
-                tx.execute("DELETE FROM pipe_stages WHERE command_id = ?1", params![id])?;
-            }
-            // Belt-and-suspenders: explicitly delete SOI rows before CASCADE
-            for &id in &old_ids {
-                tx.execute(
-                    "DELETE FROM output_records WHERE command_id = ?1",
-                    params![id],
-                )?;
-            }
-            for &id in &old_ids {
-                tx.execute(
-                    "DELETE FROM command_output_records WHERE command_id = ?1",
-                    params![id],
-                )?;
-            }
-            for &id in &old_ids {
-                tx.execute("DELETE FROM commands_fts WHERE rowid = ?1", params![id])?;
-            }
-            for &id in &old_ids {
-                tx.execute("DELETE FROM commands WHERE id = ?1", params![id])?;
+            for &(table, col) in &[
+                ("pipe_stages", "command_id"),
+                ("output_records", "command_id"),
+                ("command_output_records", "command_id"),
+                ("commands_fts", "rowid"),
+                ("commands", "id"),
+            ] {
+                let sql = format!("DELETE FROM {} WHERE {} IN ({})", table, col, placeholders);
+                let params: Vec<&dyn rusqlite::types::ToSql> = old_ids
+                    .iter()
+                    .map(|id| id as &dyn rusqlite::types::ToSql)
+                    .collect();
+                tx.execute(&sql, params.as_slice())?;
             }
             tx.commit()?;
             total_deleted += old_ids.len() as u64;
