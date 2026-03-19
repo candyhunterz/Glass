@@ -72,3 +72,10 @@ See [CLAUDE.md](CLAUDE.md) for the full crate map and architecture overview. See
 ## Configuration
 
 See [config.example.toml](config.example.toml) for all configuration options with their defaults and descriptions.
+
+## Screenshots
+
+The README references `docs/assets/hero-screenshot.png`. To update:
+1. Open Glass with a session showing command blocks, pipe visualization, exit badges, and split panes
+2. Capture at 800px width minimum
+3. Save as PNG to `docs/assets/hero-screenshot.png`
