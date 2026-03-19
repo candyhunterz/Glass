@@ -1,88 +1,117 @@
 # Orchestrator Mode
 
-Orchestrator Mode drives autonomous project development by pairing two AI agents: Claude Code (the implementer, running in the PTY) and the Glass Agent (the reviewer/guide, running as a background subprocess). Glass manages the feedback loop between them, enabling overnight project builds from a PRD or unattended completion of in-progress work.
+Orchestrator Mode drives autonomous project development by pairing two AI agents: Claude Code (the implementer, running in the PTY) and the Glass Agent (the reviewer/guide, running as a background subprocess). Glass manages the feedback loop between them, enabling overnight project builds or unattended completion of in-progress work.
 
 ---
 
 ## Overview
 
-Orchestrator Mode has two phases: **kickoff** (interactive) and **autonomous loop**.
+When you press **Ctrl+Shift+O**, Glass gathers project context from multiple sources, validates that context exists, then spawns the Glass Agent and begins the autonomous loop immediately. There is no interactive kickoff phase — the agent takes over as soon as context is validated.
 
-When you press Ctrl+Shift+O, Glass enters the kickoff phase. You interact directly with the AI agent running in the terminal — answer questions, describe your task, provide context. Glass tracks your keyboard activity and suppresses the autonomous loop while you're engaged. Once both you and the terminal have been idle for the silence threshold (default 30 seconds), the kickoff phase ends and the autonomous loop begins.
-
-During the autonomous loop, Glass monitors the PTY for silence. When the agent finishes working, Glass captures terminal context and sends it to the Glass Agent (a background reviewer process) for review. The Glass Agent decides the next step and Glass types its instructions back into the terminal. This cycle repeats until the project is complete.
-
-The Glass Agent's system prompt includes:
-- The project plan (from PRD.md, truncated to 4000 words with a notice if truncated)
-- Current progress (from .glass/checkpoint.md)
-- Iteration history (last 50 entries from .glass/iterations.tsv)
-- The iteration protocol: PLAN, IMPLEMENT, COMMIT, VERIFY, DECIDE
+The Glass Agent's system prompt includes core rules (iteration protocol, response format, critical rules). All project-specific context (files, terminal output, git status, user instructions) is delivered via the initial message.
 
 ---
 
-## Kickoff Phase
+## Activation Flow
 
-The kickoff phase prevents the orchestrator from taking over while you're still setting up the task. This is model-agnostic — it works with any AI agent running in the terminal, not just Claude Code.
+```
+Ctrl+Shift+O pressed
+    |
+    +-- Capture project root from terminal CWD
+    +-- Capture terminal context (last 200 lines)
+    +-- Read .glass/agent-instructions.md (if exists)
+    |     +-- Parse optional YAML frontmatter for context_files list
+    |     +-- Extract free-form body as agent instructions
+    +-- Read explicitly listed context_files from frontmatter
+    +-- Auto-scan: find *.md files in project root modified in last 30 minutes
+    +-- Read configured prd_path (if set and file exists)
+    +-- Deduplicate all discovered files
+    |
+    +-- If ZERO context files discovered:
+    |     +-- Show centered toast: "No project context found -- create a plan first"
+    |     +-- Don't activate (orchestrator stays off)
+    |     +-- Return
+    |
+    +-- Auto-detect orchestrator mode and verify mode from project structure
+    +-- Build agent system prompt (core rules only)
+    +-- Build initial message with all gathered context
+    +-- Spawn Glass Agent with initial message
+    +-- Set orchestrator active
+    +-- Agent begins reviewing terminal + directing Claude immediately
+```
 
-**How it works:**
+### Context Sources (Priority Order)
 
-1. Press **Ctrl+Shift+O** — orchestrator activates, Glass Agent spawns in the background
-2. If a PRD exists, Glass displays a prompt asking whether to continue or start fresh
-3. You interact directly with the AI agent in the terminal — answer questions, type your task description, clarify requirements
-4. Glass tracks your keyboard activity. As long as you've typed recently (within the silence threshold), the autonomous loop is suppressed
-5. Once you stop typing and the terminal goes silent for the full threshold duration, kickoff ends
-6. The Glass Agent takes over and begins the autonomous feedback loop
+1. **`context_files` from frontmatter** — explicitly listed in `.glass/agent-instructions.md` (highest priority)
+2. **`prd_path` from config** — e.g., `PRD.md` (only if the file actually exists)
+3. **Auto-scanned `.md` files** — any markdown in project root modified in last 30 minutes (newest first)
+4. **Terminal context** — last 200 lines of terminal output
+5. **Git status** — `git log --oneline -10` and `git diff --stat` (omitted if not a git repo)
 
-**Key behaviors during kickoff:**
+Combined file content is capped at ~8,000 words. Files beyond the budget are truncated with a note to read the full file.
 
-- You can have as many back-and-forth exchanges as needed — there is no limit
-- The orchestrator waits for you to finish naturally, not for a specific key or number of inputs
-- If you haven't typed at all since activation, the orchestrator will not start (it waits for at least one interaction)
+---
+
+## `.glass/agent-instructions.md`
+
+A project-level file for steering the Glass Agent. Optional YAML frontmatter lists context files; the body contains free-form instructions.
+
+```markdown
+---
+context_files:
+  - PRD-trip-planner.md
+  - docs/superpowers/plans/2026-03-19-multi-trip-design.md
+---
+
+Focus on the multi-trip homepage layout first.
+Use vanilla HTML/CSS/JS -- no frameworks.
+When Claude asks design questions, favor simplicity over features.
+Keep each page under 500 lines.
+Commit after each completed feature.
+```
+
+**Parsing rules:**
+- Frontmatter is optional — if the file starts with `---`, content between the two `---` delimiters is parsed
+- Only one recognized frontmatter field: `context_files` (list of relative paths from project root)
+- Everything after frontmatter is the instruction body, appended to the agent's initial message
+- If this file doesn't exist, the `agent_instructions` field in `[agent.orchestrator]` config is used as a fallback
 
 ---
 
 ## Workflows
 
-### Example: Planning a Japan Trip
+### Brainstorm Then Orchestrate
 
-A concrete example of the kickoff-to-autonomous flow:
+The typical workflow: brainstorm with Claude, create a plan, then let the orchestrator execute it.
 
-1. Open Glass, start your AI agent
-2. Press **Ctrl+Shift+O** — orchestrator activates
-3. Glass shows: "Found existing PRD. Continue? (y/n)"
-4. You type **N**, Enter
-5. Agent asks: "Starting fresh. What would you like to focus on?"
-6. Silence fires — **suppressed** (you haven't typed yet)
-7. You type: "Plan a 2-week Japan trip for October. Tokyo, Kyoto, Osaka. Budget $5k. Street food and temples."
-8. Agent asks: "Any dietary restrictions? Day-by-day or just highlights?"
-9. Silence fires — **suppressed** (you typed recently)
-10. You type: "No restrictions. Day-by-day with restaurant recs. Hotels near train stations."
-11. Agent starts working on the PRD, you sit back
-12. Silence fires — you typed before but have been idle for the full threshold — **kickoff complete**
-13. Glass Agent takes over — reviews terminal context, begins driving the agent autonomously: review, instruct, verify, next item
+1. Open Glass, start Claude Code (`claude --dangerously-skip-permissions`)
+2. Chat with Claude — describe your project, brainstorm, let it create a planning doc
+3. Claude creates `PRD-my-project.md` (or any `.md` name)
+4. Optionally create `.glass/agent-instructions.md` to steer the agent
+5. Press **Ctrl+Shift+O** — orchestrator discovers the `.md` file, activates, agent takes over
 
 ### Fresh Project from PRD
 
-1. Write `PRD.md` in your project root describing what to build
+1. Write `PRD.md` (or any name) in your project root describing what to build
 2. Open Glass in the project directory
-3. Start your AI agent (e.g., `claude --dangerously-skip-permissions`)
-4. Press **Ctrl+Shift+O** to enable orchestration
-5. The agent may ask clarifying questions — answer them at your own pace
-6. Once you stop typing and the terminal goes quiet, the Glass Agent takes over
+3. Start Claude Code
+4. Press **Ctrl+Shift+O** — orchestrator reads the PRD and begins autonomous development
 
 ### Mid-Work Handoff
 
-Already working on something and want to hand it off overnight:
+Already working on something and want to hand it off:
 
-1. Write `.glass/handoff.md` with your instructions (e.g., "finish the auth module, then add tests")
-2. Press **Ctrl+Shift+O**
-
-The orchestrator captures:
-- Your terminal context (last 100 lines)
-- Recent git history (last 10 commits)
-- Your handoff note
-
-The Glass Agent picks up where you left off.
+1. Create `.glass/agent-instructions.md` with context:
+   ```markdown
+   ---
+   context_files:
+     - src/auth.rs
+     - CHANGELOG.md
+   ---
+   Finish the auth module, then add integration tests.
+   The OAuth flow is half-done -- see src/auth.rs for current state.
+   ```
+2. Press **Ctrl+Shift+O** — agent reads your instructions and the listed files, picks up where you left off
 
 ### Course Correction
 
@@ -92,41 +121,48 @@ While the orchestrator is running, write `.glass/nudge.md` with new instructions
 
 ## Autonomous Loop
 
-Once kickoff is complete, the autonomous feedback loop runs:
+Once activated, the autonomous feedback loop runs:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Glass Orchestrator                    │
-│                                                         │
-│  1. PTY goes silent (30s default)                       │
-│  2. Capture last 100 lines of terminal output           │
-│  3. Send [TERMINAL_CONTEXT] to Glass Agent              │
-│  4. Agent responds:                                     │
-│     • Text → type into PTY as instructions              │
-│     • GLASS_WAIT → check again after next silence       │
-│     • GLASS_CHECKPOINT → refresh context cycle          │
-│     • GLASS_DONE → stop orchestration                   │
-│     • GLASS_VERIFY → report verification commands       │
-│  5. Repeat from step 1                                  │
-└─────────────────────────────────────────────────────────┘
++-----------------------------------------------------------+
+|                    Glass Orchestrator                       |
+|                                                           |
+|  1. PTY goes silent (30s default)                         |
+|  2. Capture terminal context (20-80 lines based on SOI)   |
+|  3. Send [TERMINAL_CONTEXT] to Glass Agent                |
+|  4. Agent responds:                                       |
+|     - Text -> type into PTY as instructions               |
+|     - GLASS_WAIT -> check again after next silence        |
+|     - GLASS_CHECKPOINT -> refresh context cycle           |
+|     - GLASS_DONE -> stop orchestration                    |
+|     - GLASS_VERIFY -> report verification commands        |
+|  5. Repeat from step 1                                    |
++-----------------------------------------------------------+
 ```
+
+**Key behaviors:**
+- The agent acts AS the user — it answers Claude Code's questions decisively based on project context
+- `GLASS_WAIT` is used when Claude Code is mid-turn (processing, using tools, streaming output)
+- Instructions are kept short and actionable (1-3 sentences)
+- The agent never echoes terminal content — responses are typed as-is into the PTY
 
 ---
 
 ## Checkpoint Cycle
 
-Long-running orchestration sessions need periodic context refresh to prevent the Glass Agent from hitting its context limit.
+Long-running sessions need periodic context refresh to prevent the Glass Agent from hitting its context limit.
 
 **Automatic triggers:**
 - The agent emits `GLASS_CHECKPOINT: {"completed": "...", "next": "..."}` after completing a feature
 - Glass auto-triggers a checkpoint every 15 iterations if the agent hasn't checkpointed
 
 **Refresh process:**
-1. Glass tells Claude Code to commit pending changes and write a status update to `.glass/checkpoint.md`
-2. Glass polls the checkpoint file's modification time
-3. Once updated (or after 180 seconds), the Glass Agent subprocess is killed
-4. A new Glass Agent is spawned with a fresh system prompt containing the updated checkpoint
-5. The new agent receives a `[ORCHESTRATOR_CHECKPOINT_REFRESH]` handoff message and continues
+1. Checkpoint content is written to `.glass/checkpoint.md`
+2. The Glass Agent subprocess is killed
+3. A new Glass Agent is spawned with: `"Resume from checkpoint. Read .glass/checkpoint.md and continue."`
+4. The new agent reads the checkpoint file and continues
+
+Note: only the first spawn gets the full context bundle. Checkpoint respawns send a minimal resume message to save tokens.
 
 ---
 
@@ -208,6 +244,10 @@ If the agent sends 3 identical responses in a row (configurable via `max_retries
 
 If Claude Code exits unexpectedly (detected via shell prompt-start events), the orchestrator restarts it with a prompt to read `.glass/checkpoint.md` and continue. A 10-second grace period after the orchestrator types into the PTY prevents false crash detections.
 
+### Response Pending Timeout
+
+If the Glass Agent doesn't respond within 120 seconds, `response_pending` is auto-cleared with a warning log. This prevents permanent deadlock when the agent dies silently or hangs.
+
 ### Usage Tracking
 
 Glass polls the Anthropic OAuth usage API every 60 seconds:
@@ -217,16 +257,6 @@ Glass polls the Anthropic OAuth usage API every 60 seconds:
 | >= 95% (5-hour window) | **Hard stop**: write emergency checkpoint, pause orchestrator |
 | >= 80% (5-hour window) | **Pause**: disable orchestrator, user must re-enable manually |
 | < 20% (5-hour window) | **Resume signal**: usage event sent (user still re-enables manually) |
-
-### Kickoff Guard
-
-When orchestration is first enabled, the autonomous loop is suppressed until the user has finished interacting with the AI agent. Glass tracks the timestamp of the user's last keypress. During the kickoff phase:
-
-- If the user hasn't typed at all yet, the silence trigger is suppressed
-- If the user typed recently (within the silence threshold), the silence trigger is suppressed
-- Once the user has typed and then gone idle for the full threshold, kickoff ends and the autonomous loop begins
-
-This is model-agnostic — it tracks user keyboard activity, not any specific agent's prompt format.
 
 ### Backpressure
 
@@ -238,11 +268,11 @@ Context sends are gated by a `response_pending` flag. While waiting for the Glas
 
 | File | Purpose | Lifecycle |
 |---|---|---|
-| `PRD.md` | Project plan | User-created, read on agent spawn |
-| `.glass/checkpoint.md` | Progress checkpoint | Written by Claude Code, read on agent spawn |
-| `.glass/handoff.md` | Handoff instructions | User-created, read on enable, deleted after agent starts |
+| `*.md` (project root) | Project context | Auto-discovered if modified recently, read on activation |
+| `.glass/agent-instructions.md` | Agent steering + context file list | User-created, read on activation |
+| `.glass/checkpoint.md` | Progress checkpoint | Written by Claude Code, read on agent respawn |
 | `.glass/nudge.md` | Course correction | User-created, read on next silence, deleted after |
-| `.glass/iterations.tsv` | Iteration log | Appended each iteration, included in system prompt (last 50) |
+| `.glass/iterations.tsv` | Iteration log | Appended each iteration |
 | `.glass/done` | Completion signal | Written by agent, triggers orchestrator, deleted after processing |
 
 ---
@@ -275,16 +305,16 @@ Only `verify_progress` remains as a text suggestion — the orchestrator cannot 
 Every rule goes through a guarded lifecycle:
 
 ```
-proposed → provisional → confirmed → stale → archived
-              ↓               ↓         ↓
-           rejected      provisional  confirmed
+proposed -> provisional -> confirmed -> stale -> archived
+               |               |         |
+            rejected      provisional  confirmed
                           (env drift)  (re-triggered)
 ```
 
-- **Provisional → Confirmed:** Next run's metrics didn't regress
-- **Provisional → Rejected:** Next run's metrics regressed — rule and config rolled back
-- **Confirmed → Stale:** Rule hasn't triggered in 10 runs
-- **Stale → Archived:** Stale for 5 more runs, moved to archived file
+- **Provisional -> Confirmed:** Next run's metrics didn't regress
+- **Provisional -> Rejected:** Next run's metrics regressed — rule and config rolled back
+- **Confirmed -> Stale:** Rule hasn't triggered in 10 runs
+- **Stale -> Archived:** Stale for 5 more runs, moved to archived file
 
 ### Regression Guard
 
@@ -328,13 +358,14 @@ Glass ships with 6 default rules that enter each project as provisional:
 [agent.orchestrator]
 enabled = false                # Enable orchestrator (toggled at runtime with Ctrl+Shift+O)
 silence_timeout_secs = 30      # Seconds of PTY silence before sending context to agent
-prd_path = "PRD.md"            # Path to project requirements document
+prd_path = "PRD.md"            # Optional hint for context discovery (auto-detected if missing)
 checkpoint_path = ".glass/checkpoint.md"  # Path to checkpoint file
 max_retries_before_stuck = 3   # Identical responses before stuck detection triggers
 verify_mode = "floor"          # "floor" (auto-detect + guard) or "disabled"
 # verify_command = "cargo test" # Optional override (skips auto-detect)
 completion_artifact = ".glass/done"  # File path that triggers orchestrator when created
 # max_iterations = 25          # Optional iteration limit (omit or 0 for unlimited)
+# agent_instructions = "..."   # Fallback instructions when .glass/agent-instructions.md missing
 # Feedback loop
 feedback_llm = false           # Enable LLM qualitative analysis after each run (opt-in)
 # max_prompt_hints = 10        # Max Tier 3 prompt hints per project
@@ -348,6 +379,7 @@ The orchestrator requires Agent Mode to be configured (the `[agent]` section). T
 
 When orchestrating, the status bar shows:
 - `[orchestrating | iter #N]` — current iteration number
+- `[orchestrating | iter #N | waiting for agent]` — waiting for Glass Agent response
 - Usage display: `5h: 42% | 7d: 15%` — OAuth API utilization (color-coded: green < 70%, yellow 70-85%, red 85%+)
 - `PAUSED` — shown when usage limits triggered a pause
 
@@ -357,4 +389,4 @@ When orchestrating, the status bar shows:
 
 - Claude CLI must be installed and available on `PATH`
 - Agent Mode must be configured (`[agent]` section in `~/.glass/config.toml`)
-- A `PRD.md` file in the project root (recommended but not required — a warning is logged if missing)
+- At least one `.md` file in the project (PRD, plan doc, agent-instructions.md, or any recently modified markdown)
