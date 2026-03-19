@@ -199,6 +199,16 @@ pub struct OrchestratorSection {
     pub ablation_sweep_interval: u32,
 }
 
+/// Validate a config-supplied file path is safe to use.
+///
+/// Rejects paths containing `..` components to prevent directory traversal
+/// attacks through a maliciously crafted `~/.glass/config.toml`.
+///
+/// Returns `true` when the path is safe, `false` when it should be rejected.
+pub fn validate_config_path(path: &str) -> bool {
+    !path.contains("..")
+}
+
 fn default_orch_silence_timeout() -> u64 {
     60
 }

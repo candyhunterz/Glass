@@ -927,6 +927,12 @@ fn try_spawn_agent(
         let prd_rel = orchestrator_config
             .map(|o| o.prd_path.clone())
             .unwrap_or_else(|| "PRD.md".to_string());
+        let prd_rel = if glass_core::config::validate_config_path(&prd_rel) {
+            prd_rel
+        } else {
+            tracing::warn!(path = %prd_rel, "prd_path contains '..', ignoring and using default");
+            "PRD.md".to_string()
+        };
         let prd_path = project_dir.join(&prd_rel);
         let prd_content = std::fs::read_to_string(&prd_path)
             .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path.display()));
@@ -951,6 +957,12 @@ fn try_spawn_agent(
         let checkpoint_rel = orchestrator_config
             .map(|o| o.checkpoint_path.clone())
             .unwrap_or_else(|| ".glass/checkpoint.md".to_string());
+        let checkpoint_rel = if glass_core::config::validate_config_path(&checkpoint_rel) {
+            checkpoint_rel
+        } else {
+            tracing::warn!(path = %checkpoint_rel, "checkpoint_path contains '..', ignoring and using default");
+            ".glass/checkpoint.md".to_string()
+        };
         let checkpoint_path = project_dir.join(&checkpoint_rel);
         let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
             .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());

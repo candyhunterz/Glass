@@ -14,6 +14,13 @@ const SCRIPT_SUBDIRS: &[&str] = &["hooks", "tools", "feedback"];
 /// Scans the `hooks/`, `tools/`, and `feedback/` subdirectories under `base`.
 /// For each `.toml` manifest file found, attempts to load a matching `.rhai`
 /// source file. Scripts with `Archived` or `Rejected` status are skipped.
+///
+/// # Security
+///
+/// TODO(S-14): Add workspace trust prompt before loading project scripts
+/// from untrusted .glass/scripts/ directories. The user should be asked to
+/// explicitly trust a project directory before any scripts from it are loaded
+/// or executed. Track trusted paths in ~/.glass/trusted_projects.toml.
 pub fn load_scripts_from_dir(base: &Path) -> Vec<LoadedScript> {
     let mut scripts = Vec::new();
 
