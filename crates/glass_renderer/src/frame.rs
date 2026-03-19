@@ -106,7 +106,7 @@ impl FrameRenderer {
         let block_renderer = BlockRenderer::new(cell_width, cell_height);
         let search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
         let scrollbar = ScrollbarRenderer::new();
-        let status_bar = StatusBarRenderer::new(cell_height);
+        let status_bar = StatusBarRenderer::new(cell_width, cell_height);
         let tab_bar = TabBarRenderer::new(cell_width, cell_height);
         let default_bg = Rgb {
             r: 26,
@@ -153,7 +153,7 @@ impl FrameRenderer {
         let (cell_width, cell_height) = self.grid_renderer.cell_size();
         self.block_renderer = BlockRenderer::new(cell_width, cell_height);
         self.search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
-        self.status_bar = StatusBarRenderer::new(cell_height);
+        self.status_bar = StatusBarRenderer::new(cell_width, cell_height);
         self.tab_bar = TabBarRenderer::new(cell_width, cell_height);
     }
 
@@ -413,6 +413,7 @@ impl FrameRenderer {
                 agent_paused,
                 agent_mode_text,
                 proposal_count_text,
+                w,
                 h,
             );
 
@@ -1485,6 +1486,7 @@ impl FrameRenderer {
                 agent_paused,
                 agent_mode_text,
                 proposal_count_text,
+                w,
                 h,
             );
 
