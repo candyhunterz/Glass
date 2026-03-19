@@ -189,6 +189,11 @@ async fn spawn_ipc_listener(
     }
 
     let listener = UnixListener::bind(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     tracing::info!("IPC listening on {}", path.display());
 
     loop {
@@ -216,6 +221,8 @@ async fn spawn_ipc_listener(
     let pipe_name = ipc_pipe_name();
     tracing::info!("IPC listening on {}", pipe_name);
 
+    // Windows named pipes inherit the default security descriptor, which
+    // restricts access to the creating user's SID. No additional hardening needed.
     // Create the first pipe instance
     let mut server = ServerOptions::new()
         .first_pipe_instance(true)

@@ -115,7 +115,15 @@ fn run_ephemeral_blocking(
         .map_err(|e| EphemeralAgentError::SpawnFailed(format!("write prompt: {e}")))?;
     let prompt_path = prompt_file.path().to_string_lossy().to_string();
 
-    // Build command
+    // Build command.
+    //
+    // SAFETY: --dangerously-skip-permissions is required here because ephemeral
+    // agents run non-interactively on a background thread with no TTY attached.
+    // Without this flag the Claude CLI blocks waiting for user confirmation that
+    // can never arrive, causing a silent hang. The risk is mitigated by:
+    //   1. --allowedTools "" restricts the agent to zero tools (text-only),
+    //   2. The agent receives a single user message and is killed after one response,
+    //   3. stdin is closed immediately after sending the message (no further input).
     let mut cmd = Command::new("claude");
     cmd.args([
         "-p",

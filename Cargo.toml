@@ -71,6 +71,8 @@ schemars      = "1"
 
 # Mutex without poisoning
 parking_lot   = "0.12"
+# Secret zeroing
+zeroize       = "1"
 
 [package]
 name = "glass"
@@ -126,6 +128,7 @@ ureq = { workspace = true }
 notify = "8.0"
 tempfile = "3"
 parking_lot = "0.12"
+zeroize = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

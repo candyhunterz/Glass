@@ -12,6 +12,9 @@ pub mod context;
 pub mod ipc_client;
 pub mod tools;
 
+use std::collections::HashSet;
+
+use glass_core::config::{GlassConfig, PermissionMatrix};
 use rmcp::ServiceExt;
 
 /// Start the MCP server over stdio.
@@ -19,6 +22,9 @@ use rmcp::ServiceExt;
 /// Resolves the Glass history database path and snapshot glass directory from
 /// the current working directory, creates a `GlassServer`, and serves it over
 /// stdin/stdout using JSON-RPC 2.0.
+///
+/// Loads `~/.glass/config.toml` to read `[agent].allowed_tools` and
+/// `[agent.permissions]` for MCP tool gating.
 ///
 /// # Errors
 ///
@@ -35,11 +41,33 @@ pub async fn run_mcp_server() -> anyhow::Result<()> {
         coord_db_path.display()
     );
 
+    // Load config for permission gating
+    let config = GlassConfig::load();
+    let (allowed_tools, permissions) = if let Some(ref agent) = config.agent {
+        let tools_set: HashSet<String> = agent
+            .allowed_tools
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let perms = agent.permissions.clone().unwrap_or_default();
+        (tools_set, perms)
+    } else {
+        (HashSet::new(), PermissionMatrix::default())
+    };
+    tracing::info!(
+        allowed_tools_count = allowed_tools.len(),
+        run_commands = ?permissions.run_commands,
+        edit_files = ?permissions.edit_files,
+        "MCP permission config loaded"
+    );
+
     // Always create the IPC client -- it handles connection failures lazily
     // (returns clear error messages when the GUI isn't running).
     let ipc_client = Some(ipc_client::IpcClient::new());
 
-    let server = tools::GlassServer::new(db_path, glass_dir, coord_db_path, ipc_client);
+    let server =
+        tools::GlassServer::new(db_path, glass_dir, coord_db_path, ipc_client, allowed_tools, permissions);
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

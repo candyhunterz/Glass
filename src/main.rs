@@ -301,6 +301,8 @@ struct AgentRuntime {
     last_crash: Option<std::time::Instant>,
     /// Coordination agent ID (UUID), if registration succeeded (AGTC-05).
     agent_id: Option<String>,
+    /// Session nonce for coordination operations (S-4 auth).
+    coord_nonce: Option<String>,
     /// Project root path used for coordination lock, if registration succeeded.
     #[allow(dead_code)]
     project_root: Option<String>,
@@ -439,12 +441,12 @@ struct Processor {
 impl Drop for AgentRuntime {
     fn drop(&mut self) {
         // AGTC-05: Deregister from coordination (soft errors -- never prevent shutdown).
-        if let Some(ref agent_id) = self.agent_id {
+        if let (Some(ref agent_id), Some(ref nonce)) = (&self.agent_id, &self.coord_nonce) {
             if let Ok(mut db) = glass_coordination::CoordinationDb::open_default() {
-                if let Err(e) = db.unlock_all(agent_id) {
+                if let Err(e) = db.unlock_all(agent_id, nonce) {
                     tracing::warn!("AgentRuntime: failed to release coordination locks: {}", e);
                 }
-                if let Err(e) = db.deregister(agent_id) {
+                if let Err(e) = db.deregister(agent_id, nonce) {
                     tracing::warn!(
                         "AgentRuntime: failed to deregister from coordination: {}",
                         e
@@ -925,6 +927,12 @@ fn try_spawn_agent(
         let prd_rel = orchestrator_config
             .map(|o| o.prd_path.clone())
             .unwrap_or_else(|| "PRD.md".to_string());
+        let prd_rel = if glass_core::config::validate_config_path(&prd_rel) {
+            prd_rel
+        } else {
+            tracing::warn!(path = %prd_rel, "prd_path contains '..', ignoring and using default");
+            "PRD.md".to_string()
+        };
         let prd_path = project_dir.join(&prd_rel);
         let prd_content = std::fs::read_to_string(&prd_path)
             .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path.display()));
@@ -949,6 +957,12 @@ fn try_spawn_agent(
         let checkpoint_rel = orchestrator_config
             .map(|o| o.checkpoint_path.clone())
             .unwrap_or_else(|| ".glass/checkpoint.md".to_string());
+        let checkpoint_rel = if glass_core::config::validate_config_path(&checkpoint_rel) {
+            checkpoint_rel
+        } else {
+            tracing::warn!(path = %checkpoint_rel, "checkpoint_path contains '..', ignoring and using default");
+            ".glass/checkpoint.md".to_string()
+        };
         let checkpoint_path = project_dir.join(&checkpoint_rel);
         let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
             .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());
@@ -1507,7 +1521,7 @@ Session Continuity:
     );
 
     // AGTC-05: Register with coordination DB (soft errors -- agent starts regardless).
-    let (coord_agent_id, coord_project_root) = {
+    let (coord_agent_id, coord_nonce, coord_project_root) = {
         // Use dunce::canonicalize (via glass_coordination) to avoid \\?\ UNC prefix on Windows.
         // This must match the path format used by the coordination poller.
         let canonical_str =
@@ -1534,10 +1548,10 @@ Session Continuity:
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| canonical_str.clone());
                 match db.register("glass-agent", "claude-code", &canonical_str, &cwd, None) {
-                    Ok(agent_id) => {
+                    Ok((agent_id, nonce)) => {
                         // Advisory lock on the project root directory
                         let lock_path = std::path::PathBuf::from(&canonical_str);
-                        match db.lock_files(&agent_id, &[lock_path], Some("agent session")) {
+                        match db.lock_files(&agent_id, &[lock_path], Some("agent session"), &nonce) {
                             Ok(_) => tracing::info!(
                                 "AgentRuntime: registered with coordination (id={})",
                                 agent_id
@@ -1547,20 +1561,20 @@ Session Continuity:
                                 e
                             ),
                         }
-                        (Some(agent_id), Some(canonical_str))
+                        (Some(agent_id), Some(nonce), Some(canonical_str))
                     }
                     Err(e) => {
                         tracing::warn!(
                             "AgentRuntime: coordination registration failed (soft): {}",
                             e
                         );
-                        (None, None)
+                        (None, None, None)
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!("AgentRuntime: failed to open coordination DB (soft): {}", e);
-                (None, None)
+                (None, None, None)
             }
         }
     };
@@ -1573,6 +1587,7 @@ Session Continuity:
         restart_count,
         last_crash,
         agent_id: coord_agent_id,
+        coord_nonce,
         project_root: coord_project_root,
         orchestrator_writer: Some(shared_writer),
         generation: 0, // set by caller after spawn

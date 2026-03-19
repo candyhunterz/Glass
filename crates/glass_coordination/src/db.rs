@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::types::{AgentInfo, FileLock, LockConflict, LockResult, Message};
 
@@ -36,6 +36,11 @@ impl CoordinationDb {
     /// Open a connection with WAL pragmas, performing corruption recovery if needed.
     fn open_connection(path: &Path) -> Result<Connection> {
         let conn = Connection::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         let pragma_result = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -149,10 +154,41 @@ impl CoordinationDb {
             conn.pragma_update(None, "user_version", 1)?;
         }
 
+        if version < 2 {
+            // Add nonce column for session authentication (S-4).
+            conn.execute_batch("ALTER TABLE agents ADD COLUMN nonce TEXT")?;
+            conn.pragma_update(None, "user_version", 2)?;
+        }
+
         Ok(())
     }
 
-    /// Register a new agent and return its UUID.
+    /// Validate that the provided nonce matches the stored nonce for an agent.
+    ///
+    /// Returns `Ok(())` on match, or an error on mismatch / missing agent.
+    fn validate_nonce(&self, agent_id: &str, nonce: &str) -> Result<()> {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT nonce FROM agents WHERE id = ?1",
+                params![agent_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        match stored {
+            Some(ref s) if s == nonce => Ok(()),
+            Some(_) => anyhow::bail!("Nonce mismatch for agent {agent_id}"),
+            None => anyhow::bail!("Agent not found or nonce not set: {agent_id}"),
+        }
+    }
+
+    /// Register a new agent and return `(agent_id, nonce)`.
+    ///
+    /// The nonce is a UUID v4 session secret that must be supplied with all
+    /// subsequent mutating operations (heartbeat, status, deregister, lock,
+    /// unlock, send, broadcast). This prevents agent impersonation.
     ///
     /// The `project` path is canonicalized for consistent cross-platform matching.
     /// If canonicalization fails (e.g., path doesn't exist), the raw project string is used.
@@ -163,18 +199,19 @@ impl CoordinationDb {
         project: &str,
         cwd: &str,
         pid: Option<u32>,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let canonical_project =
             crate::canonicalize_path(Path::new(project)).unwrap_or_else(|_| project.to_string());
         let id = uuid::Uuid::new_v4().to_string();
+        let nonce = uuid::Uuid::new_v4().to_string();
 
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO agents (id, name, agent_type, project, cwd, pid, status, registered_at, last_heartbeat)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', unixepoch(), unixepoch())",
-            params![&id, name, agent_type, &canonical_project, cwd, pid.map(|p| p as i64)],
+            "INSERT INTO agents (id, name, agent_type, project, cwd, pid, status, nonce, registered_at, last_heartbeat)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, unixepoch(), unixepoch())",
+            params![&id, name, agent_type, &canonical_project, cwd, pid.map(|p| p as i64), &nonce],
         )?;
         crate::event_log::insert_event(
             &tx,
@@ -189,13 +226,14 @@ impl CoordinationDb {
         )?;
         tx.commit()?;
 
-        Ok(id)
+        Ok((id, nonce))
     }
 
     /// Deregister an agent, releasing all its locks (via CASCADE).
     ///
-    /// Returns `true` if the agent existed and was removed.
-    pub fn deregister(&mut self, agent_id: &str) -> Result<bool> {
+    /// Requires a valid session nonce. Returns `true` if the agent existed and was removed.
+    pub fn deregister(&mut self, agent_id: &str, nonce: &str) -> Result<bool> {
+        self.validate_nonce(agent_id, nonce)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -231,8 +269,9 @@ impl CoordinationDb {
 
     /// Update an agent's heartbeat timestamp.
     ///
-    /// Returns `true` if the agent existed and was updated.
-    pub fn heartbeat(&mut self, agent_id: &str) -> Result<bool> {
+    /// Requires a valid session nonce. Returns `true` if the agent existed and was updated.
+    pub fn heartbeat(&mut self, agent_id: &str, nonce: &str) -> Result<bool> {
+        self.validate_nonce(agent_id, nonce)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -247,13 +286,15 @@ impl CoordinationDb {
     /// Update an agent's status and optional task description.
     ///
     /// Also implicitly refreshes the heartbeat.
-    /// Returns `true` if the agent existed and was updated.
+    /// Requires a valid session nonce. Returns `true` if the agent existed and was updated.
     pub fn update_status(
         &mut self,
         agent_id: &str,
         status: &str,
         task: Option<&str>,
+        nonce: &str,
     ) -> Result<bool> {
+        self.validate_nonce(agent_id, nonce)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -366,11 +407,9 @@ impl CoordinationDb {
         agent_id: &str,
         paths: &[std::path::PathBuf],
         reason: Option<&str>,
+        nonce: &str,
     ) -> Result<LockResult> {
-        // Validate agent exists before starting transaction
-        if !self.agent_exists(agent_id)? {
-            anyhow::bail!("Agent not registered: {agent_id}");
-        }
+        self.validate_nonce(agent_id, nonce)?;
 
         // Validate all paths are absolute before canonicalizing
         for p in paths {
@@ -522,7 +561,13 @@ impl CoordinationDb {
     ///
     /// Only the agent that holds the lock can release it.
     /// Returns `true` if a lock was actually released, `false` if no matching lock existed.
-    pub fn unlock_file(&mut self, agent_id: &str, path: &std::path::Path) -> Result<bool> {
+    pub fn unlock_file(
+        &mut self,
+        agent_id: &str,
+        path: &std::path::Path,
+        nonce: &str,
+    ) -> Result<bool> {
+        self.validate_nonce(agent_id, nonce)?;
         let canonical = crate::canonicalize_path(path)?;
         let tx = self
             .conn
@@ -560,7 +605,8 @@ impl CoordinationDb {
     /// Release all file locks held by an agent.
     ///
     /// Returns the number of locks released.
-    pub fn unlock_all(&mut self, agent_id: &str) -> Result<u64> {
+    pub fn unlock_all(&mut self, agent_id: &str, nonce: &str) -> Result<u64> {
+        self.validate_nonce(agent_id, nonce)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -655,7 +701,9 @@ impl CoordinationDb {
         project: &str,
         msg_type: &str,
         content: &str,
+        nonce: &str,
     ) -> Result<u64> {
+        self.validate_nonce(from_agent_id, nonce)?;
         let canonical_project =
             crate::canonicalize_path(Path::new(project)).unwrap_or_else(|_| project.to_string());
 
@@ -727,10 +775,12 @@ impl CoordinationDb {
         to_agent_id: &str,
         msg_type: &str,
         content: &str,
+        nonce: &str,
     ) -> Result<i64> {
-        // Validate both agents exist before attempting insert
-        if !self.agent_exists(from_agent_id)? {
-            anyhow::bail!("Sender agent not found: {from_agent_id}");
+        self.validate_nonce(from_agent_id, nonce)?;
+        // Validate recipient exists
+        if !self.agent_exists(to_agent_id)? {
+            anyhow::bail!("Recipient agent not found: {to_agent_id}");
         }
         if !self.agent_exists(to_agent_id)? {
             anyhow::bail!("Recipient agent not found: {to_agent_id}");
@@ -909,13 +959,16 @@ mod tests {
     #[test]
     fn test_register() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", Some(1234))
             .unwrap();
 
         // UUID v4 format: 8-4-4-4-12 hex chars with hyphens = 36 chars
         assert_eq!(id.len(), 36);
         assert_eq!(id.chars().filter(|c| *c == '-').count(), 4);
+        // Nonce is also a UUID v4
+        assert_eq!(nonce.len(), 36);
+        assert_ne!(id, nonce, "Agent ID and nonce must differ");
 
         // Agent should appear in list
         let agents = db.list_agents(".").unwrap();
@@ -932,7 +985,7 @@ mod tests {
         let (mut db, dir) = test_db();
         // Use the temp dir itself as the project path (it exists, so canonicalize works)
         let project_path = dir.path().to_str().unwrap();
-        let id = db
+        let (id, _nonce) = db
             .register("agent-1", "claude-code", project_path, project_path, None)
             .unwrap();
 
@@ -946,25 +999,25 @@ mod tests {
     #[test]
     fn test_deregister() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
-        let removed = db.deregister(&id).unwrap();
+        let removed = db.deregister(&id, &nonce).unwrap();
         assert!(removed);
 
         let agents = db.list_agents(".").unwrap();
         assert!(agents.is_empty());
 
-        // Deregister non-existent agent should return false
-        let removed_again = db.deregister(&id).unwrap();
-        assert!(!removed_again);
+        // Deregister non-existent agent should error (nonce not found)
+        let result = db.deregister(&id, &nonce);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_deregister_cascades_locks() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -984,7 +1037,7 @@ mod tests {
         assert_eq!(lock_count, 1);
 
         // Deregister should cascade-delete the lock
-        db.deregister(&id).unwrap();
+        db.deregister(&id, &nonce).unwrap();
 
         let lock_count: i64 = db
             .conn()
@@ -996,10 +1049,10 @@ mod tests {
     #[test]
     fn test_deregister_preserves_messages() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
+        let (id_b, _nonce_b) = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         // Agent A sends message to Agent B
         db.conn()
@@ -1010,7 +1063,7 @@ mod tests {
             .unwrap();
 
         // Deregister agent A (sender)
-        db.deregister(&id_a).unwrap();
+        db.deregister(&id_a, &nonce_a).unwrap();
 
         // Message should still exist with from_agent = NULL (SET NULL on delete)
         let (from_agent, content): (Option<String>, String) = db
@@ -1031,7 +1084,7 @@ mod tests {
     #[test]
     fn test_heartbeat() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -1053,7 +1106,7 @@ mod tests {
             .unwrap();
 
         // Heartbeat should update to recent time
-        let updated = db.heartbeat(&id).unwrap();
+        let updated = db.heartbeat(&id, &nonce).unwrap();
         assert!(updated);
 
         let new_hb: i64 = db
@@ -1070,15 +1123,15 @@ mod tests {
             "Heartbeat should be more recent: {new_hb} > {old_hb}"
         );
 
-        // Heartbeat for non-existent agent should return false
-        let updated = db.heartbeat("nonexistent").unwrap();
-        assert!(!updated);
+        // Heartbeat with wrong nonce should error
+        let result = db.heartbeat(&id, "wrong-nonce");
+        assert!(result.is_err(), "Wrong nonce should be rejected");
     }
 
     #[test]
     fn test_prune_stale_by_timeout() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, _nonce) = db
             .register("stale-agent", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -1102,7 +1155,7 @@ mod tests {
     fn test_prune_stale_by_dead_pid() {
         let (mut db, _dir) = test_db();
         // Register with a PID that almost certainly doesn't exist
-        let id = db
+        let (id, _nonce) = db
             .register("dead-pid-agent", "claude-code", ".", "/tmp", Some(999999))
             .unwrap();
 
@@ -1119,7 +1172,7 @@ mod tests {
         let (mut db, _dir) = test_db();
         // Register with our actual PID (alive) and fresh heartbeat
         let pid = std::process::id();
-        let id = db
+        let (id, _nonce) = db
             .register("active-agent", "claude-code", ".", "/tmp", Some(pid))
             .unwrap();
 
@@ -1155,12 +1208,12 @@ mod tests {
     #[test]
     fn test_update_status() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
         let updated = db
-            .update_status(&id, "editing", Some("refactoring db.rs"))
+            .update_status(&id, "editing", Some("refactoring db.rs"), &nonce)
             .unwrap();
         assert!(updated);
 
@@ -1169,14 +1222,14 @@ mod tests {
         assert_eq!(agents[0].task.as_deref(), Some("refactoring db.rs"));
 
         // Update status with no task
-        db.update_status(&id, "idle", None).unwrap();
+        db.update_status(&id, "idle", None, &nonce).unwrap();
         let agents = db.list_agents(".").unwrap();
         assert_eq!(agents[0].status, "idle");
         assert!(agents[0].task.is_none());
 
-        // Non-existent agent
-        let updated = db.update_status("nonexistent", "idle", None).unwrap();
-        assert!(!updated);
+        // Wrong nonce should error
+        let result = db.update_status(&id, "idle", None, "wrong-nonce");
+        assert!(result.is_err(), "Wrong nonce should be rejected");
     }
 
     // ---- File locking tests ----
@@ -1184,7 +1237,7 @@ mod tests {
     #[test]
     fn test_lock_files_single() {
         let (mut db, dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -1193,7 +1246,7 @@ mod tests {
         std::fs::write(&file_path, "").unwrap();
 
         let result = db
-            .lock_files(&id, &[file_path.clone()], Some("editing"))
+            .lock_files(&id, &[file_path.clone()], Some("editing"), &nonce)
             .unwrap();
 
         match result {
@@ -1210,7 +1263,7 @@ mod tests {
     #[test]
     fn test_lock_files_multiple() {
         let (mut db, dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -1222,7 +1275,7 @@ mod tests {
         std::fs::write(&f3, "").unwrap();
 
         let result = db
-            .lock_files(&id, &[f1, f2, f3], Some("refactoring"))
+            .lock_files(&id, &[f1, f2, f3], Some("refactoring"), &nonce)
             .unwrap();
 
         match result {
@@ -1236,23 +1289,28 @@ mod tests {
     #[test]
     fn test_lock_files_conflict() {
         let (mut db, dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let _id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
+        let (_id_b, nonce_b) = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         let file_path = dir.path().join("shared.rs");
         std::fs::write(&file_path, "").unwrap();
 
         // Agent A locks the file
         let result = db
-            .lock_files(&id_a, &[file_path.clone()], Some("editing shared.rs"))
+            .lock_files(
+                &id_a,
+                &[file_path.clone()],
+                Some("editing shared.rs"),
+                &nonce_a,
+            )
             .unwrap();
         assert!(matches!(result, LockResult::Acquired(_)));
 
         // Agent B tries to lock the same file
         let result = db
-            .lock_files(&_id_b, &[file_path], Some("also want shared.rs"))
+            .lock_files(&_id_b, &[file_path], Some("also want shared.rs"), &nonce_b)
             .unwrap();
 
         match result {
@@ -1269,10 +1327,10 @@ mod tests {
     #[test]
     fn test_lock_files_partial_conflict() {
         let (mut db, dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
+        let (id_b, nonce_b) = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         let file_x = dir.path().join("x.rs");
         let file_y = dir.path().join("y.rs");
@@ -1281,13 +1339,18 @@ mod tests {
 
         // Agent A locks file X
         let result = db
-            .lock_files(&id_a, &[file_x.clone()], Some("editing x"))
+            .lock_files(&id_a, &[file_x.clone()], Some("editing x"), &nonce_a)
             .unwrap();
         assert!(matches!(result, LockResult::Acquired(_)));
 
         // Agent B tries to lock [X, Y] -- should fail entirely (all-or-nothing)
         let result = db
-            .lock_files(&id_b, &[file_x, file_y.clone()], Some("want both"))
+            .lock_files(
+                &id_b,
+                &[file_x, file_y.clone()],
+                Some("want both"),
+                &nonce_b,
+            )
             .unwrap();
         assert!(
             matches!(result, LockResult::Conflict(_)),
@@ -1306,7 +1369,7 @@ mod tests {
     #[test]
     fn test_lock_files_same_agent_relock() {
         let (mut db, dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -1315,13 +1378,13 @@ mod tests {
 
         // Lock the file
         let result = db
-            .lock_files(&id, &[file_path.clone()], Some("first lock"))
+            .lock_files(&id, &[file_path.clone()], Some("first lock"), &nonce)
             .unwrap();
         assert!(matches!(result, LockResult::Acquired(_)));
 
         // Lock the same file again (same agent) -- should succeed with INSERT OR REPLACE
         let result = db
-            .lock_files(&id, &[file_path], Some("updated reason"))
+            .lock_files(&id, &[file_path], Some("updated reason"), &nonce)
             .unwrap();
         assert!(matches!(result, LockResult::Acquired(_)));
 
@@ -1334,10 +1397,10 @@ mod tests {
     #[test]
     fn test_lock_files_canonicalization() {
         let (mut db, dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
+        let (id_b, nonce_b) = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         // Create a real file
         let subdir = dir.path().join("sub");
@@ -1347,14 +1410,14 @@ mod tests {
 
         // Agent A locks via the absolute path
         let result = db
-            .lock_files(&id_a, &[file_path.clone()], Some("via absolute"))
+            .lock_files(&id_a, &[file_path.clone()], Some("via absolute"), &nonce_a)
             .unwrap();
         assert!(matches!(result, LockResult::Acquired(_)));
 
         // Agent B tries to lock via a path with ".." component
         let relative_path = subdir.join("..").join("sub").join("target.rs");
         let result = db
-            .lock_files(&id_b, &[relative_path], Some("via relative"))
+            .lock_files(&id_b, &[relative_path], Some("via relative"), &nonce_b)
             .unwrap();
 
         assert!(
@@ -1366,17 +1429,17 @@ mod tests {
     #[test]
     fn test_unlock_file() {
         let (mut db, dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
         let file_path = dir.path().join("unlock_me.rs");
         std::fs::write(&file_path, "").unwrap();
 
-        db.lock_files(&id, &[file_path.clone()], Some("temp lock"))
+        db.lock_files(&id, &[file_path.clone()], Some("temp lock"), &nonce)
             .unwrap();
 
-        let unlocked = db.unlock_file(&id, &file_path).unwrap();
+        let unlocked = db.unlock_file(&id, &file_path, &nonce).unwrap();
         assert!(unlocked);
 
         // Lock should be gone
@@ -1387,7 +1450,7 @@ mod tests {
     #[test]
     fn test_unlock_all() {
         let (mut db, dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
 
@@ -1398,10 +1461,10 @@ mod tests {
         std::fs::write(&f2, "").unwrap();
         std::fs::write(&f3, "").unwrap();
 
-        db.lock_files(&id, &[f1, f2, f3], Some("batch lock"))
+        db.lock_files(&id, &[f1, f2, f3], Some("batch lock"), &nonce)
             .unwrap();
 
-        let count = db.unlock_all(&id).unwrap();
+        let count = db.unlock_all(&id, &nonce).unwrap();
         assert_eq!(count, 3);
 
         let locks = db.list_locks(None).unwrap();
@@ -1411,20 +1474,20 @@ mod tests {
     #[test]
     fn test_unlock_file_not_owned() {
         let (mut db, dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", ".", "/tmp", None)
             .unwrap();
-        let id_b = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
+        let (id_b, nonce_b) = db.register("agent-b", "cursor", ".", "/tmp", None).unwrap();
 
         let file_path = dir.path().join("owned.rs");
         std::fs::write(&file_path, "").unwrap();
 
         // Agent A locks the file
-        db.lock_files(&id_a, &[file_path.clone()], Some("mine"))
+        db.lock_files(&id_a, &[file_path.clone()], Some("mine"), &nonce_a)
             .unwrap();
 
         // Agent B tries to unlock it -- should return false
-        let unlocked = db.unlock_file(&id_b, &file_path).unwrap();
+        let unlocked = db.unlock_file(&id_b, &file_path, &nonce_b).unwrap();
         assert!(
             !unlocked,
             "Agent B should not be able to unlock Agent A's file"
@@ -1448,10 +1511,10 @@ mod tests {
         let proj_a_str = proj_a.to_str().unwrap();
         let proj_b_str = proj_b.to_str().unwrap();
 
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", proj_a_str, proj_a_str, None)
             .unwrap();
-        let id_b = db
+        let (id_b, nonce_b) = db
             .register("agent-b", "cursor", proj_b_str, proj_b_str, None)
             .unwrap();
 
@@ -1460,9 +1523,9 @@ mod tests {
         std::fs::write(&file_a, "").unwrap();
         std::fs::write(&file_b, "").unwrap();
 
-        db.lock_files(&id_a, &[file_a], Some("project A work"))
+        db.lock_files(&id_a, &[file_a], Some("project A work"), &nonce_a)
             .unwrap();
-        db.lock_files(&id_b, &[file_b], Some("project B work"))
+        db.lock_files(&id_b, &[file_b], Some("project B work"), &nonce_b)
             .unwrap();
 
         // list_locks with project A should only show agent A's locks
@@ -1481,19 +1544,19 @@ mod tests {
     #[test]
     fn test_broadcast() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-msg", "/tmp", None)
             .unwrap();
-        let id_b = db
+        let (id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-msg", "/tmp", None)
             .unwrap();
-        let id_c = db
+        let (id_c, _nonce_c) = db
             .register("agent-c", "claude-code", "proj-msg", "/tmp", None)
             .unwrap();
 
         // Agent A broadcasts
         let count = db
-            .broadcast(&id_a, "proj-msg", "status", "I am working on X")
+            .broadcast(&id_a, "proj-msg", "status", "I am working on X", &nonce_a)
             .unwrap();
         assert_eq!(count, 2, "Broadcast should create 2 message rows (B and C)");
 
@@ -1513,18 +1576,18 @@ mod tests {
     #[test]
     fn test_broadcast_project_scoping() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-x", "/tmp", None)
             .unwrap();
-        let _id_b = db
+        let (_id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-x", "/tmp", None)
             .unwrap();
-        let id_d = db
+        let (id_d, _nonce_d) = db
             .register("agent-d", "claude-code", "proj-y", "/tmp", None)
             .unwrap();
 
         // Agent A broadcasts in proj-x
-        db.broadcast(&id_a, "proj-x", "status", "proj-x update")
+        db.broadcast(&id_a, "proj-x", "status", "proj-x update", &nonce_a)
             .unwrap();
 
         // Agent D is in proj-y -- should NOT receive the broadcast
@@ -1538,14 +1601,15 @@ mod tests {
     #[test]
     fn test_broadcast_excludes_sender() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-exc", "/tmp", None)
             .unwrap();
-        let _id_b = db
+        let (_id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-exc", "/tmp", None)
             .unwrap();
 
-        db.broadcast(&id_a, "proj-exc", "status", "hello").unwrap();
+        db.broadcast(&id_a, "proj-exc", "status", "hello", &nonce_a)
+            .unwrap();
 
         // Sender should NOT see own broadcast
         let msgs_a = db.read_messages(&id_a).unwrap();
@@ -1555,14 +1619,16 @@ mod tests {
     #[test]
     fn test_send_message() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-dm", "/tmp", None)
             .unwrap();
-        let id_b = db
+        let (id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-dm", "/tmp", None)
             .unwrap();
 
-        let msg_id = db.send_message(&id_a, &id_b, "chat", "hello B").unwrap();
+        let msg_id = db
+            .send_message(&id_a, &id_b, "chat", "hello B", &nonce_a)
+            .unwrap();
         assert!(msg_id > 0);
 
         let msgs = db.read_messages(&id_b).unwrap();
@@ -1577,15 +1643,17 @@ mod tests {
     #[test]
     fn test_read_messages_marks_read() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-read", "/tmp", None)
             .unwrap();
-        let id_b = db
+        let (id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-read", "/tmp", None)
             .unwrap();
 
-        db.send_message(&id_a, &id_b, "chat", "first").unwrap();
-        db.send_message(&id_a, &id_b, "chat", "second").unwrap();
+        db.send_message(&id_a, &id_b, "chat", "first", &nonce_a)
+            .unwrap();
+        db.send_message(&id_a, &id_b, "chat", "second", &nonce_a)
+            .unwrap();
 
         // First read should return both
         let msgs = db.read_messages(&id_b).unwrap();
@@ -1602,18 +1670,18 @@ mod tests {
     #[test]
     fn test_read_messages_preserves_from_deregistered() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-dereg", "/tmp", None)
             .unwrap();
-        let id_b = db
+        let (id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-dereg", "/tmp", None)
             .unwrap();
 
-        db.send_message(&id_a, &id_b, "chat", "remember me")
+        db.send_message(&id_a, &id_b, "chat", "remember me", &nonce_a)
             .unwrap();
 
         // Deregister sender
-        db.deregister(&id_a).unwrap();
+        db.deregister(&id_a, &nonce_a).unwrap();
 
         // Recipient should still get the message, but from_agent is None
         let msgs = db.read_messages(&id_b).unwrap();
@@ -1632,22 +1700,22 @@ mod tests {
     #[test]
     fn test_read_messages_mixed() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-mix", "/tmp", None)
             .unwrap();
-        let id_b = db
+        let (id_b, _nonce_b) = db
             .register("agent-b", "cursor", "proj-mix", "/tmp", None)
             .unwrap();
-        let _id_c = db
+        let (_id_c, _nonce_c) = db
             .register("agent-c", "claude-code", "proj-mix", "/tmp", None)
             .unwrap();
 
         // Agent A sends a directed message to B
-        db.send_message(&id_a, &id_b, "chat", "direct to B")
+        db.send_message(&id_a, &id_b, "chat", "direct to B", &nonce_a)
             .unwrap();
 
         // Agent A broadcasts (B and C should get it)
-        db.broadcast(&id_a, "proj-mix", "status", "broadcast from A")
+        db.broadcast(&id_a, "proj-mix", "status", "broadcast from A", &nonce_a)
             .unwrap();
 
         // Agent B reads -- should get both the directed and broadcast message
@@ -1662,28 +1730,25 @@ mod tests {
     #[test]
     fn test_send_message_unknown_recipient() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-unk", "/tmp", None)
             .unwrap();
 
-        // Sending to a non-existent agent should error (foreign key constraint)
-        let result = db.send_message(&id_a, "nonexistent-id", "chat", "hello?");
-        assert!(
-            result.is_err(),
-            "Sending to unknown agent should fail with FK constraint"
-        );
+        // Sending to a non-existent agent should error
+        let result = db.send_message(&id_a, "nonexistent-id", "chat", "hello?", &nonce_a);
+        assert!(result.is_err(), "Sending to unknown agent should fail");
     }
 
     #[test]
     fn test_broadcast_no_other_agents() {
         let (mut db, _dir) = test_db();
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", "proj-solo", "/tmp", None)
             .unwrap();
 
         // Broadcasting with no other agents in project should succeed with 0 rows
         let count = db
-            .broadcast(&id_a, "proj-solo", "status", "talking to myself")
+            .broadcast(&id_a, "proj-solo", "status", "talking to myself", &nonce_a)
             .unwrap();
         assert_eq!(count, 0, "No other agents means 0 messages inserted");
     }
@@ -1705,12 +1770,12 @@ mod tests {
         let project = dir.path().to_str().unwrap();
 
         // Register agent A via connection 1
-        let _id_a = db1
+        let (_id_a, _nonce_a) = db1
             .register("Agent-A", "claude-code", project, project, None)
             .unwrap();
 
         // Register agent B via connection 2
-        let _id_b = db2
+        let (_id_b, _nonce_b) = db2
             .register("Agent-B", "cursor", project, project, None)
             .unwrap();
 
@@ -1732,10 +1797,10 @@ mod tests {
         let (mut db1, mut db2, dir) = shared_test_db();
         let project = dir.path().to_str().unwrap();
 
-        let id_a = db1
+        let (id_a, nonce_a) = db1
             .register("Agent-A", "claude-code", project, project, None)
             .unwrap();
-        let id_b = db2
+        let (id_b, nonce_b) = db2
             .register("Agent-B", "cursor", project, project, None)
             .unwrap();
 
@@ -1745,7 +1810,7 @@ mod tests {
 
         // Agent A locks file via connection 1
         let result = db1
-            .lock_files(&id_a, &[file_path.clone()], Some("editing"))
+            .lock_files(&id_a, &[file_path.clone()], Some("editing"), &nonce_a)
             .unwrap();
         assert!(
             matches!(result, LockResult::Acquired(_)),
@@ -1754,7 +1819,7 @@ mod tests {
 
         // Agent B tries to lock same file via connection 2
         let result = db2
-            .lock_files(&id_b, &[file_path], Some("also want it"))
+            .lock_files(&id_b, &[file_path], Some("also want it"), &nonce_b)
             .unwrap();
         match result {
             LockResult::Conflict(conflicts) => {
@@ -1770,16 +1835,22 @@ mod tests {
     fn test_cross_connection_directed_message() {
         let (mut db1, mut db2, _dir) = shared_test_db();
 
-        let id_a = db1
+        let (id_a, nonce_a) = db1
             .register("Agent-A", "claude-code", "cross-msg", "/tmp", None)
             .unwrap();
-        let id_b = db2
+        let (id_b, _nonce_b) = db2
             .register("Agent-B", "cursor", "cross-msg", "/tmp", None)
             .unwrap();
 
         // Agent A sends directed message to Agent B via connection 1
-        db1.send_message(&id_a, &id_b, "request_unlock", "please release foo.rs")
-            .unwrap();
+        db1.send_message(
+            &id_a,
+            &id_b,
+            "request_unlock",
+            "please release foo.rs",
+            &nonce_a,
+        )
+        .unwrap();
 
         // Agent B reads messages via connection 2
         let msgs = db2.read_messages(&id_b).unwrap();
@@ -1794,16 +1865,22 @@ mod tests {
     fn test_cross_connection_broadcast() {
         let (mut db1, mut db2, _dir) = shared_test_db();
 
-        let id_a = db1
+        let (id_a, nonce_a) = db1
             .register("Agent-A", "claude-code", "cross-bcast", "/tmp", None)
             .unwrap();
-        let _id_b = db2
+        let (_id_b, _nonce_b) = db2
             .register("Agent-B", "cursor", "cross-bcast", "/tmp", None)
             .unwrap();
 
         // Agent A broadcasts via connection 1
         let count = db1
-            .broadcast(&id_a, "cross-bcast", "status_update", "working on db.rs")
+            .broadcast(
+                &id_a,
+                "cross-bcast",
+                "status_update",
+                "working on db.rs",
+                &nonce_a,
+            )
             .unwrap();
         assert_eq!(count, 1, "One other agent should receive the broadcast");
 
@@ -1828,10 +1905,10 @@ mod tests {
         let proj_a_str = proj_a.to_str().unwrap();
         let proj_b_str = proj_b.to_str().unwrap();
 
-        let id_a = db
+        let (id_a, nonce_a) = db
             .register("agent-a", "claude-code", proj_a_str, proj_a_str, None)
             .unwrap();
-        let id_b = db
+        let (id_b, nonce_b) = db
             .register("agent-b", "cursor", proj_b_str, proj_b_str, None)
             .unwrap();
 
@@ -1840,8 +1917,8 @@ mod tests {
         std::fs::write(&file_a, "").unwrap();
         std::fs::write(&file_b, "").unwrap();
 
-        db.lock_files(&id_a, &[file_a], None).unwrap();
-        db.lock_files(&id_b, &[file_b], None).unwrap();
+        db.lock_files(&id_a, &[file_a], None, &nonce_a).unwrap();
+        db.lock_files(&id_b, &[file_b], None, &nonce_b).unwrap();
 
         // list_locks with None should show all locks regardless of project
         let all_locks = db.list_locks(None).unwrap();
@@ -1853,7 +1930,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let mut db = CoordinationDb::open(&db_path).unwrap();
-        let id = db
+        let (id, _nonce) = db
             .register("test-agent", "claude-code", "/project", "/cwd", None)
             .unwrap();
 
@@ -1870,10 +1947,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let mut db = CoordinationDb::open(&db_path).unwrap();
-        let id = db
+        let (id, nonce) = db
             .register("test-agent", "claude-code", "/project", "/cwd", None)
             .unwrap();
-        db.deregister(&id).unwrap();
+        db.deregister(&id, &nonce).unwrap();
 
         let events = crate::event_log::recent_events(db.conn(), "/project", 10).unwrap();
         assert_eq!(events.len(), 2);
@@ -1886,10 +1963,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let mut db = CoordinationDb::open(&db_path).unwrap();
-        let id = db
+        let (id, nonce) = db
             .register("test-agent", "claude-code", "/project", "/cwd", None)
             .unwrap();
-        db.update_status(&id, "editing", Some("refactoring"))
+        db.update_status(&id, "editing", Some("refactoring"), &nonce)
             .unwrap();
 
         let events = crate::event_log::recent_events(db.conn(), "/project", 10).unwrap();
@@ -1908,7 +1985,7 @@ mod tests {
     #[test]
     fn test_agent_exists_returns_true_for_registered() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, _nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
         assert!(db.agent_exists(&id).unwrap());
@@ -1920,22 +1997,29 @@ mod tests {
         let fake_id = "00000000-0000-0000-0000-000000000000";
         let path = dir.path().join("file.rs");
         std::fs::write(&path, "").unwrap();
-        let err = db.lock_files(fake_id, &[path], None).unwrap_err();
+        let err = db
+            .lock_files(fake_id, &[path], None, "fake-nonce")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("Agent not registered"),
-            "Expected 'Agent not registered', got: {msg}"
+            msg.contains("Agent not found or nonce not set"),
+            "Expected nonce validation error, got: {msg}"
         );
     }
 
     #[test]
     fn test_lock_files_rejects_relative_paths() {
         let (mut db, _dir) = test_db();
-        let id = db
+        let (id, nonce) = db
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
         let err = db
-            .lock_files(&id, &[std::path::PathBuf::from("relative/path.rs")], None)
+            .lock_files(
+                &id,
+                &[std::path::PathBuf::from("relative/path.rs")],
+                None,
+                &nonce,
+            )
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1947,27 +2031,27 @@ mod tests {
     #[test]
     fn test_send_message_rejects_nonexistent_sender() {
         let (mut db, _dir) = test_db();
-        let receiver = db
+        let (receiver, _nonce) = db
             .register("receiver", "claude-code", ".", "/tmp", None)
             .unwrap();
         let err = db
-            .send_message("fake-sender-id", &receiver, "chat", "hello")
+            .send_message("fake-sender-id", &receiver, "chat", "hello", "fake-nonce")
             .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("Sender agent not found"),
-            "Expected 'Sender agent not found', got: {msg}"
+            msg.contains("Agent not found or nonce not set"),
+            "Expected nonce validation error, got: {msg}"
         );
     }
 
     #[test]
     fn test_send_message_rejects_nonexistent_recipient() {
         let (mut db, _dir) = test_db();
-        let sender = db
+        let (sender, nonce) = db
             .register("sender", "claude-code", ".", "/tmp", None)
             .unwrap();
         let err = db
-            .send_message(&sender, "fake-recipient-id", "chat", "hello")
+            .send_message(&sender, "fake-recipient-id", "chat", "hello", &nonce)
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1986,6 +2070,56 @@ mod tests {
         assert!(
             db_path.with_extension("db.corrupt").exists(),
             "Corrupt DB should be renamed"
+        );
+    }
+
+    // ---- Nonce authentication tests ----
+
+    #[test]
+    fn test_wrong_nonce_rejected() {
+        let (mut db, _dir) = test_db();
+        let (id, _nonce) = db
+            .register("agent-1", "claude-code", ".", "/tmp", None)
+            .unwrap();
+
+        // All mutating operations with wrong nonce should fail
+        let bad_nonce = "wrong-nonce-value";
+
+        let err = db.heartbeat(&id, bad_nonce).unwrap_err();
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "heartbeat: {}",
+            err
+        );
+
+        let err = db.update_status(&id, "idle", None, bad_nonce).unwrap_err();
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "update_status: {}",
+            err
+        );
+
+        let err = db.deregister(&id, bad_nonce).unwrap_err();
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "deregister: {}",
+            err
+        );
+
+        let err = db.unlock_all(&id, bad_nonce).unwrap_err();
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "unlock_all: {}",
+            err
+        );
+
+        let err = db
+            .broadcast(&id, ".", "status", "hi", bad_nonce)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "broadcast: {}",
+            err
         );
     }
 }

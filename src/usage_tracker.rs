@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
 
 /// Cached usage data from the Anthropic usage API.
 #[derive(Debug, Clone)]
@@ -34,7 +35,10 @@ pub struct UsageState {
 }
 
 /// Read the OAuth access token from `~/.claude/.credentials.json`.
-fn read_oauth_token() -> Option<String> {
+///
+/// Returns a `Zeroizing<String>` so the token bytes are wiped from memory
+/// when the value is dropped after each poll cycle.
+fn read_oauth_token() -> Option<Zeroizing<String>> {
     let home = dirs::home_dir()?;
     let cred_path = home.join(".claude").join(".credentials.json");
     let contents = std::fs::read_to_string(&cred_path).ok()?;
@@ -43,7 +47,7 @@ fn read_oauth_token() -> Option<String> {
         .get("claudeAiOauth")
         .and_then(|o| o.get("accessToken"))
         .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
+        .map(|s| Zeroizing::new(s.to_string()))
 }
 
 /// Poll the Anthropic usage API and return parsed usage data.

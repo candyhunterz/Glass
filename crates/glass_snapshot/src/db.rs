@@ -29,6 +29,11 @@ impl SnapshotDb {
     /// Open a connection with WAL pragmas, performing corruption recovery if needed.
     fn open_connection(path: &Path) -> Result<Connection> {
         let conn = Connection::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         let pragma_result = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
