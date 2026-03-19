@@ -582,7 +582,7 @@ crates/
   glass_snapshot/          Filesystem snapshots: FS watcher, blake3 blob store,
                            undo engine, destructive command parser
   glass_pipes/             Pipeline parser and tee-based stage capture
-  glass_mcp/               MCP server (31 tools, stdio transport)
+  glass_mcp/               MCP server (33 tools, stdio transport)
   glass_errors/            Structured error extraction from command output
   glass_coordination/      Multi-agent coordination: agent registry, advisory locks,
                            inter-agent messaging (SQLite WAL)
