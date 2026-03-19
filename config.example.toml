@@ -1,0 +1,104 @@
+# Glass Configuration
+# Copy to ~/.glass/config.toml and uncomment fields to customize.
+# All values shown are defaults. Changes are hot-reloaded on save.
+
+# Font family. Platform defaults: "Consolas" (Windows), "Menlo" (macOS), "Monospace" (Linux).
+# font_family = "Consolas"
+
+# Font size in points.
+# font_size = 14.0
+
+# Override default shell. Uses $SHELL / system default when unset.
+# shell = "/bin/zsh"
+
+# --- History -----------------------------------------------------------
+# [history]
+# Maximum kilobytes of command output captured per command.
+# max_output_capture_kb = 50
+
+# --- Snapshots ---------------------------------------------------------
+# [snapshot]
+# enabled = true
+# max_count = 1000
+# max_size_mb = 500
+# retention_days = 30
+
+# --- Pipes -------------------------------------------------------------
+# [pipes]
+# enabled = true
+# max_capture_mb = 10
+# auto_expand = true
+
+# --- Structured Output Intelligence -----------------------------------
+# [soi]
+# enabled = true
+# shell_summary = false
+# format = "oneline"
+# min_lines = 0
+
+# --- Terminal ----------------------------------------------------------
+# [terminal]
+# scrollback = 10000
+
+# --- Theme -------------------------------------------------------------
+# Preset: "dark" (default) or "light". Individual color fields override preset values.
+# Colors are [R, G, B] arrays (0-255). search_backdrop is [R, G, B, A] floats (0.0-1.0).
+# [theme]
+# preset = "dark"
+# terminal_bg = [26, 26, 26]
+# tab_bar_bg = [30, 30, 30]
+# tab_active_bg = [50, 50, 50]
+# tab_inactive_bg = [35, 35, 35]
+# tab_accent = [100, 149, 237]
+# status_bar_bg = [38, 38, 38]
+# block_separator = [60, 60, 60]
+# badge_success = [40, 160, 40]
+# badge_error = [200, 50, 50]
+# badge_running = [30, 120, 200]
+# search_backdrop = [0.05, 0.05, 0.05, 0.85]
+# search_input_bg = [56, 56, 56]
+
+# --- Agent -------------------------------------------------------------
+# [agent]
+# mode = "off"              # "off", "watch", "assist", "autonomous"
+# max_budget_usd = 1.0
+# cooldown_secs = 30
+# allowed_tools = "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
+
+# [agent.permissions]
+# edit_files = "approve"    # "approve", "auto", "never"
+# run_commands = "approve"
+# git_operations = "approve"
+
+# [agent.quiet_rules]
+# ignore_exit_zero = false
+# ignore_patterns = []
+
+# [agent.orchestrator]
+# enabled = false
+# silence_timeout_secs = 60
+# prd_path = "PRD.md"
+# checkpoint_path = ".glass/checkpoint.md"
+# max_retries_before_stuck = 3
+# fast_trigger_secs = 5
+# agent_prompt_pattern = ""
+# verify_mode = "floor"     # "floor" or "disabled"
+# verify_command = ""
+# completion_artifact = ".glass/done"
+# max_iterations = 0        # 0 = unlimited
+# orchestrator_mode = "build"  # "build" or "audit"
+# verify_files = []
+# feedback_llm = false
+# max_prompt_hints = 10
+# ablation_enabled = true
+# ablation_sweep_interval = 20
+
+# --- Scripting ---------------------------------------------------------
+# [scripting]
+# enabled = true
+# max_operations = 10000
+# max_timeout_ms = 5000
+# max_scripts_per_hook = 10
+# max_total_scripts = 100
+# max_mcp_tools = 50
+# script_generation = true
