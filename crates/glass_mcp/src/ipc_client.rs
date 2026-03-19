@@ -117,7 +117,13 @@ impl IpcClient {
 // ---------------------------------------------------------------------------
 
 /// Returns the IPC socket path on Unix platforms.
-/// Duplicated from `glass_core::ipc::ipc_socket_path()` to avoid the heavy dependency.
+///
+/// # Duplication note
+/// This function is intentionally duplicated from `glass_core::ipc::ipc_socket_path()`.
+/// `glass_mcp` is loaded by the standalone MCP server process which must stay lightweight;
+/// adding a dependency on `glass_core` would pull in `winit`, `wgpu`, and other heavy GUI
+/// crates that are not needed and would inflate binary size / compile times significantly.
+/// If the path ever changes, update both this file and `crates/glass_core/src/ipc.rs`.
 #[cfg(unix)]
 fn ipc_socket_path() -> std::path::PathBuf {
     dirs::home_dir()
@@ -127,7 +133,11 @@ fn ipc_socket_path() -> std::path::PathBuf {
 }
 
 /// Returns the named pipe name on Windows.
-/// Duplicated from `glass_core::ipc::ipc_pipe_name()` to avoid the heavy dependency.
+///
+/// # Duplication note
+/// This function is intentionally duplicated from `glass_core::ipc::ipc_pipe_name()`.
+/// See `ipc_socket_path` doc comment above for the rationale.
+/// If the pipe name ever changes, update both this file and `crates/glass_core/src/ipc.rs`.
 #[cfg(windows)]
 fn ipc_pipe_name() -> String {
     r"\\.\pipe\glass-terminal".to_string()
