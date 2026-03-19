@@ -282,7 +282,7 @@ struct AgentRuntime {
     project_root: Option<String>,
     /// Shared writer for sending orchestrator messages to the agent's stdin.
     orchestrator_writer:
-        Option<std::sync::Arc<std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
+        Option<std::sync::Arc<parking_lot::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
     /// Generation counter — incremented on each respawn. Used to ignore stale AgentCrashed
     /// events from orphaned reader threads of previously killed agents.
     generation: u64,
@@ -1414,7 +1414,7 @@ Session Continuity:
         .ok();
 
     // Shared stdin writer for both activity thread and orchestrator
-    let shared_writer = std::sync::Arc::new(std::sync::Mutex::new(BufWriter::new(stdin)));
+    let shared_writer = std::sync::Arc::new(parking_lot::Mutex::new(BufWriter::new(stdin)));
     let writer_clone = std::sync::Arc::clone(&shared_writer);
 
     // Writer thread: drains activity_stream_rx and writes JSON lines to claude stdin
@@ -1427,7 +1427,8 @@ Session Continuity:
 
             // Inject prior session handoff as first message before processing new events
             if let Some(ref msg) = prior_handoff_msg {
-                if let Ok(mut w) = writer_clone.lock() {
+                {
+                    let mut w = writer_clone.lock();
                     let _ = writeln!(w, "{msg}");
                     let _ = w.flush();
                 }
@@ -1447,13 +1448,12 @@ Session Continuity:
                 }
 
                 let msg = glass_core::agent_runtime::format_activity_as_user_message(&event);
-                if let Ok(mut w) = writer_clone.lock() {
+                {
+                    let mut w = writer_clone.lock();
                     if writeln!(w, "{msg}").is_err() || w.flush().is_err() {
                         // BrokenPipe: child process died
                         break;
                     }
-                } else {
-                    break;
                 }
                 last_sent = Some(std::time::Instant::now());
             }
@@ -8446,7 +8446,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Send to agent via shared stdin writer
                         if let Some(ref runtime) = self.agent_runtime {
                             if let Some(ref writer) = runtime.orchestrator_writer {
-                                if let Ok(mut w) = writer.lock() {
+                                {
+                                    let mut w = writer.lock();
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
                                     self.orchestrator.response_pending = true;
@@ -8731,7 +8732,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         if let Some(ref runtime) = self.agent_runtime {
                             if let Some(ref writer) = runtime.orchestrator_writer {
-                                if let Ok(mut w) = writer.lock() {
+                                {
+                                    let mut w = writer.lock();
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
                                     // Context was sent — mark pending so we wait for the

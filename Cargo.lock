@@ -1278,6 +1278,7 @@ dependencies = [
  "libc",
  "memory-stats",
  "notify",
+ "parking_lot",
  "pollster",
  "regex",
  "serde_json",
