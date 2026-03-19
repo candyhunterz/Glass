@@ -1,0 +1,6 @@
+name = "auto_git_status"
+hooks = ["command_complete"]
+status = "confirmed"
+origin = "user"
+version = 1
+api_version = "1"

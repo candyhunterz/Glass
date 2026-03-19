@@ -1,0 +1,6 @@
+name = "block_rm_rf"
+hooks = ["command_start"]
+status = "confirmed"
+origin = "user"
+version = 1
+api_version = "1"
