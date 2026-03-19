@@ -73,14 +73,23 @@ jobs:
             > **macOS users:** If blocked by Gatekeeper, run `xattr -cr /Applications/Glass.app` or right-click > Open.
 
   build-macos:
-    name: Build macOS Installer
+    name: Build macOS Installer (${{ matrix.arch }})
     runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-aarch64-apple-darwin
+          key: release-${{ matrix.target }}
 
       - name: Verify version matches tag
         run: |
@@ -96,15 +105,15 @@ jobs:
           fi
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build DMG installer
-        run: bash packaging/macos/build-dmg.sh "${GITHUB_REF_NAME#v}"
+        run: bash packaging/macos/build-dmg.sh "${GITHUB_REF_NAME#v}" "${{ matrix.target }}"
 
       - name: Upload DMG to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/macos/*.dmg
+          files: target/macos/*-${{ matrix.arch }}.dmg
           generate_release_notes: true
           body: |
             ## Installation
@@ -112,7 +121,8 @@ jobs:
             | Platform | Download |
             |----------|----------|
             | Windows  | `.msi` installer |
-            | macOS    | `.dmg` disk image |
+            | macOS (Apple Silicon) | `.dmg` disk image (aarch64) |
+            | macOS (Intel) | `.dmg` disk image (x86_64) |
             | Linux    | `.deb` package |
 
             > **macOS users:** If blocked by Gatekeeper, run `xattr -cr /Applications/Glass.app` or right-click > Open.
