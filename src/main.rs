@@ -415,6 +415,9 @@ struct Processor {
     settings_edit_buffer: String,
     /// Scroll offset for the Shortcuts tab.
     settings_shortcuts_scroll: usize,
+    /// Transient status message displayed in the status bar center text.
+    /// Auto-clears after 3 seconds.
+    status_message: Option<(String, std::time::Instant)>,
     /// Whether the proposal review overlay is open (Ctrl+Shift+A to toggle).
     agent_review_open: bool,
     /// Selected proposal index in the review overlay. Clamped to list bounds.
@@ -2861,10 +2864,21 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
-                    let update_text = self
-                        .update_info
-                        .as_ref()
-                        .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
+                    // Status message overrides update text for 3 seconds
+                    let update_text = if let Some((ref msg, at)) = self.status_message {
+                        if at.elapsed().as_secs() < 3 {
+                            Some(msg.clone())
+                        } else {
+                            self.status_message = None;
+                            self.update_info.as_ref().map(|info| {
+                                format!("Update v{} available (Ctrl+Shift+U)", info.latest)
+                            })
+                        }
+                    } else {
+                        self.update_info
+                            .as_ref()
+                            .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest))
+                    };
 
                     let has_agents = !self.coordination_state.agents.is_empty();
                     let coordination_text = if self.coordination_state.agent_count > 0
@@ -4509,10 +4523,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         }
                                                     }
                                                 }
-                                                tracing::info!(
-                                                    "Undo complete: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
+                                                let undo_summary = format!(
+                                                    "Undo: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
                                                     restored, deleted, skipped, conflicts, errors,
                                                 );
+                                                tracing::info!("{}", undo_summary);
+                                                self.status_message =
+                                                    Some((undo_summary, std::time::Instant::now()));
                                                 // Remove [undo] label from the undone block (visual feedback).
                                                 let epoch_to_clear = session
                                                     .block_manager
@@ -4532,9 +4549,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                             Ok(None) => {
                                                 tracing::info!("Nothing to undo -- no file-modifying commands found");
+                                                self.status_message = Some((
+                                                    "Nothing to undo".to_string(),
+                                                    std::time::Instant::now(),
+                                                ));
                                             }
                                             Err(e) => {
                                                 tracing::error!("Undo failed: {}", e);
+                                                self.status_message = Some((
+                                                    format!("Undo failed: {}", e),
+                                                    std::time::Instant::now(),
+                                                ));
                                             }
                                         }
                                     } else {
@@ -5021,7 +5046,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    // Shift+PageUp/Down: scrollback
+                    // Shift+PageUp/Down/ArrowUp/ArrowDown: scrollback (UX-9)
                     if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
                         match &event.logical_key {
                             Key::Named(NamedKey::PageUp) => {
@@ -5034,6 +5059,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Key::Named(NamedKey::PageDown) => {
                                 if let Some(session) = ctx.session() {
                                     session.term.lock().scroll_display(Scroll::PageDown);
+                                }
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::Delta(1));
+                                }
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::Delta(-1));
                                 }
                                 ctx.mark_dirty_and_redraw();
                                 return;
@@ -5102,8 +5141,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.mark_dirty_and_redraw();
                                 return;
                             } else {
-                                // Alt+Arrow: move focus
-                                if ctx.session_mux.active_tab_pane_count() > 1 {
+                                // Alt+Arrow: move focus (only when multi-pane and not in alternate screen) (UX-11)
+                                let in_alt_screen = ctx
+                                    .session_mux
+                                    .focused_session()
+                                    .map(|s| s.term.lock().mode().contains(TermMode::ALT_SCREEN))
+                                    .unwrap_or(false);
+                                if ctx.session_mux.active_tab_pane_count() > 1 && !in_alt_screen {
                                     let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                     let sc = ctx.renderer.surface_config();
                                     let container = ViewportLayout {
@@ -5410,6 +5454,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
+                        }
+                    }
+
+                    // Escape: collapse any expanded pipeline panel (UX-4)
+                    if event.state == ElementState::Pressed {
+                        if let Key::Named(NamedKey::Escape) = &event.logical_key {
+                            if let Some(session) = ctx.session_mux.focused_session_mut() {
+                                let collapsed =
+                                    session.block_manager.blocks_mut().iter_mut().any(|b| {
+                                        if b.pipeline_expanded {
+                                            b.pipeline_expanded = false;
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                if collapsed {
+                                    ctx.mark_dirty_and_redraw();
+                                    return;
+                                }
+                            }
                         }
                     }
 
@@ -10283,6 +10348,7 @@ fn main() {
                 settings_editing: false,
                 settings_edit_buffer: String::new(),
                 settings_shortcuts_scroll: 0,
+                status_message: None,
                 agent_review_open: false,
                 proposal_review_selected: 0,
                 proposal_diff_cache: None,
