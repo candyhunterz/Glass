@@ -844,7 +844,9 @@ struct JobObjectHandle(isize);
 impl Drop for JobObjectHandle {
     fn drop(&mut self) {
         unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.0 as windows_sys::Win32::Foundation::HANDLE);
+            windows_sys::Win32::Foundation::CloseHandle(
+                self.0 as windows_sys::Win32::Foundation::HANDLE,
+            );
         }
     }
 }
@@ -1600,7 +1602,8 @@ Session Continuity:
                     Ok((agent_id, nonce)) => {
                         // Advisory lock on the project root directory
                         let lock_path = std::path::PathBuf::from(&canonical_str);
-                        match db.lock_files(&agent_id, &[lock_path], Some("agent session"), &nonce) {
+                        match db.lock_files(&agent_id, &[lock_path], Some("agent session"), &nonce)
+                        {
                             Ok(_) => tracing::info!(
                                 "AgentRuntime: registered with coordination (id={})",
                                 agent_id

@@ -717,7 +717,11 @@ impl GlassServer {
         &self,
         Parameters(params): Parameters<UndoParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::info!(tool = "glass_undo", command_id = params.command_id, "MCP tool invoked");
+        tracing::info!(
+            tool = "glass_undo",
+            command_id = params.command_id,
+            "MCP tool invoked"
+        );
         if let Some(denied) = self.check_permission("glass_undo") {
             return Ok(denied);
         }
@@ -936,7 +940,9 @@ impl GlassServer {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
             let nonce = params.nonce.as_deref().unwrap_or("");
-            let ok = db.deregister(&params.agent_id, nonce).map_err(internal_err)?;
+            let ok = db
+                .deregister(&params.agent_id, nonce)
+                .map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
         })
         .await
@@ -987,7 +993,12 @@ impl GlassServer {
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
             let nonce = params.nonce.as_deref().unwrap_or("");
             let ok = db
-                .update_status(&params.agent_id, &params.status, params.task.as_deref(), nonce)
+                .update_status(
+                    &params.agent_id,
+                    &params.status,
+                    params.task.as_deref(),
+                    nonce,
+                )
                 .map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
         })
@@ -1013,7 +1024,9 @@ impl GlassServer {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
             let nonce = params.nonce.as_deref().unwrap_or("");
-            let ok = db.heartbeat(&params.agent_id, nonce).map_err(internal_err)?;
+            let ok = db
+                .heartbeat(&params.agent_id, nonce)
+                .map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
         })
         .await
@@ -1100,7 +1113,8 @@ impl GlassServer {
                 }
                 count
             } else {
-                db.unlock_all(&params.agent_id, nonce).map_err(internal_err)?
+                db.unlock_all(&params.agent_id, nonce)
+                    .map_err(internal_err)?
             };
             // MCP-12: implicit heartbeat refresh on unlock
             let _ = db.heartbeat(&params.agent_id, nonce);
