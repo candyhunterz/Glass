@@ -32,8 +32,7 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
 
     // Rust: "test module::submod::test_name ... ok"
     static RE_RUST: OnceLock<Regex> = OnceLock::new();
-    let re_rust = RE_RUST
-        .get_or_init(|| Regex::new(r"test ([\w:]+) \.\.\. (ok|FAILED)").unwrap());
+    let re_rust = RE_RUST.get_or_init(|| Regex::new(r"test ([\w:]+) \.\.\. (ok|FAILED)").unwrap());
     for caps in re_rust.captures_iter(output) {
         let name = caps[1].to_string();
         let passed = &caps[2] == "ok";
@@ -44,11 +43,18 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
                 // "test_login" -> "login", "test_connect" -> "connect"
                 let stripped = s.strip_prefix("test_").unwrap_or(s);
                 // split on "_" to get sub-segments
-                stripped.split('_').filter(|p| !p.is_empty()).collect::<Vec<_>>()
+                stripped
+                    .split('_')
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
             })
             .map(|s| s.to_lowercase())
             .collect();
-        tests.push(ParsedTest { full_name: name, segments, passed });
+        tests.push(ParsedTest {
+            full_name: name,
+            segments,
+            passed,
+        });
     }
     if !tests.is_empty() {
         return tests;
@@ -56,13 +62,16 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
 
     // Jest: "PASS src/auth.test.js" or "FAIL src/auth.test.js"
     static RE_JEST_FILE: OnceLock<Regex> = OnceLock::new();
-    let re_jest_file = RE_JEST_FILE
-        .get_or_init(|| Regex::new(r"(PASS|FAIL)\s+(\S+)").unwrap());
+    let re_jest_file = RE_JEST_FILE.get_or_init(|| Regex::new(r"(PASS|FAIL)\s+(\S+)").unwrap());
     for caps in re_jest_file.captures_iter(output) {
         let path = caps[2].to_string();
         let passed = &caps[1] == "PASS";
         let segments = path_to_segments(&path);
-        tests.push(ParsedTest { full_name: path, segments, passed });
+        tests.push(ParsedTest {
+            full_name: path,
+            segments,
+            passed,
+        });
     }
     if !tests.is_empty() {
         return tests;
@@ -70,8 +79,7 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
 
     // Pytest: "tests/test_auth.py::test_login PASSED"
     static RE_PYTEST: OnceLock<Regex> = OnceLock::new();
-    let re_pytest = RE_PYTEST
-        .get_or_init(|| Regex::new(r"(\S+::\S+)\s+(PASSED|FAILED)").unwrap());
+    let re_pytest = RE_PYTEST.get_or_init(|| Regex::new(r"(\S+::\S+)\s+(PASSED|FAILED)").unwrap());
     for caps in re_pytest.captures_iter(output) {
         let name = caps[1].to_string();
         let passed = &caps[2] == "PASSED";
@@ -86,7 +94,10 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
             .filter(|s| !s.is_empty() && *s != "py" && *s != "tests")
             .flat_map(|s| {
                 let stripped = s.strip_prefix("test_").unwrap_or(s);
-                stripped.split('_').filter(|p| !p.is_empty()).collect::<Vec<_>>()
+                stripped
+                    .split('_')
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
             })
             .map(|s| s.to_lowercase());
         // Function name segments: keep as-is (e.g. "test_login").
@@ -95,7 +106,11 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_lowercase());
         let segments: Vec<String> = path_segs.chain(func_segs).collect();
-        tests.push(ParsedTest { full_name: name, segments, passed });
+        tests.push(ParsedTest {
+            full_name: name,
+            segments,
+            passed,
+        });
     }
     if !tests.is_empty() {
         return tests;
@@ -103,13 +118,16 @@ pub fn extract_test_names(output: &str) -> Vec<ParsedTest> {
 
     // Go: "--- PASS: TestAuth (0.00s)" — subtests use parent only
     static RE_GO: OnceLock<Regex> = OnceLock::new();
-    let re_go = RE_GO
-        .get_or_init(|| Regex::new(r"--- (PASS|FAIL): (\w+)").unwrap());
+    let re_go = RE_GO.get_or_init(|| Regex::new(r"--- (PASS|FAIL): (\w+)").unwrap());
     for caps in re_go.captures_iter(output) {
         let name = caps[2].to_string();
         let passed = &caps[1] == "PASS";
         let segments = camel_to_segments(&name);
-        tests.push(ParsedTest { full_name: name, segments, passed });
+        tests.push(ParsedTest {
+            full_name: name,
+            segments,
+            passed,
+        });
     }
 
     tests
@@ -125,7 +143,8 @@ pub fn path_to_segments(path: &str) -> Vec<String> {
             !s.is_empty()
                 && !matches!(
                     *s,
-                    "src" | "lib"
+                    "src"
+                        | "lib"
                         | "mod"
                         | "index"
                         | "rs"
@@ -276,8 +295,7 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored";
 
     #[test]
     fn extract_go_test_names() {
-        let output =
-            "--- PASS: TestAuthLogin (0.00s)\n--- FAIL: TestDbConnect (0.12s)";
+        let output = "--- PASS: TestAuthLogin (0.00s)\n--- FAIL: TestDbConnect (0.12s)";
         let tests = extract_test_names(output);
         assert_eq!(tests.len(), 2);
         assert!(tests[0].passed);
@@ -287,8 +305,7 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored";
 
     #[test]
     fn extract_go_subtests_uses_parent() {
-        let output =
-            "--- PASS: TestAuth/login_success (0.00s)\n--- PASS: TestAuth (0.00s)";
+        let output = "--- PASS: TestAuth/login_success (0.00s)\n--- PASS: TestAuth (0.00s)";
         let tests = extract_test_names(output);
         assert!(tests.iter().all(|t| t.full_name == "TestAuth"));
     }
@@ -374,8 +391,14 @@ test db::tests::test_connect ... ok";
     #[test]
     fn format_coverage_gaps_message() {
         let gaps = vec![
-            CoverageGap { file: "src/db.rs".to_string(), matched_test_count: 0 },
-            CoverageGap { file: "src/config.rs".to_string(), matched_test_count: 0 },
+            CoverageGap {
+                file: "src/db.rs".to_string(),
+                matched_test_count: 0,
+            },
+            CoverageGap {
+                file: "src/config.rs".to_string(),
+                matched_test_count: 0,
+            },
         ];
         let msg = format_gaps_for_context(&gaps);
         assert!(msg.contains("[COVERAGE_GAP]"));

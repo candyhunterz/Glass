@@ -1493,6 +1493,7 @@ name = "glass_terminal"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "anyhow",
  "arboard",
  "glass_core",
  "glass_pipes",

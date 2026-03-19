@@ -950,7 +950,16 @@ fn chrono_free_timestamp() -> String {
     let month_days: [i64; 12] = [
         31,
         if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut month: i64 = 1;
     for &md in &month_days {
@@ -1114,7 +1123,6 @@ pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
 
-
 /// Build the summary string for a bounded run completion.
 pub fn build_bounded_summary(
     iterations: u32,
@@ -1253,7 +1261,9 @@ mod tests {
         let mut state = OrchestratorState::new(3);
         state.begin_synthesis("feature-a", "feature-b", "fallback content".to_string());
         match &state.checkpoint_phase {
-            CheckpointPhase::Synthesizing { completed, next, .. } => {
+            CheckpointPhase::Synthesizing {
+                completed, next, ..
+            } => {
                 assert_eq!(completed, "feature-a");
                 assert_eq!(next, "feature-b");
             }

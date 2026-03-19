@@ -748,7 +748,10 @@ fn create_session(
         } else {
             format!("source '{}'\r\n", path.display())
         };
-        pty_send(&pty_sender, PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
+        pty_send(
+            &pty_sender,
+            PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())),
+        );
         tracing::info!("Auto-injecting shell integration: {}", path.display());
     }
 
@@ -4116,7 +4119,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ) {
                                     Ok(s) => s,
                                     Err(e) => {
-                                        tracing::error!("PTY spawn failed for horizontal split: {e}");
+                                        tracing::error!(
+                                            "PTY spawn failed for horizontal split: {e}"
+                                        );
                                         return;
                                     }
                                 };
@@ -5276,10 +5281,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Orchestrator no longer auto-pauses on user input.
                         // Only Ctrl+Shift+O toggles orchestration on/off.
                         if let Some(session) = ctx.session() {
-                            pty_send(
-                                &session.pty_sender,
-                                PtyMsg::Input(Cow::Owned(bytes)),
-                            );
+                            pty_send(&session.pty_sender, PtyMsg::Input(Cow::Owned(bytes)));
                         }
                         tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                     }
@@ -5757,7 +5759,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Multi-pane click focus: if click is in a different pane, change focus
                 if ctx.session_mux.active_tab_pane_count() > 1 {
-                    if let Some((click_x, click_y)) = ctx.session().and_then(|s| s.cursor_position) {
+                    if let Some((click_x, click_y)) = ctx.session().and_then(|s| s.cursor_position)
+                    {
                         let (_, cell_h) = ctx.frame_renderer.cell_size();
                         let sc = ctx.renderer.surface_config();
                         let container = ViewportLayout {
@@ -5826,7 +5829,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
-                let needs_redraw = if let Some((_, y)) = ctx.session().and_then(|s| s.cursor_position) {
+                let needs_redraw = if let Some((_, y)) =
+                    ctx.session().and_then(|s| s.cursor_position)
+                {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let size = ctx.window.inner_size();
                     let viewport_h = size.height as f32;
@@ -6008,10 +6013,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Normal terminal scroll
                         // Positive delta = scroll up (into history), negative = scroll down
                         if let Some(session) = ctx.session() {
-                            session
-                                .term
-                                .lock()
-                                .scroll_display(Scroll::Delta(lines));
+                            session.term.lock().scroll_display(Scroll::Delta(lines));
                         }
                         ctx.window.request_redraw();
                     }
@@ -7262,9 +7264,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             ) {
                                 pty_send(
                                     &session.pty_sender,
-                                    glass_terminal::PtyMsg::Input(
-                                        std::borrow::Cow::Owned(hint.into_bytes()),
-                                    ),
+                                    glass_terminal::PtyMsg::Input(std::borrow::Cow::Owned(
+                                        hint.into_bytes(),
+                                    )),
                                 );
                             }
                         }
@@ -9112,7 +9114,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     )
                                 }
                                 Ok(session) => {
-                                    let tab_id = ctx.session_mux.add_tab(session, self.orchestrator.active);
+                                    let tab_id =
+                                        ctx.session_mux.add_tab(session, self.orchestrator.active);
                                     let new_tab_index = ctx.session_mux.tab_count() - 1;
                                     {
                                         let mut event = glass_scripting::HookEventData::new();

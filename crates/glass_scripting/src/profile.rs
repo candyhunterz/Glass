@@ -97,10 +97,7 @@ pub fn export_profile(
         // Derive filenames from the manifest name.
         let base_name = &manifest.name;
         fs::write(target_dir.join(format!("{base_name}.toml")), toml_str)?;
-        fs::write(
-            target_dir.join(format!("{base_name}.rhai")),
-            &script.source,
-        )?;
+        fs::write(target_dir.join(format!("{base_name}.rhai")), &script.source)?;
 
         if script.manifest.script_type == "mcp_tool" {
             tool_count += 1;
@@ -184,10 +181,7 @@ pub fn import_profile(
 
         let base_name = &manifest.name;
         fs::write(target_dir.join(format!("{base_name}.toml")), toml_str)?;
-        fs::write(
-            target_dir.join(format!("{base_name}.rhai")),
-            &script.source,
-        )?;
+        fs::write(target_dir.join(format!("{base_name}.rhai")), &script.source)?;
 
         imported += 1;
     }
@@ -329,8 +323,7 @@ type = "{script_type}"
         // Verify the exported manifest has status = provisional.
         let exported_manifest_str =
             fs::read_to_string(exported_hooks.join("good-hook.toml")).unwrap();
-        let exported_manifest: ScriptManifest =
-            toml::from_str(&exported_manifest_str).unwrap();
+        let exported_manifest: ScriptManifest = toml::from_str(&exported_manifest_str).unwrap();
         assert_eq!(exported_manifest.status, ScriptStatus::Provisional);
 
         // -- Import into a fresh directory --
@@ -347,8 +340,7 @@ type = "{script_type}"
 
         let imported_manifest_str =
             fs::read_to_string(imported_hooks.join("good-hook.toml")).unwrap();
-        let imported_manifest: ScriptManifest =
-            toml::from_str(&imported_manifest_str).unwrap();
+        let imported_manifest: ScriptManifest = toml::from_str(&imported_manifest_str).unwrap();
         assert_eq!(imported_manifest.status, ScriptStatus::Provisional);
 
         // -- Import again: should skip the duplicate --

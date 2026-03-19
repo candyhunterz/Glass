@@ -532,7 +532,8 @@ mod regex_compilation_tests {
     #[test]
     fn regex_rust_pattern_compiles() {
         // "45 passed; 2 failed" — triggers RE_RUST
-        let (passed, failed) = parse_test_counts_from_output("test result: ok. 45 passed; 2 failed; 0 ignored");
+        let (passed, failed) =
+            parse_test_counts_from_output("test result: ok. 45 passed; 2 failed; 0 ignored");
         assert_eq!(passed, Some(45));
         assert_eq!(failed, Some(2));
     }
@@ -540,7 +541,8 @@ mod regex_compilation_tests {
     #[test]
     fn regex_jest_pattern_compiles() {
         // Jest output — triggers RE_JEST
-        let (passed, failed) = parse_test_counts_from_output("Tests: 2 failed, 45 passed, 47 total");
+        let (passed, failed) =
+            parse_test_counts_from_output("Tests: 2 failed, 45 passed, 47 total");
         assert_eq!(passed, Some(45));
         assert_eq!(failed, Some(2));
     }

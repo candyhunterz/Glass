@@ -9,9 +9,7 @@ use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use glass_core::event::{
-    AppEvent, EphemeralAgentError, EphemeralAgentResult, EphemeralPurpose,
-};
+use glass_core::event::{AppEvent, EphemeralAgentError, EphemeralAgentResult, EphemeralPurpose};
 use winit::event_loop::EventLoopProxy;
 
 /// Request for an ephemeral agent session.
@@ -37,7 +35,11 @@ fn parse_assistant_text(line: &str) -> Option<String> {
             }
         }
     }
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// Parse cost and duration from a stream-json result message.
@@ -81,7 +83,9 @@ pub fn spawn_ephemeral_agent(
                 Ok(resp) => {
                     tracing::info!(
                         "Ephemeral agent ({:?}): completed in {:?}ms, cost={:?}",
-                        request.purpose, resp.duration_ms, resp.cost_usd,
+                        request.purpose,
+                        resp.duration_ms,
+                        resp.cost_usd,
                     );
                 }
                 Err(e) => {
@@ -115,10 +119,14 @@ fn run_ephemeral_blocking(
     let mut cmd = Command::new("claude");
     cmd.args([
         "-p",
-        "--output-format", "stream-json",
-        "--input-format", "stream-json",
-        "--system-prompt-file", &prompt_path,
-        "--allowedTools", "",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--system-prompt-file",
+        &prompt_path,
+        "--allowedTools",
+        "",
         "--dangerously-skip-permissions",
     ]);
     cmd.stdin(Stdio::piped());
@@ -179,7 +187,9 @@ fn run_ephemeral_blocking(
                 Ok(l) => l,
                 Err(_) => break,
             };
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Some(text) = parse_assistant_text(&line) {
                 response_text = text;
             }

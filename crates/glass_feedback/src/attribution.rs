@@ -36,7 +36,11 @@ pub fn update(
 
         if fired {
             score.runs_fired += 1;
-            update_rolling_avg(&mut score.avg_delta_when_fired, metric_deltas, score.runs_fired);
+            update_rolling_avg(
+                &mut score.avg_delta_when_fired,
+                metric_deltas,
+                score.runs_fired,
+            );
         } else {
             score.runs_not_fired += 1;
             update_rolling_avg(
