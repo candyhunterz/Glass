@@ -1383,10 +1383,18 @@ impl GlassServer {
                         all_lines[start..].to_vec()
                     };
 
-                    // Apply regex filter
+                    // Apply regex filter (with size limits to prevent ReDoS)
                     let filtered: Vec<String> = if let Some(ref pat) = pattern {
-                        let re =
-                            regex::Regex::new(pat).map_err(|e| format!("Invalid regex: {}", e))?;
+                        if pat.len() > 1000 {
+                            return Err(format!(
+                                "Regex pattern too long ({} chars, max 1000)",
+                                pat.len()
+                            ));
+                        }
+                        let re = regex::RegexBuilder::new(pat)
+                            .size_limit(1_000_000)
+                            .build()
+                            .map_err(|e| format!("Invalid regex: {e}"))?;
                         sliced
                             .into_iter()
                             .filter(|l| re.is_match(l))
