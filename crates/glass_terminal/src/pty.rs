@@ -166,7 +166,7 @@ pub fn spawn_pty(
     orchestrator_silence_secs: u64,
     orchestrator_fast_trigger_secs: u64,
     orchestrator_prompt_pattern: Option<String>,
-) -> (PtySender, Arc<FairMutex<Term<EventProxy>>>) {
+) -> anyhow::Result<(PtySender, Arc<FairMutex<Term<EventProxy>>>)> {
     // Use configured shell if provided, otherwise detect platform default
     let shell_program = if let Some(shell) = shell_override {
         shell.to_owned()
@@ -200,7 +200,8 @@ pub fn spawn_pty(
         cell_height: 16,
     };
 
-    let mut pty = tty::new(&options, window_size, 0).expect("Failed to spawn PTY");
+    let mut pty = tty::new(&options, window_size, 0)
+        .map_err(|e| anyhow::anyhow!("Failed to spawn PTY: {e}"))?;
 
     let term_size = TermSize {
         columns: 80,
@@ -218,7 +219,7 @@ pub fn spawn_pty(
 
     // Set up polling infrastructure (mirrors alacritty's event_loop.rs)
     let poll: Arc<polling::Poller> = polling::Poller::new()
-        .expect("Failed to create poller")
+        .map_err(|e| anyhow::anyhow!("Failed to create poller: {e}"))?
         .into();
     let (tx, rx) = mpsc::channel();
 
@@ -232,7 +233,7 @@ pub fn spawn_pty(
     let interest = PollingEvent::readable(0);
     unsafe {
         pty.register(&poll, interest, poll_opts)
-            .expect("Failed to register PTY with poller");
+            .map_err(|e| anyhow::anyhow!("Failed to register PTY with poller: {e}"))?;
     }
 
     let term_clone = Arc::clone(&term);
@@ -255,9 +256,9 @@ pub fn spawn_pty(
                 orchestrator_prompt_pattern,
             );
         })
-        .expect("Failed to spawn PTY reader thread");
+        .map_err(|e| anyhow::anyhow!("Failed to spawn PTY reader thread: {e}"))?;
 
-    (pty_sender, term)
+    Ok((pty_sender, term))
 }
 
 /// Custom PTY event loop with integrated OscScanner.

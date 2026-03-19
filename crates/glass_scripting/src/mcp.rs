@@ -119,10 +119,7 @@ fn build_params_schema(params: &Option<toml::Value>) -> serde_json::Value {
             toml::Value::Boolean(_) => "boolean",
             _ => "string",
         };
-        properties.insert(
-            key.clone(),
-            serde_json::json!({ "type": type_str }),
-        );
+        properties.insert(key.clone(), serde_json::json!({ "type": type_str }));
     }
 
     serde_json::json!({
@@ -154,7 +151,10 @@ mod tests {
                 description: Some(format!("Tool: {}", name)),
                 params: Some(toml::Value::Table({
                     let mut t = toml::map::Map::new();
-                    t.insert("input".to_string(), toml::Value::String("string".to_string()));
+                    t.insert(
+                        "input".to_string(),
+                        toml::Value::String("string".to_string()),
+                    );
                     t
                 })),
             },

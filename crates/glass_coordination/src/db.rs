@@ -27,16 +27,53 @@ impl CoordinationDb {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let conn = Self::open_connection(path)?;
+        Self::create_schema(&conn)?;
+        Self::migrate(&conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Open a connection with WAL pragmas, performing corruption recovery if needed.
+    fn open_connection(path: &Path) -> Result<Connection> {
         let conn = Connection::open(path)?;
-        conn.execute_batch(
+        let pragma_result = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;
              PRAGMA foreign_keys = ON;",
-        )?;
-        Self::create_schema(&conn)?;
-        Self::migrate(&conn)?;
-        Ok(Self { conn })
+        );
+        // If pragmas fail, the file is likely corrupt (e.g. "file is not a database").
+        let corrupt_reason = if let Err(ref e) = pragma_result {
+            Some(format!("pragma failed: {e}"))
+        } else {
+            // Check database integrity
+            match conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)) {
+                Ok(ref result) if result == "ok" => None,
+                Ok(ref result) => Some(format!("integrity_check returned: {result}")),
+                Err(ref e) => Some(format!("integrity_check error: {e}")),
+            }
+        };
+        if let Some(reason) = corrupt_reason {
+            tracing::warn!(
+                "Database corruption detected at {} ({reason})",
+                path.display()
+            );
+            drop(conn);
+            let backup = path.with_extension("db.corrupt");
+            tracing::warn!("Renaming corrupt DB to {}", backup.display());
+            let _ = std::fs::rename(path, &backup);
+            // Reopen fresh database
+            let conn = Connection::open(path)?;
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA busy_timeout = 5000;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            Ok(conn)
+        } else {
+            Ok(conn)
+        }
     }
 
     /// Open the default coordination database at `~/.glass/agents.db`.
@@ -1936,6 +1973,19 @@ mod tests {
         assert!(
             msg.contains("Recipient agent not found"),
             "Expected 'Recipient agent not found', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_corrupt_db_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        std::fs::write(&db_path, b"not a sqlite database at all").unwrap();
+        let db = CoordinationDb::open(&db_path);
+        assert!(db.is_ok(), "Should recover from corrupt DB");
+        assert!(
+            db_path.with_extension("db.corrupt").exists(),
+            "Corrupt DB should be renamed"
         );
     }
 }

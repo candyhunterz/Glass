@@ -1278,6 +1278,7 @@ dependencies = [
  "libc",
  "memory-stats",
  "notify",
+ "parking_lot",
  "pollster",
  "regex",
  "serde_json",
@@ -1492,6 +1493,7 @@ name = "glass_terminal"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "anyhow",
  "arboard",
  "glass_core",
  "glass_pipes",

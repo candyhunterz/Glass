@@ -9,6 +9,7 @@ perf = []
 [dependencies]
 glass_core = { path = "../glass_core" }
 alacritty_terminal.workspace = true
+anyhow.workspace = true
 arboard.workspace = true
 tokio.workspace = true
 winit.workspace = true

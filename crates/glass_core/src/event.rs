@@ -111,6 +111,7 @@ pub enum AppEvent {
     TerminalExit {
         window_id: winit::window::WindowId,
         session_id: SessionId,
+        exit_code: Option<i32>,
     },
     /// Shell integration event from the PTY reader thread's OscScanner.
     Shell {

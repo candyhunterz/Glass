@@ -13,7 +13,7 @@ pub fn prune(conn: &Connection, max_age_days: u32, max_size_bytes: u64) -> Resul
     // 1. Age-based pruning
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(std::time::Duration::ZERO)
         .as_secs() as i64
         - (max_age_days as i64 * 86400);
 

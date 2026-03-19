@@ -113,7 +113,10 @@ impl ScriptSystem {
         }
 
         for script in scripts {
-            match self.engine.run_script(&script.manifest.name, context, event_data) {
+            match self
+                .engine
+                .run_script(&script.manifest.name, context, event_data)
+            {
                 Ok(actions) => {
                     // McpRequest: first script with non-empty actions wins.
                     if is_mcp_request && !actions.is_empty() {
@@ -123,9 +126,7 @@ impl ScriptSystem {
                     result.actions.extend(actions);
                 }
                 Err(e) => {
-                    result
-                        .errors
-                        .push((script.manifest.name.clone(), e));
+                    result.errors.push((script.manifest.name.clone(), e));
 
                     // SnapshotBefore veto: confirmed or user-origin script
                     // errors count as a veto.
@@ -177,8 +178,7 @@ impl ScriptSystem {
     /// Compile scripts, rebuild the registry, return compile errors.
     fn ingest(&mut self, scripts: Vec<types::LoadedScript>) -> Vec<(String, String)> {
         let errors = self.engine.compile_all(&scripts);
-        self.registry =
-            hooks::HookRegistry::new(scripts, self.sandbox.max_scripts_per_hook);
+        self.registry = hooks::HookRegistry::new(scripts, self.sandbox.max_scripts_per_hook);
         errors
     }
 }
@@ -314,11 +314,7 @@ type = "hook"
 "#;
         fs::write(hooks_dir.join("bad-guard.toml"), manifest).unwrap();
         // Script that will error at runtime
-        fs::write(
-            hooks_dir.join("bad-guard.rhai"),
-            "let x = missing_fn();",
-        )
-        .unwrap();
+        fs::write(hooks_dir.join("bad-guard.rhai"), "let x = missing_fn();").unwrap();
 
         let mut system = ScriptSystem::new(SandboxConfig::default());
         let errors = system.load_from_dir(tmp.path());

@@ -51,6 +51,34 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 // ---------------------------------------------------------------------------
+// Fatal error helper
+// ---------------------------------------------------------------------------
+
+/// Show a fatal error message and exit. On Windows (where stderr is hidden
+/// due to windows_subsystem="windows"), uses a native message box.
+fn show_fatal_error(msg: &str) -> ! {
+    eprintln!("Glass fatal error: {msg}");
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let wide_msg: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_title: Vec<u16> = "Glass Error"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide_msg.as_ptr(),
+                wide_title.as_ptr(),
+                MB_ICONERROR | MB_OK,
+            );
+        }
+    }
+    std::process::exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // CLI definition (clap derive)
 // ---------------------------------------------------------------------------
 
@@ -227,18 +255,14 @@ struct WindowContext {
 }
 
 impl WindowContext {
-    /// Get an immutable reference to the focused session.
-    fn session(&self) -> &Session {
-        self.session_mux
-            .focused_session()
-            .expect("no focused session")
+    /// Get an immutable reference to the focused session (if any).
+    fn session(&self) -> Option<&Session> {
+        self.session_mux.focused_session()
     }
 
-    /// Get a mutable reference to the focused session.
-    fn session_mut(&mut self) -> &mut Session {
-        self.session_mux
-            .focused_session_mut()
-            .expect("no focused session")
+    /// Get a mutable reference to the focused session (if any).
+    fn session_mut(&mut self) -> Option<&mut Session> {
+        self.session_mux.focused_session_mut()
     }
 }
 
@@ -282,7 +306,7 @@ struct AgentRuntime {
     project_root: Option<String>,
     /// Shared writer for sending orchestrator messages to the agent's stdin.
     orchestrator_writer:
-        Option<std::sync::Arc<std::sync::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
+        Option<std::sync::Arc<parking_lot::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
     /// Generation counter — incremented on each respawn. Used to ignore stale AgentCrashed
     /// events from orphaned reader threads of previously killed agents.
     generation: u64,
@@ -435,8 +459,12 @@ impl Drop for AgentRuntime {
             match child.try_wait() {
                 Ok(Some(_)) => {} // already exited
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(e) = child.kill() {
+                        tracing::debug!("Agent child kill: {e}");
+                    }
+                    if let Err(e) = child.wait() {
+                        tracing::warn!("Agent child wait failed: {e}");
+                    }
                 }
             }
         }
@@ -614,7 +642,7 @@ fn resize_all_panes(
         };
 
         if let Some(session) = session_mux.session_mut(*sid) {
-            let _ = session.pty_sender.send(PtyMsg::Resize(pane_size));
+            pty_send(&session.pty_sender, PtyMsg::Resize(pane_size));
             session.term.lock().resize(TermDimensions {
                 columns: pane_cols as usize,
                 screen_lines: pane_lines as usize,
@@ -639,7 +667,7 @@ fn create_session(
     window_width: u32,
     window_height: u32,
     tab_bar_lines: u16,
-) -> Session {
+) -> anyhow::Result<Session> {
     let event_proxy = EventProxy::new(proxy.clone(), window_id, session_id);
 
     let max_output_kb = config
@@ -679,7 +707,7 @@ fn create_session(
         orchestrator_silence_secs,
         fast_trigger,
         prompt_pattern,
-    );
+    )?;
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
     let num_cols = ((window_width as f32 - SCROLLBAR_WIDTH) / cell_w)
@@ -694,7 +722,7 @@ fn create_session(
         cell_width: cell_w as u16,
         cell_height: cell_h as u16,
     };
-    let _ = pty_sender.send(PtyMsg::Resize(initial_size));
+    pty_send(&pty_sender, PtyMsg::Resize(initial_size));
     term.lock().resize(TermDimensions {
         columns: num_cols as usize,
         screen_lines: num_lines as usize,
@@ -720,7 +748,10 @@ fn create_session(
         } else {
             format!("source '{}'\r\n", path.display())
         };
-        let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
+        pty_send(
+            &pty_sender,
+            PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())),
+        );
         tracing::info!("Auto-injecting shell integration: {}", path.display());
     }
 
@@ -756,7 +787,7 @@ fn create_session(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| String::from("Glass"));
 
-    Session {
+    Ok(Session {
         id: session_id,
         pty_sender,
         term,
@@ -775,12 +806,25 @@ fn create_session(
         pending_parse_confidence: None,
         cursor_position: None,
         title,
+    })
+}
+
+/// Send a message to the PTY, logging if the channel is dead.
+///
+/// Returns `true` if the send succeeded, `false` if the shell has already exited.
+fn pty_send(sender: &PtySender, msg: PtyMsg) -> bool {
+    match sender.send(msg) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!("PTY channel closed — shell has exited: {e}");
+            false
+        }
     }
 }
 
 /// Clean up a session by shutting down its PTY.
 fn cleanup_session(session: Session) {
-    let _ = session.pty_sender.send(PtyMsg::Shutdown);
+    pty_send(&session.pty_sender, PtyMsg::Shutdown);
     // Session is dropped here, releasing all resources
 }
 
@@ -1410,7 +1454,7 @@ Session Continuity:
         .ok();
 
     // Shared stdin writer for both activity thread and orchestrator
-    let shared_writer = std::sync::Arc::new(std::sync::Mutex::new(BufWriter::new(stdin)));
+    let shared_writer = std::sync::Arc::new(parking_lot::Mutex::new(BufWriter::new(stdin)));
     let writer_clone = std::sync::Arc::clone(&shared_writer);
 
     // Writer thread: drains activity_stream_rx and writes JSON lines to claude stdin
@@ -1423,7 +1467,8 @@ Session Continuity:
 
             // Inject prior session handoff as first message before processing new events
             if let Some(ref msg) = prior_handoff_msg {
-                if let Ok(mut w) = writer_clone.lock() {
+                {
+                    let mut w = writer_clone.lock();
                     let _ = writeln!(w, "{msg}");
                     let _ = w.flush();
                 }
@@ -1443,13 +1488,12 @@ Session Continuity:
                 }
 
                 let msg = glass_core::agent_runtime::format_activity_as_user_message(&event);
-                if let Ok(mut w) = writer_clone.lock() {
+                {
+                    let mut w = writer_clone.lock();
                     if writeln!(w, "{msg}").is_err() || w.flush().is_err() {
                         // BrokenPipe: child process died
                         break;
                     }
-                } else {
-                    break;
                 }
                 last_sent = Some(std::time::Instant::now());
             }
@@ -2286,7 +2330,9 @@ impl Processor {
         let cp_path = std::path::Path::new(cwd)
             .join(".glass")
             .join("checkpoint.md");
-        let _ = std::fs::create_dir_all(cp_path.parent().unwrap());
+        if let Some(parent) = cp_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Err(e) = std::fs::write(&cp_path, content) {
             tracing::warn!("Failed to write checkpoint.md: {e}");
         }
@@ -2321,7 +2367,7 @@ impl ApplicationHandler<AppEvent> for Processor {
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
-                .expect("Failed to create window"),
+                .unwrap_or_else(|e| show_fatal_error(&format!("Failed to create window: {e}"))),
         );
 
         // Parallelize font discovery with GPU init — FontSystem::new() enumerates
@@ -2332,7 +2378,10 @@ impl ApplicationHandler<AppEvent> for Processor {
         let renderer = pollster::block_on(GlassRenderer::new(Arc::clone(&window)));
 
         // Join font thread — should already be done since GPU init takes longer
-        let font_system = font_handle.join().expect("Font system thread panicked");
+        let font_system = font_handle.join().unwrap_or_else(|_| {
+            tracing::warn!("Font system thread panicked, using default");
+            FontSystem::new()
+        });
 
         // Create FrameRenderer with pre-loaded font system
         let scale_factor = window.scale_factor() as f32;
@@ -2366,7 +2415,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         // Create the initial session using the helper
         let session_id = SessionId::new(0);
-        let session = create_session(
+        let session = match create_session(
             &self.proxy,
             window.id(),
             session_id,
@@ -2377,7 +2426,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             size.width,
             size.height,
             1, // 1 tab bar line
-        );
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("PTY spawn failed: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
 
         tracing::info!("PTY spawned -- shell is running");
 
@@ -2573,9 +2629,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
                 // Keep requesting redraws while search is pending (debounce timer not elapsed)
-                if let Some(ref overlay) = ctx.session().search_overlay {
-                    if overlay.search_pending {
-                        ctx.window.request_redraw();
+                if let Some(session) = ctx.session() {
+                    if let Some(ref overlay) = session.search_overlay {
+                        if overlay.search_pending {
+                            ctx.window.request_redraw();
+                        }
                     }
                 }
 
@@ -2613,7 +2671,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if pane_count <= 1 {
                     // Single-pane path: use existing draw_frame for backward compatibility
                     let snapshot = {
-                        let session = ctx.session();
+                        let Some(session) = ctx.session() else {
+                            return;
+                        };
                         let term = session.term.lock();
                         snapshot_term(&term, &session.default_colors)
                     };
@@ -3702,7 +3762,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         cell_height: cell_h as u16,
                     };
                     if let Some(session) = ctx.session_mux.focused_session_mut() {
-                        let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                        pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                         session.term.lock().resize(TermDimensions {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
@@ -3735,7 +3795,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .collect();
                 for sid in bg_session_ids {
                     if let Some(session) = ctx.session_mux.session_mut(sid) {
-                        let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                        pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                         session.term.lock().resize(TermDimensions {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
@@ -3785,7 +3845,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             cell_height: cell_h as u16,
                         };
                         if let Some(session) = ctx.session_mux.focused_session_mut() {
-                            let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                            pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                             session.term.lock().resize(TermDimensions {
                                 columns: num_cols as usize,
                                 screen_lines: num_lines as usize,
@@ -3817,7 +3877,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .collect();
                     for sid in bg_session_ids {
                         if let Some(session) = ctx.session_mux.session_mut(sid) {
-                            let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                            pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                             session.term.lock().resize(TermDimensions {
                                 columns: num_cols as usize,
                                 screen_lines: num_lines as usize,
@@ -3920,18 +3980,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    let mode = *ctx.session().term.lock().mode();
+                    let Some(session) = ctx.session() else {
+                        return;
+                    };
+                    let mode = *session.term.lock().mode();
 
                     // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
                     if glass_mux::is_glass_shortcut(modifiers) {
                         match &event.logical_key {
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
                                 // New tab: inherit CWD from current session
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -3942,7 +4008,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for new tab: {e}");
+                                        return;
+                                    }
+                                };
                                 ctx.session_mux.add_tab(session, false);
                                 {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
@@ -4026,11 +4098,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
                                 // Horizontal split (new pane to the right)
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -4041,7 +4116,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "PTY spawn failed for horizontal split: {e}"
+                                        );
+                                        return;
+                                    }
+                                };
                                 if ctx
                                     .session_mux
                                     .split_pane(SplitDirection::Horizontal, session)
@@ -4062,11 +4145,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
                                 // Vertical split (new pane below)
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -4077,7 +4163,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for vertical split: {e}");
+                                        return;
+                                    }
+                                };
                                 if ctx
                                     .session_mux
                                     .split_pane(SplitDirection::Vertical, session)
@@ -4198,15 +4290,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
-                                clipboard_copy(&ctx.session().term);
+                                if let Some(session) = ctx.session() {
+                                    clipboard_copy(&session.term);
+                                }
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
-                                clipboard_paste(&ctx.session().pty_sender, mode);
+                                if let Some(session) = ctx.session() {
+                                    clipboard_paste(&session.pty_sender, mode);
+                                }
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
-                                ctx.session_mut().search_overlay = Some(SearchOverlay::new());
+                                if let Some(session) = ctx.session_mut() {
+                                    session.search_overlay = Some(SearchOverlay::new());
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -4396,9 +4494,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 prd_rel
                                             );
                                             let bytes = msg.into_bytes();
-                                            let _ = session.pty_sender.send(PtyMsg::Input(
-                                                std::borrow::Cow::Owned(bytes),
-                                            ));
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                            );
                                         }
                                         tracing::info!(
                                             "Orchestrator: PRD found at {}, prompting user",
@@ -4408,9 +4507,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         // No PRD — tell user to describe what they want
                                         if let Some(session) = ctx.session_mux.focused_session() {
                                             let msg = "\r\n[GLASS] Orchestrator active. No PRD found — describe what you want to build, then wait for the loop to start.\r\n";
-                                            let _ = session.pty_sender.send(PtyMsg::Input(
-                                                std::borrow::Cow::Owned(msg.as_bytes().to_vec()),
-                                            ));
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(std::borrow::Cow::Owned(
+                                                    msg.as_bytes().to_vec(),
+                                                )),
+                                            );
                                         }
                                         tracing::info!(
                                             "Orchestrator: no PRD at {} — kickoff mode",
@@ -4746,7 +4848,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         let cp_path = std::path::Path::new(&cwd)
                                             .join(".glass")
                                             .join("checkpoint.md");
-                                        let _ = std::fs::create_dir_all(cp_path.parent().unwrap());
+                                        if let Some(parent) = cp_path.parent() {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
                                         if let Some(fallback) =
                                             self.orchestrator.cached_checkpoint_fallback.take()
                                         {
@@ -4776,12 +4880,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
                         match &event.logical_key {
                             Key::Named(NamedKey::PageUp) => {
-                                ctx.session().term.lock().scroll_display(Scroll::PageUp);
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::PageUp);
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::PageDown) => {
-                                ctx.session().term.lock().scroll_display(Scroll::PageDown);
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::PageDown);
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -5172,16 +5280,17 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Orchestrator no longer auto-pauses on user input.
                         // Only Ctrl+Shift+O toggles orchestration on/off.
-                        let _ = ctx
-                            .session()
-                            .pty_sender
-                            .send(PtyMsg::Input(Cow::Owned(bytes)));
+                        if let Some(session) = ctx.session() {
+                            pty_send(&session.pty_sender, PtyMsg::Input(Cow::Owned(bytes)));
+                        }
                         tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                     }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                ctx.session_mut().cursor_position = Some((position.x, position.y));
+                if let Some(session) = ctx.session_mut() {
+                    session.cursor_position = Some((position.x, position.y));
+                }
 
                 let mouse_x = position.x as f32;
                 let mouse_y = position.y as f32;
@@ -5372,21 +5481,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             Side::Right
                         };
-                        let mut term = ctx.session().term.lock();
-                        let display_offset = term.grid().display_offset();
-                        let columns = term.columns();
-                        let screen_lines = term.screen_lines();
-                        let col = col.min(columns.saturating_sub(1));
-                        let row = row.min(screen_lines.saturating_sub(1));
-                        let point = alacritty_terminal::index::Point::new(
-                            Line(row as i32 - display_offset as i32),
-                            Column(col),
-                        );
-                        if let Some(ref mut sel) = term.selection {
-                            sel.update(point, side);
+                        if let Some(session) = ctx.session() {
+                            let mut term = session.term.lock();
+                            let display_offset = term.grid().display_offset();
+                            let columns = term.columns();
+                            let screen_lines = term.screen_lines();
+                            let col = col.min(columns.saturating_sub(1));
+                            let row = row.min(screen_lines.saturating_sub(1));
+                            let point = alacritty_terminal::index::Point::new(
+                                Line(row as i32 - display_offset as i32),
+                                Column(col),
+                            );
+                            if let Some(ref mut sel) = term.selection {
+                                sel.update(point, side);
+                            }
+                            drop(term);
+                            ctx.window.request_redraw();
                         }
-                        drop(term);
-                        ctx.window.request_redraw();
                     }
                 }
             }
@@ -5398,7 +5509,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 ctx.mouse_left_pressed = true;
 
                 // Tab bar click handling
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     if (y as f32) < cell_h {
                         // Click is in tab bar region
@@ -5446,11 +5557,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                             }
                             Some(TabHitResult::NewTabButton) => {
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h_inner) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -5461,7 +5575,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for new tab button: {e}");
+                                        return;
+                                    }
+                                };
                                 ctx.session_mux.add_tab(session, false);
                                 {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
@@ -5483,7 +5603,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Scrollbar click handling (before text selection)
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     let sc = ctx.renderer.surface_config();
                     let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
@@ -5639,7 +5759,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Multi-pane click focus: if click is in a different pane, change focus
                 if ctx.session_mux.active_tab_pane_count() > 1 {
-                    if let Some((click_x, click_y)) = ctx.session().cursor_position {
+                    if let Some((click_x, click_y)) = ctx.session().and_then(|s| s.cursor_position)
+                    {
                         let (_, cell_h) = ctx.frame_renderer.cell_size();
                         let sc = ctx.renderer.surface_config();
                         let container = ViewportLayout {
@@ -5672,7 +5793,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Start text selection at the clicked grid position
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
                         cell_h
@@ -5689,23 +5810,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             Side::Right
                         };
-                        let mut term = ctx.session().term.lock();
-                        let display_offset = term.grid().display_offset();
-                        let columns = term.columns();
-                        let screen_lines = term.screen_lines();
-                        let col = col.min(columns.saturating_sub(1));
-                        let row = row.min(screen_lines.saturating_sub(1));
-                        let point = alacritty_terminal::index::Point::new(
-                            Line(row as i32 - display_offset as i32),
-                            Column(col),
-                        );
-                        term.selection = Some(Selection::new(SelectionType::Simple, point, side));
-                        drop(term);
-                        ctx.window.request_redraw();
+                        if let Some(session) = ctx.session() {
+                            let mut term = session.term.lock();
+                            let display_offset = term.grid().display_offset();
+                            let columns = term.columns();
+                            let screen_lines = term.screen_lines();
+                            let col = col.min(columns.saturating_sub(1));
+                            let row = row.min(screen_lines.saturating_sub(1));
+                            let point = alacritty_terminal::index::Point::new(
+                                Line(row as i32 - display_offset as i32),
+                                Column(col),
+                            );
+                            term.selection =
+                                Some(Selection::new(SelectionType::Simple, point, side));
+                            drop(term);
+                            ctx.window.request_redraw();
+                        }
                     }
                 }
 
-                let needs_redraw = if let Some((_, y)) = ctx.session().cursor_position {
+                let needs_redraw = if let Some((_, y)) =
+                    ctx.session().and_then(|s| s.cursor_position)
+                {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let size = ctx.window.inner_size();
                     let viewport_h = size.height as f32;
@@ -5789,14 +5915,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
                 ctx.mouse_left_pressed = false;
                 // Copy selection to clipboard on mouse release
-                clipboard_copy(&ctx.session().term);
+                if let Some(session) = ctx.session() {
+                    clipboard_copy(&session.term);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Middle,
                 ..
             } => {
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     if (y as f32) < cell_h {
                         let viewport_w = ctx.window.inner_size().width as f32;
@@ -5884,10 +6012,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     } else {
                         // Normal terminal scroll
                         // Positive delta = scroll up (into history), negative = scroll down
-                        ctx.session()
-                            .term
-                            .lock()
-                            .scroll_display(Scroll::Delta(lines));
+                        if let Some(session) = ctx.session() {
+                            session.term.lock().scroll_display(Scroll::Delta(lines));
+                        }
                         ctx.window.request_redraw();
                     }
                 }
@@ -5901,10 +6028,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                 } else {
                     path_str.into_owned()
                 };
-                let _ = ctx
-                    .session()
-                    .pty_sender
-                    .send(PtyMsg::Input(Cow::Owned(text.into_bytes())));
+                if let Some(session) = ctx.session() {
+                    pty_send(
+                        &session.pty_sender,
+                        PtyMsg::Input(Cow::Owned(text.into_bytes())),
+                    );
+                }
             }
             _ => {}
         }
@@ -5943,7 +6072,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::TerminalExit {
                 window_id,
                 session_id,
+                exit_code,
             } => {
+                // Show exit message for non-zero codes
+                if let Some(code) = exit_code {
+                    if code != 0 {
+                        tracing::info!("Shell exited with code {code} (session {session_id})");
+                    }
+                }
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Find the tab containing this session
                     let tab_idx = ctx
@@ -6077,9 +6213,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 cp_rel,
                             );
                             let bytes = restart_msg.into_bytes();
-                            let _ = session
-                                .pty_sender
-                                .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            pty_send(
+                                &session.pty_sender,
+                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                            );
                             self.orchestrator.mark_pty_write();
                         }
 
@@ -7125,9 +7262,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 min_lines,
                                 raw_line_count,
                             ) {
-                                let _ = session.pty_sender.send(glass_terminal::PtyMsg::Input(
-                                    std::borrow::Cow::Owned(hint.into_bytes()),
-                                ));
+                                pty_send(
+                                    &session.pty_sender,
+                                    glass_terminal::PtyMsg::Input(std::borrow::Cow::Owned(
+                                        hint.into_bytes(),
+                                    )),
+                                );
                             }
                         }
                     }
@@ -7581,9 +7721,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(session) = ctx.session_mux.focused_session() {
                                     let msg = "You've tried this same approach multiple times without making progress. STOP and take a different approach:\n1. If you have uncommitted changes, stash them: git stash\n2. Think about WHY the current approach isn't working\n3. Try a fundamentally different strategy, not a minor variation\n";
                                     let bytes = msg.as_bytes().to_vec();
-                                    let _ = session
-                                        .pty_sender
-                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                    pty_send(
+                                        &session.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                    );
                                 }
                             }
 
@@ -7656,9 +7797,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .push(text_to_type.clone());
                                 } else {
                                     let bytes = format!("{}\n", text_to_type).into_bytes();
-                                    let _ = session
-                                        .pty_sender
-                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                    pty_send(
+                                        &session.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                    );
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
@@ -7752,9 +7894,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if summary.is_empty() { String::new() } else { format!(" Summary: {}", summary) }
                                 );
                                 let bytes = msg.into_bytes();
-                                let _ = session
-                                    .pty_sender
-                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                pty_send(
+                                    &session.pty_sender,
+                                    PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                );
                                 self.orchestrator.mark_pty_write();
                             }
                         }
@@ -7847,9 +7990,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if !block_executing {
                                 let deferred = self.orchestrator.deferred_type_text.remove(0);
                                 let bytes = format!("{}\n", deferred).into_bytes();
-                                let _ = session
-                                    .pty_sender
-                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                pty_send(
+                                    &session.pty_sender,
+                                    PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                );
                                 self.orchestrator.mark_pty_write();
                                 tracing::info!("Orchestrator: flushed deferred TypeText ({} chars, {} remaining)", deferred.len(), self.orchestrator.deferred_type_text.len());
                                 return; // Let the typed text be processed before next silence
@@ -8162,9 +8306,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         ctx_ref.session_mux.session(session_id)
                                     {
                                         let msg = format!("STOP current task. {}\n", block_msg);
-                                        let _ = session_ref.pty_sender.send(PtyMsg::Input(
-                                            std::borrow::Cow::Owned(msg.into_bytes()),
-                                        ));
+                                        pty_send(
+                                            &session_ref.pty_sender,
+                                            PtyMsg::Input(std::borrow::Cow::Owned(
+                                                msg.into_bytes(),
+                                            )),
+                                        );
                                         self.orchestrator.mark_pty_write();
                                     }
                                 }
@@ -8412,9 +8559,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(ctx_ib) = self.windows.get(&window_id) {
                                 if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
                                     let msg = format!("{}\n", next);
-                                    let _ = session_ib.pty_sender.send(PtyMsg::Input(
-                                        std::borrow::Cow::Owned(msg.into_bytes()),
-                                    ));
+                                    pty_send(
+                                        &session_ib.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
+                                    );
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
@@ -8438,7 +8586,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Send to agent via shared stdin writer
                         if let Some(ref runtime) = self.agent_runtime {
                             if let Some(ref writer) = runtime.orchestrator_writer {
-                                if let Ok(mut w) = writer.lock() {
+                                {
+                                    let mut w = writer.lock();
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
                                     self.orchestrator.response_pending = true;
@@ -8723,7 +8872,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         if let Some(ref runtime) = self.agent_runtime {
                             if let Some(ref writer) = runtime.orchestrator_writer {
-                                if let Ok(mut w) = writer.lock() {
+                                {
+                                    let mut w = writer.lock();
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
                                     // Context was sent — mark pending so we wait for the
@@ -8944,7 +9094,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             };
 
                             let window_id = ctx.window.id();
-                            let session = create_session(
+                            match create_session(
                                 &self.proxy,
                                 window_id,
                                 session_id,
@@ -8955,28 +9105,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 size.width,
                                 size.height,
                                 1,
-                            );
-                            let tab_id = ctx.session_mux.add_tab(session, self.orchestrator.active);
-                            let new_tab_index = ctx.session_mux.tab_count() - 1;
-                            {
-                                let mut event = glass_scripting::HookEventData::new();
-                                event.set("tab_index", new_tab_index as i64);
-                                fire_hook_on_bridge(
-                                    &mut self.script_bridge,
-                                    &self.orchestrator.project_root,
-                                    glass_scripting::HookPoint::TabCreate,
-                                    &event,
-                                );
+                            ) {
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for MCP tab_create: {e}");
+                                    glass_core::ipc::McpResponse::err(
+                                        request.id,
+                                        format!("PTY spawn failed: {e}"),
+                                    )
+                                }
+                                Ok(session) => {
+                                    let tab_id =
+                                        ctx.session_mux.add_tab(session, self.orchestrator.active);
+                                    let new_tab_index = ctx.session_mux.tab_count() - 1;
+                                    {
+                                        let mut event = glass_scripting::HookEventData::new();
+                                        event.set("tab_index", new_tab_index as i64);
+                                        fire_hook_on_bridge(
+                                            &mut self.script_bridge,
+                                            &self.orchestrator.project_root,
+                                            glass_scripting::HookPoint::TabCreate,
+                                            &event,
+                                        );
+                                    }
+                                    ctx.window.request_redraw();
+                                    glass_core::ipc::McpResponse::ok(
+                                        request.id,
+                                        serde_json::json!({
+                                            "tab_index": new_tab_index,
+                                            "session_id": session_id.val(),
+                                            "tab_id": tab_id.val(),
+                                        }),
+                                    )
+                                }
                             }
-                            ctx.window.request_redraw();
-                            glass_core::ipc::McpResponse::ok(
-                                request.id,
-                                serde_json::json!({
-                                    "tab_index": new_tab_index,
-                                    "session_id": session_id.val(),
-                                    "tab_id": tab_id.val(),
-                                }),
-                            )
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
@@ -8996,9 +9157,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
                                     if let Some(session) = ctx.session_mux.session(focused_sid) {
                                         let input = format!("{}\r", command).into_bytes();
-                                        let _ = session
-                                            .pty_sender
-                                            .send(PtyMsg::Input(Cow::Owned(input)));
+                                        pty_send(
+                                            &session.pty_sender,
+                                            PtyMsg::Input(Cow::Owned(input)),
+                                        );
                                         glass_core::ipc::McpResponse::ok(
                                             request.id,
                                             serde_json::json!({
@@ -9201,9 +9363,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .unwrap_or(false);
                                         // Send ETX byte (Ctrl+C) to PTY
                                         let input = vec![0x03u8];
-                                        let _ = session
-                                            .pty_sender
-                                            .send(PtyMsg::Input(Cow::Owned(input)));
+                                        pty_send(
+                                            &session.pty_sender,
+                                            PtyMsg::Input(Cow::Owned(input)),
+                                        );
                                         glass_core::ipc::McpResponse::ok(
                                             request.id,
                                             serde_json::json!({
@@ -9551,7 +9714,7 @@ fn clipboard_paste(sender: &PtySender, mode: TermMode) {
             } else {
                 text.into_bytes()
             };
-            let _ = sender.send(PtyMsg::Input(Cow::Owned(bytes)));
+            pty_send(sender, PtyMsg::Input(Cow::Owned(bytes)));
         }
     }
 }
@@ -9799,7 +9962,7 @@ fn main() {
 
             let event_loop = EventLoop::<AppEvent>::with_user_event()
                 .build()
-                .expect("Failed to create event loop");
+                .unwrap_or_else(|e| show_fatal_error(&format!("Failed to create event loop: {e}")));
 
             // Create proxy BEFORE run_app() — EventLoopProxy<AppEvent> is Clone + Send,
             // so the PTY EventProxy stores a clone of this.
@@ -9888,9 +10051,9 @@ fn main() {
                 script_gen_parse_failures: 0,
             };
 
-            event_loop
-                .run_app(&mut processor)
-                .expect("Event loop exited with error");
+            if let Err(e) = event_loop.run_app(&mut processor) {
+                show_fatal_error(&format!("Event loop error: {e}"));
+            }
         }
         Some(Commands::History { action }) => {
             // Initialize structured logging for CLI mode (stdout)
@@ -9978,7 +10141,11 @@ fn main() {
                     let scripts_path = match scripts_dir {
                         Some(p) => std::path::PathBuf::from(p),
                         None => dirs::home_dir()
-                            .expect("Could not determine home directory")
+                            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))
+                            .unwrap_or_else(|e| {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            })
                             .join(".glass")
                             .join("scripts"),
                     };
@@ -10005,7 +10172,11 @@ fn main() {
                     let target_path = match target {
                         Some(p) => std::path::PathBuf::from(p),
                         None => dirs::home_dir()
-                            .expect("Could not determine home directory")
+                            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))
+                            .unwrap_or_else(|e| {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            })
                             .join(".glass")
                             .join("scripts"),
                     };

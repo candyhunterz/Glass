@@ -10,6 +10,7 @@ pub struct GlassRenderer {
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
+    consecutive_surface_failures: u32,
 }
 
 impl GlassRenderer {
@@ -87,6 +88,7 @@ impl GlassRenderer {
             queue,
             surface,
             surface_config,
+            consecutive_surface_failures: 0,
         }
     }
 
@@ -96,10 +98,18 @@ impl GlassRenderer {
     /// the surface and skipping the frame — does NOT panic on these recoverable errors.
     pub fn draw(&mut self) {
         let frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
+            Ok(frame) => {
+                self.consecutive_surface_failures = 0;
+                frame
+            }
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
                 // Recoverable — reconfigure and skip this frame (Pitfall 3)
                 self.surface.configure(&self.device, &self.surface_config);
+                self.consecutive_surface_failures += 1;
+                if self.consecutive_surface_failures >= 3 {
+                    tracing::warn!("3 consecutive GPU surface failures — device may be lost");
+                    self.consecutive_surface_failures = 0;
+                }
                 return;
             }
             Err(e) => {

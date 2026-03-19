@@ -80,12 +80,8 @@ impl ScriptBridge {
 
         // Rebuild the MCP tool registry from loaded scripts.
         self.tool_registry = ScriptToolRegistry::new();
-        let all_scripts: Vec<glass_scripting::LoadedScript> = self
-            .system
-            .all_scripts()
-            .into_iter()
-            .cloned()
-            .collect();
+        let all_scripts: Vec<glass_scripting::LoadedScript> =
+            self.system.all_scripts().into_iter().cloned().collect();
         self.tool_registry
             .register_from_scripts(&all_scripts, false);
         let tool_count = self.tool_registry.list_confirmed().len();
@@ -224,8 +220,7 @@ impl ScriptBridge {
                     // Provisional + not regressed + not triggered: no action needed
                 }
 
-                glass_scripting::ScriptStatus::Confirmed
-                | glass_scripting::ScriptStatus::Stale => {
+                glass_scripting::ScriptStatus::Confirmed | glass_scripting::ScriptStatus::Stale => {
                     if was_triggered {
                         // 4. Confirmed/Stale + triggered -> record_trigger
                         if let Err(e) = glass_scripting::lifecycle::record_trigger(path) {
@@ -235,9 +230,7 @@ impl ScriptBridge {
                         }
                     } else {
                         // 5. Confirmed/Stale + NOT triggered -> increment_stale
-                        if let Err(e) =
-                            glass_scripting::lifecycle::increment_stale(path, 5, 10)
-                        {
+                        if let Err(e) = glass_scripting::lifecycle::increment_stale(path, 5, 10) {
                             tracing::warn!(
                                 "ScriptBridge lifecycle: increment_stale '{name}' failed: {e}"
                             );
@@ -292,10 +285,7 @@ impl ScriptBridge {
 
         // Build a HookContext with whatever we have.
         let ctx = HookContext {
-            cwd: self
-                .project_root
-                .clone()
-                .unwrap_or_else(|| ".".to_string()),
+            cwd: self.project_root.clone().unwrap_or_else(|| ".".to_string()),
             ..Default::default()
         };
 
@@ -327,11 +317,8 @@ impl ScriptBridge {
             }
             ref result => {
                 // Convert actions to a JSON summary for the MCP response.
-                let action_summaries: Vec<serde_json::Value> = result
-                    .actions
-                    .iter()
-                    .map(action_to_json)
-                    .collect();
+                let action_summaries: Vec<serde_json::Value> =
+                    result.actions.iter().map(action_to_json).collect();
                 Ok(serde_json::json!({
                     "tool": name,
                     "actions": action_summaries,
@@ -523,7 +510,9 @@ impl ScriptBridge {
                     tracing::info!("[script] force snapshot for {} path(s)", paths.len());
                 }
                 Action::SetSnapshotPolicy { pattern, policy } => {
-                    tracing::info!("[script] set snapshot policy: pattern={pattern} policy={policy}");
+                    tracing::info!(
+                        "[script] set snapshot policy: pattern={pattern} policy={policy}"
+                    );
                 }
                 Action::TagCommand { block_id, tag } => {
                     let id_str = block_id.as_deref().unwrap_or("current");
@@ -709,7 +698,9 @@ impl ScriptBridge {
         }
 
         let mut cmd = std::process::Command::new("git");
-        cmd.args(["checkout", "--"]).args(paths).current_dir(project_root);
+        cmd.args(["checkout", "--"])
+            .args(paths)
+            .current_dir(project_root);
 
         #[cfg(target_os = "windows")]
         {

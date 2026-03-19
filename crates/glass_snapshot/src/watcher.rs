@@ -33,7 +33,9 @@ impl FsWatcher {
         let (tx, rx) = mpsc::channel();
 
         let mut watcher = notify::recommended_watcher(move |res| {
-            tx.send(res).ok();
+            if tx.send(res).is_err() {
+                // Channel disconnected — receiver dropped (FsWatcher was dropped)
+            }
         })?;
 
         watcher.watch(&cwd, RecursiveMode::Recursive)?;

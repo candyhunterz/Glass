@@ -47,7 +47,7 @@ impl<'a> Pruner<'a> {
         if total_count > 10 {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::ZERO)
                 .as_secs() as i64;
             let age_epoch = now - (self.retention_days as i64) * 86400;
 

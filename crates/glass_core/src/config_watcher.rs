@@ -24,7 +24,7 @@ pub fn spawn_config_watcher(config_path: PathBuf, proxy: EventLoopProxy<AppEvent
         .expect("config_path must have a parent directory")
         .to_path_buf();
 
-    std::thread::Builder::new()
+    let spawn_result = std::thread::Builder::new()
         .name("Glass config watcher".into())
         .spawn(move || {
             let proxy_clone = proxy.clone();
@@ -63,6 +63,10 @@ pub fn spawn_config_watcher(config_path: PathBuf, proxy: EventLoopProxy<AppEvent
                         });
                     }
                     Err(err) => {
+                        // Send a placeholder config on parse error. The main thread
+                        // handler checks `error` first and skips applying `config`
+                        // when it is Some — so GlassConfig::default() is never
+                        // installed; the current config remains unchanged.
                         let _ = proxy_clone.send_event(AppEvent::ConfigReloaded {
                             config: Box::new(GlassConfig::default()),
                             error: Some(err),
@@ -94,6 +98,8 @@ pub fn spawn_config_watcher(config_path: PathBuf, proxy: EventLoopProxy<AppEvent
             loop {
                 std::thread::park();
             }
-        })
-        .expect("Failed to spawn config watcher thread");
+        });
+    if let Err(e) = spawn_result {
+        tracing::warn!("Failed to spawn config watcher thread: {e}");
+    }
 }

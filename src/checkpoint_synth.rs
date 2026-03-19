@@ -40,7 +40,10 @@ Rules:
 /// Build the user message from gathered checkpoint data.
 pub fn synthesis_user_message(data: &CheckpointData) -> String {
     let mut msg = String::new();
-    msg.push_str(&format!("## Agent Summary\nCompleted: {}\nNext: {}\n\n", data.completed, data.next));
+    msg.push_str(&format!(
+        "## Agent Summary\nCompleted: {}\nNext: {}\n\n",
+        data.completed, data.next
+    ));
 
     if !data.soi_errors.is_empty() {
         msg.push_str("## SOI Errors\n");
@@ -122,7 +125,9 @@ pub fn build_fallback_checkpoint(data: &CheckpointData) -> String {
     cp.push('\n');
 
     cp.push_str("## Abandoned Approaches\n");
-    let abandoned: Vec<&str> = data.iterations_tsv.lines()
+    let abandoned: Vec<&str> = data
+        .iterations_tsv
+        .lines()
         .filter(|l| l.contains("stuck") || l.contains("revert"))
         .collect();
     if abandoned.is_empty() {
@@ -141,7 +146,10 @@ pub fn build_fallback_checkpoint(data: &CheckpointData) -> String {
         cp.push_str(&format!("Recent commits:\n```\n{}```\n", data.git_log));
     }
     if !data.git_diff_stat.is_empty() {
-        cp.push_str(&format!("Uncommitted changes:\n```\n{}```\n", data.git_diff_stat));
+        cp.push_str(&format!(
+            "Uncommitted changes:\n```\n{}```\n",
+            data.git_diff_stat
+        ));
     }
     cp.push('\n');
 
@@ -157,7 +165,9 @@ pub fn build_fallback_checkpoint(data: &CheckpointData) -> String {
 
 /// Build a metric summary string from baseline data.
 pub fn build_metric_summary(baseline: Option<&orchestrator::MetricBaseline>) -> String {
-    let Some(b) = baseline else { return String::new() };
+    let Some(b) = baseline else {
+        return String::new();
+    };
     let mut summary = format!("Keeps: {}, Reverts: {}\n", b.keep_count, b.revert_count);
     if let Some(result) = b.last_results.first() {
         if let Some(passed) = result.tests_passed {
@@ -179,7 +189,13 @@ pub fn gather_git_state(project_root: &str) -> (String, String, String) {
         .current_dir(project_root)
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
         .unwrap_or_default();
 
     let git_diff_stat = crate::git_cmd()
@@ -241,11 +257,16 @@ mod tests {
     #[test]
     fn fallback_checkpoint_empty_data() {
         let data = CheckpointData {
-            soi_errors: vec![], iterations_tsv: String::new(),
-            git_log: String::new(), git_diff_stat: String::new(),
-            git_diff_names: String::new(), metric_summary: String::new(),
-            prd_content: String::new(), coverage_gaps: String::new(),
-            completed: String::new(), next: String::new(),
+            soi_errors: vec![],
+            iterations_tsv: String::new(),
+            git_log: String::new(),
+            git_diff_stat: String::new(),
+            git_diff_names: String::new(),
+            metric_summary: String::new(),
+            prd_content: String::new(),
+            coverage_gaps: String::new(),
+            completed: String::new(),
+            next: String::new(),
         };
         let cp = build_fallback_checkpoint(&data);
         assert!(cp.contains("## Completed"));
@@ -281,8 +302,11 @@ mod tests {
         baseline.keep_count = 8;
         baseline.revert_count = 2;
         baseline.last_results = vec![orchestrator::VerifyResult {
-            command_name: "test".to_string(), exit_code: 0,
-            tests_passed: Some(45), tests_failed: Some(1), errors: vec![],
+            command_name: "test".to_string(),
+            exit_code: 0,
+            tests_passed: Some(45),
+            tests_failed: Some(1),
+            errors: vec![],
         }];
         let summary = build_metric_summary(Some(&baseline));
         assert!(summary.contains("Keeps: 8"));
