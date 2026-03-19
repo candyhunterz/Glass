@@ -19,10 +19,11 @@ impl GlassRenderer {
     /// On Windows this auto-selects the DX12 backend. The selected backend is logged via
     /// `tracing::info!` so callers can confirm "GPU backend: Dx12" in the log output.
     pub async fn new(window: Arc<winit::window::Window>) -> Self {
-        // Prefer DX12 on Windows (faster init than Vulkan), Metal on macOS, Vulkan on Linux
+        // Prefer DX12 on Windows (faster init than Vulkan), Metal on macOS, Vulkan on Linux.
+        // On Windows, also allow Vulkan as a fallback for older GPUs without DX12 support.
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             #[cfg(target_os = "windows")]
-            backends: wgpu::Backends::DX12,
+            backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
             #[cfg(not(target_os = "windows"))]
             backends: wgpu::Backends::all(),
             ..Default::default()
