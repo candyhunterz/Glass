@@ -643,7 +643,7 @@ fn create_session(
     window_width: u32,
     window_height: u32,
     tab_bar_lines: u16,
-) -> Session {
+) -> anyhow::Result<Session> {
     let event_proxy = EventProxy::new(proxy.clone(), window_id, session_id);
 
     let max_output_kb = config
@@ -683,7 +683,7 @@ fn create_session(
         orchestrator_silence_secs,
         fast_trigger,
         prompt_pattern,
-    );
+    )?;
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
     let num_cols = ((window_width as f32 - SCROLLBAR_WIDTH) / cell_w)
@@ -760,7 +760,7 @@ fn create_session(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| String::from("Glass"));
 
-    Session {
+    Ok(Session {
         id: session_id,
         pty_sender,
         term,
@@ -779,7 +779,7 @@ fn create_session(
         pending_parse_confidence: None,
         cursor_position: None,
         title,
-    }
+    })
 }
 
 /// Clean up a session by shutting down its PTY.
@@ -2372,7 +2372,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         // Create the initial session using the helper
         let session_id = SessionId::new(0);
-        let session = create_session(
+        let session = match create_session(
             &self.proxy,
             window.id(),
             session_id,
@@ -2383,7 +2383,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             size.width,
             size.height,
             1, // 1 tab bar line
-        );
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("PTY spawn failed: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
 
         tracing::info!("PTY spawned -- shell is running");
 
@@ -3937,7 +3944,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -3948,7 +3955,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for new tab: {e}");
+                                        return;
+                                    }
+                                };
                                 ctx.session_mux.add_tab(session, false);
                                 {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
@@ -4036,7 +4049,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -4047,7 +4060,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for horizontal split: {e}");
+                                        return;
+                                    }
+                                };
                                 if ctx
                                     .session_mux
                                     .split_pane(SplitDirection::Horizontal, session)
@@ -4072,7 +4091,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -4083,7 +4102,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for vertical split: {e}");
+                                        return;
+                                    }
+                                };
                                 if ctx
                                     .session_mux
                                     .split_pane(SplitDirection::Vertical, session)
@@ -5458,7 +5483,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h_inner) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
-                                let session = create_session(
+                                let session = match create_session(
                                     &self.proxy,
                                     window_id,
                                     session_id,
@@ -5469,7 +5494,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     size.width,
                                     size.height,
                                     1,
-                                );
+                                ) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("PTY spawn failed for new tab button: {e}");
+                                        return;
+                                    }
+                                };
                                 ctx.session_mux.add_tab(session, false);
                                 {
                                     let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
@@ -8954,7 +8985,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             };
 
                             let window_id = ctx.window.id();
-                            let session = create_session(
+                            match create_session(
                                 &self.proxy,
                                 window_id,
                                 session_id,
@@ -8965,28 +8996,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 size.width,
                                 size.height,
                                 1,
-                            );
-                            let tab_id = ctx.session_mux.add_tab(session, self.orchestrator.active);
-                            let new_tab_index = ctx.session_mux.tab_count() - 1;
-                            {
-                                let mut event = glass_scripting::HookEventData::new();
-                                event.set("tab_index", new_tab_index as i64);
-                                fire_hook_on_bridge(
-                                    &mut self.script_bridge,
-                                    &self.orchestrator.project_root,
-                                    glass_scripting::HookPoint::TabCreate,
-                                    &event,
-                                );
+                            ) {
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for MCP tab_create: {e}");
+                                    glass_core::ipc::McpResponse::err(
+                                        request.id,
+                                        format!("PTY spawn failed: {e}"),
+                                    )
+                                }
+                                Ok(session) => {
+                                    let tab_id = ctx.session_mux.add_tab(session, self.orchestrator.active);
+                                    let new_tab_index = ctx.session_mux.tab_count() - 1;
+                                    {
+                                        let mut event = glass_scripting::HookEventData::new();
+                                        event.set("tab_index", new_tab_index as i64);
+                                        fire_hook_on_bridge(
+                                            &mut self.script_bridge,
+                                            &self.orchestrator.project_root,
+                                            glass_scripting::HookPoint::TabCreate,
+                                            &event,
+                                        );
+                                    }
+                                    ctx.window.request_redraw();
+                                    glass_core::ipc::McpResponse::ok(
+                                        request.id,
+                                        serde_json::json!({
+                                            "tab_index": new_tab_index,
+                                            "session_id": session_id.val(),
+                                            "tab_id": tab_id.val(),
+                                        }),
+                                    )
+                                }
                             }
-                            ctx.window.request_redraw();
-                            glass_core::ipc::McpResponse::ok(
-                                request.id,
-                                serde_json::json!({
-                                    "tab_index": new_tab_index,
-                                    "session_id": session_id.val(),
-                                    "tab_id": tab_id.val(),
-                                }),
-                            )
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
