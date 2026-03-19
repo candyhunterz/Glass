@@ -151,8 +151,9 @@ pub fn filtered_query(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Com
     }
 
     if let Some(ref cwd) = filter.cwd {
-        conditions.push("c.cwd LIKE ?".to_string());
-        params.push(rusqlite::types::Value::Text(format!("{}%", cwd)));
+        let escaped_cwd = cwd.replace('%', "\\%").replace('_', "\\_");
+        conditions.push("c.cwd LIKE ? ESCAPE '\\'".to_string());
+        params.push(rusqlite::types::Value::Text(format!("{}%", escaped_cwd)));
     }
 
     if !conditions.is_empty() {
@@ -465,17 +466,26 @@ mod tests {
     }
 
     #[test]
-    fn test_cwd_wildcard_characters() {
+    fn test_cwd_wildcard_characters_escaped() {
         let (db, _dir) = test_db();
         insert_record(&db, "cmd1", "/home/user", Some(0), 1700000000);
         insert_record(&db, "cmd2", "/tmp/test", Some(0), 1700000010);
 
-        // SQL LIKE wildcard % in cwd matches everything (by design — not sanitized)
+        // % and _ in the cwd filter are escaped so they match literal characters,
+        // not LIKE wildcards. A bare "%" should match nothing (no cwd starts with literal %).
         let filter = QueryFilter {
             cwd: Some("%".to_string()),
             ..QueryFilter::new()
         };
         let results = filtered_query(db.conn(), &filter).unwrap();
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 0, "% in cwd filter should be escaped, not match all");
+
+        // Underscore should also be treated literally.
+        let filter = QueryFilter {
+            cwd: Some("_".to_string()),
+            ..QueryFilter::new()
+        };
+        let results = filtered_query(db.conn(), &filter).unwrap();
+        assert_eq!(results.len(), 0, "_ in cwd filter should be escaped, not match any single char");
     }
 }
