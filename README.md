@@ -1,5 +1,7 @@
 # Glass
 
+[![CI](https://github.com/candyhunterz/Glass/actions/workflows/ci.yml/badge.svg)](https://github.com/candyhunterz/Glass/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal terminal but understands command structure — every command produces a structured record that humans can inspect and AI agents can query.
 
 **For humans**: command blocks with exit codes, durations, and CWD badges; command-level undo; visual pipeline debugging; full-text history search.
