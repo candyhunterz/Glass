@@ -127,7 +127,7 @@ pub fn start_polling(
                     }
                 };
 
-                match poll_usage(&*token) {
+                match poll_usage(&token) {
                     Ok(data) => {
                         let mut st = state_clone.lock().unwrap_or_else(|e| e.into_inner());
                         let five_hour = data.five_hour_utilization;

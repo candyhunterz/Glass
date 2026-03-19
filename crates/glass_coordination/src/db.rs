@@ -561,7 +561,12 @@ impl CoordinationDb {
     ///
     /// Only the agent that holds the lock can release it.
     /// Returns `true` if a lock was actually released, `false` if no matching lock existed.
-    pub fn unlock_file(&mut self, agent_id: &str, path: &std::path::Path, nonce: &str) -> Result<bool> {
+    pub fn unlock_file(
+        &mut self,
+        agent_id: &str,
+        path: &std::path::Path,
+        nonce: &str,
+    ) -> Result<bool> {
         self.validate_nonce(agent_id, nonce)?;
         let canonical = crate::canonicalize_path(path)?;
         let tx = self
@@ -1294,7 +1299,12 @@ mod tests {
 
         // Agent A locks the file
         let result = db
-            .lock_files(&id_a, &[file_path.clone()], Some("editing shared.rs"), &nonce_a)
+            .lock_files(
+                &id_a,
+                &[file_path.clone()],
+                Some("editing shared.rs"),
+                &nonce_a,
+            )
             .unwrap();
         assert!(matches!(result, LockResult::Acquired(_)));
 
@@ -1335,7 +1345,12 @@ mod tests {
 
         // Agent B tries to lock [X, Y] -- should fail entirely (all-or-nothing)
         let result = db
-            .lock_files(&id_b, &[file_x, file_y.clone()], Some("want both"), &nonce_b)
+            .lock_files(
+                &id_b,
+                &[file_x, file_y.clone()],
+                Some("want both"),
+                &nonce_b,
+            )
             .unwrap();
         assert!(
             matches!(result, LockResult::Conflict(_)),
@@ -1593,7 +1608,8 @@ mod tests {
             .register("agent-b", "cursor", "proj-exc", "/tmp", None)
             .unwrap();
 
-        db.broadcast(&id_a, "proj-exc", "status", "hello", &nonce_a).unwrap();
+        db.broadcast(&id_a, "proj-exc", "status", "hello", &nonce_a)
+            .unwrap();
 
         // Sender should NOT see own broadcast
         let msgs_a = db.read_messages(&id_a).unwrap();
@@ -1610,7 +1626,9 @@ mod tests {
             .register("agent-b", "cursor", "proj-dm", "/tmp", None)
             .unwrap();
 
-        let msg_id = db.send_message(&id_a, &id_b, "chat", "hello B", &nonce_a).unwrap();
+        let msg_id = db
+            .send_message(&id_a, &id_b, "chat", "hello B", &nonce_a)
+            .unwrap();
         assert!(msg_id > 0);
 
         let msgs = db.read_messages(&id_b).unwrap();
@@ -1632,8 +1650,10 @@ mod tests {
             .register("agent-b", "cursor", "proj-read", "/tmp", None)
             .unwrap();
 
-        db.send_message(&id_a, &id_b, "chat", "first", &nonce_a).unwrap();
-        db.send_message(&id_a, &id_b, "chat", "second", &nonce_a).unwrap();
+        db.send_message(&id_a, &id_b, "chat", "first", &nonce_a)
+            .unwrap();
+        db.send_message(&id_a, &id_b, "chat", "second", &nonce_a)
+            .unwrap();
 
         // First read should return both
         let msgs = db.read_messages(&id_b).unwrap();
@@ -1716,10 +1736,7 @@ mod tests {
 
         // Sending to a non-existent agent should error
         let result = db.send_message(&id_a, "nonexistent-id", "chat", "hello?", &nonce_a);
-        assert!(
-            result.is_err(),
-            "Sending to unknown agent should fail"
-        );
+        assert!(result.is_err(), "Sending to unknown agent should fail");
     }
 
     #[test]
@@ -1826,8 +1843,14 @@ mod tests {
             .unwrap();
 
         // Agent A sends directed message to Agent B via connection 1
-        db1.send_message(&id_a, &id_b, "request_unlock", "please release foo.rs", &nonce_a)
-            .unwrap();
+        db1.send_message(
+            &id_a,
+            &id_b,
+            "request_unlock",
+            "please release foo.rs",
+            &nonce_a,
+        )
+        .unwrap();
 
         // Agent B reads messages via connection 2
         let msgs = db2.read_messages(&id_b).unwrap();
@@ -1851,7 +1874,13 @@ mod tests {
 
         // Agent A broadcasts via connection 1
         let count = db1
-            .broadcast(&id_a, "cross-bcast", "status_update", "working on db.rs", &nonce_a)
+            .broadcast(
+                &id_a,
+                "cross-bcast",
+                "status_update",
+                "working on db.rs",
+                &nonce_a,
+            )
             .unwrap();
         assert_eq!(count, 1, "One other agent should receive the broadcast");
 
@@ -1968,7 +1997,9 @@ mod tests {
         let fake_id = "00000000-0000-0000-0000-000000000000";
         let path = dir.path().join("file.rs");
         std::fs::write(&path, "").unwrap();
-        let err = db.lock_files(fake_id, &[path], None, "fake-nonce").unwrap_err();
+        let err = db
+            .lock_files(fake_id, &[path], None, "fake-nonce")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("Agent not found or nonce not set"),
@@ -1983,7 +2014,12 @@ mod tests {
             .register("agent-1", "claude-code", ".", "/tmp", None)
             .unwrap();
         let err = db
-            .lock_files(&id, &[std::path::PathBuf::from("relative/path.rs")], None, &nonce)
+            .lock_files(
+                &id,
+                &[std::path::PathBuf::from("relative/path.rs")],
+                None,
+                &nonce,
+            )
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -2050,18 +2086,40 @@ mod tests {
         let bad_nonce = "wrong-nonce-value";
 
         let err = db.heartbeat(&id, bad_nonce).unwrap_err();
-        assert!(err.to_string().contains("Nonce mismatch"), "heartbeat: {}", err);
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "heartbeat: {}",
+            err
+        );
 
         let err = db.update_status(&id, "idle", None, bad_nonce).unwrap_err();
-        assert!(err.to_string().contains("Nonce mismatch"), "update_status: {}", err);
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "update_status: {}",
+            err
+        );
 
         let err = db.deregister(&id, bad_nonce).unwrap_err();
-        assert!(err.to_string().contains("Nonce mismatch"), "deregister: {}", err);
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "deregister: {}",
+            err
+        );
 
         let err = db.unlock_all(&id, bad_nonce).unwrap_err();
-        assert!(err.to_string().contains("Nonce mismatch"), "unlock_all: {}", err);
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "unlock_all: {}",
+            err
+        );
 
-        let err = db.broadcast(&id, ".", "status", "hi", bad_nonce).unwrap_err();
-        assert!(err.to_string().contains("Nonce mismatch"), "broadcast: {}", err);
+        let err = db
+            .broadcast(&id, ".", "status", "hi", bad_nonce)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Nonce mismatch"),
+            "broadcast: {}",
+            err
+        );
     }
 }

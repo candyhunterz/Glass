@@ -478,7 +478,11 @@ mod tests {
             ..QueryFilter::new()
         };
         let results = filtered_query(db.conn(), &filter).unwrap();
-        assert_eq!(results.len(), 0, "% in cwd filter should be escaped, not match all");
+        assert_eq!(
+            results.len(),
+            0,
+            "% in cwd filter should be escaped, not match all"
+        );
 
         // Underscore should also be treated literally.
         let filter = QueryFilter {
@@ -486,6 +490,10 @@ mod tests {
             ..QueryFilter::new()
         };
         let results = filtered_query(db.conn(), &filter).unwrap();
-        assert_eq!(results.len(), 0, "_ in cwd filter should be escaped, not match any single char");
+        assert_eq!(
+            results.len(),
+            0,
+            "_ in cwd filter should be escaped, not match any single char"
+        );
     }
 }
