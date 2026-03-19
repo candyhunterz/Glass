@@ -1289,6 +1289,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "uuid",
+ "wgpu",
  "windows-sys 0.59.0",
  "winit",
  "winresource",
@@ -1446,6 +1447,7 @@ dependencies = [
  "glyphon",
  "tracing",
  "wgpu",
+ "windows-sys 0.59.0",
  "winit",
 ]
 
