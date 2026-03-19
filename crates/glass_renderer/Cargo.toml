@@ -16,3 +16,6 @@ wgpu.workspace = true
 winit.workspace = true
 bytemuck.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
