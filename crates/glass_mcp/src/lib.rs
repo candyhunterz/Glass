@@ -1,12 +1,9 @@
-//! glass_mcp — MCP server exposing Glass terminal history to AI assistants.
+//! glass_mcp — MCP server exposing Glass terminal capabilities to AI assistants.
 //!
-//! Provides four tools via the Model Context Protocol:
-//! - **GlassHistory**: Query command history with text, time, exit code, cwd, and limit filters
-//! - **GlassContext**: Get an activity summary with command counts, failure rate, and directories
-//! - **GlassUndo**: Undo a file-modifying command by restoring pre-command state
-//! - **GlassFileDiff**: Inspect pre-command file contents for a given command
-//!
-//! All logging goes to stderr; stdout carries only JSON-RPC messages.
+//! Provides 33 tools via the Model Context Protocol spanning history queries,
+//! context summaries, undo/diff, tab/pane management, pipe inspection,
+//! agent coordination, and scripting. All logging goes to stderr; stdout
+//! carries only JSON-RPC messages.
 
 pub mod context;
 pub mod ipc_client;

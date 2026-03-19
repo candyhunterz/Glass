@@ -1,5 +1,12 @@
 # Glass
 
+[![CI](https://github.com/candyhunterz/Glass/actions/workflows/ci.yml/badge.svg)](https://github.com/candyhunterz/Glass/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+<!-- TODO: Replace with actual screenshot or GIF demo showing command blocks, pipe viz, exit badges, and splits -->
+<p align="center">
+  <img src="docs/assets/hero-screenshot.png" alt="Glass terminal showing command blocks, pipe visualization, and split panes" width="800">
+</p>
+
 A GPU-accelerated terminal emulator built in Rust. Glass looks like a normal terminal but understands command structure — every command produces a structured record that humans can inspect and AI agents can query.
 
 **For humans**: command blocks with exit codes, durations, and CWD badges; command-level undo; visual pipeline debugging; full-text history search.
@@ -582,7 +589,7 @@ crates/
   glass_snapshot/          Filesystem snapshots: FS watcher, blake3 blob store,
                            undo engine, destructive command parser
   glass_pipes/             Pipeline parser and tee-based stage capture
-  glass_mcp/               MCP server (31 tools, stdio transport)
+  glass_mcp/               MCP server (33 tools, stdio transport)
   glass_errors/            Structured error extraction from command output
   glass_coordination/      Multi-agent coordination: agent registry, advisory locks,
                            inter-agent messaging (SQLite WAL)

@@ -4,19 +4,24 @@
 Glass is a GPU-accelerated terminal emulator built in Rust. It looks like a normal terminal but understands command structure — providing command-level undo, visual pipe debugging, and queryable history. MIT licensed.
 
 ## Architecture
-Rust workspace with 9 crates + main binary:
+Rust workspace with 14 crates + main binary:
 
 ```
 src/main.rs              - App entry point, winit event loop, wires everything together
 crates/glass_core/       - Config (TOML), events, config hot-reload watcher, update checker
+crates/glass_errors/     - Centralized error types and structured error handling
 crates/glass_terminal/   - PTY management, VT parsing (alacritty_terminal), block manager, OSC scanner, input encoding, shell integration
 crates/glass_renderer/   - wgpu GPU rendering: grid, blocks, tab bar, status bar, search overlay, pipe visualization
 crates/glass_mux/        - Session multiplexer: tabs, split panes (binary split tree), search overlay state
 crates/glass_history/    - SQLite + FTS5 command history DB, query engine, retention/pruning
 crates/glass_snapshot/   - Filesystem snapshots: file watcher, blob store (blake3 content-addressed), undo engine, command parser
 crates/glass_pipes/      - Pipeline parsing (pipe detection, stage capture)
+crates/glass_soi/        - Structured Output Intelligence: 19 format-specific parsers for command output
 crates/glass_mcp/        - MCP server for AI tool integration (history, context, undo, file diff, pipe inspect)
 crates/glass_coordination/ - Multi-agent coordination: agent registry, advisory file locks, inter-agent messaging (SQLite)
+crates/glass_agent/      - Agent runtime: event-driven AI agent with MCP tool access
+crates/glass_feedback/   - Feedback loop: LLM-based qualitative analysis, rule extraction, prompt hints
+crates/glass_scripting/  - Self-improvement scripting: Rhai engine, hook system, sandbox, profiles
 ```
 
 ## Important: Orchestrator Reference
@@ -44,6 +49,11 @@ crates/glass_coordination/ - Multi-agent coordination: agent registry, advisory 
 - `src/orchestrator.rs` - Orchestrator state machine, response parsing, checkpoint cycle, stuck detection, iteration logging
 - `src/usage_tracker.rs` - OAuth usage polling, auto-pause/hard-stop thresholds
 - `crates/glass_terminal/src/silence.rs` - Periodic silence detection for orchestrator polling
+- `crates/glass_soi/src/lib.rs` - SOI parser registry and format detection
+- `crates/glass_agent/src/lib.rs` - Agent runtime event loop and MCP tool dispatch
+- `crates/glass_feedback/src/lib.rs` - Feedback loop lifecycle, rule extraction, prompt hints
+- `crates/glass_scripting/src/engine.rs` - Rhai script execution engine with sandbox
+- `crates/glass_scripting/src/hooks.rs` - Hook registry mapping scripts to lifecycle events
 
 ## Tech Stack
 - Rust 2021 edition, Tokio async runtime
@@ -83,7 +93,7 @@ Scripts in `shell-integration/` auto-injected by PTY spawner:
 - Pipeline stages emit custom OSC 133;S (start) and OSC 133;P (stage data)
 
 ## Configuration
-`~/.glass/config.toml` — hot-reloaded via notify watcher. Sections: font, shell, history, snapshot, pipes.
+`~/.glass/config.toml` — hot-reloaded via notify watcher. Sections: font, shell, history, snapshot, pipes, soi, agent (with orchestrator, permissions, quiet_rules sub-sections), scripting, terminal, theme. See `config.example.toml` for all fields with defaults.
 
 ## Conventions
 - Clippy with `-D warnings` — all warnings are errors

@@ -16,7 +16,7 @@ Use Tab/Shift+Tab to switch between tabs, and Escape to close.
 
 `~/.glass/config.toml` on all platforms (macOS, Linux, Windows).
 
-Glass resolves `~` to your home directory using the system's standard home directory lookup. If the file does not exist, Glass starts with built-in defaults and does not create the file automatically.
+Glass resolves `~` to your home directory using the system's standard home directory lookup. If the file does not exist, Glass creates a commented-out default config on first launch.
 
 ## Error Handling
 
@@ -46,18 +46,25 @@ auto_expand = true
 [soi]
 enabled = true
 shell_summary = false
-min_lines = 5
+format = "oneline"
+min_lines = 0
+
+[terminal]
+scrollback = 10000
+
+[theme]
+preset = "dark"
 
 [agent]
-enabled = false
-mode = "watch"
+mode = "off"
 max_budget_usd = 1.0
 cooldown_secs = 30
+allowed_tools = "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
 
 [agent.permissions]
 edit_files = "approve"
-run_commands = "never"
-git_operations = "never"
+run_commands = "approve"
+git_operations = "approve"
 
 [agent.quiet_rules]
 ignore_patterns = []
@@ -65,20 +72,34 @@ ignore_exit_zero = false
 
 [agent.orchestrator]
 enabled = false
-silence_timeout_secs = 30
+silence_timeout_secs = 60
 prd_path = "PRD.md"
+checkpoint_path = ".glass/checkpoint.md"
+max_retries_before_stuck = 3
+fast_trigger_secs = 5
 verify_mode = "floor"
 completion_artifact = ".glass/done"
-# max_iterations = 25
+orchestrator_mode = "build"
 feedback_llm = false
-# max_prompt_hints = 10
+max_prompt_hints = 10
+ablation_enabled = true
+ablation_sweep_interval = 20
+# max_iterations = 25
+# verify_command = "cargo test"
+# agent_prompt_pattern = "^>"
+# verify_files = []
 
 [scripting]
 enabled = true
 max_operations = 10000
 max_timeout_ms = 5000
 max_scripts_per_hook = 10
+max_total_scripts = 100
+max_mcp_tools = 50
+script_generation = true
 ```
+
+See also [`config.example.toml`](https://github.com/candyhunterz/Glass/blob/main/config.example.toml) in the repository root for a fully commented reference.
 
 ---
 
@@ -94,9 +115,9 @@ max_scripts_per_hook = 10
 
 | Platform | Default Font |
 |----------|--------------|
-| Windows | `Cascadia Code` |
-| macOS | `SF Mono` |
-| Linux | `DejaVu Sans Mono` |
+| Windows | `Consolas` |
+| macOS | `Menlo` |
+| Linux | `Monospace` |
 
 ---
 
@@ -137,26 +158,59 @@ Controls pipeline visualization and stage capture. See [Pipe Inspection](./featu
 
 ## [soi]
 
-Controls Structured Output Inspection (SOI) — Glass's ability to parse and index structured output (JSON, CSV, tables) from commands for later querying via MCP tools.
+Controls Structured Output Intelligence (SOI) — Glass's ability to parse and index structured output (JSON, CSV, tables) from commands for later querying via MCP tools.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable or disable SOI parsing. When disabled, command output is stored as plain text only. |
 | `shell_summary` | bool | `false` | When true, Glass generates a one-line shell-visible summary of parsed structured output after each command completes. |
-| `min_lines` | int | `5` | Minimum number of output lines required before Glass attempts structured parsing. Commands with fewer output lines are stored as plain text only. |
+| `format` | string | `"oneline"` | Display format for SOI labels on command blocks. |
+| `min_lines` | int | `0` | Minimum number of output lines required before Glass attempts structured parsing. Commands with fewer output lines are stored as plain text only. |
+
+---
+
+## [terminal]
+
+Controls terminal behavior settings.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `scrollback` | int | `10000` | Number of lines of scrollback history retained in the terminal buffer. |
+
+---
+
+## [theme]
+
+Controls terminal chrome colors (tab bar, status bar, block decorations, search overlay). Ships with `dark` (default) and `light` presets. Individual color fields override preset values.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `preset` | string | `"dark"` | Color preset: `"dark"` or `"light"`. Individual fields below override preset values. |
+| `terminal_bg` | [R,G,B] | `[26,26,26]` | Terminal background color. |
+| `tab_bar_bg` | [R,G,B] | `[30,30,30]` | Tab bar background color. |
+| `tab_active_bg` | [R,G,B] | `[50,50,50]` | Active tab background color. |
+| `tab_inactive_bg` | [R,G,B] | `[35,35,35]` | Inactive tab background color. |
+| `tab_accent` | [R,G,B] | `[100,149,237]` | Active tab accent underline color. |
+| `status_bar_bg` | [R,G,B] | `[38,38,38]` | Status bar background color. |
+| `block_separator` | [R,G,B] | `[60,60,60]` | Block separator line color. |
+| `badge_success` | [R,G,B] | `[40,160,40]` | Badge color for successful commands (exit 0). |
+| `badge_error` | [R,G,B] | `[200,50,50]` | Badge color for failed commands (non-zero exit). |
+| `badge_running` | [R,G,B] | `[30,120,200]` | Badge color for running commands. |
+| `search_backdrop` | [R,G,B,A] | `[0.05,0.05,0.05,0.85]` | Search overlay backdrop (floats 0.0-1.0). |
+| `search_input_bg` | [R,G,B] | `[56,56,56]` | Search input box background color. |
 
 ---
 
 ## [agent]
 
-Controls the Glass AI agent integration. When enabled, Glass can respond to agent activity in the terminal and expose budget and permission guardrails to limit autonomous behavior.
+Controls the Glass AI agent integration. The agent runtime watches terminal activity and can propose or execute actions within configured permission limits.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable or disable agent integration features. |
-| `mode` | string | `"watch"` | Agent operating mode. `"watch"` — Glass monitors agent activity and surfaces summaries. `"assist"` — Glass can prompt the agent with context. `"autonomous"` — Glass acts on agent instructions within configured permission limits. |
+| `mode` | string | `"off"` | Agent operating mode. `"off"` disables the agent. `"watch"` monitors and surfaces summaries. `"assist"` prompts with context. `"autonomous"` acts within permission limits. |
 | `max_budget_usd` | float | `1.0` | Maximum cumulative API spend in USD before Glass pauses agent actions and requires user confirmation to continue. |
 | `cooldown_secs` | int | `30` | Minimum seconds between consecutive agent-initiated actions. |
+| `allowed_tools` | string | `"glass_query,..."` | Comma-separated list of MCP tools the agent is allowed to use. |
 
 ### [agent.permissions]
 
@@ -165,8 +219,8 @@ Granular permission controls for agent-initiated operations.
 | Key | Type | Default | Options | Description |
 |-----|------|---------|---------|-------------|
 | `edit_files` | string | `"approve"` | `"approve"`, `"auto"`, `"never"` | Controls whether the agent can edit files. `"approve"` requires user confirmation per edit. `"auto"` allows edits without confirmation. `"never"` blocks all agent file edits. |
-| `run_commands` | string | `"never"` | `"approve"`, `"auto"`, `"never"` | Controls whether the agent can run shell commands. Defaults to `"never"` for safety. |
-| `git_operations` | string | `"never"` | `"approve"`, `"auto"`, `"never"` | Controls whether the agent can perform git operations. Defaults to `"never"` for safety. |
+| `run_commands` | string | `"approve"` | `"approve"`, `"auto"`, `"never"` | Controls whether the agent can run shell commands. |
+| `git_operations` | string | `"approve"` | `"approve"`, `"auto"`, `"never"` | Controls whether the agent can perform git operations. |
 
 ### [agent.quiet_rules]
 
@@ -184,36 +238,44 @@ Controls the orchestrator mode that drives autonomous project development. See [
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Enable orchestrator mode. Can also be toggled at runtime with Ctrl+Shift+O. |
-| `silence_timeout_secs` | int | `30` | Seconds of PTY silence before sending context to the Glass Agent. |
-| `fast_trigger_secs` | int | `0` | Optional fast trigger threshold (seconds). When set, triggers after shorter silence if the agent appears idle. |
+| `silence_timeout_secs` | int | `60` | Seconds of PTY silence before sending context to the Glass Agent. |
+| `fast_trigger_secs` | int | `5` | Seconds after output stops before fast-triggering the orchestrator. |
 | `prd_path` | string | `"PRD.md"` | Path to the project requirements document. |
 | `checkpoint_path` | string | `".glass/checkpoint.md"` | Path to the checkpoint file used for context refresh. |
 | `max_retries_before_stuck` | int | `3` | Number of identical agent responses before stuck detection triggers. |
+| `agent_prompt_pattern` | string | (none) | Optional regex pattern to detect the agent's prompt for instant triggering. |
 | `verify_mode` | string | `"floor"` | Verification mode. `"floor"` auto-detects and runs verification commands after each iteration, auto-reverting on regression. `"disabled"` turns off the metric guard. |
 | `verify_command` | string | (none) | Optional user override for the verification command. When set, skips auto-detection and agent discovery. |
 | `completion_artifact` | string | `".glass/done"` | File path (relative to project root) that triggers the orchestrator when created. Set to empty string to disable. |
 | `max_iterations` | int | (none) | Maximum iterations before checkpoint-stop. Omit or set to 0 for unlimited. |
+| `orchestrator_mode` | string | `"build"` | Orchestrator mode. `"build"` gives agent observation-only tools. `"audit"` gives agent all MCP tools for interactive testing. |
+| `verify_files` | array of strings | `[]` | Files to check for file-based verification. Auto-populated from PRD deliverables. |
 | `feedback_llm` | bool | `false` | Enable LLM qualitative analysis after each orchestrator run. Produces Tier 3 prompt hints. Requires an extra API call per run. |
 | `max_prompt_hints` | int | `10` | Maximum number of Tier 3 prompt hints retained per project. |
+| `ablation_enabled` | bool | `true` | Enable automatic ablation testing of confirmed feedback rules. |
+| `ablation_sweep_interval` | int | `20` | Number of runs between re-sweeps after full ablation coverage. |
 
 ---
 
 ## [scripting]
 
-Controls the embedded Rhai scripting engine. Scripts can hook into Glass lifecycle events (snapshot, MCP requests, orchestrator iterations) for custom automation.
+Controls the embedded Rhai scripting engine. Scripts can hook into Glass lifecycle events (snapshot, MCP requests, orchestrator iterations) for custom automation. See [Scripting](./features/scripting.md) for full details.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable or disable the Rhai scripting engine. When disabled, all scripts are skipped. |
-| `max_operations` | int | `10000` | Maximum Rhai operations per script execution. Prevents runaway scripts from blocking the event loop. |
-| `max_timeout_ms` | int | `5000` | Maximum wall-clock time per script execution in milliseconds. |
-| `max_scripts_per_hook` | int | `10` | Maximum number of scripts that can register for a single hook point. |
+| `max_operations` | int | (none) | Maximum Rhai operations per script execution. Prevents runaway scripts from blocking the event loop. |
+| `max_timeout_ms` | int | (none) | Maximum wall-clock time per script execution in milliseconds. |
+| `max_scripts_per_hook` | int | (none) | Maximum number of scripts that can register for a single hook point. |
+| `max_total_scripts` | int | (none) | Maximum total number of registered scripts. |
+| `max_mcp_tools` | int | (none) | Maximum number of MCP tools a script may expose. |
+| `script_generation` | bool | `true` | Whether AI-assisted script generation is enabled. |
 
 Scripts are loaded from two locations:
 - `~/.glass/scripts/` — Global scripts, available in all projects
 - `<project>/.glass/scripts/` — Project-local scripts, scoped to the project root
 
-Each script has a `manifest.toml` describing its hook point, status (provisional or confirmed), and metadata.
+Each script has a `.toml` manifest describing its hook points, status (provisional or confirmed), and metadata.
 
 ---
 
