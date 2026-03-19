@@ -113,7 +113,7 @@ mod tests {
         assert_eq!(labels.len(), 1);
         assert_eq!(
             labels[0].text,
-            "Config error (line 3, col 5): expected string"
+            "~/.glass/config.toml (line 3, col 5): expected string"
         );
         assert_eq!(
             labels[0].color,
@@ -135,7 +135,7 @@ mod tests {
             snippet: None,
         };
         let labels = o.build_error_text(&err, 800.0);
-        assert_eq!(labels[0].text, "Config error: something failed");
+        assert_eq!(labels[0].text, "~/.glass/config.toml: something failed");
     }
 
     #[test]

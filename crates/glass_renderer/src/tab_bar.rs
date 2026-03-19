@@ -161,6 +161,14 @@ impl TabBarRenderer {
                 pos: [x, 0.0, tab_width, self.cell_height],
                 color,
             });
+
+            // 2px cornflower blue accent underline on active tab (UX-7)
+            if tab.is_active {
+                rects.push(RectInstance {
+                    pos: [x, self.cell_height - 2.0, tab_width, 2.0],
+                    color: [100.0 / 255.0, 149.0 / 255.0, 237.0 / 255.0, 1.0],
+                });
+            }
         }
 
         // Close button highlight rect (only for hovered tab)
@@ -409,8 +417,8 @@ mod tests {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab 1", true)]);
         let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
-        // Bar background + 1 active tab + "+" button = 3 rects
-        assert_eq!(rects.len(), 3);
+        // Bar background + 1 active tab + 1 accent underline + "+" button = 4 rects
+        assert_eq!(rects.len(), 4);
         // First rect is bar background
         assert_eq!(rects[0].color, BAR_BG_COLOR);
         assert_eq!(rects[0].pos[2], 800.0); // full width
@@ -423,12 +431,13 @@ mod tests {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab 1", false), ("Tab 2", true), ("Tab 3", false)]);
         let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
-        // Bar background + 3 tab rects + "+" button = 5
-        assert_eq!(rects.len(), 5);
+        // Bar background + 3 tab rects + 1 accent underline + "+" button = 6
+        assert_eq!(rects.len(), 6);
         // Active tab (index 1 -> rects[2]) has distinct color
         assert_eq!(rects[1].color, INACTIVE_TAB_COLOR);
         assert_eq!(rects[2].color, ACTIVE_TAB_COLOR);
-        assert_eq!(rects[3].color, INACTIVE_TAB_COLOR);
+        // rects[3] is accent underline for active tab
+        assert_eq!(rects[4].color, INACTIVE_TAB_COLOR);
     }
 
     #[test]
@@ -448,9 +457,13 @@ mod tests {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("Tab", true)]);
         let rects = renderer.build_tab_rects(&tabs, 800.0, None, None);
-        // All rects at y=0 with height=cell_height (except close button)
+        // All rects at y=0 with height=cell_height, except accent underline (2px)
         for rect in &rects {
-            assert_eq!(rect.pos[3], 16.0);
+            assert!(
+                rect.pos[3] == 16.0 || rect.pos[3] == 2.0,
+                "rect height should be cell_height (16) or accent (2), got {}",
+                rect.pos[3]
+            );
         }
     }
 
@@ -589,16 +602,16 @@ mod tests {
 
         // No hover -> no close button rect
         let rects_none = renderer.build_tab_rects(&tabs, 800.0, None, None);
-        // bg + 3 tabs + "+" button = 5
-        assert_eq!(rects_none.len(), 5);
+        // bg + 3 tabs + 1 accent underline + "+" button = 6
+        assert_eq!(rects_none.len(), 6);
 
         // Hover on tab 1 -> close button rect added
         let rects_hover = renderer.build_tab_rects(&tabs, 800.0, Some(1), None);
-        // bg + 3 tabs + close button + "+" button = 6
-        assert_eq!(rects_hover.len(), 6);
+        // bg + 3 tabs + 1 accent underline + close button + "+" button = 7
+        assert_eq!(rects_hover.len(), 7);
 
         // The close button rect should have HOVER_HIGHLIGHT_COLOR
-        let close_rect = &rects_hover[4]; // After 3 tab rects + bg
+        let close_rect = &rects_hover[5]; // After bg + 3 tab rects + 1 accent underline
         assert_eq!(close_rect.color, HOVER_HIGHLIGHT_COLOR);
         assert_eq!(close_rect.pos[2], CLOSE_BUTTON_SIZE);
         assert_eq!(close_rect.pos[3], CLOSE_BUTTON_SIZE);
@@ -772,8 +785,8 @@ mod tests {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("A", true), ("B", false), ("C", false)]);
         let rects = renderer.build_tab_rects(&tabs, 800.0, None, Some(1));
-        // Should have: bg + 3 tabs + "+" button + 1 indicator = 6
-        assert_eq!(rects.len(), 6);
+        // Should have: bg + 3 tabs + 1 accent underline + "+" button + 1 indicator = 7
+        assert_eq!(rects.len(), 7);
         // Last rect is the indicator (added after "+" button)
         let indicator = rects.last().unwrap();
         assert_eq!(indicator.color, DRAG_INDICATOR_COLOR);
@@ -785,8 +798,8 @@ mod tests {
         let renderer = TabBarRenderer::new(8.0, 16.0);
         let tabs = make_tabs(&[("A", true), ("B", false), ("C", false)]);
         let rects_none = renderer.build_tab_rects(&tabs, 800.0, None, None);
-        // bg + 3 tabs + "+" button = 5 (same as before)
-        assert_eq!(rects_none.len(), 5);
+        // bg + 3 tabs + 1 accent underline + "+" button = 6
+        assert_eq!(rects_none.len(), 6);
     }
 
     // ---- Tab overflow tests ----
@@ -815,7 +828,7 @@ mod tests {
         assert!(total_width > 1920.0, "50 tabs should overflow 1920px");
         // Build rects shouldn't panic
         let rects = renderer.build_tab_rects(&tab_infos, 1920.0, None, None);
-        assert_eq!(rects.len(), 50 + 2); // bg + 50 tabs + "+" button
+        assert_eq!(rects.len(), 50 + 3); // bg + 50 tabs + 1 accent underline + "+" button
                                          // Build text shouldn't panic
         let labels = renderer.build_tab_text(&tab_infos, 1920.0, None);
         assert_eq!(labels.len(), 50 + 1); // 50 tab labels + "+" button

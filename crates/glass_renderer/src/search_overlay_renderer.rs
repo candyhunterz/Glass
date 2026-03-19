@@ -120,7 +120,7 @@ impl SearchOverlayRenderer {
 
         // Query text label
         labels.push(SearchOverlayTextLabel {
-            text: format!("Search: {}", query),
+            text: format!("Search History: {}", query),
             x: input_x + padding,
             y: input_y + (input_h - self.cell_height) * 0.5,
             color: Rgb {
@@ -258,7 +258,7 @@ mod tests {
         let r = renderer();
         let labels = r.build_overlay_text("hello", &[], 0, 800.0, 600.0);
         assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].text, "Search: hello");
+        assert_eq!(labels[0].text, "Search History: hello");
         assert_eq!(
             labels[0].color,
             Rgb {

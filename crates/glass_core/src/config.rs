@@ -104,11 +104,11 @@ impl fmt::Display for ConfigError {
             (Some(line), Some(col)) => {
                 write!(
                     f,
-                    "Config error (line {}, col {}): {}",
+                    "~/.glass/config.toml (line {}, col {}): {}",
                     line, col, self.message
                 )
             }
-            _ => write!(f, "Config error: {}", self.message),
+            _ => write!(f, "~/.glass/config.toml: {}", self.message),
         }
     }
 }
@@ -726,7 +726,10 @@ mod tests {
             snippet: None,
         };
         let display = format!("{}", err);
-        assert_eq!(display, "Config error (line 3, col 5): expected string");
+        assert_eq!(
+            display,
+            "~/.glass/config.toml (line 3, col 5): expected string"
+        );
     }
 
     #[test]
@@ -738,7 +741,7 @@ mod tests {
             snippet: None,
         };
         let display = format!("{}", err);
-        assert_eq!(display, "Config error: something went wrong");
+        assert_eq!(display, "~/.glass/config.toml: something went wrong");
     }
 
     #[test]
