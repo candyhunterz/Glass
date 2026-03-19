@@ -66,8 +66,14 @@ pub async fn run_mcp_server() -> anyhow::Result<()> {
     // (returns clear error messages when the GUI isn't running).
     let ipc_client = Some(ipc_client::IpcClient::new());
 
-    let server =
-        tools::GlassServer::new(db_path, glass_dir, coord_db_path, ipc_client, allowed_tools, permissions);
+    let server = tools::GlassServer::new(
+        db_path,
+        glass_dir,
+        coord_db_path,
+        ipc_client,
+        allowed_tools,
+        permissions,
+    );
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

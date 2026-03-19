@@ -254,7 +254,11 @@ mod tests {
         let result = store.read_blob("../../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("non-hex"), "Error should mention non-hex: {}", err);
+        assert!(
+            err.contains("non-hex"),
+            "Error should mention non-hex: {}",
+            err
+        );
     }
 
     #[test]
@@ -263,7 +267,11 @@ mod tests {
         let result = store.delete_blob("../../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("non-hex"), "Error should mention non-hex: {}", err);
+        assert!(
+            err.contains("non-hex"),
+            "Error should mention non-hex: {}",
+            err
+        );
     }
 
     #[test]

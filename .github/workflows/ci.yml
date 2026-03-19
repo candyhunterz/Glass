@@ -43,14 +43,26 @@ jobs:
         run: cargo test --workspace
 
   clippy:
-    name: Clippy
-    runs-on: windows-latest
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.os }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libx11-dev libxi-dev libxtst-dev
+
       - run: cargo clippy --workspace -- -D warnings
 
   fmt:
