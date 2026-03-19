@@ -435,8 +435,12 @@ impl Drop for AgentRuntime {
             match child.try_wait() {
                 Ok(Some(_)) => {} // already exited
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(e) = child.kill() {
+                        tracing::debug!("Agent child kill: {e}");
+                    }
+                    if let Err(e) = child.wait() {
+                        tracing::warn!("Agent child wait failed: {e}");
+                    }
                 }
             }
         }
@@ -2286,7 +2290,9 @@ impl Processor {
         let cp_path = std::path::Path::new(cwd)
             .join(".glass")
             .join("checkpoint.md");
-        let _ = std::fs::create_dir_all(cp_path.parent().unwrap());
+        if let Some(parent) = cp_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Err(e) = std::fs::write(&cp_path, content) {
             tracing::warn!("Failed to write checkpoint.md: {e}");
         }
@@ -4746,7 +4752,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         let cp_path = std::path::Path::new(&cwd)
                                             .join(".glass")
                                             .join("checkpoint.md");
-                                        let _ = std::fs::create_dir_all(cp_path.parent().unwrap());
+                                        if let Some(parent) = cp_path.parent() {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
                                         if let Some(fallback) =
                                             self.orchestrator.cached_checkpoint_fallback.take()
                                         {
