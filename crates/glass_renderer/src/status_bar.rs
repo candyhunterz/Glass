@@ -4,7 +4,7 @@
 //! that sits at the bottom of the terminal viewport.
 
 use alacritty_terminal::vte::ansi::Rgb;
-
+use glass_core::config::ThemeConfig;
 use glass_terminal::GitInfo;
 
 use crate::rect_renderer::RectInstance;
@@ -90,6 +90,8 @@ pub fn build_agent_activity_line(
 pub struct StatusBarRenderer {
     cell_width: f32,
     cell_height: f32,
+    /// Theme colors for status bar chrome.
+    theme: ThemeConfig,
 }
 
 impl StatusBarRenderer {
@@ -98,7 +100,13 @@ impl StatusBarRenderer {
         Self {
             cell_width,
             cell_height,
+            theme: ThemeConfig::default(),
         }
+    }
+
+    /// Update the theme colors (called on config hot-reload).
+    pub fn update_theme(&mut self, theme: ThemeConfig) {
+        self.theme = theme;
     }
 
     /// Build the status bar background rectangle.
@@ -113,13 +121,14 @@ impl StatusBarRenderer {
         orchestrating: bool,
     ) -> Vec<RectInstance> {
         let y = viewport_height - self.cell_height;
+        let status_bg = ThemeConfig::to_f32_rgba(self.theme.status_bar_bg);
         let mut rects = vec![RectInstance {
             pos: [0.0, y, viewport_width, self.cell_height],
             color: if orchestrating {
                 // Dark teal tint when orchestrating
                 [15.0 / 255.0, 45.0 / 255.0, 40.0 / 255.0, 1.0]
             } else {
-                [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0]
+                status_bg
             },
         }];
         if orchestrating {
@@ -144,12 +153,13 @@ impl StatusBarRenderer {
     ) -> Vec<RectInstance> {
         let height = self.cell_height * 2.0;
         let y = viewport_height - height;
+        let status_bg = ThemeConfig::to_f32_rgba(self.theme.status_bar_bg);
         let mut rects = vec![RectInstance {
             pos: [0.0, y, viewport_width, height],
             color: if orchestrating {
                 [15.0 / 255.0, 45.0 / 255.0, 40.0 / 255.0, 1.0]
             } else {
-                [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0]
+                status_bg
             },
         }];
         if orchestrating {

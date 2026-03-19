@@ -4,7 +4,7 @@
 //! plus text labels for badge symbols and duration display.
 
 use alacritty_terminal::vte::ansi::Rgb;
-
+use glass_core::config::ThemeConfig;
 use glass_pipes::FinalizedBuffer;
 use glass_terminal::{Block, BlockState};
 
@@ -58,6 +58,8 @@ pub struct BlockLabel {
 pub struct BlockRenderer {
     cell_width: f32,
     cell_height: f32,
+    /// Theme colors for block decorations.
+    theme: ThemeConfig,
 }
 
 impl BlockRenderer {
@@ -66,7 +68,13 @@ impl BlockRenderer {
         Self {
             cell_width,
             cell_height,
+            theme: ThemeConfig::default(),
         }
+    }
+
+    /// Update the theme colors (called on config hot-reload).
+    pub fn update_theme(&mut self, theme: ThemeConfig) {
+        self.theme = theme;
     }
 
     /// Build colored rectangles for block separators and exit code badges.
@@ -93,10 +101,10 @@ impl BlockRenderer {
 
             let y = (line - display_offset) as f32 * self.cell_height;
 
-            // Horizontal separator line (1px tall, full width, subtle gray)
+            // Horizontal separator line (2px tall, full width)
             rects.push(RectInstance {
-                pos: [0.0, y, viewport_width, 1.0],
-                color: [60.0 / 255.0, 60.0 / 255.0, 60.0 / 255.0, 1.0],
+                pos: [0.0, y, viewport_width, 2.0],
+                color: ThemeConfig::to_f32_rgba(self.theme.block_separator),
             });
 
             // Exit code badge (if available)
@@ -121,11 +129,9 @@ impl BlockRenderer {
                 });
 
                 let badge_color = if exit_code == 0 {
-                    // Green for success
-                    [40.0 / 255.0, 160.0 / 255.0, 40.0 / 255.0, 1.0]
+                    ThemeConfig::to_f32_rgba(self.theme.badge_success)
                 } else {
-                    // Red for failure
-                    [200.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0]
+                    ThemeConfig::to_f32_rgba(self.theme.badge_error)
                 };
                 rects.push(RectInstance {
                     pos: [badge_x, y, badge_width, self.cell_height],
@@ -152,10 +158,10 @@ impl BlockRenderer {
                     color: [0.102, 0.102, 0.102, 1.0],
                 });
 
-                // Blue badge for "running"
+                // Running badge
                 rects.push(RectInstance {
                     pos: [badge_x, y, badge_width, self.cell_height],
-                    color: [30.0 / 255.0, 120.0 / 255.0, 200.0 / 255.0, 1.0],
+                    color: ThemeConfig::to_f32_rgba(self.theme.badge_running),
                 });
             }
         }
