@@ -282,10 +282,9 @@ if [[ "${BASH_VERSINFO[0]}" -ge 5 ]] || \
         local cmd="$READLINE_LINE"
 
         if [[ -n "$cmd" ]] && __glass_has_pipes "$cmd"; then
-            local tmpdir="${TMPDIR:-/tmp}/glass_${$}_$(date +%s%N)"
-            if ! mkdir -p "$tmpdir" 2>/dev/null; then
-                return  # Skip pipeline rewriting if temp dir creation fails
-            fi
+            local tmpdir
+            tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/glass_XXXXXXXX") || return
+            chmod 700 "$tmpdir"
             __glass_capture_tmpdir="$tmpdir"
 
             local rewritten
