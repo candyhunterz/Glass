@@ -4,7 +4,7 @@
 //! that sits at the bottom of the terminal viewport.
 
 use alacritty_terminal::vte::ansi::Rgb;
-
+use glass_core::config::ThemeConfig;
 use glass_terminal::GitInfo;
 
 use crate::rect_renderer::RectInstance;
@@ -88,13 +88,25 @@ pub fn build_agent_activity_line(
 /// Produces a background rectangle and text labels showing the current
 /// working directory and optional git branch/dirty information.
 pub struct StatusBarRenderer {
+    cell_width: f32,
     cell_height: f32,
+    /// Theme colors for status bar chrome.
+    theme: ThemeConfig,
 }
 
 impl StatusBarRenderer {
-    /// Create a new StatusBarRenderer with the given cell height.
-    pub fn new(cell_height: f32) -> Self {
-        Self { cell_height }
+    /// Create a new StatusBarRenderer with the given cell dimensions.
+    pub fn new(cell_width: f32, cell_height: f32) -> Self {
+        Self {
+            cell_width,
+            cell_height,
+            theme: ThemeConfig::default(),
+        }
+    }
+
+    /// Update the theme colors (called on config hot-reload).
+    pub fn update_theme(&mut self, theme: ThemeConfig) {
+        self.theme = theme;
     }
 
     /// Build the status bar background rectangle.
@@ -109,13 +121,14 @@ impl StatusBarRenderer {
         orchestrating: bool,
     ) -> Vec<RectInstance> {
         let y = viewport_height - self.cell_height;
+        let status_bg = ThemeConfig::to_f32_rgba(self.theme.status_bar_bg);
         let mut rects = vec![RectInstance {
             pos: [0.0, y, viewport_width, self.cell_height],
             color: if orchestrating {
                 // Dark teal tint when orchestrating
                 [15.0 / 255.0, 45.0 / 255.0, 40.0 / 255.0, 1.0]
             } else {
-                [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0]
+                status_bg
             },
         }];
         if orchestrating {
@@ -140,12 +153,13 @@ impl StatusBarRenderer {
     ) -> Vec<RectInstance> {
         let height = self.cell_height * 2.0;
         let y = viewport_height - height;
+        let status_bg = ThemeConfig::to_f32_rgba(self.theme.status_bar_bg);
         let mut rects = vec![RectInstance {
             pos: [0.0, y, viewport_width, height],
             color: if orchestrating {
                 [15.0 / 255.0, 45.0 / 255.0, 40.0 / 255.0, 1.0]
             } else {
-                [38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0]
+                status_bg
             },
         }];
         if orchestrating {
@@ -185,13 +199,18 @@ impl StatusBarRenderer {
         agent_paused: bool,
         agent_mode_text: Option<&str>,
         proposal_count_text: Option<&str>,
+        viewport_width: f32,
         viewport_height: f32,
     ) -> StatusLabel {
         let y = viewport_height - self.cell_height;
 
-        // Truncate CWD if too long (keep last 60 chars with leading ...)
-        let left_text = if cwd.len() > 60 {
-            format!("...{}", &cwd[cwd.len() - 57..])
+        // Dynamic CWD truncation: use roughly half the viewport width for CWD,
+        // leaving room for right-side elements (git branch, agent cost, etc.).
+        let max_cwd_chars = ((viewport_width / self.cell_width) as usize / 2).max(20);
+        // Safe truncation for Unicode paths
+        let left_text = if cwd.chars().count() > max_cwd_chars {
+            let skip = cwd.chars().count() - (max_cwd_chars - 3);
+            format!("...{}", cwd.chars().skip(skip).collect::<String>())
         } else {
             cwd.to_string()
         };
@@ -290,7 +309,7 @@ mod tests {
     use super::*;
 
     fn renderer() -> StatusBarRenderer {
-        StatusBarRenderer::new(20.0)
+        StatusBarRenderer::new(10.0, 20.0)
     }
 
     fn make_label(renderer: &StatusBarRenderer) -> StatusLabel {
@@ -303,6 +322,7 @@ mod tests {
             false,
             None,
             None,
+            800.0,
             600.0,
         )
     }
@@ -318,11 +338,14 @@ mod tests {
     fn test_status_bar_cwd_truncation() {
         let r = renderer();
         let long_cwd = "/".repeat(80);
-        let label =
-            r.build_status_text(&long_cwd, None, None, None, None, false, None, None, 600.0);
+        // With cell_width=10.0 and viewport_width=800.0, max_cwd_chars = (800/10)/2 = 40
+        let label = r.build_status_text(
+            &long_cwd, None, None, None, None, false, None, None, 800.0, 600.0,
+        );
         assert!(
-            label.left_text.len() <= 60,
-            "Truncated CWD should be at most 60 chars"
+            label.left_text.chars().count() <= 40,
+            "Truncated CWD should be at most max_cwd_chars (40), got {}",
+            label.left_text.chars().count()
         );
         assert!(label.left_text.starts_with("..."));
     }
@@ -359,6 +382,7 @@ mod tests {
             false,
             Some("[agent: watch]"),
             Some("2 proposals"),
+            800.0,
             600.0,
         );
         assert_eq!(
@@ -402,6 +426,7 @@ mod tests {
             true,
             None,
             None,
+            800.0,
             600.0,
         );
         assert_eq!(
@@ -452,6 +477,7 @@ mod tests {
             false,
             None,
             None,
+            800.0,
             600.0,
         );
         assert_eq!(

@@ -104,11 +104,11 @@ impl fmt::Display for ConfigError {
             (Some(line), Some(col)) => {
                 write!(
                     f,
-                    "Config error (line {}, col {}): {}",
+                    "~/.glass/config.toml (line {}, col {}): {}",
                     line, col, self.message
                 )
             }
-            _ => write!(f, "Config error: {}", self.message),
+            _ => write!(f, "~/.glass/config.toml: {}", self.message),
         }
     }
 }
@@ -267,6 +267,97 @@ impl Default for AgentSection {
     }
 }
 
+/// Chrome/UI color theme configuration in the `[theme]` TOML section.
+///
+/// Allows users to customize the terminal chrome colors (tab bar, status bar,
+/// block decorations, search overlay). Ships with `dark` (default) and `light` presets.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    /// Preset name: "dark" (default) or "light". Individual fields override preset values.
+    pub preset: String,
+    /// Terminal background color \[R, G, B\].
+    pub terminal_bg: [u8; 3],
+    /// Tab bar background color.
+    pub tab_bar_bg: [u8; 3],
+    /// Active tab background color.
+    pub tab_active_bg: [u8; 3],
+    /// Inactive tab background color.
+    pub tab_inactive_bg: [u8; 3],
+    /// Active tab accent underline color.
+    pub tab_accent: [u8; 3],
+    /// Status bar background color.
+    pub status_bar_bg: [u8; 3],
+    /// Block separator line color.
+    pub block_separator: [u8; 3],
+    /// Badge color for successful commands (exit 0).
+    pub badge_success: [u8; 3],
+    /// Badge color for failed commands (non-zero exit).
+    pub badge_error: [u8; 3],
+    /// Badge color for currently running commands.
+    pub badge_running: [u8; 3],
+    /// Search overlay backdrop color \[R, G, B, A\] as floats 0.0-1.0.
+    pub search_backdrop: [f32; 4],
+    /// Search input box background color.
+    pub search_input_bg: [u8; 3],
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl ThemeConfig {
+    /// Dark theme preset (default).
+    pub fn dark() -> Self {
+        Self {
+            preset: "dark".to_string(),
+            terminal_bg: [26, 26, 26],
+            tab_bar_bg: [30, 30, 30],
+            tab_active_bg: [50, 50, 50],
+            tab_inactive_bg: [35, 35, 35],
+            tab_accent: [100, 149, 237],
+            status_bar_bg: [38, 38, 38],
+            block_separator: [60, 60, 60],
+            badge_success: [40, 160, 40],
+            badge_error: [200, 50, 50],
+            badge_running: [30, 120, 200],
+            search_backdrop: [0.05, 0.05, 0.05, 0.85],
+            search_input_bg: [56, 56, 56],
+        }
+    }
+
+    /// Light theme preset.
+    pub fn light() -> Self {
+        Self {
+            preset: "light".to_string(),
+            terminal_bg: [250, 250, 250],
+            tab_bar_bg: [235, 235, 235],
+            tab_active_bg: [255, 255, 255],
+            tab_inactive_bg: [225, 225, 225],
+            tab_accent: [70, 130, 210],
+            status_bar_bg: [230, 230, 230],
+            block_separator: [200, 200, 200],
+            badge_success: [50, 180, 50],
+            badge_error: [220, 60, 60],
+            badge_running: [40, 140, 220],
+            search_backdrop: [0.95, 0.95, 0.95, 0.9],
+            search_input_bg: [240, 240, 240],
+        }
+    }
+
+    /// Convert a \[u8; 3\] color to wgpu-style \[f32; 4\] with alpha 1.0.
+    pub fn to_f32_rgba(color: [u8; 3]) -> [f32; 4] {
+        [
+            color[0] as f32 / 255.0,
+            color[1] as f32 / 255.0,
+            color[2] as f32 / 255.0,
+            1.0,
+        ]
+    }
+}
+
 /// Glass terminal configuration, loaded from `~/.glass/config.toml`.
 ///
 /// All fields have sensible defaults. Missing fields in the TOML file
@@ -298,6 +389,9 @@ pub struct GlassConfig {
     /// Terminal behavior configuration section. Optional in the TOML file;
     /// uses defaults when present without explicit field values.
     pub terminal: Option<TerminalSection>,
+    /// Theme configuration for chrome colors. Uses dark preset by default.
+    #[serde(default)]
+    pub theme: ThemeConfig,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -458,6 +552,7 @@ impl Default for GlassConfig {
             agent: None,
             scripting: None,
             terminal: None,
+            theme: ThemeConfig::default(),
         }
     }
 }
@@ -726,7 +821,10 @@ mod tests {
             snippet: None,
         };
         let display = format!("{}", err);
-        assert_eq!(display, "Config error (line 3, col 5): expected string");
+        assert_eq!(
+            display,
+            "~/.glass/config.toml (line 3, col 5): expected string"
+        );
     }
 
     #[test]
@@ -738,7 +836,7 @@ mod tests {
             snippet: None,
         };
         let display = format!("{}", err);
-        assert_eq!(display, "Config error: something went wrong");
+        assert_eq!(display, "~/.glass/config.toml: something went wrong");
     }
 
     #[test]
@@ -1382,6 +1480,38 @@ script_generation = false
         assert_eq!(scripting.max_scripts_per_hook, None);
         assert_eq!(scripting.max_total_scripts, None);
         assert_eq!(scripting.max_mcp_tools, None);
+    }
+
+    #[test]
+    fn test_theme_presets() {
+        let dark = ThemeConfig::dark();
+        assert_eq!(dark.terminal_bg, [26, 26, 26]);
+        assert_eq!(dark.preset, "dark");
+
+        let light = ThemeConfig::light();
+        assert_eq!(light.terminal_bg, [250, 250, 250]);
+        assert_eq!(light.preset, "light");
+    }
+
+    #[test]
+    fn test_theme_from_config_toml() {
+        let toml = r#"
+        [theme]
+        terminal_bg = [40, 40, 40]
+        "#;
+        let config = GlassConfig::load_from_str(toml);
+        assert_eq!(config.theme.terminal_bg, [40, 40, 40]);
+        // Unspecified fields use dark defaults
+        assert_eq!(config.theme.status_bar_bg, [38, 38, 38]);
+    }
+
+    #[test]
+    fn test_theme_to_f32_rgba() {
+        let rgba = ThemeConfig::to_f32_rgba([255, 128, 0]);
+        assert!((rgba[0] - 1.0).abs() < 0.001);
+        assert!((rgba[1] - 128.0 / 255.0).abs() < 0.001);
+        assert!((rgba[2] - 0.0).abs() < 0.001);
+        assert_eq!(rgba[3], 1.0);
     }
 
     #[test]

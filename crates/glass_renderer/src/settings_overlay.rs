@@ -233,11 +233,11 @@ const SHORTCUT_DATA: &[ShortcutCategory] = &[
         name: "PANES",
         entries: &[
             ShortcutEntry {
-                action: "Split horizontal",
+                action: "Split Down (horizontal)",
                 keys: "Ctrl+Shift+D",
             },
             ShortcutEntry {
-                action: "Split vertical",
+                action: "Split East/right (vertical)",
                 keys: "Ctrl+Shift+E",
             },
             ShortcutEntry {

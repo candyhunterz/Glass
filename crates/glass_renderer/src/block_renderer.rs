@@ -4,7 +4,7 @@
 //! plus text labels for badge symbols and duration display.
 
 use alacritty_terminal::vte::ansi::Rgb;
-
+use glass_core::config::ThemeConfig;
 use glass_pipes::FinalizedBuffer;
 use glass_terminal::{Block, BlockState};
 
@@ -58,6 +58,8 @@ pub struct BlockLabel {
 pub struct BlockRenderer {
     cell_width: f32,
     cell_height: f32,
+    /// Theme colors for block decorations.
+    theme: ThemeConfig,
 }
 
 impl BlockRenderer {
@@ -66,7 +68,13 @@ impl BlockRenderer {
         Self {
             cell_width,
             cell_height,
+            theme: ThemeConfig::default(),
         }
+    }
+
+    /// Update the theme colors (called on config hot-reload).
+    pub fn update_theme(&mut self, theme: ThemeConfig) {
+        self.theme = theme;
     }
 
     /// Build colored rectangles for block separators and exit code badges.
@@ -93,15 +101,15 @@ impl BlockRenderer {
 
             let y = (line - display_offset) as f32 * self.cell_height;
 
-            // Horizontal separator line (1px tall, full width, subtle gray)
+            // Horizontal separator line (2px tall, full width)
             rects.push(RectInstance {
-                pos: [0.0, y, viewport_width, 1.0],
-                color: [60.0 / 255.0, 60.0 / 255.0, 60.0 / 255.0, 1.0],
+                pos: [0.0, y, viewport_width, 2.0],
+                color: ThemeConfig::to_f32_rgba(self.theme.block_separator),
             });
 
             // Exit code badge (if available)
             if let Some(exit_code) = block.exit_code {
-                let badge_width = self.cell_width * 3.0;
+                let badge_width = self.cell_width * 5.0;
                 let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH;
 
                 // Opaque background behind entire right-side decoration cluster
@@ -121,15 +129,39 @@ impl BlockRenderer {
                 });
 
                 let badge_color = if exit_code == 0 {
-                    // Green for success
-                    [40.0 / 255.0, 160.0 / 255.0, 40.0 / 255.0, 1.0]
+                    ThemeConfig::to_f32_rgba(self.theme.badge_success)
                 } else {
-                    // Red for failure
-                    [200.0 / 255.0, 50.0 / 255.0, 50.0 / 255.0, 1.0]
+                    ThemeConfig::to_f32_rgba(self.theme.badge_error)
                 };
                 rects.push(RectInstance {
                     pos: [badge_x, y, badge_width, self.cell_height],
                     color: badge_color,
+                });
+            }
+
+            // Running indicator for blocks in Executing state
+            if block.exit_code.is_none() && block.state == BlockState::Executing {
+                let badge_width = self.cell_width * 5.0;
+                let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH;
+
+                // Opaque background
+                let cluster_width = badge_width;
+                let padding = self.cell_width;
+                let cluster_x = viewport_width - cluster_width - SCROLLBAR_WIDTH - padding;
+                rects.push(RectInstance {
+                    pos: [
+                        cluster_x,
+                        y,
+                        cluster_width + SCROLLBAR_WIDTH + padding,
+                        self.cell_height,
+                    ],
+                    color: [0.102, 0.102, 0.102, 1.0],
+                });
+
+                // Running badge
+                rects.push(RectInstance {
+                    pos: [badge_x, y, badge_width, self.cell_height],
+                    color: ThemeConfig::to_f32_rgba(self.theme.badge_running),
                 });
             }
         }
@@ -163,7 +195,7 @@ impl BlockRenderer {
 
             // Exit code badge text
             if let Some(exit_code) = block.exit_code {
-                let badge_width = self.cell_width * 3.0;
+                let badge_width = self.cell_width * 5.0;
                 let badge_x = viewport_width - badge_width - SCROLLBAR_WIDTH + self.cell_width;
                 let (text, color) = if exit_code == 0 {
                     (
@@ -176,7 +208,7 @@ impl BlockRenderer {
                     )
                 } else {
                     (
-                        "X".to_string(),
+                        format!("E:{}", exit_code),
                         Rgb {
                             r: 255,
                             g: 255,
@@ -197,7 +229,7 @@ impl BlockRenderer {
             if let Some(duration) = block.duration() {
                 let duration_text = glass_terminal::format_duration(duration);
                 let duration_width = duration_text.len() as f32 * self.cell_width;
-                let badge_width = self.cell_width * 3.0;
+                let badge_width = self.cell_width * 5.0;
                 let x = viewport_width
                     - badge_width
                     - SCROLLBAR_WIDTH
@@ -220,7 +252,7 @@ impl BlockRenderer {
             if block.has_snapshot && block.state == BlockState::Complete {
                 let undo_text = "[undo]";
                 let undo_width = undo_text.len() as f32 * self.cell_width;
-                let badge_width = self.cell_width * 3.0;
+                let badge_width = self.cell_width * 5.0;
                 let undo_x = if let Some(dx) = duration_x {
                     // Position to the left of the duration text
                     dx - undo_width - self.cell_width
@@ -242,6 +274,35 @@ impl BlockRenderer {
 
             // SOI summary is displayed via PTY-injected hint line (build_soi_hint_line),
             // not as an overlay label, to avoid overlapping with prompt/command text.
+
+            // Running elapsed timer for Executing blocks
+            if block.exit_code.is_none() && block.state == BlockState::Executing {
+                if let Some(started) = block.started_at {
+                    let elapsed = started.elapsed();
+                    let secs = elapsed.as_secs();
+                    let text = if secs >= 3600 {
+                        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+                    } else if secs >= 60 {
+                        format!("{}m{}s", secs / 60, secs % 60)
+                    } else {
+                        format!("{}s", secs)
+                    };
+
+                    let badge_width = self.cell_width * 5.0;
+                    let badge_x =
+                        viewport_width - badge_width - SCROLLBAR_WIDTH + self.cell_width * 0.5;
+                    labels.push(BlockLabel {
+                        x: badge_x,
+                        y,
+                        text,
+                        color: Rgb {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                        },
+                    });
+                }
+            }
         }
 
         labels
@@ -250,7 +311,7 @@ impl BlockRenderer {
     /// Calculate the total width of the right-side decoration cluster for a block.
     /// Includes badge (3 cells) + optional duration + optional [undo] + gaps.
     fn decoration_cluster_width(&self, block: &Block) -> f32 {
-        let badge_width = self.cell_width * 3.0;
+        let badge_width = self.cell_width * 5.0;
         let mut width = badge_width;
 
         if let Some(duration) = block.duration() {
@@ -348,6 +409,22 @@ impl BlockRenderer {
         let total_rows = Self::panel_total_rows(block, stage_count);
         let panel_top = viewport_height - status_bar_height - total_rows as f32 * self.cell_height;
         let mut row = 0;
+
+        // "[Esc] close" hint on the first row (UX-4)
+        {
+            let hint_text = "[Esc] close";
+            let hint_width = hint_text.len() as f32 * self.cell_width;
+            labels.push(BlockLabel {
+                x: viewport_width - hint_width - SCROLLBAR_WIDTH - self.cell_width,
+                y: panel_top,
+                text: hint_text.to_string(),
+                color: Rgb {
+                    r: 120,
+                    g: 120,
+                    b: 120,
+                },
+            });
+        }
 
         for i in 0..stage_count {
             let row_y = panel_top + row as f32 * self.cell_height;

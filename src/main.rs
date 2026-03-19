@@ -347,6 +347,8 @@ struct Processor {
     config_error: Option<glass_core::config::ConfigError>,
     /// Whether the config file watcher has been spawned (only once).
     watcher_spawned: bool,
+    /// Show settings hint in status bar for the first few sessions (UX-1).
+    show_settings_hint: bool,
     /// Available update info, if a newer version was found.
     update_info: Option<glass_core::updater::UpdateInfo>,
     /// Current coordination state from background poller.
@@ -415,6 +417,9 @@ struct Processor {
     settings_edit_buffer: String,
     /// Scroll offset for the Shortcuts tab.
     settings_shortcuts_scroll: usize,
+    /// Transient status message displayed in the status bar center text.
+    /// Auto-clears after 3 seconds.
+    status_message: Option<(String, std::time::Instant)>,
     /// Whether the proposal review overlay is open (Ctrl+Shift+A to toggle).
     agent_review_open: bool,
     /// Selected proposal index in the review overlay. Clamped to list bounds.
@@ -2495,7 +2500,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         // Create FrameRenderer with pre-loaded font system
         let scale_factor = window.scale_factor() as f32;
-        let frame_renderer = FrameRenderer::with_font_system(
+        let mut frame_renderer = FrameRenderer::with_font_system(
             font_system,
             renderer.device(),
             renderer.queue(),
@@ -2504,6 +2509,8 @@ impl ApplicationHandler<AppEvent> for Processor {
             self.config.font_size,
             scale_factor,
         );
+        // Apply initial theme from config (UX-13)
+        frame_renderer.update_theme(self.config.theme.clone());
 
         // Compute initial terminal size from font metrics.
         // Subtract 2 lines for the status bar + tab bar so the PTY resize reflects actual content area.
@@ -2861,10 +2868,23 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let visible_block_refs: Vec<&_> = visible_blocks.iter().collect();
 
-                    let update_text = self
-                        .update_info
-                        .as_ref()
-                        .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest));
+                    // Status message overrides update text for 3 seconds
+                    let update_text = if let Some((ref msg, at)) = self.status_message {
+                        if at.elapsed().as_secs() < 3 {
+                            Some(msg.clone())
+                        } else {
+                            self.status_message = None;
+                            self.update_info.as_ref().map(|info| {
+                                format!("Update v{} available (Ctrl+Shift+U)", info.latest)
+                            })
+                        }
+                    } else if let Some(ref info) = self.update_info {
+                        Some(format!("Update v{} available (Ctrl+Shift+U)", info.latest))
+                    } else if self.show_settings_hint {
+                        Some("Tip: Ctrl+Shift+, = settings & shortcuts".to_string())
+                    } else {
+                        None
+                    };
 
                     let has_agents = !self.coordination_state.agents.is_empty();
                     let coordination_text = if self.coordination_state.agent_count > 0
@@ -4275,7 +4295,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .split_pane(SplitDirection::Horizontal, session)
                                     .is_none()
                                 {
-                                    return; // max depth reached
+                                    // UX-20: notify user when max split depth reached
+                                    self.status_message = Some((
+                                        "Maximum split depth reached".to_string(),
+                                        std::time::Instant::now(),
+                                    ));
+                                    ctx.mark_dirty_and_redraw();
+                                    return;
                                 }
 
                                 // Resize all panes' PTYs with per-pane dimensions
@@ -4320,7 +4346,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .split_pane(SplitDirection::Vertical, session)
                                     .is_none()
                                 {
-                                    return; // max depth reached
+                                    // UX-20: notify user when max split depth reached
+                                    self.status_message = Some((
+                                        "Maximum split depth reached".to_string(),
+                                        std::time::Instant::now(),
+                                    ));
+                                    ctx.mark_dirty_and_redraw();
+                                    return;
                                 }
                                 // Resize all panes' PTYs with per-pane dimensions
                                 resize_all_panes(
@@ -4509,10 +4541,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         }
                                                     }
                                                 }
-                                                tracing::info!(
-                                                    "Undo complete: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
+                                                let undo_summary = format!(
+                                                    "Undo: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
                                                     restored, deleted, skipped, conflicts, errors,
                                                 );
+                                                tracing::info!("{}", undo_summary);
+                                                self.status_message =
+                                                    Some((undo_summary, std::time::Instant::now()));
                                                 // Remove [undo] label from the undone block (visual feedback).
                                                 let epoch_to_clear = session
                                                     .block_manager
@@ -4532,9 +4567,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                             Ok(None) => {
                                                 tracing::info!("Nothing to undo -- no file-modifying commands found");
+                                                self.status_message = Some((
+                                                    "Nothing to undo".to_string(),
+                                                    std::time::Instant::now(),
+                                                ));
                                             }
                                             Err(e) => {
                                                 tracing::error!("Undo failed: {}", e);
+                                                self.status_message = Some((
+                                                    format!("Undo failed: {}", e),
+                                                    std::time::Instant::now(),
+                                                ));
                                             }
                                         }
                                     } else {
@@ -5021,7 +5064,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    // Shift+PageUp/Down: scrollback
+                    // Shift+PageUp/Down/ArrowUp/ArrowDown: scrollback (UX-9)
                     if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
                         match &event.logical_key {
                             Key::Named(NamedKey::PageUp) => {
@@ -5034,6 +5077,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Key::Named(NamedKey::PageDown) => {
                                 if let Some(session) = ctx.session() {
                                     session.term.lock().scroll_display(Scroll::PageDown);
+                                }
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::Delta(1));
+                                }
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::Delta(-1));
                                 }
                                 ctx.mark_dirty_and_redraw();
                                 return;
@@ -5102,8 +5159,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.mark_dirty_and_redraw();
                                 return;
                             } else {
-                                // Alt+Arrow: move focus
-                                if ctx.session_mux.active_tab_pane_count() > 1 {
+                                // Alt+Arrow: move focus (only when multi-pane and not in alternate screen) (UX-11)
+                                let in_alt_screen = ctx
+                                    .session_mux
+                                    .focused_session()
+                                    .map(|s| s.term.lock().mode().contains(TermMode::ALT_SCREEN))
+                                    .unwrap_or(false);
+                                if ctx.session_mux.active_tab_pane_count() > 1 && !in_alt_screen {
                                     let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                     let sc = ctx.renderer.surface_config();
                                     let container = ViewportLayout {
@@ -5410,6 +5472,45 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
+                        }
+                    }
+
+                    // Escape: collapse any expanded pipeline panel (UX-4)
+                    if event.state == ElementState::Pressed {
+                        if let Key::Named(NamedKey::Escape) = &event.logical_key {
+                            if let Some(session) = ctx.session_mux.focused_session_mut() {
+                                let collapsed =
+                                    session.block_manager.blocks_mut().iter_mut().any(|b| {
+                                        if b.pipeline_expanded {
+                                            b.pipeline_expanded = false;
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                if collapsed {
+                                    ctx.mark_dirty_and_redraw();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
+                    // UX-14: Ctrl+C copies when selection is active instead of SIGINT
+                    if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
+                        if let Key::Character(ref c) = event.logical_key {
+                            if c.as_str().eq_ignore_ascii_case("c") {
+                                if let Some(session) = ctx.session() {
+                                    let has_selection =
+                                        session.term.lock().selection_to_string().is_some();
+                                    if has_selection {
+                                        clipboard_copy(&session.term);
+                                        ctx.mark_dirty_and_redraw();
+                                        return;
+                                    }
+                                }
+                                // No selection — fall through to send ETX/SIGINT via encoder
+                            }
                         }
                     }
 
@@ -5738,6 +5839,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         glass_scripting::HookPoint::TabCreate,
                                         &event,
                                     );
+                                }
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            Some(TabHitResult::ScrollLeft) => {
+                                let offset = &mut ctx.frame_renderer.tab_bar_mut().scroll_offset;
+                                *offset = offset.saturating_sub(1);
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            Some(TabHitResult::ScrollRight) => {
+                                let tab_count = ctx.session_mux.tab_count();
+                                let offset = &mut ctx.frame_renderer.tab_bar_mut().scroll_offset;
+                                if *offset + 1 < tab_count {
+                                    *offset += 1;
                                 }
                                 ctx.mark_dirty_and_redraw();
                             }
@@ -6107,7 +6221,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 ctx.mark_dirty_and_redraw();
                             }
-                            Some(TabHitResult::NewTabButton) | None => {}
+                            Some(TabHitResult::NewTabButton)
+                            | Some(TabHitResult::ScrollLeft)
+                            | Some(TabHitResult::ScrollRight)
+                            | None => {}
                         }
                     }
                 }
@@ -7003,6 +7120,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 size.width,
                                 size.height,
                             );
+                            ctx.mark_dirty_and_redraw();
+                        }
+                    }
+
+                    // Update theme on all windows (UX-13)
+                    if self.config.theme != new_config.theme {
+                        for ctx in self.windows.values_mut() {
+                            ctx.frame_renderer.update_theme(new_config.theme.clone());
                             ctx.mark_dirty_and_redraw();
                         }
                     }
@@ -10229,6 +10354,15 @@ fn main() {
 
             let script_bridge = script_bridge::ScriptBridge::new(&config);
 
+            // Load persistent state and increment session count (UX-1 onboarding)
+            let show_settings_hint = {
+                let mut glass_state = glass_core::state::GlassState::load();
+                let hint = glass_state.should_show_hint();
+                glass_state.session_count += 1;
+                glass_state.save();
+                hint
+            };
+
             let mut processor = Processor {
                 windows: HashMap::new(),
                 proxy,
@@ -10237,6 +10371,7 @@ fn main() {
                 cold_start,
                 config_error: None,
                 watcher_spawned: false,
+                show_settings_hint,
                 update_info: None,
                 coordination_state: Default::default(),
                 last_ticker_event_id: None,
@@ -10283,6 +10418,7 @@ fn main() {
                 settings_editing: false,
                 settings_edit_buffer: String::new(),
                 settings_shortcuts_scroll: 0,
+                status_message: None,
                 agent_review_open: false,
                 proposal_review_selected: 0,
                 proposal_diff_cache: None,

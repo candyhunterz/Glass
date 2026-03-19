@@ -4,6 +4,7 @@
 //! plus text labels for the query string and result details.
 
 use alacritty_terminal::vte::ansi::Rgb;
+use glass_core::config::ThemeConfig;
 
 use crate::rect_renderer::RectInstance;
 
@@ -30,6 +31,8 @@ pub struct SearchOverlayTextLabel {
 pub struct SearchOverlayRenderer {
     cell_width: f32,
     cell_height: f32,
+    /// Theme colors for search overlay.
+    theme: ThemeConfig,
 }
 
 impl SearchOverlayRenderer {
@@ -38,7 +41,13 @@ impl SearchOverlayRenderer {
         Self {
             cell_width,
             cell_height,
+            theme: ThemeConfig::default(),
         }
+    }
+
+    /// Update the theme colors (called on config hot-reload).
+    pub fn update_theme(&mut self, theme: ThemeConfig) {
+        self.theme = theme;
     }
 
     /// Build colored rectangles for the overlay backdrop, search box, and result rows.
@@ -60,7 +69,7 @@ impl SearchOverlayRenderer {
         // Semi-transparent backdrop
         rects.push(RectInstance {
             pos: [0.0, 0.0, viewport_w, viewport_h],
-            color: [0.05, 0.05, 0.05, 0.85],
+            color: self.theme.search_backdrop,
         });
 
         // Search input box: centered with margin, near top
@@ -71,7 +80,7 @@ impl SearchOverlayRenderer {
         let input_h = 1.5 * self.cell_height;
         rects.push(RectInstance {
             pos: [input_x, input_y, input_w, input_h],
-            color: [0.22, 0.22, 0.22, 1.0],
+            color: ThemeConfig::to_f32_rgba(self.theme.search_input_bg),
         });
 
         // Result rows
@@ -120,7 +129,7 @@ impl SearchOverlayRenderer {
 
         // Query text label
         labels.push(SearchOverlayTextLabel {
-            text: format!("Search: {}", query),
+            text: format!("Search History: {}", query),
             x: input_x + padding,
             y: input_y + (input_h - self.cell_height) * 0.5,
             color: Rgb {
@@ -258,7 +267,7 @@ mod tests {
         let r = renderer();
         let labels = r.build_overlay_text("hello", &[], 0, 800.0, 600.0);
         assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].text, "Search: hello");
+        assert_eq!(labels[0].text, "Search History: hello");
         assert_eq!(
             labels[0].color,
             Rgb {

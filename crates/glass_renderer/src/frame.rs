@@ -9,6 +9,7 @@ use glyphon::{
     TextBounds,
 };
 
+use glass_core::config::ThemeConfig;
 use glass_terminal::{Block, GridSnapshot, StatusState};
 
 use crate::block_renderer::BlockRenderer;
@@ -44,6 +45,8 @@ pub struct FrameRenderer {
     status_bar: StatusBarRenderer,
     tab_bar: TabBarRenderer,
     default_bg: Rgb,
+    /// Active theme for chrome colors.
+    theme: ThemeConfig,
     /// Reusable buffer storage to avoid per-frame allocation
     text_buffers: Vec<Buffer>,
     /// Reusable position storage for per-cell grid rendering
@@ -93,6 +96,7 @@ impl FrameRenderer {
         font_size: f32,
         scale_factor: f32,
     ) -> Self {
+        let theme = ThemeConfig::default();
         let mut glyph_cache =
             GlyphCache::with_font_system(font_system, device, queue, surface_format);
         let grid_renderer = GridRenderer::new(
@@ -106,12 +110,12 @@ impl FrameRenderer {
         let block_renderer = BlockRenderer::new(cell_width, cell_height);
         let search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
         let scrollbar = ScrollbarRenderer::new();
-        let status_bar = StatusBarRenderer::new(cell_height);
+        let status_bar = StatusBarRenderer::new(cell_width, cell_height);
         let tab_bar = TabBarRenderer::new(cell_width, cell_height);
         let default_bg = Rgb {
-            r: 26,
-            g: 26,
-            b: 26,
+            r: theme.terminal_bg[0],
+            g: theme.terminal_bg[1],
+            b: theme.terminal_bg[2],
         };
 
         Self {
@@ -124,6 +128,7 @@ impl FrameRenderer {
             status_bar,
             tab_bar,
             default_bg,
+            theme,
             text_buffers: Vec::new(),
             cell_positions: Vec::new(),
             overlay_buffers: Vec::new(),
@@ -153,7 +158,7 @@ impl FrameRenderer {
         let (cell_width, cell_height) = self.grid_renderer.cell_size();
         self.block_renderer = BlockRenderer::new(cell_width, cell_height);
         self.search_overlay_renderer = SearchOverlayRenderer::new(cell_width, cell_height);
-        self.status_bar = StatusBarRenderer::new(cell_height);
+        self.status_bar = StatusBarRenderer::new(cell_width, cell_height);
         self.tab_bar = TabBarRenderer::new(cell_width, cell_height);
     }
 
@@ -165,6 +170,30 @@ impl FrameRenderer {
     /// Returns a reference to the tab bar renderer (for hit testing).
     pub fn tab_bar(&self) -> &TabBarRenderer {
         &self.tab_bar
+    }
+
+    /// Returns a mutable reference to the tab bar renderer (for scroll offset).
+    pub fn tab_bar_mut(&mut self) -> &mut TabBarRenderer {
+        &mut self.tab_bar
+    }
+
+    /// Update the active theme (called on config hot-reload).
+    pub fn update_theme(&mut self, theme: ThemeConfig) {
+        self.default_bg = Rgb {
+            r: theme.terminal_bg[0],
+            g: theme.terminal_bg[1],
+            b: theme.terminal_bg[2],
+        };
+        self.block_renderer.update_theme(theme.clone());
+        self.search_overlay_renderer.update_theme(theme.clone());
+        self.status_bar.update_theme(theme.clone());
+        self.tab_bar.update_theme(theme.clone());
+        self.theme = theme;
+    }
+
+    /// Returns a reference to the active theme.
+    pub fn theme(&self) -> &ThemeConfig {
+        &self.theme
     }
 
     /// Draw a complete frame with terminal content.
@@ -413,6 +442,7 @@ impl FrameRenderer {
                 agent_paused,
                 agent_mode_text,
                 proposal_count_text,
+                w,
                 h,
             );
 
@@ -1485,6 +1515,7 @@ impl FrameRenderer {
                 agent_paused,
                 agent_mode_text,
                 proposal_count_text,
+                w,
                 h,
             );
 
