@@ -28,15 +28,14 @@ The orchestrator drives Claude Code sessions autonomously. It spawns a separate 
 
 ```
 User presses Ctrl+Shift+O
-    → Orchestrator activates
-    → Glass Agent subprocess spawns with system prompt + handoff
-    → Kickoff phase begins (suppress loop while user chats)
-
-User stops typing for 30s → kickoff completes
+    → Gather context (agent-instructions.md → prd_path → auto-scan .md files → terminal → git status)
+    → Validate: at least one context file found (else: centered toast + abort)
+    → Glass Agent subprocess spawns with assembled context as first message
+    → Autonomous loop begins immediately
 
 SmartTrigger fires (silence detected)
     → OrchestratorSilence event
-    → Guard checks: active? agent alive? response_pending? kickoff?
+    → Guard checks: active? agent alive? response_pending?
     → Flush any deferred TypeText
     → Capture terminal context (20-80 lines based on SOI)
     → Compute environment fingerprint (stuck detection)
@@ -49,7 +48,7 @@ Glass Agent responds
     → Parse response (TypeText / Wait / Checkpoint / Done / Verify)
     → Check bounded limit and auto-checkpoint
     → Route response:
-        TypeText → type into PTY (or defer if kickoff/executing)
+        TypeText → type into PTY (or defer if block executing)
         Wait → do nothing, wait for next silence
         Checkpoint → synthesize checkpoint.md, kill/respawn agent
         Done → deactivate orchestrator, final commit
@@ -72,7 +71,7 @@ When the user re-enables (Ctrl+Shift+O on):
 3. `iterations.tsv` is preserved — the agent sees history from prior runs (truncated to last 50 entries). This helps it avoid repeating failed approaches.
 4. `on_run_start()` loads rules (including any promoted from the cancelled run)
 5. Metric baseline preserved if it existed — test floor carries over
-6. Fresh kickoff phase begins
+6. Context is re-gathered and agent spawns immediately (no kickoff delay)
 
 ## Orchestrator Modes
 
@@ -84,20 +83,56 @@ Set via `orchestrator_mode` in config. Auto-detected at activation.
 | **general** | PRD has deliverables but no code project | glass_query, glass_context | Orchestrate research/planning/design, track by deliverable files |
 | **audit** | Manual selection | All MCP tools (tab control, history, etc.) | Test features interactively via MCP, delegate code fixes |
 
-## Kickoff Flow
+## Activation Flow
 
-The kickoff phase prevents the orchestrator from interrupting while the user chats with Claude Code.
+Ctrl+Shift+O immediately gathers context, validates it, and spawns the agent. There is no kickoff delay.
 
-1. **Ctrl+Shift+O pressed** → `kickoff_complete = false`, `last_user_keypress = None`
-2. **Glass prints visible message** → `[GLASS] Orchestrator active. No PRD found — describe what you want to build...` (or PRD continue prompt)
-3. **Glass Agent spawns** → sends initial response, but TypeText is **deferred** during kickoff (not typed into PTY)
-4. **User types** → `mark_user_keypress()` called on each keypress, resets idle timer
-5. **Silence fires** → kickoff guard suppresses:
-   - `last_user_keypress.is_none()` → suppress (waiting for first input)
-   - `user_recently_active(30s)` → suppress (user still typing)
-6. **User goes idle 30s** → `kickoff_complete = true`, deferred text flushes, autonomous loop begins
+### Steps
 
-**Critical:** During kickoff, ALL TypeText responses are deferred to `deferred_type_text`. The deferred flush only runs AFTER the kickoff guard passes. This prevents the Glass Agent from interrupting the user mid-conversation.
+1. **Ctrl+Shift+O pressed** → read current working directory from OSC 7 CWD
+2. **Context cascade** (in priority order):
+   - `.glass/agent-instructions.md` — primary steering file (frontmatter + body)
+   - `prd_path` from config — structured project plan
+   - Auto-scan: up to 5 recently modified `.md` files in project root (modified within 30 days)
+   - Recent terminal output lines
+   - `git log --oneline -10` and `git diff --stat`
+3. **Zero-context gate** — if `context.files` is empty after the cascade, activation is **aborted**:
+   - A centered toast message is displayed: `"Orchestrator: no project context found (add PRD.md or .glass/agent-instructions.md)"`
+   - `orchestrator.active` is reset to false
+4. **Agent spawns** → initial message sent as `[ORCHESTRATOR_START]` block containing all gathered context
+5. **Autonomous loop begins immediately** — SmartTrigger drives from here
+
+### Zero-Context Gate
+
+The gate blocks activation if no markdown files with actual content are found. This prevents the agent from running blind without any project context.
+
+Files must exist AND have non-empty content. Terminal lines and git output alone are not counted as "context files."
+
+### `.glass/agent-instructions.md` Format
+
+This file is the primary way to steer the agent for a project. It supports optional YAML frontmatter followed by a body with instructions.
+
+```markdown
+---
+title: My Project
+mode: build
+verify: cargo test --workspace
+---
+
+Build a GPU-accelerated terminal emulator in Rust. Focus on:
+- Implement the feature described in PRD.md
+- Keep all tests passing
+- Commit after each working increment
+```
+
+**Frontmatter fields** (all optional):
+- `title` — project name (informational)
+- `mode` — orchestrator mode override (`build`, `general`, `audit`)
+- `verify` — verification command override
+
+The body (everything after the `---` closing fence) is passed verbatim as the agent's instructions. If no frontmatter is present, the entire file is treated as instructions.
+
+**Note:** `handoff.md` is no longer supported. It has been superseded by `agent-instructions.md`, which is persistent (not deleted after reading) and supports frontmatter metadata.
 
 ## Silence Detection (SmartTrigger)
 
@@ -199,11 +234,7 @@ Background thread polls Anthropic OAuth usage API every 60 seconds.
 
 ## Deferred TypeText
 
-TypeText responses are buffered (not typed immediately) in two cases:
-1. **During kickoff** — user is still chatting, agent responses queue up
-2. **Block executing** — Claude Code is actively running a command
-
-The deferred queue is flushed one item at a time on each silence trigger, AFTER the kickoff guard passes. Each flush types one deferred message and returns (letting the terminal process it before the next).
+TypeText responses are buffered (not typed immediately) when a block is executing (Claude Code is actively running a command). The deferred queue is flushed one item at a time on each silence trigger. Each flush types one deferred message and returns (letting the terminal process it before the next).
 
 ## Course Correction (Nudge)
 
@@ -237,7 +268,7 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `checkpoint.md` | Last checkpoint for agent context handoff | Checkpoint synthesis |
 | `postmortem-YYYYMMDD-HHMMSS.md` | Run summary report | `generate_postmortem()` on Done/deactivate |
 | `nudge.md` | User course correction (read and deleted per iteration) | User-created |
-| `handoff.md` | User notes for next orchestrator activation (read and deleted) | User-created |
+| `agent-instructions.md` | Persistent agent steering file with optional frontmatter (supersedes handoff.md) | User-created |
 | `done` | Completion artifact signal (configurable path) | Agent creates, orchestrator deletes |
 | `scripts/hooks/*.toml` | Script manifests (name, hooks, status, origin) | Tier 4 generation or user-created |
 | `scripts/hooks/*.rhai` | Rhai script source files | Tier 4 generation or user-created |
@@ -600,7 +631,7 @@ script_generation = true           # Allow feedback loop to generate Tier 4 scri
 - **`project_root` is captured at Ctrl+Shift+O time.** The shell's OSC 7 CWD stops updating once Claude Code starts, so all file operations use the stored `project_root`, not live CWD.
 - **All git commands use `git_cmd()`** which adds `CREATE_NO_WINDOW` on Windows to prevent console flashing.
 - **The Glass Agent cannot write code.** In build/general mode it only has `glass_query` and `glass_context` tools. It must instruct Claude Code (running in the terminal) to do implementation work.
-- **Deferred TypeText is a Vec, not Option.** Multiple responses can queue up during kickoff or while a block is executing. They flush one at a time on each silence trigger.
+- **Deferred TypeText is a Vec, not Option.** Multiple responses can queue up while a block is executing. They flush one at a time on each silence trigger.
 - **Metric guard reverts use `git reset --hard`.** The `last_good_commit` is captured at the start of each iteration before verification runs.
 - **Iterations.tsv format:** `iteration\tcommit\tfeature\t(metric)\tstatus\tdescription` — note the empty metric column (index 3), status is at index 4.
 - **Post-mortem timestamp** uses a leap-year-aware date calculation (not chrono).

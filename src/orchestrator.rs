@@ -473,13 +473,6 @@ pub struct OrchestratorState {
     pub bounded_stop_pending: bool,
     /// Last iteration that ran verification (to avoid duplicate verify per iteration).
     pub last_verified_iteration: Option<u32>,
-    /// Timestamp of the last user keypress (for kickoff suppression).
-    /// During kickoff, the silence trigger is suppressed as long as the user
-    /// is actively engaged (has typed within the silence threshold).
-    pub last_user_keypress: Option<std::time::Instant>,
-    /// Whether the kickoff phase is complete. Set to true once both the terminal
-    /// and user have been silent for the threshold duration.
-    pub kickoff_complete: bool,
     /// Feedback loop: count of iterations classified as wasted.
     pub feedback_waste_iterations: u32,
     /// Feedback loop: count of commits made during this run.
@@ -548,8 +541,6 @@ impl OrchestratorState {
             max_iterations: None,
             bounded_stop_pending: false,
             last_verified_iteration: None,
-            last_user_keypress: None,
-            kickoff_complete: false,
             feedback_waste_iterations: 0,
             feedback_commit_count: 0,
             feedback_reverted_files: Vec::new(),
@@ -584,19 +575,6 @@ impl OrchestratorState {
     /// Record that the orchestrator just typed into the PTY.
     pub fn mark_pty_write(&mut self) {
         self.last_pty_write = Some(std::time::Instant::now());
-    }
-
-    /// Record a user keypress (for kickoff suppression).
-    pub fn mark_user_keypress(&mut self) {
-        self.last_user_keypress = Some(std::time::Instant::now());
-    }
-
-    /// Check if the user is still engaged during kickoff.
-    /// Returns true if the user has typed within the given threshold duration.
-    pub fn user_recently_active(&self, threshold: std::time::Duration) -> bool {
-        self.last_user_keypress
-            .map(|t| t.elapsed() < threshold)
-            .unwrap_or(false)
     }
 
     /// Check if automatic checkpoint should trigger.
@@ -779,7 +757,7 @@ pub fn generate_postmortem(
     duration: Option<std::time::Duration>,
     metric_baseline: Option<&MetricBaseline>,
     completion_reason: &str,
-    prd_path: &str,
+    context_files: &[String],
 ) {
     let glass_dir = std::path::Path::new(project_root).join(".glass");
     let _ = std::fs::create_dir_all(&glass_dir);
@@ -859,6 +837,17 @@ pub fn generate_postmortem(
         "N/A".to_string()
     };
 
+    // Format context file list for report
+    let context_files_str = if context_files.is_empty() {
+        "(none)".to_string()
+    } else {
+        context_files
+            .iter()
+            .map(|f| format!("`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
     // Build report
     let report = format!(
         r#"# Orchestrator Post-Mortem Report
@@ -867,7 +856,7 @@ pub fn generate_postmortem(
 
 | Metric | Value |
 |--------|-------|
-| PRD | `{prd_path}` |
+| Context Files | {context_files_str} |
 | Completion | {completion_reason} |
 | Iterations | {iteration} |
 | Duration | {duration_str} |

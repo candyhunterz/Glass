@@ -2725,6 +2725,125 @@ impl FrameRenderer {
         queue.submit([encoder.finish()]);
     }
 
+    /// Draw a centered toast notification on top of existing frame content.
+    ///
+    /// Renders a small dark rect centered on the viewport with the given text.
+    /// Uses LoadOp::Load to preserve the existing frame content underneath.
+    /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
+    pub fn draw_centered_toast(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        text: &str,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+
+        // Calculate box dimensions: text width + 3 cells padding X, 0.5 cells padding Y
+        let text_px_width = text.len() as f32 * cell_width;
+        let box_w = text_px_width + cell_width * 3.0;
+        let box_h = cell_height + cell_height * 0.5;
+
+        // Center on screen
+        let box_x = (width as f32 - box_w) * 0.5;
+        let box_y = (height as f32 - box_h) * 0.5;
+
+        let toast_rect = crate::rect_renderer::RectInstance {
+            pos: [box_x, box_y, box_w, box_h],
+            color: [0.1, 0.1, 0.1, 0.85],
+        };
+
+        self.rect_renderer
+            .prepare(device, queue, &[toast_rect], width, height);
+
+        // Build text buffer
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut toast_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+        toast_buffer.set_size(
+            &mut self.glyph_cache.font_system,
+            Some(box_w),
+            Some(box_h),
+        );
+        toast_buffer.set_text(
+            &mut self.glyph_cache.font_system,
+            text,
+            &Attrs::new()
+                .family(Family::Name(font_family))
+                .color(GlyphonColor::rgba(255, 255, 255, 255)),
+            Shaping::Advanced,
+            None,
+        );
+        toast_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+
+        let text_x = box_x + cell_width * 1.5;
+        let text_y = box_y + cell_height * 0.25;
+
+        let toast_text_areas = vec![TextArea {
+            buffer: &toast_buffer,
+            left: text_x,
+            top: text_y,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right: width as i32,
+                bottom: height as i32,
+            },
+            default_color: GlyphonColor::rgba(255, 255, 255, 255),
+            custom_glyphs: &[],
+        }];
+
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            toast_text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Centered toast text prepare error: {:?}", e);
+        }
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("centered_toast_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer.render(&mut pass, 1);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Centered toast text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Free unused glyph atlas space between frames.
     pub fn trim(&mut self) {
         self.glyph_cache.trim();

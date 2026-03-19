@@ -197,6 +197,9 @@ pub struct OrchestratorSection {
     /// Runs between re-sweeps after full ablation coverage. Default 20.
     #[serde(default = "default_ablation_sweep_interval")]
     pub ablation_sweep_interval: u32,
+    /// Fallback agent instructions when .glass/agent-instructions.md doesn't exist.
+    #[serde(default)]
+    pub agent_instructions: Option<String>,
 }
 
 /// Validate a config-supplied file path is safe to use.

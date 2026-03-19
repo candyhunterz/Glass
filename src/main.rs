@@ -2,6 +2,7 @@
 // CLI subcommands (history, undo, mcp) still work when launched from an existing terminal.
 #![windows_subsystem = "windows"]
 
+mod agent_instructions;
 #[allow(dead_code)]
 mod checkpoint_synth;
 #[allow(dead_code)]
@@ -9,6 +10,7 @@ mod ephemeral_agent;
 mod history;
 #[allow(dead_code)]
 mod orchestrator;
+mod orchestrator_context;
 mod orchestrator_events;
 #[allow(dead_code)]
 mod script_bridge;
@@ -457,6 +459,8 @@ struct Processor {
     /// new Tier 4 ephemeral agents are suppressed to avoid wasting resources.
     /// Reset to 0 on any successful parse.
     script_gen_parse_failures: u32,
+    /// Centered toast message, auto-dismisses after 5 seconds.
+    centered_toast: Option<(String, std::time::Instant)>,
 }
 
 impl Drop for AgentRuntime {
@@ -990,59 +994,6 @@ fn try_spawn_agent(
     let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
 
     let system_prompt = if orchestrator_enabled {
-        // Resolve paths relative to the terminal's project root, not Glass's CWD
-        let project_dir = std::path::Path::new(&project_root);
-
-        let prd_rel = orchestrator_config
-            .map(|o| o.prd_path.clone())
-            .unwrap_or_else(|| "PRD.md".to_string());
-        let prd_rel = if glass_core::config::validate_config_path(&prd_rel) {
-            prd_rel
-        } else {
-            tracing::warn!(path = %prd_rel, "prd_path contains '..', ignoring and using default");
-            "PRD.md".to_string()
-        };
-        let prd_path = project_dir.join(&prd_rel);
-        let prd_content = std::fs::read_to_string(&prd_path)
-            .unwrap_or_else(|_| format!("(PRD not found at {})", prd_path.display()));
-        // Truncate to ~4000 words
-        let word_count = prd_content.split_whitespace().count();
-        let prd_truncated: String = prd_content
-            .split_whitespace()
-            .take(4000)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let prd_truncated = if word_count > 4000 {
-            format!(
-                "{}\n\n[PRD TRUNCATED — {} words omitted. Read the full file at {} for complete requirements.]",
-                prd_truncated,
-                word_count - 4000,
-                prd_rel,
-            )
-        } else {
-            prd_truncated
-        };
-
-        let checkpoint_rel = orchestrator_config
-            .map(|o| o.checkpoint_path.clone())
-            .unwrap_or_else(|| ".glass/checkpoint.md".to_string());
-        let checkpoint_rel = if glass_core::config::validate_config_path(&checkpoint_rel) {
-            checkpoint_rel
-        } else {
-            tracing::warn!(path = %checkpoint_rel, "checkpoint_path contains '..', ignoring and using default");
-            ".glass/checkpoint.md".to_string()
-        };
-        let checkpoint_path = project_dir.join(&checkpoint_rel);
-        let checkpoint_content = std::fs::read_to_string(&checkpoint_path)
-            .unwrap_or_else(|_| "Fresh start — no previous checkpoint.".to_string());
-
-        let iterations_content = orchestrator::read_iterations_log_truncated(&project_root, 50);
-        let iterations_content = if iterations_content.is_empty() {
-            "No iterations yet.".to_string()
-        } else {
-            iterations_content
-        };
-
         let artifact_path = orchestrator_config
             .map(|o| o.completion_artifact.as_str())
             .unwrap_or(".glass/done");
@@ -1103,37 +1054,6 @@ For each feature, guide Claude Code through this cycle:
 You CANNOT implement code yourself — you must instruct Claude Code to do it."#
         };
 
-        let prd_missing = prd_content.starts_with("(PRD not found");
-        let kickoff_instructions = if prd_missing {
-            "\n\nKICKOFF MODE:\n\
-             No PRD file exists yet. The user has been chatting with Claude Code to \
-             describe what they want to build. Glass suppressed the orchestration loop \
-             while the user was typing. Now the user has gone idle — it's your turn.\n\n\
-             Read the terminal context carefully. Pick up from where the conversation \
-             left off and push it forward:\n\
-             - If the user's goals are clear enough, instruct Claude Code to write the PRD.\n\
-             - If critical details are missing, ask ONE clarifying question.\n\
-             - Do NOT repeat greetings or re-ask questions the user already answered.\n\n\
-             Once the project goals are established, instruct Claude Code to:\n\
-             \"Generate a detailed PRD file. Name it descriptively based on the project \
-             goal (e.g., PRD-japan-vacation.md). Include:\n\
-             - ## Deliverables (list each output file with path)\n\
-             - ## Requirements (specific constraints)\n\
-             - ## Research Areas (if applicable)\n\
-             Write it to disk, then start executing it.\"\n\n\
-             After Claude Code writes the PRD, continue with normal orchestration."
-        } else {
-            "\n\nKICKOFF MODE:\n\
-             An existing PRD was found. Glass prompted the user: \"Continue with \
-             existing PRD? (y/n)\". Your FIRST instruction to Claude Code: ask the \
-             user what they would like to do.\n\
-             - If the user wants to continue: proceed with the existing PRD plan.\n\
-             - If the user wants to start fresh: ask what they want to build instead. \
-             Gather their goals, requirements, and preferences through conversation. \
-             Then generate a new PRD and begin execution.\n\n\
-             Do NOT start autonomous work until the user has responded."
-        };
-
         format!(
             r#"You are the Glass Agent, collaborating with Claude Code to build a project.
 Claude Code is the implementer — it writes code, runs commands, builds features.
@@ -1142,16 +1062,12 @@ and keep the project moving against the plan.
 
 PROJECT DIRECTORY: {project_root}
 
-PROJECT PLAN:
-{prd_truncated}
+{mode_instructions}
 
-CURRENT STATUS:
-{checkpoint_content}
-
-ITERATION HISTORY:
-{iterations_content}
-
-{mode_instructions}{kickoff_instructions}
+CRITICAL RULES:
+- You CANNOT write code yourself. Instruct Claude Code to do all implementation.
+- Project context (PRD, instructions, git status) is provided in the initial message, not here.
+- Read project files via Claude Code if you need more detail.
 
 TASK COMPLETION SIGNAL:
 When the implementer is done with a task, have it create the file `{artifact_path}` to signal completion.
@@ -2237,6 +2153,235 @@ impl Processor {
                 .map(|o| o.max_retries_before_stuck)
                 .unwrap_or(3),
         }
+    }
+
+    /// Build a `FeedbackConfig` from the current config state.
+    fn build_feedback_config(&self, project_root: &str) -> glass_feedback::FeedbackConfig {
+        let orch = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref());
+        glass_feedback::FeedbackConfig {
+            project_root: project_root.to_string(),
+            feedback_llm: orch.map(|o| o.feedback_llm).unwrap_or(false),
+            max_prompt_hints: orch.map(|o| o.max_prompt_hints).unwrap_or(10),
+            silence_timeout_secs: orch.map(|o| o.silence_timeout_secs),
+            max_retries_before_stuck: orch.map(|o| o.max_retries_before_stuck),
+            ablation_enabled: orch.map(|o| o.ablation_enabled).unwrap_or(true),
+            ablation_sweep_interval: orch.map(|o| o.ablation_sweep_interval).unwrap_or(20),
+        }
+    }
+
+    /// Shared orchestrator activation logic used by both Ctrl+Shift+O and the
+    /// settings overlay toggle. Assumes `self.orchestrator.active` is already `true`.
+    fn activate_orchestrator(&mut self, window_id: WindowId) {
+        // 1. Standard flags
+        self.orchestrator.reset_stuck();
+        self.orchestrator.iterations_since_checkpoint = 0;
+        self.orchestrator.bounded_stop_pending = false;
+        self.orchestrator.max_iterations = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .and_then(|o| o.max_iterations);
+
+        // 2. Capture current CWD from the terminal (not Glass's CWD)
+        let current_cwd = self
+            .windows
+            .get(&window_id)
+            .and_then(|ctx| ctx.session_mux.focused_session())
+            .map(|s| s.status.cwd().to_string())
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+
+        // 3. Store project root
+        self.orchestrator.project_root = current_cwd.clone();
+
+        // 4. Load scripts
+        self.script_bridge.load_for_project(&current_cwd);
+        self.script_bridge.reset_run_tracking();
+
+        // 5. Fire OrchestratorRunStart hook
+        fire_hook_on_bridge(
+            &mut self.script_bridge,
+            &self.orchestrator.project_root,
+            glass_scripting::HookPoint::OrchestratorRunStart,
+            &glass_scripting::HookEventData::new(),
+        );
+
+        // 6. Capture terminal context
+        let terminal_lines = self
+            .windows
+            .get(&window_id)
+            .and_then(|ctx| ctx.session_mux.focused_session())
+            .map(|session| extract_term_lines(&session.term, 200))
+            .unwrap_or_default();
+
+        // 7. Config PRD path — only use if the file actually exists
+        let config_prd_path: Option<String> = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.prd_path.clone())
+            .filter(|p| std::path::Path::new(&current_cwd).join(p).exists());
+
+        // 8. Config instructions fallback
+        let config_instructions: Option<String> = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .and_then(|o| o.agent_instructions.clone());
+
+        // 9. Gather context
+        let context = orchestrator_context::gather_context(
+            &current_cwd,
+            terminal_lines,
+            config_prd_path.as_deref(),
+            config_instructions.as_deref(),
+        );
+
+        // 10. No context files found — abort activation
+        if context.has_no_files() {
+            self.orchestrator.active = false;
+            self.centered_toast = Some((
+                "Orchestrator: no project context found (add PRD.md or .glass/agent-instructions.md)".to_string(),
+                std::time::Instant::now(),
+            ));
+            tracing::warn!("Orchestrator activation aborted — no context files found");
+            if let Some(ctx) = self.windows.get_mut(&window_id) {
+                ctx.mark_dirty_and_redraw();
+            }
+            return;
+        }
+
+        // 11. Set activation timestamp
+        self.orchestrator_activated_at = Some(std::time::Instant::now());
+
+        // 12. Auto-detect orchestrator mode (do NOT write to config.toml)
+        let prd_content_for_detect = config_prd_path.as_ref().and_then(|p| {
+            std::fs::read_to_string(std::path::Path::new(&current_cwd).join(p)).ok()
+        });
+        let (detected_mode, detected_verify, detected_files) =
+            orchestrator::auto_detect_orchestrator_config(
+                &current_cwd,
+                prd_content_for_detect.as_deref(),
+            );
+        tracing::info!(
+            "Orchestrator auto-detect: mode={}, verify={}, files={:?}",
+            detected_mode,
+            detected_verify,
+            detected_files
+        );
+
+        // 13. Build initial message from gathered context
+        let initial_message = context.build_initial_message();
+
+        // 14. Respawn agent
+        self.respawn_orchestrator_agent(&current_cwd, initial_message);
+
+        // 15. Initialize metric guard
+        let verify_mode = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.verify_mode.as_str())
+            .unwrap_or("floor");
+
+        if verify_mode == "floor" {
+            let user_cmd = self
+                .config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .and_then(|o| o.verify_command.clone());
+
+            let commands = if let Some(cmd) = user_cmd {
+                vec![orchestrator::VerifyCommand {
+                    name: cmd.clone(),
+                    cmd,
+                }]
+            } else {
+                orchestrator::auto_detect_verify_commands(&current_cwd)
+            };
+
+            if !commands.is_empty() {
+                if self.orchestrator.metric_baseline.is_none() {
+                    let cmd_count = commands.len();
+                    let mut baseline = orchestrator::MetricBaseline::new();
+                    baseline.commands = commands;
+                    self.orchestrator.metric_baseline = Some(baseline);
+                    tracing::info!("Metric guard initialized with {cmd_count} commands");
+                } else {
+                    tracing::info!("Metric guard: preserving existing baseline");
+                }
+            }
+        }
+
+        // Start artifact watcher
+        let artifact_path = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.completion_artifact.clone())
+            .unwrap_or_else(|| ".glass/done".to_string());
+        if let Some(session) = self
+            .windows
+            .get(&window_id)
+            .and_then(|ctx| ctx.session_mux.focused_session())
+        {
+            let sid = session.id;
+            self.artifact_watcher_thread = start_artifact_watcher(
+                &artifact_path,
+                &current_cwd,
+                self.proxy.clone(),
+                window_id,
+                sid,
+            );
+        }
+
+        // Initialize feedback loop
+        self.orchestrator.feedback_waste_iterations = 0;
+        self.orchestrator.feedback_stuck_count = 0;
+        self.orchestrator.feedback_checkpoint_count = 0;
+        self.orchestrator.feedback_verify_sequence.clear();
+        self.orchestrator.feedback_agent_responses.clear();
+        self.orchestrator.feedback_completion_reason.clear();
+        self.orchestrator.feedback_commit_count = 0;
+        self.orchestrator.feedback_reverted_files.clear();
+        self.orchestrator.feedback_fast_trigger_during_output = 0;
+        self.orchestrator.feedback_iteration_timestamps.clear();
+
+        let feedback_config = self.build_feedback_config(&current_cwd);
+        self.feedback_state = Some(glass_feedback::on_run_start(
+            &current_cwd,
+            &feedback_config,
+        ));
+
+        // Cache PRD deliverables for scope guard
+        if let Some(ref prd_rel) = config_prd_path {
+            let prd_full = std::path::Path::new(&current_cwd).join(prd_rel);
+            if let Ok(prd_text) = std::fs::read_to_string(&prd_full) {
+                self.orchestrator.prd_deliverable_files =
+                    orchestrator::parse_prd_deliverables(&prd_text);
+            }
+        }
+
+        // Reset enforcement state
+        self.orchestrator.instruction_buffer.clear();
+        self.orchestrator.dependency_block = None;
+        self.orchestrator.dependency_block_iterations = 0;
+        self.orchestrator.iterations_since_last_commit = 0;
+        self.orchestrator.last_known_head = None;
     }
 
     /// Kill the current agent and respawn with a fresh system prompt.
@@ -3426,6 +3571,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.coordination_state.agent_count,
                         self.coordination_state.lock_count,
                     );
+                }
+
+                // Centered toast: auto-dismisses after 5 seconds
+                if let Some((ref msg, at)) = self.centered_toast {
+                    if at.elapsed().as_secs() < 5 {
+                        ctx.frame_renderer.draw_centered_toast(
+                            ctx.renderer.device(),
+                            ctx.renderer.queue(),
+                            &view,
+                            sc.width,
+                            sc.height,
+                            msg,
+                        );
+                    } else {
+                        self.centered_toast = None;
+                    }
                 }
 
                 // Activity stream overlay (fullscreen, on top of everything)
@@ -4662,387 +4823,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.orchestrator.active = !self.orchestrator.active;
                                 if self.orchestrator.active {
                                     tracing::info!("Orchestrator: enabled by user");
-                                    self.orchestrator_activated_at =
-                                        Some(std::time::Instant::now());
-                                    self.orchestrator.reset_stuck();
-                                    self.orchestrator.iterations_since_checkpoint = 0;
-                                    self.orchestrator.bounded_stop_pending = false;
-                                    self.orchestrator.kickoff_complete = false;
-                                    self.orchestrator.last_user_keypress = None;
-                                    self.orchestrator.max_iterations = self
-                                        .config
-                                        .agent
-                                        .as_ref()
-                                        .and_then(|a| a.orchestrator.as_ref())
-                                        .and_then(|o| o.max_iterations);
-
-                                    // Respawn agent with fresh system prompt using the
-                                    // terminal's current CWD (not Glass's CWD)
-                                    let current_cwd = ctx
-                                        .session_mux
-                                        .focused_session()
-                                        .map(|s| s.status.cwd().to_string())
-                                        .unwrap_or_else(|| {
-                                            std::env::current_dir()
-                                                .unwrap_or_default()
-                                                .to_string_lossy()
-                                                .to_string()
-                                        });
-
-                                    // Store project root for all subsequent orchestrator
-                                    // operations. The shell's OSC 7 CWD stops updating once
-                                    // Claude Code starts, so we capture it here.
-                                    self.orchestrator.project_root = current_cwd.clone();
-
-                                    // Load scripts for the project now that we know its root.
-                                    self.script_bridge.load_for_project(&current_cwd);
-
-                                    // Reset per-run script tracking for the new orchestrator run.
-                                    self.script_bridge.reset_run_tracking();
-
-                                    // Fire scripting OrchestratorRunStart hook
-                                    fire_hook_on_bridge(
-                                        &mut self.script_bridge,
-                                        &self.orchestrator.project_root,
-                                        glass_scripting::HookPoint::OrchestratorRunStart,
-                                        &glass_scripting::HookEventData::new(),
-                                    );
-
-                                    // Kickoff flow: check PRD existence
-                                    let prd_rel = self
-                                        .config
-                                        .agent
-                                        .as_ref()
-                                        .and_then(|a| a.orchestrator.as_ref())
-                                        .map(|o| o.prd_path.clone())
-                                        .unwrap_or_else(|| "PRD.md".to_string());
-                                    let prd_path =
-                                        std::path::Path::new(&current_cwd).join(&prd_rel);
-                                    if prd_path.exists() {
-                                        // PRD exists — show status notification (not PTY input,
-                                        // which would be fed to Claude Code's stdin and disrupt it)
-                                        self.status_message = Some((
-                                            format!(
-                                                "Orchestrator: PRD found at {}",
-                                                prd_rel
-                                            ),
-                                            std::time::Instant::now(),
-                                        ));
-                                        tracing::info!(
-                                            "Orchestrator: PRD found at {}, prompting user",
-                                            prd_path.display()
-                                        );
-                                    } else {
-                                        // No PRD — show status notification
-                                        self.status_message = Some((
-                                            "Orchestrator active -- describe your goal to Claude, then go hands-off".to_string(),
-                                            std::time::Instant::now(),
-                                        ));
-                                        tracing::info!(
-                                            "Orchestrator: no PRD at {} -- kickoff mode",
-                                            prd_path.display()
-                                        );
-                                    }
-
-                                    // Auto-detect mode from project + PRD
-                                    let prd_content = std::fs::read_to_string(&prd_path).ok();
-                                    let (detected_mode, detected_verify, detected_files) =
-                                        orchestrator::auto_detect_orchestrator_config(
-                                            &current_cwd,
-                                            prd_content.as_deref(),
-                                        );
-                                    tracing::info!(
-                                        "Orchestrator auto-detect: mode={}, verify={}, files={:?}",
-                                        detected_mode,
-                                        detected_verify,
-                                        detected_files
-                                    );
-
-                                    // Suppress config reload agent restarts for 2 seconds.
-                                    // We're about to write 3 values to config.toml, which
-                                    // triggers ConfigReloaded events that would kill the
-                                    // agent we just spawned.
-                                    self.config_write_suppress_until = Some(
-                                        std::time::Instant::now()
-                                            + std::time::Duration::from_secs(2),
-                                    );
-
-                                    // Write auto-detected values to config.toml
-                                    if let Some(config_path) = dirs::home_dir()
-                                        .map(|h| h.join(".glass").join("config.toml"))
-                                    {
-                                        let _ = glass_core::config::update_config_field(
-                                            &config_path,
-                                            Some("agent.orchestrator"),
-                                            "orchestrator_mode",
-                                            &format!("\"{}\"", detected_mode),
-                                        );
-                                        let _ = glass_core::config::update_config_field(
-                                            &config_path,
-                                            Some("agent.orchestrator"),
-                                            "verify_mode",
-                                            &format!("\"{}\"", detected_verify),
-                                        );
-                                        if !detected_files.is_empty() {
-                                            let files_toml = format!(
-                                                "[{}]",
-                                                detected_files
-                                                    .iter()
-                                                    .map(|f| format!("\"{f}\""))
-                                                    .collect::<Vec<_>>()
-                                                    .join(", ")
-                                            );
-                                            let _ = glass_core::config::update_config_field(
-                                                &config_path,
-                                                Some("agent.orchestrator"),
-                                                "verify_files",
-                                                &files_toml,
-                                            );
-                                        }
-                                    }
-
-                                    // Capture context for handoff (gather from ctx before calling helper)
-                                    let terminal_context = ctx
-                                        .session_mux
-                                        .focused_session()
-                                        .map(|session| {
-                                            extract_term_lines(&session.term, 100).join("\n")
-                                        })
-                                        .unwrap_or_default();
-
-                                    // Check for handoff note
-                                    let handoff_path = std::path::Path::new(&current_cwd)
-                                        .join(".glass")
-                                        .join("handoff.md");
-                                    let handoff_note = std::fs::read_to_string(&handoff_path).ok();
-
-                                    let git_log = git_cmd()
-                                        .args(["log", "--oneline", "-10"])
-                                        .current_dir(&current_cwd)
-                                        .output()
-                                        .ok()
-                                        .and_then(|o| {
-                                            if o.status.success() {
-                                                String::from_utf8(o.stdout).ok()
-                                            } else {
-                                                None
-                                            }
-                                        });
-
-                                    // Regenerate checkpoint.md from current git state so the
-                                    // agent sees accurate context — not a stale checkpoint from
-                                    // a previous run that the user may have worked past manually.
-                                    {
-                                        let cp_dir =
-                                            std::path::Path::new(&current_cwd).join(".glass");
-                                        let _ = std::fs::create_dir_all(&cp_dir);
-                                        let git_diff = git_cmd()
-                                            .args(["diff", "--stat"])
-                                            .current_dir(&current_cwd)
-                                            .output()
-                                            .ok()
-                                            .and_then(|o| {
-                                                if o.status.success() {
-                                                    String::from_utf8(o.stdout).ok()
-                                                } else {
-                                                    None
-                                                }
-                                            });
-                                        let prd_status = if prd_path.exists() {
-                                            "PRD exists"
-                                        } else {
-                                            "No PRD yet"
-                                        };
-                                        let checkpoint = format!(
-                                            "# Checkpoint (auto-generated on re-enable)\n\n\
-                                             ## Status\n{prd_status}\n\n\
-                                             ## Recent Commits\n{}\n\n\
-                                             ## Uncommitted Changes\n{}\n\n\
-                                             ## Next\nReview terminal context and PRD, then continue.\n",
-                                            git_log.as_deref().unwrap_or("(no git history)"),
-                                            git_diff.as_deref().unwrap_or("(clean working tree)"),
-                                        );
-                                        let _ = std::fs::write(
-                                            cp_dir.join("checkpoint.md"),
-                                            &checkpoint,
-                                        );
-                                    }
-
-                                    let mut content = String::from("[ORCHESTRATOR_HANDOFF]\nThe user just enabled orchestration. Pick up where they left off.\n");
-                                    if let Some(ref note) = handoff_note {
-                                        content
-                                            .push_str(&format!("\nUSER INSTRUCTIONS:\n{}\n", note));
-                                    }
-                                    if let Some(log) = git_log {
-                                        content.push_str(&format!(
-                                            "\nRECENT GIT HISTORY:\n{}\n",
-                                            log.trim()
-                                        ));
-                                    }
-                                    content.push_str(&format!(
-                                        "\nTERMINAL CONTEXT (last 100 lines):\n{}\n",
-                                        terminal_context
-                                    ));
-
-                                    // Drop ctx borrow, then respawn (needs &mut self)
                                     let _ = ctx;
-                                    self.respawn_orchestrator_agent(&current_cwd, content);
-
-                                    // Delete handoff.md only after agent starts successfully
-                                    if handoff_note.is_some() && self.agent_runtime.is_some() {
-                                        let _ = std::fs::remove_file(&handoff_path);
-                                    }
-
-                                    // Initialize metric guard
-                                    let verify_mode = self
-                                        .config
-                                        .agent
-                                        .as_ref()
-                                        .and_then(|a| a.orchestrator.as_ref())
-                                        .map(|o| o.verify_mode.as_str())
-                                        .unwrap_or("floor");
-
-                                    if verify_mode == "floor" {
-                                        let user_cmd = self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .and_then(|o| o.verify_command.clone());
-
-                                        let commands = if let Some(cmd) = user_cmd {
-                                            vec![orchestrator::VerifyCommand {
-                                                name: cmd.clone(),
-                                                cmd,
-                                            }]
-                                        } else {
-                                            orchestrator::auto_detect_verify_commands(&current_cwd)
-                                        };
-
-                                        if !commands.is_empty() {
-                                            // Preserve existing baseline across re-activations
-                                            // (e.g., user toggles off/on, or checkpoint respawn).
-                                            // Only create a new baseline if none exists.
-                                            if self.orchestrator.metric_baseline.is_none() {
-                                                let cmd_count = commands.len();
-                                                let mut baseline =
-                                                    orchestrator::MetricBaseline::new();
-                                                baseline.commands = commands;
-                                                self.orchestrator.metric_baseline = Some(baseline);
-                                                tracing::info!(
-                                                    "Metric guard initialized with {cmd_count} commands"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    "Metric guard: preserving existing baseline"
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    // Baseline verification deferred to first iteration.
-                                    // Running cargo test at enable time blocks the orchestrator
-                                    // for minutes while compiling + running all tests. Instead,
-                                    // the VerifyComplete handler establishes the baseline lazily
-                                    // on the first verification run after the agent's first iteration.
-
-                                    // Start artifact watcher
-                                    let artifact_path = self
-                                        .config
-                                        .agent
-                                        .as_ref()
-                                        .and_then(|a| a.orchestrator.as_ref())
-                                        .map(|o| o.completion_artifact.clone())
-                                        .unwrap_or_else(|| ".glass/done".to_string());
-                                    if let Some(session) = self
-                                        .windows
-                                        .get(&window_id)
-                                        .and_then(|ctx| ctx.session_mux.focused_session())
-                                    {
-                                        let sid = session.id;
-                                        self.artifact_watcher_thread = start_artifact_watcher(
-                                            &artifact_path,
-                                            &current_cwd,
-                                            self.proxy.clone(),
-                                            window_id,
-                                            sid,
-                                        );
-                                    }
-
-                                    // Initialize feedback loop
-                                    self.orchestrator.feedback_waste_iterations = 0;
-                                    self.orchestrator.feedback_stuck_count = 0;
-                                    self.orchestrator.feedback_checkpoint_count = 0;
-                                    self.orchestrator.feedback_verify_sequence.clear();
-                                    self.orchestrator.feedback_agent_responses.clear();
-                                    self.orchestrator.feedback_completion_reason.clear();
-                                    self.orchestrator.feedback_commit_count = 0;
-                                    self.orchestrator.feedback_reverted_files.clear();
-                                    self.orchestrator.feedback_fast_trigger_during_output = 0;
-                                    self.orchestrator.feedback_iteration_timestamps.clear();
-
-                                    let feedback_config = glass_feedback::FeedbackConfig {
-                                        project_root: current_cwd.clone(),
-                                        feedback_llm: self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .map(|o| o.feedback_llm)
-                                            .unwrap_or(false),
-                                        max_prompt_hints: self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .map(|o| o.max_prompt_hints)
-                                            .unwrap_or(10),
-                                        silence_timeout_secs: self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .map(|o| o.silence_timeout_secs),
-                                        max_retries_before_stuck: self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .map(|o| o.max_retries_before_stuck),
-                                        ablation_enabled: self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .map(|o| o.ablation_enabled)
-                                            .unwrap_or(true),
-                                        ablation_sweep_interval: self
-                                            .config
-                                            .agent
-                                            .as_ref()
-                                            .and_then(|a| a.orchestrator.as_ref())
-                                            .map(|o| o.ablation_sweep_interval)
-                                            .unwrap_or(20),
-                                    };
-
-                                    self.feedback_state = Some(glass_feedback::on_run_start(
-                                        &current_cwd,
-                                        &feedback_config,
-                                    ));
-
-                                    // Cache PRD deliverables for scope guard
-                                    let prd_full = std::path::Path::new(&current_cwd).join(prd_rel);
-                                    if let Ok(prd_text) = std::fs::read_to_string(&prd_full) {
-                                        self.orchestrator.prd_deliverable_files =
-                                            orchestrator::parse_prd_deliverables(&prd_text);
-                                    }
-
-                                    // Reset enforcement state
-                                    self.orchestrator.instruction_buffer.clear();
-                                    self.orchestrator.dependency_block = None;
-                                    self.orchestrator.dependency_block_iterations = 0;
-                                    self.orchestrator.iterations_since_last_commit = 0;
-                                    self.orchestrator.last_known_head = None;
+                                    self.activate_orchestrator(window_id);
                                 } else {
                                     tracing::info!("Orchestrator: disabled by user");
                                     // Fire scripting OrchestratorRunEnd hook
@@ -5553,13 +5335,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
-                        // Track user keypress for kickoff suppression.
-                        // During the kickoff phase, the silence trigger is suppressed
-                        // as long as the user is actively typing.
-                        if self.orchestrator.active && !self.orchestrator.kickoff_complete {
-                            self.orchestrator.mark_user_keypress();
-                        }
-
                         // Orchestrator no longer auto-pauses on user input.
                         // Only Ctrl+Shift+O toggles orchestration on/off.
                         if let Some(session) = ctx.session() {
@@ -7299,120 +7074,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                             // when enabled=true in config.toml — Ctrl+Shift+O is required
                             // to start the orchestration loop with a proper handoff.
                             self.orchestrator.active = true;
-                            self.orchestrator_activated_at = Some(std::time::Instant::now());
-                            self.orchestrator.reset_stuck();
-                            self.orchestrator.iterations_since_checkpoint = 0;
-                            self.orchestrator.bounded_stop_pending = false;
-                            self.orchestrator.kickoff_complete = false;
-                            self.orchestrator.last_user_keypress = None;
-                            self.orchestrator.max_iterations = self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .and_then(|o| o.max_iterations);
-
-                            // Initialize metric guard
-                            let verify_mode = self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.verify_mode.as_str())
-                                .unwrap_or("floor");
-                            if verify_mode == "floor" && self.orchestrator.metric_baseline.is_none()
-                            {
-                                let cwd = self.orchestrator.project_root.clone();
-                                let commands = orchestrator::auto_detect_verify_commands(&cwd);
-                                if !commands.is_empty() {
-                                    let mut baseline = orchestrator::MetricBaseline::new();
-                                    baseline.commands = commands;
-                                    self.orchestrator.metric_baseline = Some(baseline);
-                                }
+                            if let Some(&wid) = self.windows.keys().next() {
+                                self.activate_orchestrator(wid);
                             }
-                            // Initialize feedback loop
-                            self.orchestrator.feedback_waste_iterations = 0;
-                            self.orchestrator.feedback_stuck_count = 0;
-                            self.orchestrator.feedback_checkpoint_count = 0;
-                            self.orchestrator.feedback_verify_sequence.clear();
-                            self.orchestrator.feedback_agent_responses.clear();
-                            self.orchestrator.feedback_completion_reason.clear();
-                            self.orchestrator.feedback_commit_count = 0;
-                            self.orchestrator.feedback_reverted_files.clear();
-                            self.orchestrator.feedback_fast_trigger_during_output = 0;
-                            self.orchestrator.feedback_iteration_timestamps.clear();
-
-                            let cwd_for_feedback = self.orchestrator.project_root.clone();
-                            let feedback_config = glass_feedback::FeedbackConfig {
-                                project_root: cwd_for_feedback.clone(),
-                                feedback_llm: self
-                                    .config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.feedback_llm)
-                                    .unwrap_or(false),
-                                max_prompt_hints: self
-                                    .config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.max_prompt_hints)
-                                    .unwrap_or(10),
-                                silence_timeout_secs: self
-                                    .config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.silence_timeout_secs),
-                                max_retries_before_stuck: self
-                                    .config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.max_retries_before_stuck),
-                                ablation_enabled: self
-                                    .config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.ablation_enabled)
-                                    .unwrap_or(true),
-                                ablation_sweep_interval: self
-                                    .config
-                                    .agent
-                                    .as_ref()
-                                    .and_then(|a| a.orchestrator.as_ref())
-                                    .map(|o| o.ablation_sweep_interval)
-                                    .unwrap_or(20),
-                            };
-                            self.feedback_state = Some(glass_feedback::on_run_start(
-                                &cwd_for_feedback,
-                                &feedback_config,
-                            ));
-
-                            // Cache PRD deliverables for scope guard
-                            let prd_rel_reload = self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.prd_path.as_str())
-                                .unwrap_or("PRD.md");
-                            let prd_full_reload =
-                                std::path::Path::new(&cwd_for_feedback).join(prd_rel_reload);
-                            if let Ok(prd_text) = std::fs::read_to_string(&prd_full_reload) {
-                                self.orchestrator.prd_deliverable_files =
-                                    orchestrator::parse_prd_deliverables(&prd_text);
-                            }
-
-                            // Reset enforcement state
-                            self.orchestrator.instruction_buffer.clear();
-                            self.orchestrator.dependency_block = None;
-                            self.orchestrator.dependency_block_iterations = 0;
-                            self.orchestrator.iterations_since_last_commit = 0;
-                            self.orchestrator.last_known_head = None;
-
                             tracing::info!(
                                 "Orchestrator: activated via config reload (settings overlay)"
                             );
@@ -8078,16 +7742,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             text.clone()
                         };
 
-                        // During kickoff, defer all TypeText — the user is still
-                        // chatting with Claude Code and must not be interrupted.
-                        if !self.orchestrator.kickoff_complete {
-                            tracing::debug!(
-                                "Orchestrator: deferring TypeText — kickoff not complete"
-                            );
-                            self.orchestrator
-                                .deferred_type_text
-                                .push(text_to_type.clone());
-                        } else if let Some(ctx) = self.windows.values().next() {
+                        if let Some(ctx) = self.windows.values().next() {
                             // Type the text into the active PTY — but only if a command
                             // isn't actively executing (avoid interrupting Claude Code mid-turn)
                             if let Some(session) = ctx.session_mux.focused_session() {
@@ -8159,13 +7814,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         // Generate post-mortem report
-                        let prd_path = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.prd_path.clone())
-                            .unwrap_or_default();
                         orchestrator::generate_postmortem(
                             &self.orchestrator.project_root,
                             self.orchestrator.iteration,
@@ -8179,7 +7827,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     &summary
                                 }
                             ),
-                            &prd_path,
+                            &[],
                         );
 
                         {
@@ -8264,42 +7912,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                         tracing::debug!("Orchestrator: skipping context send (response pending)");
                         return;
                     }
-                }
-
-                // Kickoff guard: during the kickoff phase, suppress the silence
-                // trigger while the user is still actively engaged. This is
-                // model-agnostic — it only tracks user keypress recency, not any
-                // specific agent's prompt format.
-                //
-                // Three cases:
-                // 1. User hasn't typed yet → suppress (still waiting for interaction)
-                // 2. User typed recently → suppress (still engaged)
-                // 3. User typed but has gone idle → kickoff complete, start loop
-                if !self.orchestrator.kickoff_complete {
-                    let threshold = std::time::Duration::from_secs(
-                        self.config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.silence_timeout_secs)
-                            .unwrap_or(30),
-                    );
-                    if self.orchestrator.last_user_keypress.is_none() {
-                        // User hasn't typed anything yet — still waiting
-                        tracing::debug!(
-                            "Orchestrator: skipping context send during kickoff (no user input yet)"
-                        );
-                        return;
-                    }
-                    if self.orchestrator.user_recently_active(threshold) {
-                        tracing::debug!(
-                            "Orchestrator: skipping context send during kickoff (user recently active)"
-                        );
-                        return;
-                    }
-                    // User typed and has gone idle — kickoff is complete
-                    self.orchestrator.kickoff_complete = true;
-                    tracing::info!("Orchestrator: kickoff complete (user and terminal both idle)");
                 }
 
                 // Flush deferred text if a previous TypeText was blocked during
@@ -10496,6 +10108,7 @@ fn main() {
                 script_gen_project_root: None,
                 script_bridge,
                 script_gen_parse_failures: 0,
+                centered_toast: None,
             };
 
             if let Err(e) = event_loop.run_app(&mut processor) {
