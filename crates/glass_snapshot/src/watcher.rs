@@ -50,6 +50,12 @@ impl FsWatcher {
     /// Drain all pending events, filtering ignored paths and deduplicating.
     ///
     /// Returns one event per path (the last event wins for deduplication).
+    ///
+    /// PERF-F01: Debouncing is handled architecturally — the watcher collects
+    /// events during command execution and drain_events() is called once when
+    /// the command finishes, providing natural batching. The per-path HashMap
+    /// deduplication eliminates redundant events for the same file. No additional
+    /// timer-based debounce is needed given this call pattern.
     pub fn drain_events(&self) -> Vec<WatcherEvent> {
         let mut seen: HashMap<PathBuf, WatcherEvent> = HashMap::new();
 

@@ -295,6 +295,9 @@ pub struct GlassConfig {
     /// Scripting configuration section. Optional in the TOML file;
     /// uses defaults when present without explicit field values.
     pub scripting: Option<ScriptingSection>,
+    /// Terminal behavior configuration section. Optional in the TOML file;
+    /// uses defaults when present without explicit field values.
+    pub terminal: Option<TerminalSection>,
 }
 
 /// History-related configuration in the `[history]` TOML section.
@@ -415,6 +418,18 @@ fn default_true() -> bool {
     true
 }
 
+/// Terminal behavior configuration in the `[terminal]` TOML section.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct TerminalSection {
+    /// Number of lines of scrollback history. Default 10_000.
+    #[serde(default = "default_scrollback")]
+    pub scrollback: usize,
+}
+
+fn default_scrollback() -> usize {
+    10_000
+}
+
 fn default_font_family() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -442,6 +457,7 @@ impl Default for GlassConfig {
             soi: None,
             agent: None,
             scripting: None,
+            terminal: None,
         }
     }
 }
@@ -504,6 +520,9 @@ impl GlassConfig {
 # [scripting]
 # enabled = true
 # auto_confirm = false
+
+# [terminal]
+# scrollback = 10000
 "#;
 
         match std::fs::write(&config_path, default_config) {

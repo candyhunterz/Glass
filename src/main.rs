@@ -714,6 +714,7 @@ fn create_session(
         .as_ref()
         .and_then(|a| a.orchestrator.as_ref())
         .and_then(|o| o.agent_prompt_pattern.clone());
+    let scrollback = config.terminal.as_ref().map(|t| t.scrollback);
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
         proxy.clone(),
@@ -725,6 +726,7 @@ fn create_session(
         orchestrator_silence_secs,
         fast_trigger,
         prompt_pattern,
+        scrollback,
     )?;
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
@@ -2756,9 +2758,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // VSync provides additional backpressure, but during output
                 // floods with mailbox present mode this prevents wasted GPU work.
                 let now = std::time::Instant::now();
-                if now.duration_since(ctx.last_redraw)
-                    < std::time::Duration::from_millis(1)
-                {
+                if now.duration_since(ctx.last_redraw) < std::time::Duration::from_millis(1) {
                     // Too soon — the next natural redraw will pick it up.
                     return;
                 }
@@ -2806,6 +2806,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                         snapshot_term(&term, &session.default_colors)
                     };
 
+                    // PERF-M01: Evict pipeline data from blocks far from viewport
+                    {
+                        if let Some(session) = ctx.session_mux.focused_session_mut() {
+                            let viewport_abs_start = snapshot
+                                .history_size
+                                .saturating_sub(snapshot.display_offset);
+                            session
+                                .block_manager
+                                .evict_distant_blocks(viewport_abs_start, snapshot.screen_lines);
+                        }
+                    }
+
                     let (visible_blocks, search_overlay_data, status_clone) = {
                         let Some(session) = ctx.session_mux.focused_session() else {
                             return;
@@ -2813,6 +2825,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let viewport_abs_start = snapshot
                             .history_size
                             .saturating_sub(snapshot.display_offset);
+                        // PERF-A01: cloned() is required here because the session borrow
+                        // is released at the end of this block, but visible_block_refs
+                        // are used later in draw_frame. Eliminating this clone would
+                        // require restructuring to hold the session borrow across the
+                        // entire draw call, which conflicts with other mutable borrows.
                         let vb: Vec<_> = session
                             .block_manager
                             .visible_blocks(viewport_abs_start, snapshot.screen_lines)

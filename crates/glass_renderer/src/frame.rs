@@ -381,6 +381,10 @@ impl FrameRenderer {
         // 3b. Build overlay text buffers for block labels and status bar.
         // Two-phase approach: first build all buffers (mutable), then create
         // text areas (immutable borrows) to satisfy the borrow checker.
+        // TODO(PERF-R04): Cache overlay buffers when content is unchanged.
+        // The overlay text (status bar, tab bar, block labels, search overlay,
+        // proposal toast/overlay) depends on many inputs; caching would require
+        // hashing all inputs to detect staleness. Deferred to a future pass.
         self.overlay_buffers.clear();
 
         let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;

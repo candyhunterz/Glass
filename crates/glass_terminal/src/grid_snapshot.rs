@@ -65,7 +65,10 @@ pub struct RenderedCell {
     pub fg: Rgb,
     pub bg: Rgb,
     pub flags: Flags,
-    pub zerowidth: Vec<char>,
+    /// Zero-width combining characters following the base character.
+    /// `None` for the common case (99%+ of cells have no combiners), avoiding
+    /// a heap-allocated empty Vec per cell.
+    pub zerowidth: Option<Vec<char>>,
 }
 
 /// A snapshot of the terminal grid for rendering.
@@ -318,7 +321,7 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
             fg,
             bg,
             flags: cell.flags,
-            zerowidth: cell.zerowidth().map(|z| z.to_vec()).unwrap_or_default(),
+            zerowidth: cell.zerowidth().map(|z| z.to_vec()),
         });
     }
 
