@@ -3,6 +3,7 @@ name = "glass_soi"
 version = "0.1.0"
 edition = "2021"
 description = "Structured Output Intelligence: classifier and parsers for command output"
+license = "MIT"
 
 [dependencies]
 regex = "1"
