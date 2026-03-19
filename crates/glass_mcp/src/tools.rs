@@ -144,6 +144,10 @@ pub struct DeregisterParams {
     /// Agent UUID to deregister.
     #[schemars(description = "Agent UUID to deregister")]
     pub agent_id: String,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_list tool.
@@ -166,6 +170,10 @@ pub struct StatusParams {
     /// Current task description.
     #[schemars(description = "Current task description")]
     pub task: Option<String>,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_heartbeat tool.
@@ -174,6 +182,10 @@ pub struct HeartbeatParams {
     /// Agent UUID to refresh heartbeat for.
     #[schemars(description = "Agent UUID to refresh heartbeat for")]
     pub agent_id: String,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_lock tool.
@@ -188,6 +200,10 @@ pub struct LockParams {
     /// Reason for locking (shown to other agents).
     #[schemars(description = "Reason for locking (shown to other agents)")]
     pub reason: Option<String>,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_unlock tool.
@@ -199,6 +215,10 @@ pub struct UnlockParams {
     /// Specific file paths to unlock. Omit to release all locks.
     #[schemars(description = "Specific file paths to unlock. Omit to release all locks.")]
     pub paths: Option<Vec<String>>,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_locks tool.
@@ -224,6 +244,10 @@ pub struct BroadcastParams {
     /// Message content.
     #[schemars(description = "Message content")]
     pub content: String,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_send tool.
@@ -241,6 +265,10 @@ pub struct SendParams {
     /// Message content.
     #[schemars(description = "Message content")]
     pub content: String,
+    /// Session nonce returned by glass_agent_register.
+    #[schemars(description = "Session nonce returned by glass_agent_register")]
+    #[serde(default)]
+    pub nonce: Option<String>,
 }
 
 /// Parameters for the glass_agent_messages tool.
@@ -870,7 +898,7 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
-            let agent_id = db
+            let (agent_id, nonce) = db
                 .register(
                     &params.name,
                     &params.agent_type,
@@ -882,6 +910,7 @@ impl GlassServer {
             let agents = db.list_agents(&params.project).map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({
                 "agent_id": agent_id,
+                "nonce": nonce,
                 "agents_active": agents.len(),
             }))
         })
@@ -906,7 +935,8 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
-            let ok = db.deregister(&params.agent_id).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
+            let ok = db.deregister(&params.agent_id, nonce).map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
         })
         .await
@@ -955,8 +985,9 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
             let ok = db
-                .update_status(&params.agent_id, &params.status, params.task.as_deref())
+                .update_status(&params.agent_id, &params.status, params.task.as_deref(), nonce)
                 .map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
         })
@@ -981,7 +1012,8 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
-            let ok = db.heartbeat(&params.agent_id).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
+            let ok = db.heartbeat(&params.agent_id, nonce).map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "ok": ok }))
         })
         .await
@@ -1005,9 +1037,10 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
             let paths: Vec<PathBuf> = params.paths.iter().map(PathBuf::from).collect();
             let lock_result = db
-                .lock_files(&params.agent_id, &paths, params.reason.as_deref())
+                .lock_files(&params.agent_id, &paths, params.reason.as_deref(), nonce)
                 .map_err(internal_err)?;
             match lock_result {
                 glass_coordination::types::LockResult::Acquired(locked) => {
@@ -1054,11 +1087,12 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
             let released = if let Some(paths) = &params.paths {
                 let mut count = 0u64;
                 for p in paths {
                     let ok = db
-                        .unlock_file(&params.agent_id, std::path::Path::new(p))
+                        .unlock_file(&params.agent_id, std::path::Path::new(p), nonce)
                         .map_err(internal_err)?;
                     if ok {
                         count += 1;
@@ -1066,10 +1100,10 @@ impl GlassServer {
                 }
                 count
             } else {
-                db.unlock_all(&params.agent_id).map_err(internal_err)?
+                db.unlock_all(&params.agent_id, nonce).map_err(internal_err)?
             };
             // MCP-12: implicit heartbeat refresh on unlock
-            let _ = db.heartbeat(&params.agent_id);
+            let _ = db.heartbeat(&params.agent_id, nonce);
             Ok::<_, McpError>(serde_json::json!({ "released": released }))
         })
         .await
@@ -1113,12 +1147,14 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
             let count = db
                 .broadcast(
                     &params.agent_id,
                     &params.project,
                     &params.msg_type,
                     &params.content,
+                    nonce,
                 )
                 .map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "delivered_to": count }))
@@ -1141,12 +1177,14 @@ impl GlassServer {
         let result = tokio::task::spawn_blocking(move || {
             let mut db =
                 glass_coordination::CoordinationDb::open(&coord_path).map_err(internal_err)?;
+            let nonce = params.nonce.as_deref().unwrap_or("");
             let msg_id = db
                 .send_message(
                     &params.agent_id,
                     &params.to_agent,
                     &params.msg_type,
                     &params.content,
+                    nonce,
                 )
                 .map_err(internal_err)?;
             Ok::<_, McpError>(serde_json::json!({ "message_id": msg_id }))
