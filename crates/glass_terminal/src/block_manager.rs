@@ -138,6 +138,8 @@ pub struct BlockManager {
     current: Option<usize>,
     /// Last known terminal column count; used to detect reflow-inducing resizes.
     last_columns: usize,
+    /// Last known history_size; used to adjust block positions after reflow.
+    last_history_size: usize,
 }
 
 impl BlockManager {
@@ -146,16 +148,43 @@ impl BlockManager {
             blocks: Vec::new(),
             current: None,
             last_columns: 0,
+            last_history_size: 0,
         }
     }
 
     /// Notify the block manager that the terminal was resized.
-    /// We keep existing blocks even when column count changes — their line
-    /// positions may be slightly off after reflow, but clearing them would
-    /// permanently lose all decorations (separators, badges, etc.) since
-    /// shell integration only re-emits OSC 133 for the current prompt.
-    pub fn notify_resize(&mut self, columns: usize) {
+    ///
+    /// When column count changes, the terminal reflows text, shifting absolute
+    /// line positions. We adjust stored block positions by the history_size
+    /// delta so separators and badges remain aligned with their content.
+    /// This is an approximation (reflow isn't uniform across the buffer),
+    /// but far better than leaving positions stale.
+    pub fn notify_resize(&mut self, columns: usize, new_history_size: usize) {
+        if self.last_columns != columns && self.last_columns > 0 && !self.blocks.is_empty() {
+            let delta = new_history_size as isize - self.last_history_size as isize;
+            if delta != 0 {
+                for block in &mut self.blocks {
+                    block.prompt_start_line =
+                        (block.prompt_start_line as isize + delta).max(0) as usize;
+                    block.command_start_line =
+                        (block.command_start_line as isize + delta).max(0) as usize;
+                    if let Some(ref mut line) = block.output_start_line {
+                        *line = (*line as isize + delta).max(0) as usize;
+                    }
+                    if let Some(ref mut line) = block.output_end_line {
+                        *line = (*line as isize + delta).max(0) as usize;
+                    }
+                }
+            }
+        }
         self.last_columns = columns;
+        self.last_history_size = new_history_size;
+    }
+
+    /// Update the tracked history size (call after terminal operations that
+    /// change history without a resize, such as initial snapshot).
+    pub fn update_history_size(&mut self, history_size: usize) {
+        self.last_history_size = history_size;
     }
 
     /// Process an OSC event and update block state.

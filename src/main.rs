@@ -666,11 +666,17 @@ fn resize_all_panes(
 
         if let Some(session) = session_mux.session_mut(*sid) {
             pty_send(&session.pty_sender, PtyMsg::Resize(pane_size));
-            session.term.lock().resize(TermDimensions {
-                columns: pane_cols as usize,
-                screen_lines: pane_lines as usize,
-            });
-            session.block_manager.notify_resize(pane_cols as usize);
+            let new_history = {
+                let mut term = session.term.lock();
+                term.resize(TermDimensions {
+                    columns: pane_cols as usize,
+                    screen_lines: pane_lines as usize,
+                });
+                term.grid().history_size()
+            };
+            session
+                .block_manager
+                .notify_resize(pane_cols as usize, new_history);
         }
     }
 }
@@ -1166,10 +1172,18 @@ When ALL items in the project plan are implemented, tested, and committed, emit:
 GLASS_DONE: <brief summary of what was built>
 This stops orchestration and tells Claude Code to do a final commit.
 
+CRITICAL RULES:
+- GLASS_WAIT if Claude Code is mid-turn (processing, using tools, churning, streaming output)
+- GLASS_WAIT if Claude Code just finished and hasn't shown a prompt yet
+- Only type text when Claude Code is IDLE at its input prompt waiting for input
+- You ARE the user — when Claude Code asks a question, answer it decisively based on the PRD and project goals
+- NEVER echo or repeat text from the terminal context — your response is typed as-is into the terminal
+- Keep instructions short and actionable (1-3 sentences)
+
 RESPONSE FORMAT:
 Respond with ONLY one of:
-1. Text to type into the terminal (sent as-is to Claude Code)
-2. GLASS_WAIT (Claude Code is still working, check again later)
+1. Text to type into the terminal (a clear instruction for Claude Code)
+2. GLASS_WAIT (Claude Code is still working, asking questions, or not ready for input)
 3. GLASS_CHECKPOINT: {{"completed": "...", "next": "..."}}
 4. GLASS_DONE: <summary> (all PRD items complete)
 5. GLASS_VERIFY: {{"commands": [{{"name": "...", "cmd": "..."}}]}}
@@ -2304,6 +2318,7 @@ impl Processor {
         // Handoff was sent as initial_message in try_spawn_agent.
         // Suppress silence trigger until the agent responds.
         self.orchestrator.response_pending = true;
+        self.orchestrator.response_pending_since = Some(std::time::Instant::now());
 
         // Tag with current generation so stale AgentCrashed events are ignored
         if let Some(ref mut rt) = self.agent_runtime {
@@ -3928,11 +3943,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                     };
                     if let Some(session) = ctx.session_mux.focused_session_mut() {
                         pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
-                        session.term.lock().resize(TermDimensions {
-                            columns: num_cols as usize,
-                            screen_lines: num_lines as usize,
-                        });
-                        session.block_manager.notify_resize(num_cols as usize);
+                        let new_history = {
+                            let mut term = session.term.lock();
+                            term.resize(TermDimensions {
+                                columns: num_cols as usize,
+                                screen_lines: num_lines as usize,
+                            });
+                            term.grid().history_size()
+                        };
+                        session
+                            .block_manager
+                            .notify_resize(num_cols as usize, new_history);
                     }
                 }
 
@@ -3961,11 +3982,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                 for sid in bg_session_ids {
                     if let Some(session) = ctx.session_mux.session_mut(sid) {
                         pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
-                        session.term.lock().resize(TermDimensions {
-                            columns: num_cols as usize,
-                            screen_lines: num_lines as usize,
-                        });
-                        session.block_manager.notify_resize(num_cols as usize);
+                        let new_history = {
+                            let mut term = session.term.lock();
+                            term.resize(TermDimensions {
+                                columns: num_cols as usize,
+                                screen_lines: num_lines as usize,
+                            });
+                            term.grid().history_size()
+                        };
+                        session
+                            .block_manager
+                            .notify_resize(num_cols as usize, new_history);
                     }
                 }
 
@@ -4015,11 +4042,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                         };
                         if let Some(session) = ctx.session_mux.focused_session_mut() {
                             pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
-                            session.term.lock().resize(TermDimensions {
-                                columns: num_cols as usize,
-                                screen_lines: num_lines as usize,
-                            });
-                            session.block_manager.notify_resize(num_cols as usize);
+                            let new_history = {
+                                let mut term = session.term.lock();
+                                term.resize(TermDimensions {
+                                    columns: num_cols as usize,
+                                    screen_lines: num_lines as usize,
+                                });
+                                term.grid().history_size()
+                            };
+                            session
+                                .block_manager
+                                .notify_resize(num_cols as usize, new_history);
                         }
                     }
 
@@ -4047,11 +4080,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                     for sid in bg_session_ids {
                         if let Some(session) = ctx.session_mux.session_mut(sid) {
                             pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
-                            session.term.lock().resize(TermDimensions {
-                                columns: num_cols as usize,
-                                screen_lines: num_lines as usize,
-                            });
-                            session.block_manager.notify_resize(num_cols as usize);
+                            let new_history = {
+                                let mut term = session.term.lock();
+                                term.resize(TermDimensions {
+                                    columns: num_cols as usize,
+                                    screen_lines: num_lines as usize,
+                                });
+                                term.grid().history_size()
+                            };
+                            session
+                                .block_manager
+                                .notify_resize(num_cols as usize, new_history);
                         }
                     }
                 }
@@ -4680,35 +4719,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let prd_path =
                                         std::path::Path::new(&current_cwd).join(&prd_rel);
                                     if prd_path.exists() {
-                                        // PRD exists — prompt user to continue or start fresh
-                                        if let Some(session) = ctx.session_mux.focused_session() {
-                                            let msg = format!(
-                                                "\r\n[GLASS] Found existing PRD at {}. Continue with it? (y=continue, n=start fresh)\r\n",
+                                        // PRD exists — show status notification (not PTY input,
+                                        // which would be fed to Claude Code's stdin and disrupt it)
+                                        self.status_message = Some((
+                                            format!(
+                                                "Orchestrator: PRD found at {}",
                                                 prd_rel
-                                            );
-                                            let bytes = msg.into_bytes();
-                                            pty_send(
-                                                &session.pty_sender,
-                                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
-                                            );
-                                        }
+                                            ),
+                                            std::time::Instant::now(),
+                                        ));
                                         tracing::info!(
                                             "Orchestrator: PRD found at {}, prompting user",
                                             prd_path.display()
                                         );
                                     } else {
-                                        // No PRD — tell user to describe what they want
-                                        if let Some(session) = ctx.session_mux.focused_session() {
-                                            let msg = "\r\n[GLASS] Orchestrator active. No PRD found — describe what you want to build, then wait for the loop to start.\r\n";
-                                            pty_send(
-                                                &session.pty_sender,
-                                                PtyMsg::Input(std::borrow::Cow::Owned(
-                                                    msg.as_bytes().to_vec(),
-                                                )),
-                                            );
-                                        }
+                                        // No PRD — show status notification
+                                        self.status_message = Some((
+                                            "Orchestrator active -- describe your goal to Claude, then go hands-off".to_string(),
+                                            std::time::Instant::now(),
+                                        ));
                                         tracing::info!(
-                                            "Orchestrator: no PRD at {} — kickoff mode",
+                                            "Orchestrator: no PRD at {} -- kickoff mode",
                                             prd_path.display()
                                         );
                                     }
@@ -6457,6 +6488,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let osc_event = shell_event_to_osc(&shell_event);
                         session.block_manager.handle_event(&osc_event, line);
 
+                        // Keep block_manager's history tracking in sync so
+                        // resize delta computation is accurate.
+                        let current_history = session.term.lock().grid().history_size();
+                        session
+                            .block_manager
+                            .update_history_size(current_history);
+
                         // Fix #3: Orchestrator crash recovery with grace period.
                         // Only trigger if orchestrating, had iterations, AND not within
                         // the grace period after the orchestrator itself typed something.
@@ -6476,7 +6514,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .map(|o| o.checkpoint_path.as_str())
                                 .unwrap_or(".glass/checkpoint.md");
                             let restart_msg = format!(
-                                "claude --dangerously-skip-permissions -p \"Read {} and continue the project from where you left off. Follow the iteration protocol: plan, implement, commit, verify, decide.\"\n",
+                                "claude --dangerously-skip-permissions -p \"Read {} and continue the project from where you left off. Follow the iteration protocol: plan, implement, commit, verify, decide.\"\r",
                                 cp_rel,
                             );
                             let bytes = restart_msg.into_bytes();
@@ -8071,7 +8109,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .deferred_type_text
                                         .push(text_to_type.clone());
                                 } else {
-                                    let bytes = format!("{}\n", text_to_type).into_bytes();
+                                    let bytes = format!("{}\r", text_to_type).into_bytes();
                                     pty_send(
                                         &session.pty_sender,
                                         PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
@@ -8165,7 +8203,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if let Some(ctx) = self.windows.values().next() {
                             if let Some(session) = ctx.session_mux.focused_session() {
                                 let msg = format!(
-                                    "All PRD items are complete. Commit any remaining changes with a summary commit message.{}\n",
+                                    "All PRD items are complete. Commit any remaining changes with a summary commit message.{}\r",
                                     if summary.is_empty() { String::new() } else { format!(" Summary: {}", summary) }
                                 );
                                 let bytes = msg.into_bytes();
@@ -8207,10 +8245,25 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return;
                 }
 
-                // Backpressure: skip if waiting for agent response
+                // Backpressure: skip if waiting for agent response.
+                // Timeout after 120s to prevent permanent deadlock if the agent
+                // dies silently or hangs (e.g., MCP server failure, API timeout).
                 if self.orchestrator.response_pending {
-                    tracing::debug!("Orchestrator: skipping context send (response pending)");
-                    return;
+                    let timed_out = self
+                        .orchestrator
+                        .response_pending_since
+                        .map(|t| t.elapsed().as_secs() > 120)
+                        .unwrap_or(false);
+                    if timed_out {
+                        tracing::warn!(
+                            "Orchestrator: response_pending timeout (>120s) — clearing to unblock"
+                        );
+                        self.orchestrator.response_pending = false;
+                        self.orchestrator.response_pending_since = None;
+                    } else {
+                        tracing::debug!("Orchestrator: skipping context send (response pending)");
+                        return;
+                    }
                 }
 
                 // Kickoff guard: during the kickoff phase, suppress the silence
@@ -8264,7 +8317,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .unwrap_or(false);
                             if !block_executing {
                                 let deferred = self.orchestrator.deferred_type_text.remove(0);
-                                let bytes = format!("{}\n", deferred).into_bytes();
+                                let bytes = format!("{}\r", deferred).into_bytes();
                                 pty_send(
                                     &session.pty_sender,
                                     PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
@@ -8498,6 +8551,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if spawn_result.is_ok() {
                                         // Block sending context until verification completes
                                         self.orchestrator.response_pending = true;
+                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
                                         self.orchestrator.last_verified_iteration =
                                             Some(self.orchestrator.iteration);
                                         return;
@@ -8580,7 +8634,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if let Some(session_ref) =
                                         ctx_ref.session_mux.session(session_id)
                                     {
-                                        let msg = format!("STOP current task. {}\n", block_msg);
+                                        let msg = format!("STOP current task. {}\r", block_msg);
                                         pty_send(
                                             &session_ref.pty_sender,
                                             PtyMsg::Input(std::borrow::Cow::Owned(
@@ -8591,6 +8645,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 self.orchestrator.response_pending = true;
+                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
                                 for ctx_ref in self.windows.values_mut() {
                                     ctx_ref.mark_dirty_and_redraw();
                                 }
@@ -8833,7 +8888,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             let next = self.orchestrator.instruction_buffer.remove(0);
                             if let Some(ctx_ib) = self.windows.get(&window_id) {
                                 if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
-                                    let msg = format!("{}\n", next);
+                                    let msg = format!("{}\r", next);
                                     pty_send(
                                         &session_ib.pty_sender,
                                         PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
@@ -8842,6 +8897,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             }
                             self.orchestrator.response_pending = true;
+                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
                             tracing::info!(
                                 "Orchestrator: sent buffered instruction ({} remaining)",
                                 self.orchestrator.instruction_buffer.len()
@@ -8866,6 +8922,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let _ = writeln!(w, "{msg}");
                                     let _ = w.flush();
                                     self.orchestrator.response_pending = true;
+                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
 
                                     self.orchestrator_event_buffer.push(
                                         orchestrator_events::OrchestratorEvent::ContextSent {
@@ -9154,6 +9211,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     // Context was sent — mark pending so we wait for the
                                     // agent's response before the next silence fires.
                                     self.orchestrator.response_pending = true;
+                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
                                 }
                             }
                         }

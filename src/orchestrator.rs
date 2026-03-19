@@ -457,6 +457,8 @@ pub struct OrchestratorState {
     pub last_pty_write: Option<std::time::Instant>,
     /// Whether we're waiting for the agent to respond to a context send.
     pub response_pending: bool,
+    /// When response_pending was set to true (for timeout detection).
+    pub response_pending_since: Option<std::time::Instant>,
     /// Last N environment fingerprints for semantic stuck detection.
     pub recent_fingerprints: Vec<StateFingerprint>,
     /// Whether the last fingerprint check detected stuck (consumed by response handler).
@@ -538,6 +540,7 @@ impl OrchestratorState {
             last_checkpoint_next: String::new(),
             last_pty_write: None,
             response_pending: false,
+            response_pending_since: None,
             recent_fingerprints: Vec::new(),
             fingerprint_stuck: false,
             metric_baseline: None,

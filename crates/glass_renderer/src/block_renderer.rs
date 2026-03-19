@@ -102,8 +102,9 @@ impl BlockRenderer {
             let y = (line - display_offset) as f32 * self.cell_height;
 
             // Horizontal separator line (2px tall, full width)
+            // Drawn 2px above the prompt line so it doesn't clip text ascenders.
             rects.push(RectInstance {
-                pos: [0.0, y, viewport_width, 2.0],
+                pos: [0.0, (y - 2.0).max(0.0), viewport_width, 2.0],
                 color: ThemeConfig::to_f32_rgba(self.theme.block_separator),
             });
 

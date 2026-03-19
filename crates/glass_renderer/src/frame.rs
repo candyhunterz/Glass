@@ -324,6 +324,9 @@ impl FrameRenderer {
         }
 
         // 1d. Append search overlay rects (backdrop, input box, result rows)
+        // These are bg-layer rects; the backdrop covers terminal cell backgrounds.
+        // When search is active, grid text is suppressed (see step 3 below)
+        // so the backdrop is visible and only search text renders on top.
         if let Some(overlay) = search_overlay {
             let overlay_rects = self.search_overlay_renderer.build_overlay_rects(
                 overlay.results.len(),
@@ -393,26 +396,31 @@ impl FrameRenderer {
             .prepare(device, queue, &rect_instances, width, height);
 
         // 3. Build per-cell text buffers and text areas for grid content
-        // PERF-R01: Skip expensive font shaping when terminal content unchanged.
-        if snapshot.generation != self.last_rendered_generation {
-            self.text_buffers.clear();
-            self.cell_positions.clear();
-            self.grid_renderer.build_cell_buffers(
-                &mut self.glyph_cache.font_system,
-                snapshot,
-                &mut self.text_buffers,
-                &mut self.cell_positions,
-            );
-            self.last_rendered_generation = snapshot.generation;
-        }
-        let mut text_areas: Vec<TextArea<'_>> = self.grid_renderer.build_cell_text_areas_offset(
-            &self.text_buffers,
-            &self.cell_positions,
-            width,
-            height,
-            0.0,
-            grid_y_offset,
-        );
+        // When search overlay is active, suppress grid text so the backdrop is visible.
+        let mut text_areas: Vec<TextArea<'_>> = if search_overlay.is_some() {
+            Vec::new()
+        } else {
+            // PERF-R01: Skip expensive font shaping when terminal content unchanged.
+            if snapshot.generation != self.last_rendered_generation {
+                self.text_buffers.clear();
+                self.cell_positions.clear();
+                self.grid_renderer.build_cell_buffers(
+                    &mut self.glyph_cache.font_system,
+                    snapshot,
+                    &mut self.text_buffers,
+                    &mut self.cell_positions,
+                );
+                self.last_rendered_generation = snapshot.generation;
+            }
+            self.grid_renderer.build_cell_text_areas_offset(
+                &self.text_buffers,
+                &self.cell_positions,
+                width,
+                height,
+                0.0,
+                grid_y_offset,
+            )
+        };
 
         // 3b. Build overlay text buffers for block labels and status bar.
         // Two-phase approach: first build all buffers (mutable), then create
@@ -824,9 +832,12 @@ impl FrameRenderer {
                     rw
                 };
                 let center_text_width = center_text.len() as f32 * cell_width;
-                let available = w - left_text_width - right_side_width;
-                if center_text_width < available {
-                    let center_x = (w - center_text_width) / 2.0;
+                let center_x = (w - center_text_width) / 2.0;
+                let right_items_start = w - right_side_width;
+                // Check actual pixel positions: center text must not overlap left OR right items
+                if center_x > left_text_width
+                    && center_x + center_text_width < right_items_start
+                {
                     let mut buffer =
                         Buffer::new(&mut self.glyph_cache.font_system, metrics);
                     buffer.set_size(
@@ -1922,9 +1933,12 @@ impl FrameRenderer {
                     rw
                 };
                 let center_text_width = center_text.len() as f32 * cell_width;
-                let available = w - left_text_width - right_side_width;
-                if center_text_width < available {
-                    let center_x = (w - center_text_width) / 2.0;
+                let center_x = (w - center_text_width) / 2.0;
+                let right_items_start = w - right_side_width;
+                // Check actual pixel positions: center text must not overlap left OR right items
+                if center_x > left_text_width
+                    && center_x + center_text_width < right_items_start
+                {
                     let mut buffer =
                         Buffer::new(&mut self.glyph_cache.font_system, metrics);
                     buffer.set_size(
