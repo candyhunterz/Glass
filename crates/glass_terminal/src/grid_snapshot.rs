@@ -11,7 +11,14 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{RenderableCursor, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
+use std::sync::atomic::AtomicU64;
+
 use crate::event_proxy::EventProxy;
+
+/// Monotonically increasing counter for snapshot generations.
+/// Each call to `snapshot_term` bumps this, allowing the renderer to detect
+/// when the terminal content has actually changed between frames.
+static SNAPSHOT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Default foreground and background colors for the terminal.
 #[derive(Debug, Clone)]
@@ -71,6 +78,10 @@ pub struct GridSnapshot {
     pub columns: usize,
     pub screen_lines: usize,
     pub selection: Option<SelectionRange>,
+    /// Monotonically increasing generation counter.
+    /// Changes each time a new snapshot is taken, allowing the renderer
+    /// to skip expensive buffer rebuilds when content hasn't changed.
+    pub generation: u64,
 }
 
 /// Resolve a `Color` to an `Rgb` value using the terminal color palette.
@@ -311,6 +322,8 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
         });
     }
 
+    let generation = SNAPSHOT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     GridSnapshot {
         cells,
         cursor: content.cursor,
@@ -320,6 +333,7 @@ pub fn snapshot_term(term: &Term<EventProxy>, defaults: &DefaultColors) -> GridS
         columns: term.columns(),
         screen_lines: term.screen_lines(),
         selection: content.selection,
+        generation,
     }
 }
 

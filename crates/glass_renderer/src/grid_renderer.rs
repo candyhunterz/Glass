@@ -615,6 +615,7 @@ mod tests {
             columns: 5,
             screen_lines: 1,
             selection: None,
+            generation: 0,
         };
 
         let mut buffers = Vec::new();
@@ -740,6 +741,7 @@ mod tests {
             columns,
             screen_lines: 1,
             selection: None,
+            generation: 0,
         }
     }
 
@@ -766,6 +768,7 @@ mod tests {
             columns,
             screen_lines: 1,
             selection: None,
+            generation: 0,
         }
     }
 

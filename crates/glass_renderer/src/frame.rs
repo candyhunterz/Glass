@@ -52,6 +52,11 @@ pub struct FrameRenderer {
     overlay_buffers: Vec<Buffer>,
     /// Reusable buffer storage for pipeline overlay text (drawn after overlay rects)
     pipeline_buffers: Vec<Buffer>,
+    /// Last rendered GridSnapshot generation (single-pane path).
+    /// Initialized to `u64::MAX` to force the first render.
+    last_rendered_generation: u64,
+    /// Cached pane buffer/position ranges for multi-pane rebuild skipping.
+    cached_pane_ranges: Vec<(usize, usize, usize, usize)>,
 }
 
 impl FrameRenderer {
@@ -123,6 +128,8 @@ impl FrameRenderer {
             cell_positions: Vec::new(),
             overlay_buffers: Vec::new(),
             pipeline_buffers: Vec::new(),
+            last_rendered_generation: u64::MAX,
+            cached_pane_ranges: Vec::new(),
         }
     }
 
@@ -350,14 +357,18 @@ impl FrameRenderer {
             .prepare(device, queue, &rect_instances, width, height);
 
         // 3. Build per-cell text buffers and text areas for grid content
-        self.text_buffers.clear();
-        self.cell_positions.clear();
-        self.grid_renderer.build_cell_buffers(
-            &mut self.glyph_cache.font_system,
-            snapshot,
-            &mut self.text_buffers,
-            &mut self.cell_positions,
-        );
+        // PERF-R01: Skip expensive font shaping when terminal content unchanged.
+        if snapshot.generation != self.last_rendered_generation {
+            self.text_buffers.clear();
+            self.cell_positions.clear();
+            self.grid_renderer.build_cell_buffers(
+                &mut self.glyph_cache.font_system,
+                snapshot,
+                &mut self.text_buffers,
+                &mut self.cell_positions,
+            );
+            self.last_rendered_generation = snapshot.generation;
+        }
         let mut text_areas: Vec<TextArea<'_>> = self.grid_renderer.build_cell_text_areas_offset(
             &self.text_buffers,
             &self.cell_positions,
@@ -1399,24 +1410,34 @@ impl FrameRenderer {
 
         // 3. Build per-cell text buffers for all panes
         // We need separate buffer storage per pane since they have different offsets
-        self.text_buffers.clear();
-        self.cell_positions.clear();
-        let mut text_areas: Vec<TextArea<'_>> = Vec::new();
-        let mut pane_ranges: Vec<(usize, usize, usize, usize)> = Vec::new();
-
-        for (_viewport, snapshot, _blocks, _is_focused) in panes {
-            let buf_start = self.text_buffers.len();
-            let pos_start = self.cell_positions.len();
-            self.grid_renderer.build_cell_buffers(
-                &mut self.glyph_cache.font_system,
-                snapshot,
-                &mut self.text_buffers,
-                &mut self.cell_positions,
-            );
-            let buf_end = self.text_buffers.len();
-            let pos_end = self.cell_positions.len();
-            pane_ranges.push((buf_start, buf_end, pos_start, pos_end));
+        // PERF-R01: Skip rebuild if no pane snapshot has changed since last render.
+        let max_generation = panes
+            .iter()
+            .map(|(_, snap, _, _)| snap.generation)
+            .max()
+            .unwrap_or(0);
+        if max_generation != self.last_rendered_generation {
+            self.text_buffers.clear();
+            self.cell_positions.clear();
+            self.cached_pane_ranges.clear();
+            for (_viewport, snapshot, _blocks, _is_focused) in panes.iter() {
+                let buf_start = self.text_buffers.len();
+                let pos_start = self.cell_positions.len();
+                self.grid_renderer.build_cell_buffers(
+                    &mut self.glyph_cache.font_system,
+                    snapshot,
+                    &mut self.text_buffers,
+                    &mut self.cell_positions,
+                );
+                let buf_end = self.text_buffers.len();
+                let pos_end = self.cell_positions.len();
+                self.cached_pane_ranges
+                    .push((buf_start, buf_end, pos_start, pos_end));
+            }
+            self.last_rendered_generation = max_generation;
         }
+        let mut text_areas: Vec<TextArea<'_>> = Vec::new();
+        let pane_ranges = &self.cached_pane_ranges;
 
         // Build text areas with offsets for each pane
         for (i, (viewport, _snapshot, _blocks, _is_focused)) in panes.iter().enumerate() {
