@@ -184,13 +184,31 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 
 Download the latest release from [github.com/candyhunterz/Glass/releases](https://github.com/candyhunterz/Glass/releases).
 
+> **macOS Gatekeeper:** If macOS blocks Glass with "cannot be opened because the developer cannot be verified", run:
+> ```bash
+> xattr -cr /Applications/Glass.app
+> ```
+> This removes the quarantine attribute from unsigned downloads. Code signing and notarization are planned for a future release.
+
 ### Build from source
 
 Prerequisites: Rust stable toolchain (https://rustup.rs), Git.
 
-On Linux, also install system dependencies:
+On Linux, install system dependencies for your distribution:
+
+**Debian / Ubuntu:**
 ```bash
-sudo apt install libxkbcommon-dev libwayland-dev libx11-dev libxi-dev
+sudo apt install libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxtst-dev
+```
+
+**Fedora:**
+```bash
+sudo dnf install libxkbcommon-devel wayland-devel libX11-devel libXi-devel libXtst-devel
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S libxkbcommon wayland libx11 libxi libxtst
 ```
 
 ```bash
@@ -384,6 +402,7 @@ Default fonts: Consolas (Windows), Menlo (macOS), Monospace (Linux).
 
 ```
 glass                           Launch Glass terminal
+glass check                     Run system diagnostics (GPU, shell, config)
 glass history search <query>    Full-text search command history
 glass history list              List recent commands
 glass undo <id>                 Restore filesystem snapshot by command ID
@@ -604,6 +623,17 @@ crates/
 | SOI parsing | Non-blocking via spawn_blocking |
 
 Run `cargo bench` for Criterion benchmarks. Build with `--features perf` for tracing instrumentation (view in [Perfetto](https://ui.perfetto.dev)).
+
+---
+
+## Troubleshooting
+
+### Windows Console Behavior
+
+Glass uses `#![windows_subsystem = "windows"]` to suppress the console window when launched from the Start Menu or Explorer. This means:
+- **No visible console output** when double-clicked -- this is intentional
+- **CLI subcommands** (`glass history`, `glass check`, `glass mcp`) work normally when run from an existing terminal (PowerShell, cmd, Windows Terminal)
+- **Error messages** during initialization use native Windows dialog boxes since stderr is hidden
 
 ---
 
