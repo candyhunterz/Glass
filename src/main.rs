@@ -227,18 +227,14 @@ struct WindowContext {
 }
 
 impl WindowContext {
-    /// Get an immutable reference to the focused session.
-    fn session(&self) -> &Session {
-        self.session_mux
-            .focused_session()
-            .expect("no focused session")
+    /// Get an immutable reference to the focused session (if any).
+    fn session(&self) -> Option<&Session> {
+        self.session_mux.focused_session()
     }
 
-    /// Get a mutable reference to the focused session.
-    fn session_mut(&mut self) -> &mut Session {
-        self.session_mux
-            .focused_session_mut()
-            .expect("no focused session")
+    /// Get a mutable reference to the focused session (if any).
+    fn session_mut(&mut self) -> Option<&mut Session> {
+        self.session_mux.focused_session_mut()
     }
 }
 
@@ -2599,9 +2595,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
                 // Keep requesting redraws while search is pending (debounce timer not elapsed)
-                if let Some(ref overlay) = ctx.session().search_overlay {
-                    if overlay.search_pending {
-                        ctx.window.request_redraw();
+                if let Some(session) = ctx.session() {
+                    if let Some(ref overlay) = session.search_overlay {
+                        if overlay.search_pending {
+                            ctx.window.request_redraw();
+                        }
                     }
                 }
 
@@ -2639,7 +2637,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                 if pane_count <= 1 {
                     // Single-pane path: use existing draw_frame for backward compatibility
                     let snapshot = {
-                        let session = ctx.session();
+                        let Some(session) = ctx.session() else {
+                            return;
+                        };
                         let term = session.term.lock();
                         snapshot_term(&term, &session.default_colors)
                     };
@@ -3946,14 +3946,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
-                    let mode = *ctx.session().term.lock().mode();
+                    let Some(session) = ctx.session() else {
+                        return;
+                    };
+                    let mode = *session.term.lock().mode();
 
                     // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
                     if glass_mux::is_glass_shortcut(modifiers) {
                         match &event.logical_key {
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
                                 // New tab: inherit CWD from current session
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
@@ -4058,7 +4064,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
                                 // Horizontal split (new pane to the right)
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
@@ -4100,7 +4109,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
                                 // Vertical split (new pane below)
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
@@ -4242,15 +4254,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
-                                clipboard_copy(&ctx.session().term);
+                                if let Some(session) = ctx.session() {
+                                    clipboard_copy(&session.term);
+                                }
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
-                                clipboard_paste(&ctx.session().pty_sender, mode);
+                                if let Some(session) = ctx.session() {
+                                    clipboard_paste(&session.pty_sender, mode);
+                                }
                                 return;
                             }
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
-                                ctx.session_mut().search_overlay = Some(SearchOverlay::new());
+                                if let Some(session) = ctx.session_mut() {
+                                    session.search_overlay = Some(SearchOverlay::new());
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -4826,12 +4844,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
                         match &event.logical_key {
                             Key::Named(NamedKey::PageUp) => {
-                                ctx.session().term.lock().scroll_display(Scroll::PageUp);
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::PageUp);
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
                             Key::Named(NamedKey::PageDown) => {
-                                ctx.session().term.lock().scroll_display(Scroll::PageDown);
+                                if let Some(session) = ctx.session() {
+                                    session.term.lock().scroll_display(Scroll::PageDown);
+                                }
                                 ctx.window.request_redraw();
                                 return;
                             }
@@ -5222,16 +5244,20 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Orchestrator no longer auto-pauses on user input.
                         // Only Ctrl+Shift+O toggles orchestration on/off.
-                        pty_send(
-                            &ctx.session().pty_sender,
-                            PtyMsg::Input(Cow::Owned(bytes)),
-                        );
+                        if let Some(session) = ctx.session() {
+                            pty_send(
+                                &session.pty_sender,
+                                PtyMsg::Input(Cow::Owned(bytes)),
+                            );
+                        }
                         tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                     }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                ctx.session_mut().cursor_position = Some((position.x, position.y));
+                if let Some(session) = ctx.session_mut() {
+                    session.cursor_position = Some((position.x, position.y));
+                }
 
                 let mouse_x = position.x as f32;
                 let mouse_y = position.y as f32;
@@ -5422,21 +5448,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             Side::Right
                         };
-                        let mut term = ctx.session().term.lock();
-                        let display_offset = term.grid().display_offset();
-                        let columns = term.columns();
-                        let screen_lines = term.screen_lines();
-                        let col = col.min(columns.saturating_sub(1));
-                        let row = row.min(screen_lines.saturating_sub(1));
-                        let point = alacritty_terminal::index::Point::new(
-                            Line(row as i32 - display_offset as i32),
-                            Column(col),
-                        );
-                        if let Some(ref mut sel) = term.selection {
-                            sel.update(point, side);
+                        if let Some(session) = ctx.session() {
+                            let mut term = session.term.lock();
+                            let display_offset = term.grid().display_offset();
+                            let columns = term.columns();
+                            let screen_lines = term.screen_lines();
+                            let col = col.min(columns.saturating_sub(1));
+                            let row = row.min(screen_lines.saturating_sub(1));
+                            let point = alacritty_terminal::index::Point::new(
+                                Line(row as i32 - display_offset as i32),
+                                Column(col),
+                            );
+                            if let Some(ref mut sel) = term.selection {
+                                sel.update(point, side);
+                            }
+                            drop(term);
+                            ctx.window.request_redraw();
                         }
-                        drop(term);
-                        ctx.window.request_redraw();
                     }
                 }
             }
@@ -5448,7 +5476,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 ctx.mouse_left_pressed = true;
 
                 // Tab bar click handling
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     if (y as f32) < cell_h {
                         // Click is in tab bar region
@@ -5496,7 +5524,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.window.request_redraw();
                             }
                             Some(TabHitResult::NewTabButton) => {
-                                let cwd = ctx.session().status.cwd().to_string();
+                                let cwd = ctx
+                                    .session()
+                                    .map(|s| s.status.cwd().to_string())
+                                    .unwrap_or_default();
                                 let session_id = ctx.session_mux.next_session_id();
                                 let (cell_w, cell_h_inner) = ctx.frame_renderer.cell_size();
                                 let size = ctx.window.inner_size();
@@ -5539,7 +5570,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Scrollbar click handling (before text selection)
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     let sc = ctx.renderer.surface_config();
                     let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
@@ -5695,7 +5726,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Multi-pane click focus: if click is in a different pane, change focus
                 if ctx.session_mux.active_tab_pane_count() > 1 {
-                    if let Some((click_x, click_y)) = ctx.session().cursor_position {
+                    if let Some((click_x, click_y)) = ctx.session().and_then(|s| s.cursor_position) {
                         let (_, cell_h) = ctx.frame_renderer.cell_size();
                         let sc = ctx.renderer.surface_config();
                         let container = ViewportLayout {
@@ -5728,7 +5759,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Start text selection at the clicked grid position
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let grid_y_offset = if ctx.session_mux.tab_count() > 0 {
                         cell_h
@@ -5745,23 +5776,26 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             Side::Right
                         };
-                        let mut term = ctx.session().term.lock();
-                        let display_offset = term.grid().display_offset();
-                        let columns = term.columns();
-                        let screen_lines = term.screen_lines();
-                        let col = col.min(columns.saturating_sub(1));
-                        let row = row.min(screen_lines.saturating_sub(1));
-                        let point = alacritty_terminal::index::Point::new(
-                            Line(row as i32 - display_offset as i32),
-                            Column(col),
-                        );
-                        term.selection = Some(Selection::new(SelectionType::Simple, point, side));
-                        drop(term);
-                        ctx.window.request_redraw();
+                        if let Some(session) = ctx.session() {
+                            let mut term = session.term.lock();
+                            let display_offset = term.grid().display_offset();
+                            let columns = term.columns();
+                            let screen_lines = term.screen_lines();
+                            let col = col.min(columns.saturating_sub(1));
+                            let row = row.min(screen_lines.saturating_sub(1));
+                            let point = alacritty_terminal::index::Point::new(
+                                Line(row as i32 - display_offset as i32),
+                                Column(col),
+                            );
+                            term.selection =
+                                Some(Selection::new(SelectionType::Simple, point, side));
+                            drop(term);
+                            ctx.window.request_redraw();
+                        }
                     }
                 }
 
-                let needs_redraw = if let Some((_, y)) = ctx.session().cursor_position {
+                let needs_redraw = if let Some((_, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
                     let size = ctx.window.inner_size();
                     let viewport_h = size.height as f32;
@@ -5845,14 +5879,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
                 ctx.mouse_left_pressed = false;
                 // Copy selection to clipboard on mouse release
-                clipboard_copy(&ctx.session().term);
+                if let Some(session) = ctx.session() {
+                    clipboard_copy(&session.term);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: winit::event::MouseButton::Middle,
                 ..
             } => {
-                if let Some((x, y)) = ctx.session().cursor_position {
+                if let Some((x, y)) = ctx.session().and_then(|s| s.cursor_position) {
                     let (_, cell_h) = ctx.frame_renderer.cell_size();
                     if (y as f32) < cell_h {
                         let viewport_w = ctx.window.inner_size().width as f32;
@@ -5940,10 +5976,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     } else {
                         // Normal terminal scroll
                         // Positive delta = scroll up (into history), negative = scroll down
-                        ctx.session()
-                            .term
-                            .lock()
-                            .scroll_display(Scroll::Delta(lines));
+                        if let Some(session) = ctx.session() {
+                            session
+                                .term
+                                .lock()
+                                .scroll_display(Scroll::Delta(lines));
+                        }
                         ctx.window.request_redraw();
                     }
                 }
@@ -5957,10 +5995,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                 } else {
                     path_str.into_owned()
                 };
-                pty_send(
-                    &ctx.session().pty_sender,
-                    PtyMsg::Input(Cow::Owned(text.into_bytes())),
-                );
+                if let Some(session) = ctx.session() {
+                    pty_send(
+                        &session.pty_sender,
+                        PtyMsg::Input(Cow::Owned(text.into_bytes())),
+                    );
+                }
             }
             _ => {}
         }
