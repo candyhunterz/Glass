@@ -51,6 +51,34 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 // ---------------------------------------------------------------------------
+// Fatal error helper
+// ---------------------------------------------------------------------------
+
+/// Show a fatal error message and exit. On Windows (where stderr is hidden
+/// due to windows_subsystem="windows"), uses a native message box.
+fn show_fatal_error(msg: &str) -> ! {
+    eprintln!("Glass fatal error: {msg}");
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let wide_msg: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_title: Vec<u16> = "Glass Error"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide_msg.as_ptr(),
+                wide_title.as_ptr(),
+                MB_ICONERROR | MB_OK,
+            );
+        }
+    }
+    std::process::exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // CLI definition (clap derive)
 // ---------------------------------------------------------------------------
 
@@ -2336,7 +2364,7 @@ impl ApplicationHandler<AppEvent> for Processor {
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
-                .expect("Failed to create window"),
+                .unwrap_or_else(|e| show_fatal_error(&format!("Failed to create window: {e}"))),
         );
 
         // Parallelize font discovery with GPU init — FontSystem::new() enumerates
@@ -2347,7 +2375,10 @@ impl ApplicationHandler<AppEvent> for Processor {
         let renderer = pollster::block_on(GlassRenderer::new(Arc::clone(&window)));
 
         // Join font thread — should already be done since GPU init takes longer
-        let font_system = font_handle.join().expect("Font system thread panicked");
+        let font_system = font_handle.join().unwrap_or_else(|_| {
+            tracing::warn!("Font system thread panicked, using default");
+            FontSystem::new()
+        });
 
         // Create FrameRenderer with pre-loaded font system
         let scale_factor = window.scale_factor() as f32;
@@ -9928,7 +9959,7 @@ fn main() {
 
             let event_loop = EventLoop::<AppEvent>::with_user_event()
                 .build()
-                .expect("Failed to create event loop");
+                .unwrap_or_else(|e| show_fatal_error(&format!("Failed to create event loop: {e}")));
 
             // Create proxy BEFORE run_app() — EventLoopProxy<AppEvent> is Clone + Send,
             // so the PTY EventProxy stores a clone of this.
@@ -10017,9 +10048,9 @@ fn main() {
                 script_gen_parse_failures: 0,
             };
 
-            event_loop
-                .run_app(&mut processor)
-                .expect("Event loop exited with error");
+            if let Err(e) = event_loop.run_app(&mut processor) {
+                show_fatal_error(&format!("Event loop error: {e}"));
+            }
         }
         Some(Commands::History { action }) => {
             // Initialize structured logging for CLI mode (stdout)
@@ -10107,7 +10138,11 @@ fn main() {
                     let scripts_path = match scripts_dir {
                         Some(p) => std::path::PathBuf::from(p),
                         None => dirs::home_dir()
-                            .expect("Could not determine home directory")
+                            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))
+                            .unwrap_or_else(|e| {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            })
                             .join(".glass")
                             .join("scripts"),
                     };
@@ -10134,7 +10169,11 @@ fn main() {
                     let target_path = match target {
                         Some(p) => std::path::PathBuf::from(p),
                         None => dirs::home_dir()
-                            .expect("Could not determine home directory")
+                            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))
+                            .unwrap_or_else(|e| {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            })
                             .join(".glass")
                             .join("scripts"),
                     };
