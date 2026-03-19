@@ -144,4 +144,17 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].severity, Severity::Help);
     }
+
+    /// Verify that the OnceLock<Regex> patterns compile without panicking.
+    /// This exercises header_regex() and span_regex() on first call.
+    #[test]
+    fn static_regexes_compile() {
+        // header_regex: matches error/warning/note/help lines
+        let _ = header_regex();
+        // span_regex: matches " --> file:line:col" lines
+        let _ = span_regex();
+        // Drive both via parse to ensure get_or_init paths are exercised
+        let output = "error[E0001]: test\n --> src/x.rs:1:1";
+        assert_eq!(parse_rust_human(output).len(), 1);
+    }
 }

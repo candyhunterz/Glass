@@ -524,6 +524,44 @@ mod orchestrator_parser_tests {
 }
 
 #[cfg(test)]
+mod regex_compilation_tests {
+    use super::super::parse_test_counts_from_output;
+
+    /// Verify that all OnceLock<Regex> patterns in parse_test_counts_from_output
+    /// compile without panicking. Exercises all 4 static regexes on first call.
+    #[test]
+    fn regex_rust_pattern_compiles() {
+        // "45 passed; 2 failed" — triggers RE_RUST
+        let (passed, failed) = parse_test_counts_from_output("test result: ok. 45 passed; 2 failed; 0 ignored");
+        assert_eq!(passed, Some(45));
+        assert_eq!(failed, Some(2));
+    }
+
+    #[test]
+    fn regex_jest_pattern_compiles() {
+        // Jest output — triggers RE_JEST
+        let (passed, failed) = parse_test_counts_from_output("Tests: 2 failed, 45 passed, 47 total");
+        assert_eq!(passed, Some(45));
+        assert_eq!(failed, Some(2));
+    }
+
+    #[test]
+    fn regex_passed_pattern_compiles() {
+        // Pytest-style — triggers RE_PASSED and RE_FAILED
+        let (passed, failed) = parse_test_counts_from_output("5 passed, 2 failed");
+        assert_eq!(passed, Some(5));
+        assert_eq!(failed, Some(2));
+    }
+
+    #[test]
+    fn regex_no_match_returns_none() {
+        let (passed, failed) = parse_test_counts_from_output("no test output here");
+        assert_eq!(passed, None);
+        assert_eq!(failed, None);
+    }
+}
+
+#[cfg(test)]
 mod codepage_tests {
     /// Verify that the Windows console codepage is set to 65001 (UTF-8).
     /// This test calls GetConsoleOutputCP() and asserts the value.

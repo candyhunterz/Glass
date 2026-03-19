@@ -181,4 +181,20 @@ mod tests {
         assert_eq!(errors[0].severity, Severity::Error);
         assert_eq!(errors[1].severity, Severity::Warning);
     }
+
+    /// Verify that all OnceLock<Regex> patterns (regex_full, regex_no_col,
+    /// regex_no_severity) compile without panicking on first access.
+    #[test]
+    fn static_regexes_compile() {
+        let _ = regex_full();
+        let _ = regex_no_col();
+        let _ = regex_no_severity();
+        // Drive all three via parse
+        let full = "src/main.c:10:5: error: msg";
+        let no_col = "src/main.c:10: warning: msg";
+        let no_sev = "src/main.c:10:5: some message";
+        assert!(!parse_generic(full).is_empty());
+        assert!(!parse_generic(no_col).is_empty());
+        assert!(!parse_generic(no_sev).is_empty());
+    }
 }
