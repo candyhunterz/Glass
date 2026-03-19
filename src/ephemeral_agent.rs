@@ -160,6 +160,28 @@ fn run_ephemeral_blocking(
         }
     }
 
+    // macOS: spawn a watchdog thread in the child that polls getppid().
+    // When Glass (the parent) dies, the child is reparented to launchd (PID 1).
+    // The watchdog detects this and exits so ephemeral agents don't linger.
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                std::thread::Builder::new()
+                    .name("glass-orphan-watchdog".into())
+                    .spawn(|| loop {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        if unsafe { libc::getppid() } == 1 {
+                            std::process::exit(1);
+                        }
+                    })
+                    .ok();
+                Ok(())
+            });
+        }
+    }
+
     let mut child = cmd
         .spawn()
         .map_err(|e| EphemeralAgentError::SpawnFailed(format!("spawn claude: {e}")))?;

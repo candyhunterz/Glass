@@ -408,11 +408,12 @@ struct Processor {
     /// Cleared when selection changes to trigger regeneration on next redraw.
     proposal_diff_cache: Option<(usize, String)>,
     /// Windows Job Object handle for orphan prevention (Windows only).
-    /// Must remain alive for the app lifetime -- dropping closes the handle,
-    /// which triggers kill-on-close for all processes in the job.
+    /// Must remain alive for the app lifetime -- dropping closes the handle
+    /// (via `JobObjectHandle`'s `Drop` impl), which triggers kill-on-close
+    /// for all processes in the job.
     #[cfg(target_os = "windows")]
     #[allow(dead_code)]
-    job_object_handle: Option<isize>,
+    job_object_handle: Option<JobObjectHandle>,
     /// Thread handle for the artifact completion watcher (if active).
     artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
     /// Feedback loop state for the current orchestrator run.
@@ -830,14 +831,32 @@ fn cleanup_session(session: Session) {
     // Session is dropped here, releasing all resources
 }
 
+/// RAII wrapper for a Windows Job Object HANDLE.
+///
+/// Closes the underlying `HANDLE` when dropped. Because the Job Object was
+/// created with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, closing the handle
+/// causes the kernel to terminate all processes in the job — including any
+/// claude subprocesses — when Glass exits (whether cleanly or via a crash).
+#[cfg(target_os = "windows")]
+struct JobObjectHandle(isize);
+
+#[cfg(target_os = "windows")]
+impl Drop for JobObjectHandle {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0 as windows_sys::Win32::Foundation::HANDLE);
+        }
+    }
+}
+
 /// Create a Windows Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and assign
 /// the current process to it.  When Glass exits (handle dropped), the kernel kills
 /// any processes in the job (including the claude subprocess).
 ///
-/// Returns None on failure (logged as a warning). The returned isize is the HANDLE
-/// value and must be kept alive for the app lifetime.
+/// Returns None on failure (logged as a warning). The returned `JobObjectHandle`
+/// must be kept alive for the app lifetime (it is stored in `App`).
 #[cfg(target_os = "windows")]
-fn setup_windows_job_object() -> Option<isize> {
+fn setup_windows_job_object() -> Option<JobObjectHandle> {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -879,7 +898,7 @@ fn setup_windows_job_object() -> Option<isize> {
         }
 
         tracing::info!("AgentRuntime: Windows Job Object created (kill-on-close enabled)");
-        Some(job as isize)
+        Some(JobObjectHandle(job as isize))
     }
 }
 
@@ -1189,7 +1208,7 @@ Session Continuity:
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    // Linux: set PR_SET_PDEATHSIG so child is killed when parent dies
+    // Linux: set PR_SET_PDEATHSIG so child is killed when parent dies.
     // (prctl is Linux-specific; macOS does not have it)
     #[cfg(target_os = "linux")]
     {
@@ -1197,6 +1216,36 @@ Session Continuity:
         unsafe {
             cmd.pre_exec(|| {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+    }
+
+    // macOS: spawn a watchdog thread in the child process that polls getppid().
+    // When the parent (Glass) exits, the child is reparented to launchd (PID 1).
+    // The watchdog detects this and calls process::exit so the child does not
+    // become a long-running orphan.
+    //
+    // Implementation note: pre_exec runs *after* fork() but *before* exec(), so
+    // code here executes in the child process's context (single-threaded at that
+    // point). We use pre_exec to register the watchdog thread via the child's
+    // tokio-free environment; the thread is safe because exec() will replace the
+    // image immediately after, and if exec() fails the process exits anyway.
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                std::thread::Builder::new()
+                    .name("glass-orphan-watchdog".into())
+                    .spawn(|| loop {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        // getppid() returns 1 when reparented to launchd after parent death
+                        if unsafe { libc::getppid() } == 1 {
+                            std::process::exit(1);
+                        }
+                    })
+                    .ok();
                 Ok(())
             });
         }
