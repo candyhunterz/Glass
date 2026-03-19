@@ -51,10 +51,18 @@ impl EventListener for EventProxy {
                     title,
                 });
             }
-            Event::Exit | Event::ChildExit(_) => {
+            Event::Exit => {
                 let _ = self.proxy.send_event(AppEvent::TerminalExit {
                     window_id: self.window_id,
                     session_id: self.session_id,
+                    exit_code: None,
+                });
+            }
+            Event::ChildExit(code) => {
+                let _ = self.proxy.send_event(AppEvent::TerminalExit {
+                    window_id: self.window_id,
+                    session_id: self.session_id,
+                    exit_code: Some(code),
                 });
             }
             _ => {}

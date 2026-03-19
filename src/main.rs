@@ -5982,7 +5982,14 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::TerminalExit {
                 window_id,
                 session_id,
+                exit_code,
             } => {
+                // Show exit message for non-zero codes
+                if let Some(code) = exit_code {
+                    if code != 0 {
+                        tracing::info!("Shell exited with code {code} (session {session_id})");
+                    }
+                }
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Find the tab containing this session
                     let tab_idx = ctx
