@@ -618,7 +618,7 @@ fn resize_all_panes(
         };
 
         if let Some(session) = session_mux.session_mut(*sid) {
-            let _ = session.pty_sender.send(PtyMsg::Resize(pane_size));
+            pty_send(&session.pty_sender, PtyMsg::Resize(pane_size));
             session.term.lock().resize(TermDimensions {
                 columns: pane_cols as usize,
                 screen_lines: pane_lines as usize,
@@ -698,7 +698,7 @@ fn create_session(
         cell_width: cell_w as u16,
         cell_height: cell_h as u16,
     };
-    let _ = pty_sender.send(PtyMsg::Resize(initial_size));
+    pty_send(&pty_sender, PtyMsg::Resize(initial_size));
     term.lock().resize(TermDimensions {
         columns: num_cols as usize,
         screen_lines: num_lines as usize,
@@ -724,7 +724,7 @@ fn create_session(
         } else {
             format!("source '{}'\r\n", path.display())
         };
-        let _ = pty_sender.send(PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
+        pty_send(&pty_sender, PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())));
         tracing::info!("Auto-injecting shell integration: {}", path.display());
     }
 
@@ -782,9 +782,22 @@ fn create_session(
     })
 }
 
+/// Send a message to the PTY, logging if the channel is dead.
+///
+/// Returns `true` if the send succeeded, `false` if the shell has already exited.
+fn pty_send(sender: &PtySender, msg: PtyMsg) -> bool {
+    match sender.send(msg) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!("PTY channel closed — shell has exited: {e}");
+            false
+        }
+    }
+}
+
 /// Clean up a session by shutting down its PTY.
 fn cleanup_session(session: Session) {
-    let _ = session.pty_sender.send(PtyMsg::Shutdown);
+    pty_send(&session.pty_sender, PtyMsg::Shutdown);
     // Session is dropped here, releasing all resources
 }
 
@@ -3715,7 +3728,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         cell_height: cell_h as u16,
                     };
                     if let Some(session) = ctx.session_mux.focused_session_mut() {
-                        let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                        pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                         session.term.lock().resize(TermDimensions {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
@@ -3748,7 +3761,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .collect();
                 for sid in bg_session_ids {
                     if let Some(session) = ctx.session_mux.session_mut(sid) {
-                        let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                        pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                         session.term.lock().resize(TermDimensions {
                             columns: num_cols as usize,
                             screen_lines: num_lines as usize,
@@ -3798,7 +3811,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             cell_height: cell_h as u16,
                         };
                         if let Some(session) = ctx.session_mux.focused_session_mut() {
-                            let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                            pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                             session.term.lock().resize(TermDimensions {
                                 columns: num_cols as usize,
                                 screen_lines: num_lines as usize,
@@ -3830,7 +3843,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .collect();
                     for sid in bg_session_ids {
                         if let Some(session) = ctx.session_mux.session_mut(sid) {
-                            let _ = session.pty_sender.send(PtyMsg::Resize(full_size));
+                            pty_send(&session.pty_sender, PtyMsg::Resize(full_size));
                             session.term.lock().resize(TermDimensions {
                                 columns: num_cols as usize,
                                 screen_lines: num_lines as usize,
@@ -4427,9 +4440,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 prd_rel
                                             );
                                             let bytes = msg.into_bytes();
-                                            let _ = session.pty_sender.send(PtyMsg::Input(
-                                                std::borrow::Cow::Owned(bytes),
-                                            ));
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                            );
                                         }
                                         tracing::info!(
                                             "Orchestrator: PRD found at {}, prompting user",
@@ -4439,9 +4453,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         // No PRD — tell user to describe what they want
                                         if let Some(session) = ctx.session_mux.focused_session() {
                                             let msg = "\r\n[GLASS] Orchestrator active. No PRD found — describe what you want to build, then wait for the loop to start.\r\n";
-                                            let _ = session.pty_sender.send(PtyMsg::Input(
-                                                std::borrow::Cow::Owned(msg.as_bytes().to_vec()),
-                                            ));
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(std::borrow::Cow::Owned(
+                                                    msg.as_bytes().to_vec(),
+                                                )),
+                                            );
                                         }
                                         tracing::info!(
                                             "Orchestrator: no PRD at {} — kickoff mode",
@@ -5205,10 +5222,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Orchestrator no longer auto-pauses on user input.
                         // Only Ctrl+Shift+O toggles orchestration on/off.
-                        let _ = ctx
-                            .session()
-                            .pty_sender
-                            .send(PtyMsg::Input(Cow::Owned(bytes)));
+                        pty_send(
+                            &ctx.session().pty_sender,
+                            PtyMsg::Input(Cow::Owned(bytes)),
+                        );
                         tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                     }
                 }
@@ -5940,10 +5957,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 } else {
                     path_str.into_owned()
                 };
-                let _ = ctx
-                    .session()
-                    .pty_sender
-                    .send(PtyMsg::Input(Cow::Owned(text.into_bytes())));
+                pty_send(
+                    &ctx.session().pty_sender,
+                    PtyMsg::Input(Cow::Owned(text.into_bytes())),
+                );
             }
             _ => {}
         }
@@ -6123,9 +6140,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 cp_rel,
                             );
                             let bytes = restart_msg.into_bytes();
-                            let _ = session
-                                .pty_sender
-                                .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                            pty_send(
+                                &session.pty_sender,
+                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                            );
                             self.orchestrator.mark_pty_write();
                         }
 
@@ -7171,9 +7189,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 min_lines,
                                 raw_line_count,
                             ) {
-                                let _ = session.pty_sender.send(glass_terminal::PtyMsg::Input(
-                                    std::borrow::Cow::Owned(hint.into_bytes()),
-                                ));
+                                pty_send(
+                                    &session.pty_sender,
+                                    glass_terminal::PtyMsg::Input(
+                                        std::borrow::Cow::Owned(hint.into_bytes()),
+                                    ),
+                                );
                             }
                         }
                     }
@@ -7627,9 +7648,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(session) = ctx.session_mux.focused_session() {
                                     let msg = "You've tried this same approach multiple times without making progress. STOP and take a different approach:\n1. If you have uncommitted changes, stash them: git stash\n2. Think about WHY the current approach isn't working\n3. Try a fundamentally different strategy, not a minor variation\n";
                                     let bytes = msg.as_bytes().to_vec();
-                                    let _ = session
-                                        .pty_sender
-                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                    pty_send(
+                                        &session.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                    );
                                 }
                             }
 
@@ -7702,9 +7724,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .push(text_to_type.clone());
                                 } else {
                                     let bytes = format!("{}\n", text_to_type).into_bytes();
-                                    let _ = session
-                                        .pty_sender
-                                        .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                    pty_send(
+                                        &session.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                    );
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
@@ -7798,9 +7821,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if summary.is_empty() { String::new() } else { format!(" Summary: {}", summary) }
                                 );
                                 let bytes = msg.into_bytes();
-                                let _ = session
-                                    .pty_sender
-                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                pty_send(
+                                    &session.pty_sender,
+                                    PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                );
                                 self.orchestrator.mark_pty_write();
                             }
                         }
@@ -7893,9 +7917,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if !block_executing {
                                 let deferred = self.orchestrator.deferred_type_text.remove(0);
                                 let bytes = format!("{}\n", deferred).into_bytes();
-                                let _ = session
-                                    .pty_sender
-                                    .send(PtyMsg::Input(std::borrow::Cow::Owned(bytes)));
+                                pty_send(
+                                    &session.pty_sender,
+                                    PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                );
                                 self.orchestrator.mark_pty_write();
                                 tracing::info!("Orchestrator: flushed deferred TypeText ({} chars, {} remaining)", deferred.len(), self.orchestrator.deferred_type_text.len());
                                 return; // Let the typed text be processed before next silence
@@ -8208,9 +8233,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         ctx_ref.session_mux.session(session_id)
                                     {
                                         let msg = format!("STOP current task. {}\n", block_msg);
-                                        let _ = session_ref.pty_sender.send(PtyMsg::Input(
-                                            std::borrow::Cow::Owned(msg.into_bytes()),
-                                        ));
+                                        pty_send(
+                                            &session_ref.pty_sender,
+                                            PtyMsg::Input(std::borrow::Cow::Owned(
+                                                msg.into_bytes(),
+                                            )),
+                                        );
                                         self.orchestrator.mark_pty_write();
                                     }
                                 }
@@ -8458,9 +8486,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(ctx_ib) = self.windows.get(&window_id) {
                                 if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
                                     let msg = format!("{}\n", next);
-                                    let _ = session_ib.pty_sender.send(PtyMsg::Input(
-                                        std::borrow::Cow::Owned(msg.into_bytes()),
-                                    ));
+                                    pty_send(
+                                        &session_ib.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
+                                    );
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
@@ -9054,9 +9083,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
                                     if let Some(session) = ctx.session_mux.session(focused_sid) {
                                         let input = format!("{}\r", command).into_bytes();
-                                        let _ = session
-                                            .pty_sender
-                                            .send(PtyMsg::Input(Cow::Owned(input)));
+                                        pty_send(
+                                            &session.pty_sender,
+                                            PtyMsg::Input(Cow::Owned(input)),
+                                        );
                                         glass_core::ipc::McpResponse::ok(
                                             request.id,
                                             serde_json::json!({
@@ -9259,9 +9289,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .unwrap_or(false);
                                         // Send ETX byte (Ctrl+C) to PTY
                                         let input = vec![0x03u8];
-                                        let _ = session
-                                            .pty_sender
-                                            .send(PtyMsg::Input(Cow::Owned(input)));
+                                        pty_send(
+                                            &session.pty_sender,
+                                            PtyMsg::Input(Cow::Owned(input)),
+                                        );
                                         glass_core::ipc::McpResponse::ok(
                                             request.id,
                                             serde_json::json!({
@@ -9609,7 +9640,7 @@ fn clipboard_paste(sender: &PtySender, mode: TermMode) {
             } else {
                 text.into_bytes()
             };
-            let _ = sender.send(PtyMsg::Input(Cow::Owned(bytes)));
+            pty_send(sender, PtyMsg::Input(Cow::Owned(bytes)));
         }
     }
 }
