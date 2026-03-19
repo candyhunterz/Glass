@@ -11,22 +11,29 @@
 
 | Order | Branch | Focus | Est. Effort |
 |-------|--------|-------|-------------|
-| 1 | `audit/bugs-error-handling` | Panics, error propagation, failure modes | 3-4 days |
+| 1 | `audit/bugs-error-handling` | Panics, error propagation, failure modes | 5-6 days |
 | 2 | `audit/security` | MCP auth, IPC, agent coordination, redaction | 3-4 days |
-| 3 | `audit/setup-packaging` | Shell script embedding, installers, first-run | 2-3 days |
-| 4 | `audit/performance` | Render pipeline, memory, throttling | 3-4 days |
-| 5 | `audit/cross-platform` | zsh/fish pipelines, macOS orphan, CI | 2-3 days |
-| 6 | `audit/ui-ux` | Onboarding, discoverability, polish | 4-5 days |
+| 3 | `audit/cross-platform` | zsh/fish pipelines, macOS orphan, CI | 2-3 days |
+| 4 | `audit/setup-packaging` | Shell script embedding, installers, first-run | 2-3 days |
+| 5 | `audit/performance` | Render pipeline, memory, throttling | 5-6 days |
+| 6 | `audit/ui-ux` | Onboarding, discoverability, polish | 6-8 days |
 | 7 | `audit/documentation` | README, CHANGELOG, CONTRIBUTING, examples | 2-3 days |
 | any | `audit/dependency-licensing` | License fields, attribution, cargo-deny | 1 day |
 
 **Merge order rationale:**
 - `bugs-error-handling` first: fixes panics other branches might hit while testing
 - `security` second: permission model affects MCP tools referenced by cross-platform and setup
-- `setup-packaging` third: shell integration embedding affects cross-platform and docs
-- `performance`, `cross-platform`, `ui-ux` can be parallel after that
+- `cross-platform` third: zsh/fish pipeline scripts must be complete before embedding
+- `setup-packaging` fourth: embeds the now-complete shell integration scripts
+- `performance` fifth: render pipeline refactors are independent of above
+- `ui-ux` sixth: largest branch, benefits from all prior fixes being stable
 - `documentation` last: needs to reflect all other changes
 - `dependency-licensing` anytime: fully independent
+
+**Process:**
+- Each branch is a clean PR with CI passing (fmt + clippy + test) before merge
+- After each merge, run full CI on the merged state before starting the next branch
+- If a branch introduces regressions, revert before proceeding
 
 ---
 
@@ -51,9 +58,10 @@
 
 ### High
 
-**H-1: PTY spawn `expect()`** (`glass_terminal/src/pty.rs:203,221,235,258`)
+**H-1/H-8: PTY spawn `expect()`** (`glass_terminal/src/pty.rs:203,221,235,258`)
 - Return `Result` from `spawn_pty()`
 - Show error in-window or native message box on failure
+- Note: also covers H-8 (ConPTY init invisible on Windows due to `windows_subsystem`)
 
 **H-3: `SystemTime` unwrap** (`glass_snapshot/src/pruner.rs:50`, `glass_history/src/retention.rs:16`)
 - Replace with `.unwrap_or(Duration::ZERO)`
@@ -108,6 +116,28 @@
 **L-2: Script generation hardcoded** (`glass_feedback/src/lib.rs:372`)
 - Read `script_generation` from config
 
+### Cross-references
+
+- **H-2 (GPU init `expect()`):** Covered by P-4 in Branch 4 (setup-packaging)
+
+### Accepted risk / Deferred
+
+- **M-6 (orchestrator silence event `let _ =` sends):** Accepted — PTY loop self-terminates on app close
+- **M-7 (PTY poll error breaks loop silently):** Accepted — transient errors are rare; retry logic adds complexity without clear benefit
+- **M-9 (disk-full not surfaced to user):** Accepted — errors propagate via `anyhow`; root-cause surfacing is a UX polish item
+- **M-10 (font loading failure → blank terminal):** Accepted — rare on desktop systems; containers without fonts are not a launch target
+- **M-11 (undo permission check UX):** Accepted — error is captured in `FileOutcome::Error`; clearer messaging is a UX polish item
+- **M-12 (blob store TOCTOU):** Accepted — benign due to content-addressing, no data corruption risk
+- **M-14 (agent generation counter not atomic):** Accepted — safe under current single-threaded architecture
+
+### Testing strategy
+
+- **C-2 (session refactor):** Unit tests verifying `session()` returns `None` when no tabs exist. Manual test: close all tabs, verify no panic
+- **H-1 (PTY spawn):** Manual test on restricted environment (no PTY available). Verify error dialog appears
+- **H-5 (PTY send errors):** Kill shell process, verify "[Shell exited]" message appears
+- **H-9 (GPU device-lost):** Manual test: sleep/wake laptop, verify recovery or graceful degradation
+- **M-8 (SQLite corruption):** Unit test: corrupt DB file, verify rename-and-recreate
+
 ---
 
 ## Branch 2: `audit/security`
@@ -159,6 +189,7 @@
 - Remove `--dangerously-skip-permissions`
 - Rely on `--allowedTools ""` alone
 - Add integration test verifying no tools available
+- **Testing note:** Verify ephemeral agent still works without `--dangerously-skip-permissions` across Claude CLI versions before committing. If the flag is required for non-interactive use, document the rationale instead of removing it
 
 **S-10: Regex pattern length limit** (`glass_mcp/src/tools.rs:1264`)
 - Cap `pattern` at 1000 chars
@@ -180,9 +211,22 @@
 
 **S-16: Config path validation** — Validate `prd_path` and `checkpoint_path` within project directory
 
+### Accepted risk / Deferred
+
+- **Finding 12 (FTS5 query injection):** Accepted — current quoting approach is correct for phrase queries
+- **Finding 14 (SQLite no encryption):** Accepted — file permissions (S-12) are the practical mitigation; encryption (SQLCipher) is a hardening item for post-launch
+
+### Testing strategy
+
+- **S-1 (MCP permission gate):** Unit tests for each permission level (Allow/Approve/Deny). Manual test: connect MCP client, verify Approve shows dialog
+- **S-2 (IPC auth):** Verify socket permissions with `stat` on Unix. Manual test: attempt connection from different user
+- **S-4 (agent nonces):** Unit test: operations without nonce are rejected
+- **S-6 (redaction):** Unit tests with sensitive pattern matching
+- **S-9 (ephemeral agent):** Integration test across Claude CLI versions
+
 ---
 
-## Branch 3: `audit/setup-packaging`
+## Branch 4: `audit/setup-packaging`
 
 ### Critical
 
@@ -229,7 +273,7 @@
 
 ---
 
-## Branch 4: `audit/performance`
+## Branch 5: `audit/performance`
 
 ### Critical
 
@@ -291,9 +335,24 @@
 4. Quick wins: cursor lookup, batch DELETE, clone removal, SmallVec
 5. Benchmarks last (measure improvements)
 
+### Accepted risk / Deferred
+
+- **PERF-TH02 (FairMutex contention):** Mitigated by PERF-R02 (dirty flags reduce lock frequency)
+- **PERF-R05 (duplicate draw_frame/draw_multi_pane_frame):** No runtime impact, refactor deferred
+- **PERF-L02 (output capture buffer):** Current bounded design is sound
+- **PERF-G01 (instance buffer growth without shrink):** 256KB max, not practical concern
+- **PERF-G03, S01, S03, T01, T02, T03, P01, P02:** Already optimized / correct design
+- **PERF-A02 (tab title clone):** Low impact (1-5 short strings)
+
+### Testing strategy
+
+- **PERF-R01/R02 (buffer caching + dirty flags):** Benchmark before/after with `build_cell_buffers` Criterion bench. Manual test: `cat` large file, verify no frame drops
+- **PERF-L01 (frame throttling):** Manual test: rapid output flood, monitor CPU usage
+- **PERF-M01 (block eviction):** Unit test: create 1000+ blocks, verify old pipeline data evicted, verify scroll-back rehydrates
+
 ---
 
-## Branch 5: `audit/cross-platform`
+## Branch 3: `audit/cross-platform`
 
 ### Medium
 
@@ -394,6 +453,11 @@
 - Configurable keybindings (large feature)
 - Search overlay advanced filters (large feature)
 - Status bar density management (dependent on theme)
+- MEDIUM-24 (undo label overlaps terminal content) — cosmetic, acceptable tradeoff
+- LOW-05 (Ctrl+1-9 tab jumping overlap) — minimal real-world conflict
+- LOW-17 (no cursor blinking in search input) — polish item
+- LOW-27 (no loading state for agent operations) — most operations are fast
+- LOW-28 (background tabs resized with full-window dimensions) — self-corrects on next redraw
 
 ---
 
@@ -455,18 +519,8 @@
 
 ## Cross-Branch Coordination Notes
 
-- **GPU error messages:** Setup branch handles the user-friendly errors for GPU init. Bugs branch handles device-lost recovery. No overlap.
-- **Shell integration:** Setup branch embeds scripts. Cross-platform branch adds pipeline capture to zsh/fish (modify the scripts before embedding, or update the embedded versions).
-- **Permission model:** Security branch builds the MCP permission gate. Other branches reference it but don't modify it.
-- **Documentation:** Must merge last to reflect all changes from other 7 branches.
-- **`include_str!` and shell scripts:** Cross-platform branch should complete zsh/fish pipeline capture BEFORE setup branch embeds them. Adjust merge order if needed: cross-platform before setup, or coordinate within setup to embed updated scripts.
-
-**Revised merge order considering this dependency:**
-1. `bugs-error-handling`
-2. `security`
-3. `cross-platform` (zsh/fish pipeline scripts ready)
-4. `setup-packaging` (embeds the now-complete scripts)
-5. `performance`
-6. `ui-ux`
-7. `documentation`
-- `dependency-licensing` (anytime)
+- **GPU error messages:** Setup branch (Branch 4) handles the user-friendly errors for GPU init. Bugs branch (Branch 1) handles device-lost recovery. No overlap.
+- **Shell integration:** Cross-platform branch (Branch 3) adds pipeline capture to zsh/fish FIRST. Then setup branch (Branch 4) embeds the now-complete scripts via `include_str!()`. This dependency is reflected in the merge order.
+- **Permission model:** Security branch (Branch 2) builds the MCP permission gate. Other branches reference it but don't modify it.
+- **Documentation:** Must merge last (Branch 7) to reflect all changes from other branches.
+- **Setup branch P-4 covers bugs audit H-2:** GPU init `expect()` user-friendly errors live in the setup branch, not the bugs branch. The bugs branch cross-references this.
