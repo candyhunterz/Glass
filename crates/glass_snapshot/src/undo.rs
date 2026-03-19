@@ -10,12 +10,27 @@ use crate::SnapshotStore;
 /// Engine that performs undo operations by restoring snapshotted files.
 pub struct UndoEngine<'a> {
     store: &'a SnapshotStore,
+    /// Optional project root for path validation.
+    /// When set, restore_file will refuse to write/delete outside this directory.
+    project_root: Option<PathBuf>,
 }
 
 impl<'a> UndoEngine<'a> {
     /// Create a new UndoEngine backed by the given SnapshotStore.
     pub fn new(store: &'a SnapshotStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            project_root: None,
+        }
+    }
+
+    /// Create a new UndoEngine with project-root path validation.
+    /// Restore operations will be rejected if the target path falls outside `project_root`.
+    pub fn with_project_root(store: &'a SnapshotStore, project_root: PathBuf) -> Self {
+        Self {
+            store,
+            project_root: Some(project_root),
+        }
     }
 
     /// Undo the most recent file-modifying command.
@@ -119,6 +134,15 @@ impl<'a> UndoEngine<'a> {
         command_id: i64,
     ) -> (PathBuf, FileOutcome) {
         let path = PathBuf::from(&file_rec.file_path);
+
+        // Validate path is within project root (prevent path-traversal attacks)
+        if let Some(ref root) = self.project_root {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !canonical.starts_with(root) {
+                let msg = format!("Path outside project root: {}", path.display());
+                return (path, FileOutcome::Error(msg));
+            }
+        }
 
         // Check for conflicts before restoring
         match self.check_conflict(&path, command_id) {
@@ -584,5 +608,70 @@ mod tests {
             "Expected Error outcome when blob missing, got {:?}",
             result.files[0].1
         );
+    }
+
+    #[test]
+    fn test_path_outside_project_root_rejected() {
+        let (store, dir) = setup();
+
+        // Use a subdirectory as the project root
+        let project_root = dir.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let engine = UndoEngine::with_project_root(&store, project_root.clone());
+
+        // Create a file OUTSIDE the project root
+        let outside_file = dir.path().join("outside.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+
+        // Snapshot the outside file
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
+        store.store_file(sid, &outside_file, "parser").unwrap();
+
+        // Modify the file
+        std::fs::write(&outside_file, b"modified").unwrap();
+
+        // Undo should reject the path
+        let result = engine.undo_latest().unwrap().expect("should have a result");
+        assert_eq!(result.files.len(), 1);
+        match &result.files[0].1 {
+            FileOutcome::Error(msg) => {
+                assert!(
+                    msg.contains("outside project root"),
+                    "Error should mention project root, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Error for path outside root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_path_within_project_root_allowed() {
+        let (store, dir) = setup();
+
+        // Project root is the whole temp dir
+        let project_root = dir.path().canonicalize().unwrap();
+        let engine = UndoEngine::with_project_root(&store, project_root);
+
+        let file_path = dir.path().join("inside.txt");
+        std::fs::write(&file_path, b"original").unwrap();
+
+        let sid = store
+            .create_snapshot(1, dir.path().to_str().unwrap())
+            .unwrap();
+        store.store_file(sid, &file_path, "parser").unwrap();
+
+        std::fs::write(&file_path, b"modified").unwrap();
+
+        let result = engine.undo_latest().unwrap().expect("should have a result");
+        assert_eq!(result.files.len(), 1);
+        assert!(
+            matches!(result.files[0].1, FileOutcome::Restored),
+            "Expected Restored for path inside root, got {:?}",
+            result.files[0].1
+        );
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "original");
     }
 }

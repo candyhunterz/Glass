@@ -39,6 +39,10 @@ impl BlobStore {
     /// Read blob contents by hash.
     pub fn read_blob(&self, hash: &str) -> Result<Vec<u8>> {
         anyhow::ensure!(hash.len() >= 2, "blob hash too short: '{hash}'");
+        anyhow::ensure!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "blob hash contains non-hex characters: '{hash}'"
+        );
         let blob_path = self
             .blob_dir
             .join(&hash[..2])
@@ -85,6 +89,10 @@ impl BlobStore {
     /// Delete a blob by hash. Returns true if it existed.
     pub fn delete_blob(&self, hash: &str) -> Result<bool> {
         anyhow::ensure!(hash.len() >= 2, "blob hash too short: '{hash}'");
+        anyhow::ensure!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "blob hash contains non-hex characters: '{hash}'"
+        );
         let blob_path = self
             .blob_dir
             .join(&hash[..2])
@@ -237,6 +245,36 @@ mod tests {
         let (store, _dir) = setup();
         let hashes = store.list_blob_hashes().unwrap();
         assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_read_blob_non_hex_hash_returns_error() {
+        let (store, _dir) = setup();
+        // Path traversal attempt
+        let result = store.read_blob("../../etc/passwd");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("non-hex"), "Error should mention non-hex: {}", err);
+    }
+
+    #[test]
+    fn test_delete_blob_non_hex_hash_returns_error() {
+        let (store, _dir) = setup();
+        let result = store.delete_blob("../../etc/passwd");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("non-hex"), "Error should mention non-hex: {}", err);
+    }
+
+    #[test]
+    fn test_read_blob_valid_hex_accepted() {
+        let (store, dir) = setup();
+        let file_path = dir.path().join("hextest.txt");
+        std::fs::write(&file_path, b"hex test content").unwrap();
+        let (hash, _) = store.store_file(&file_path).unwrap();
+        // Valid hex hash should work
+        let content = store.read_blob(&hash).unwrap();
+        assert_eq!(content, b"hex test content");
     }
 
     /// Helper to count .blob files recursively under a directory.
