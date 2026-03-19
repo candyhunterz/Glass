@@ -3969,6 +3969,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
+                // Force full buffer rebuild so block badges and overlays
+                // are recomputed with the new viewport dimensions.
+                ctx.frame_renderer.invalidate_generation();
+
                 // Request a redraw after resize so the surface is repainted immediately
                 ctx.mark_dirty_and_redraw();
             }
@@ -4052,6 +4056,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                 }
 
+                ctx.frame_renderer.invalidate_generation();
                 ctx.mark_dirty_and_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {

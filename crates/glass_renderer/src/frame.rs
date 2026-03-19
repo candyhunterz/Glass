@@ -143,6 +143,13 @@ impl FrameRenderer {
         self.grid_renderer.cell_size()
     }
 
+    /// Invalidate the cached generation so the next render forces a full buffer rebuild.
+    /// Call this after window resize or scale-factor changes to ensure all layout
+    /// calculations use the new viewport dimensions.
+    pub fn invalidate_generation(&mut self) {
+        self.last_rendered_generation = u64::MAX;
+    }
+
     /// Rebuild font metrics and all dependent sub-renderers after a font change.
     ///
     /// Called when the user changes font_family or font_size in config.toml.
@@ -792,42 +799,68 @@ impl FrameRenderer {
                 });
             }
 
-            // Center text (update notification)
+            // Center text (update notification / onboarding tip)
+            // Only show if there is enough horizontal space between left CWD and right-side items.
             if let Some(ref center_text) = status_label.center_text {
+                let left_text_width =
+                    status_label.left_text.len() as f32 * cell_width + cell_width;
+                let right_side_width = {
+                    let mut rw = 0.0f32;
+                    if let Some(ref rt) = status_label.right_text {
+                        rw += rt.len() as f32 * cell_width + cell_width * 2.0;
+                    }
+                    if let Some(ref ct) = status_label.coordination_text {
+                        rw += ct.len() as f32 * cell_width + cell_width * 2.0;
+                    }
+                    if let Some(ref at) = status_label.agent_cost_text {
+                        rw += at.len() as f32 * cell_width + cell_width;
+                    }
+                    if let Some(ref mt) = status_label.agent_mode_text {
+                        rw += mt.len() as f32 * cell_width + cell_width;
+                    }
+                    if let Some(ref pt) = status_label.proposal_count_text {
+                        rw += pt.len() as f32 * cell_width + cell_width;
+                    }
+                    rw
+                };
                 let center_text_width = center_text.len() as f32 * cell_width;
-                let center_x = (w - center_text_width) / 2.0;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
-                );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    center_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
+                let available = w - left_text_width - right_side_width;
+                if center_text_width < available {
+                    let center_x = (w - center_text_width) / 2.0;
+                    let mut buffer =
+                        Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                    buffer.set_size(
+                        &mut self.glyph_cache.font_system,
+                        Some(w),
+                        Some(cell_height),
+                    );
+                    buffer.set_text(
+                        &mut self.glyph_cache.font_system,
+                        center_text,
+                        &Attrs::new()
+                            .family(Family::Name(font_family))
+                            .color(GlyphonColor::rgba(
+                                status_label.center_color.r,
+                                status_label.center_color.g,
+                                status_label.center_color.b,
+                                255,
+                            )),
+                        Shaping::Advanced,
+                        None,
+                    );
+                    buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                    self.overlay_buffers.push(buffer);
+                    overlay_metas.push(OverlayMeta {
+                        left: center_x,
+                        top: status_label.y,
+                        color: GlyphonColor::rgba(
                             status_label.center_color.r,
                             status_label.center_color.g,
                             status_label.center_color.b,
                             255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: center_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.center_color.r,
-                        status_label.center_color.g,
-                        status_label.center_color.b,
-                        255,
-                    ),
-                });
+                        ),
+                    });
+                }
             }
 
             // Agent activity line (top row of two-line status bar)
@@ -1864,42 +1897,68 @@ impl FrameRenderer {
                 });
             }
 
-            // Center text (update notification)
+            // Center text (update notification / onboarding tip) -- multi-pane path
+            // Only show if there is enough horizontal space between left CWD and right-side items.
             if let Some(ref center_text) = status_label.center_text {
+                let left_text_width =
+                    status_label.left_text.len() as f32 * cell_width + cell_width;
+                let right_side_width = {
+                    let mut rw = 0.0f32;
+                    if let Some(ref rt) = status_label.right_text {
+                        rw += rt.len() as f32 * cell_width + cell_width * 2.0;
+                    }
+                    if let Some(ref ct) = status_label.coordination_text {
+                        rw += ct.len() as f32 * cell_width + cell_width * 2.0;
+                    }
+                    if let Some(ref at) = status_label.agent_cost_text {
+                        rw += at.len() as f32 * cell_width + cell_width;
+                    }
+                    if let Some(ref mt) = status_label.agent_mode_text {
+                        rw += mt.len() as f32 * cell_width + cell_width;
+                    }
+                    if let Some(ref pt) = status_label.proposal_count_text {
+                        rw += pt.len() as f32 * cell_width + cell_width;
+                    }
+                    rw
+                };
                 let center_text_width = center_text.len() as f32 * cell_width;
-                let center_x = (w - center_text_width) / 2.0;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
-                );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    center_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
+                let available = w - left_text_width - right_side_width;
+                if center_text_width < available {
+                    let center_x = (w - center_text_width) / 2.0;
+                    let mut buffer =
+                        Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                    buffer.set_size(
+                        &mut self.glyph_cache.font_system,
+                        Some(w),
+                        Some(cell_height),
+                    );
+                    buffer.set_text(
+                        &mut self.glyph_cache.font_system,
+                        center_text,
+                        &Attrs::new()
+                            .family(Family::Name(font_family))
+                            .color(GlyphonColor::rgba(
+                                status_label.center_color.r,
+                                status_label.center_color.g,
+                                status_label.center_color.b,
+                                255,
+                            )),
+                        Shaping::Advanced,
+                        None,
+                    );
+                    buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                    self.overlay_buffers.push(buffer);
+                    overlay_metas.push(OverlayMeta {
+                        left: center_x,
+                        top: status_label.y,
+                        color: GlyphonColor::rgba(
                             status_label.center_color.r,
                             status_label.center_color.g,
                             status_label.center_color.b,
                             255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: center_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.center_color.r,
-                        status_label.center_color.g,
-                        status_label.center_color.b,
-                        255,
-                    ),
-                });
+                        ),
+                    });
+                }
             }
 
             // Agent activity line (top row of two-line status bar)

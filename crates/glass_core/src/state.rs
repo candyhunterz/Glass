@@ -50,9 +50,9 @@ impl GlassState {
         self.session_count == 0
     }
 
-    /// True if the settings hint should be shown (first 5 sessions).
+    /// True if the settings hint should be shown (first 3 sessions).
     pub fn should_show_hint(&self) -> bool {
-        self.session_count <= 5
+        self.session_count <= 3
     }
 }
 
@@ -72,12 +72,12 @@ mod tests {
         let mut state = GlassState::default();
         state.session_count += 1;
         assert!(!state.is_first_run());
-        assert!(state.should_show_hint()); // still within first 5
+        assert!(state.should_show_hint()); // still within first 3
     }
 
     #[test]
-    fn hint_stops_after_five_sessions() {
-        let state = GlassState { session_count: 6 };
+    fn hint_stops_after_three_sessions() {
+        let state = GlassState { session_count: 4 };
         assert!(!state.is_first_run());
         assert!(!state.should_show_hint());
     }

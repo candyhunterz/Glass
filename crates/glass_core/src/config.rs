@@ -323,7 +323,7 @@ impl ThemeConfig {
             badge_success: [40, 160, 40],
             badge_error: [200, 50, 50],
             badge_running: [30, 120, 200],
-            search_backdrop: [0.05, 0.05, 0.05, 0.85],
+            search_backdrop: [0.1, 0.1, 0.1, 0.95],
             search_input_bg: [56, 56, 56],
         }
     }
