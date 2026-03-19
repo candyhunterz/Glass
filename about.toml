@@ -1,0 +1,19 @@
+# cargo-about configuration
+# See https://embarkstudios.github.io/cargo-about/
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "BSL-1.0",
+    "OpenSSL",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+
+# self_cell uses Apache-2.0 — this is intentionally accepted.
+# Apache-2.0 is compatible with MIT for downstream consumers.
