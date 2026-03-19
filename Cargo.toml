@@ -81,6 +81,11 @@ edition = "2021"
 authors = ["Glass Contributors"]
 license = "MIT"
 description = "GPU-accelerated terminal emulator with command structure awareness"
+repository = "https://github.com/candyhunterz/Glass"
+homepage = "https://github.com/candyhunterz/Glass"
+keywords = ["terminal", "gpu", "emulator", "command-line", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.82"
 
 [features]
 perf = ["glass_terminal/perf", "glass_renderer/perf", "dep:tracing-chrome"]
@@ -97,6 +102,7 @@ harness = false
 glass_core     = { path = "crates/glass_core" }
 glass_terminal = { path = "crates/glass_terminal" }
 glass_renderer = { path = "crates/glass_renderer" }
+wgpu.workspace = true
 winit.workspace = true
 pollster.workspace = true
 tracing.workspace = true

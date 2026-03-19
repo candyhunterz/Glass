@@ -16,9 +16,12 @@ pub struct GlassRenderer {
 impl GlassRenderer {
     /// Initialize the wgpu instance, adapter, device, queue, and surface for the given window.
     ///
-    /// On Windows this auto-selects the DX12 backend. The selected backend is logged via
-    /// `tracing::info!` so callers can confirm "GPU backend: Dx12" in the log output.
-    pub async fn new(window: Arc<winit::window::Window>) -> Self {
+    /// Returns an error with a user-friendly message if GPU initialization fails (e.g. no
+    /// compatible adapter, missing driver, headless VM). On Windows this auto-selects the
+    /// DX12 backend. The selected backend is logged via `tracing::info!`.
+    pub async fn try_new(
+        window: Arc<winit::window::Window>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Prefer DX12 on Windows (faster init than Vulkan), Metal on macOS, Vulkan on Linux.
         // On Windows, also allow Vulkan as a fallback for older GPUs without DX12 support.
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -29,9 +32,13 @@ impl GlassRenderer {
             ..Default::default()
         });
 
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("Failed to create wgpu surface");
+        let surface = instance.create_surface(window.clone()).map_err(|e| {
+            format!(
+                "Failed to create GPU surface: {e}. \
+                 Your GPU driver may not support the required graphics API. \
+                 Run `glass check` for diagnosis."
+            )
+        })?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -40,15 +47,26 @@ impl GlassRenderer {
                 force_fallback_adapter: false,
             })
             .await
-            .expect("No compatible GPU adapter found");
+            .map_err(|e| {
+                format!(
+                    "No compatible GPU adapter found: {e}. \
+                 Ensure your system has a GPU with DX12 (Windows), Metal (macOS), \
+                 or Vulkan (Linux) support. Run `glass check` for diagnosis."
+                )
+            })?;
 
         // Log which backend was selected — on Windows 11 this should be Dx12
         tracing::info!("GPU backend: {:?}", adapter.get_info().backend);
 
-        let (device, queue) = adapter
+        let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
-            .expect("Failed to create wgpu device");
+            .map_err(|e| {
+                format!(
+                    "Failed to create GPU device: {e}. \
+                 Your GPU driver may be outdated. Run `glass check` for diagnosis."
+                )
+            })?;
 
         let adapter_info = adapter.get_info();
         tracing::info!(
@@ -84,13 +102,45 @@ impl GlassRenderer {
         };
         surface.configure(&device, &surface_config);
 
-        Self {
+        Ok(Self {
             device,
             queue,
             surface,
             surface_config,
             consecutive_surface_failures: 0,
-        }
+        })
+    }
+
+    /// Convenience wrapper around `try_new` that shows a fatal error and exits on failure.
+    ///
+    /// Kept for backward compatibility with call sites that do not handle errors.
+    pub async fn new(window: Arc<winit::window::Window>) -> Self {
+        Self::try_new(window).await.unwrap_or_else(|e| {
+            eprintln!("Glass fatal GPU error: {e}");
+            #[cfg(target_os = "windows")]
+            {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    MessageBoxW, MB_ICONERROR, MB_OK,
+                };
+                let msg: Vec<u16> = format!("{e}")
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let title: Vec<u16> = "Glass - GPU Error"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                unsafe {
+                    MessageBoxW(
+                        std::ptr::null_mut(),
+                        msg.as_ptr(),
+                        title.as_ptr(),
+                        MB_ICONERROR | MB_OK,
+                    );
+                }
+            }
+            std::process::exit(1);
+        })
     }
 
     /// Render a single frame clearing the surface to dark gray (0.1, 0.1, 0.1).

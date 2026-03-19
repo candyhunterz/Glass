@@ -452,6 +452,66 @@ impl GlassConfig {
         dirs::home_dir().map(|h| h.join(".glass").join("config.toml"))
     }
 
+    /// Create a default `~/.glass/config.toml` with all options commented out
+    /// if the file does not already exist. This gives users a reference for
+    /// available configuration options without changing any defaults.
+    pub fn ensure_default_config() {
+        let Some(config_path) = Self::config_path() else {
+            return;
+        };
+
+        if config_path.exists() {
+            return; // Already has a config -- don't overwrite
+        }
+
+        // Create ~/.glass/ directory
+        if let Some(parent) = config_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::debug!("Could not create config directory: {e}");
+                return;
+            }
+        }
+
+        let default_config = r#"# Glass Terminal Configuration
+# This file was auto-generated on first launch. All options shown below
+# are commented out and use their default values. Uncomment and modify
+# as needed. Changes are hot-reloaded — no restart required.
+#
+# Documentation: https://github.com/candyhunterz/Glass
+
+# Font settings
+# font_family = "Cascadia Code"
+# font_size = 14.0
+
+# Shell override (auto-detected if not set)
+# shell = "/bin/zsh"
+
+# [history]
+# max_output_capture_kb = 50
+
+# [snapshot]
+# enabled = true
+# max_count = 1000
+# max_size_mb = 500
+# retention_days = 30
+
+# [pipes]
+# enabled = true
+
+# [soi]
+# enabled = true
+
+# [scripting]
+# enabled = true
+# auto_confirm = false
+"#;
+
+        match std::fs::write(&config_path, default_config) {
+            Ok(()) => tracing::info!("Created default config at {}", config_path.display()),
+            Err(e) => tracing::debug!("Could not write default config: {e}"),
+        }
+    }
+
     /// Load configuration from `~/.glass/config.toml`.
     ///
     /// Returns `Self::default()` if the file is missing, unreadable, or malformed.
@@ -1303,6 +1363,17 @@ script_generation = false
         assert_eq!(scripting.max_scripts_per_hook, None);
         assert_eq!(scripting.max_total_scripts, None);
         assert_eq!(scripting.max_mcp_tools, None);
+    }
+
+    #[test]
+    fn ensure_default_config_text_parses_to_defaults() {
+        // All commented out = empty TOML = valid, produces defaults
+        let default_text = r#"
+# font_family = "Cascadia Code"
+# font_size = 14.0
+"#;
+        let config: GlassConfig = toml::from_str(default_text).unwrap();
+        assert_eq!(config, GlassConfig::default());
     }
 }
 

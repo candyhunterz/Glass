@@ -1,0 +1,22 @@
+{
+    "version": "2.5.0",
+    "description": "GPU-accelerated terminal emulator with command structure awareness",
+    "homepage": "https://github.com/candyhunterz/Glass",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/candyhunterz/Glass/releases/download/v2.5.0/glass-2.5.0-x86_64.msi",
+            "hash": "<SHA256>"
+        }
+    },
+    "bin": "bin\\glass.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/candyhunterz/Glass/releases/download/v$version/glass-$version-x86_64.msi"
+            }
+        }
+    },
+    "notes": "Shell integration is embedded in the binary and works automatically."
+}

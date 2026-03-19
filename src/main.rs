@@ -111,6 +111,8 @@ enum Commands {
         #[command(subcommand)]
         action: ProfileAction,
     },
+    /// Run system diagnostics (GPU, shell, config, integration)
+    Check,
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -739,6 +741,20 @@ fn create_session(
         effective_shell.clone()
     };
 
+    // Warn about unsupported shells before attempting injection
+    let known_shells = ["bash", "zsh", "fish", "pwsh", "powershell"];
+    let is_known_shell = known_shells
+        .iter()
+        .any(|s| effective_shell_for_integration.to_lowercase().contains(s));
+
+    if !is_known_shell {
+        tracing::warn!(
+            "Shell '{}' does not have Glass integration support. \
+             Command blocks, pipe visualization, and undo require bash, zsh, fish, or PowerShell.",
+            effective_shell_for_integration
+        );
+    }
+
     if let Some(path) = find_shell_integration(&effective_shell_for_integration) {
         let inject_cmd = if effective_shell_for_integration.contains("fish") {
             format!("source {}\r\n", path.display())
@@ -756,6 +772,12 @@ fn create_session(
             PtyMsg::Input(Cow::Owned(inject_cmd.into_bytes())),
         );
         tracing::info!("Auto-injecting shell integration: {}", path.display());
+    } else {
+        tracing::warn!(
+            "Shell integration unavailable for '{}'. Command blocks, pipe \
+             visualization, and undo will not work. Run `glass check` for diagnosis.",
+            effective_shell_for_integration
+        );
     }
 
     let default_colors = DefaultColors::default();
@@ -2442,7 +2464,13 @@ impl ApplicationHandler<AppEvent> for Processor {
         let font_handle = std::thread::spawn(FontSystem::new);
 
         // wgpu init is async; block via pollster from this sync callback
-        let renderer = pollster::block_on(GlassRenderer::new(Arc::clone(&window)));
+        let renderer = match pollster::block_on(GlassRenderer::try_new(Arc::clone(&window))) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("GPU initialization failed: {e}");
+                show_fatal_error(&format!("{e}"));
+            }
+        };
 
         // Join font thread — should already be done since GPU init takes longer
         let font_system = font_handle.join().unwrap_or_else(|_| {
@@ -9718,14 +9746,21 @@ fn parse_script_response(text: &str) -> Option<(String, String, String)> {
     Some((name, hooks, source))
 }
 
-/// Copy the current terminal selection to the system clipboard.
+/// Embedded shell integration scripts, compiled into the binary.
+/// These are the fallback when scripts are not found on disk (e.g. installed via MSI/DMG/DEB).
+const SHELL_INTEGRATION_BASH: &str = include_str!("../shell-integration/glass.bash");
+const SHELL_INTEGRATION_ZSH: &str = include_str!("../shell-integration/glass.zsh");
+const SHELL_INTEGRATION_FISH: &str = include_str!("../shell-integration/glass.fish");
+const SHELL_INTEGRATION_PS1: &str = include_str!("../shell-integration/glass.ps1");
+
 /// Locate the shell integration script relative to the executable.
 ///
 /// Platform-aware: selects glass.ps1/glass.zsh/glass.bash/glass.fish based on shell name.
 ///
-/// Checks two layouts:
-/// - Installed: `<exe_dir>/shell-integration/<script>`
-/// - Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
+/// Search order:
+/// 1. Installed: `<exe_dir>/shell-integration/<script>`
+/// 2. Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
+/// 3. Fallback: write embedded script to temp directory
 fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
     let script_name =
         if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") {
@@ -9755,7 +9790,31 @@ fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
         }
     }
 
-    None
+    // Fallback: write embedded script to temp directory
+    let embedded = match script_name {
+        "glass.bash" => SHELL_INTEGRATION_BASH,
+        "glass.zsh" => SHELL_INTEGRATION_ZSH,
+        "glass.fish" => SHELL_INTEGRATION_FISH,
+        "glass.ps1" => SHELL_INTEGRATION_PS1,
+        _ => return None,
+    };
+
+    let temp_dir = std::env::temp_dir().join("glass-shell-integration");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let temp_path = temp_dir.join(script_name);
+    match std::fs::write(&temp_path, embedded) {
+        Ok(()) => {
+            tracing::info!(
+                "Wrote embedded shell integration to {}",
+                temp_path.display()
+            );
+            Some(temp_path)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to write embedded shell integration: {e}");
+            None
+        }
+    }
 }
 
 fn clipboard_copy(term: &Arc<FairMutex<Term<EventProxy>>>) {
@@ -9962,6 +10021,77 @@ fn emit_command_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
     }
 }
 
+/// Run system diagnostics: GPU adapter, detected shell, shell integration, config path.
+fn run_check() -> anyhow::Result<()> {
+    println!("Glass System Check");
+    println!("==================\n");
+
+    // Version
+    println!("Version: {}", env!("CARGO_PKG_VERSION"));
+
+    // Config
+    match glass_core::config::GlassConfig::config_path() {
+        Some(p) if p.exists() => println!("Config:  {} (found)", p.display()),
+        Some(p) => println!("Config:  {} (not found -- using defaults)", p.display()),
+        None => println!("Config:  <unable to determine home directory>"),
+    }
+
+    // Data directory
+    if let Some(home) = dirs::home_dir() {
+        let data_dir = home.join(".glass");
+        if data_dir.exists() {
+            println!("Data:    {}", data_dir.display());
+        } else {
+            println!("Data:    {} (not created yet)", data_dir.display());
+        }
+    }
+
+    // Shell detection
+    let shell = std::env::var("SHELL")
+        .or_else(|_| std::env::var("COMSPEC"))
+        .unwrap_or_else(|_| "<not detected>".to_string());
+    println!("Shell:   {}", shell);
+
+    // Shell integration
+    let shell_lower = shell.to_lowercase();
+    let known = ["bash", "zsh", "fish", "pwsh", "powershell"];
+    let supported = known.iter().any(|s| shell_lower.contains(s));
+    if supported {
+        println!("Shell integration: supported");
+        println!("Shell scripts:     embedded in binary");
+    } else {
+        println!("Shell integration: NOT supported (need bash, zsh, fish, or PowerShell)");
+    }
+
+    // GPU check
+    println!("\nGPU Diagnostics:");
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        #[cfg(target_os = "windows")]
+        backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
+        #[cfg(not(target_os = "windows"))]
+        backends: wgpu::Backends::all(),
+        ..Default::default()
+    });
+
+    let adapters: Vec<wgpu::Adapter> =
+        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+    if adapters.is_empty() {
+        println!("  No GPU adapters found!");
+        println!("  Glass requires a GPU with DX12 (Windows), Metal (macOS), or Vulkan (Linux).");
+    } else {
+        for adapter in &adapters {
+            let info = adapter.get_info();
+            println!(
+                "  {} -- {:?} ({:?})",
+                info.name, info.backend, info.device_type
+            );
+        }
+    }
+
+    println!("\nAll checks complete.");
+    Ok(())
+}
+
 fn main() {
     install_crash_handler();
 
@@ -10019,6 +10149,7 @@ fn main() {
             // No subcommand: launch the terminal GUI (default behavior)
             tracing::info!("Glass starting");
 
+            GlassConfig::ensure_default_config();
             let config = GlassConfig::load();
             tracing::info!(
                 "Config: font_family={}, font_size={}, shell={:?}",
@@ -10128,6 +10259,12 @@ fn main() {
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
                 .init();
             history::run_history(action);
+        }
+        Some(Commands::Check) => {
+            if let Err(e) = run_check() {
+                eprintln!("Check failed: {e}");
+                std::process::exit(1);
+            }
         }
         Some(Commands::Undo { command_id }) => {
             // Initialize structured logging for CLI mode (stdout)
