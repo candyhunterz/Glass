@@ -347,6 +347,8 @@ struct Processor {
     config_error: Option<glass_core::config::ConfigError>,
     /// Whether the config file watcher has been spawned (only once).
     watcher_spawned: bool,
+    /// Show settings hint in status bar for the first few sessions (UX-1).
+    show_settings_hint: bool,
     /// Available update info, if a newer version was found.
     update_info: Option<glass_core::updater::UpdateInfo>,
     /// Current coordination state from background poller.
@@ -2498,7 +2500,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
         // Create FrameRenderer with pre-loaded font system
         let scale_factor = window.scale_factor() as f32;
-        let frame_renderer = FrameRenderer::with_font_system(
+        let mut frame_renderer = FrameRenderer::with_font_system(
             font_system,
             renderer.device(),
             renderer.queue(),
@@ -2507,6 +2509,8 @@ impl ApplicationHandler<AppEvent> for Processor {
             self.config.font_size,
             scale_factor,
         );
+        // Apply initial theme from config (UX-13)
+        frame_renderer.update_theme(self.config.theme.clone());
 
         // Compute initial terminal size from font metrics.
         // Subtract 2 lines for the status bar + tab bar so the PTY resize reflects actual content area.
@@ -2874,10 +2878,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 format!("Update v{} available (Ctrl+Shift+U)", info.latest)
                             })
                         }
+                    } else if let Some(ref info) = self.update_info {
+                        Some(format!("Update v{} available (Ctrl+Shift+U)", info.latest))
+                    } else if self.show_settings_hint {
+                        Some("Tip: Ctrl+Shift+, = settings & shortcuts".to_string())
                     } else {
-                        self.update_info
-                            .as_ref()
-                            .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest))
+                        None
                     };
 
                     let has_agents = !self.coordination_state.agents.is_empty();
@@ -4289,7 +4295,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .split_pane(SplitDirection::Horizontal, session)
                                     .is_none()
                                 {
-                                    return; // max depth reached
+                                    // UX-20: notify user when max split depth reached
+                                    self.status_message = Some((
+                                        "Maximum split depth reached".to_string(),
+                                        std::time::Instant::now(),
+                                    ));
+                                    ctx.mark_dirty_and_redraw();
+                                    return;
                                 }
 
                                 // Resize all panes' PTYs with per-pane dimensions
@@ -4334,7 +4346,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     .split_pane(SplitDirection::Vertical, session)
                                     .is_none()
                                 {
-                                    return; // max depth reached
+                                    // UX-20: notify user when max split depth reached
+                                    self.status_message = Some((
+                                        "Maximum split depth reached".to_string(),
+                                        std::time::Instant::now(),
+                                    ));
+                                    ctx.mark_dirty_and_redraw();
+                                    return;
                                 }
                                 // Resize all panes' PTYs with per-pane dimensions
                                 resize_all_panes(
@@ -5478,6 +5496,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
+                    // UX-14: Ctrl+C copies when selection is active instead of SIGINT
+                    if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
+                        if let Key::Character(ref c) = event.logical_key {
+                            if c.as_str().eq_ignore_ascii_case("c") {
+                                if let Some(session) = ctx.session() {
+                                    let has_selection =
+                                        session.term.lock().selection_to_string().is_some();
+                                    if has_selection {
+                                        clipboard_copy(&session.term);
+                                        ctx.mark_dirty_and_redraw();
+                                        return;
+                                    }
+                                }
+                                // No selection — fall through to send ETX/SIGINT via encoder
+                            }
+                        }
+                    }
+
                     // Forward to PTY via encoder
                     let key_start = std::time::Instant::now();
                     if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
@@ -5803,6 +5839,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         glass_scripting::HookPoint::TabCreate,
                                         &event,
                                     );
+                                }
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            Some(TabHitResult::ScrollLeft) => {
+                                let offset = &mut ctx.frame_renderer.tab_bar_mut().scroll_offset;
+                                *offset = offset.saturating_sub(1);
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            Some(TabHitResult::ScrollRight) => {
+                                let tab_count = ctx.session_mux.tab_count();
+                                let offset = &mut ctx.frame_renderer.tab_bar_mut().scroll_offset;
+                                if *offset + 1 < tab_count {
+                                    *offset += 1;
                                 }
                                 ctx.mark_dirty_and_redraw();
                             }
@@ -6172,7 +6221,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                                 ctx.mark_dirty_and_redraw();
                             }
-                            Some(TabHitResult::NewTabButton) | None => {}
+                            Some(TabHitResult::NewTabButton)
+                            | Some(TabHitResult::ScrollLeft)
+                            | Some(TabHitResult::ScrollRight)
+                            | None => {}
                         }
                     }
                 }
@@ -7068,6 +7120,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 size.width,
                                 size.height,
                             );
+                            ctx.mark_dirty_and_redraw();
+                        }
+                    }
+
+                    // Update theme on all windows (UX-13)
+                    if self.config.theme != new_config.theme {
+                        for ctx in self.windows.values_mut() {
+                            ctx.frame_renderer.update_theme(new_config.theme.clone());
                             ctx.mark_dirty_and_redraw();
                         }
                     }
@@ -10294,6 +10354,15 @@ fn main() {
 
             let script_bridge = script_bridge::ScriptBridge::new(&config);
 
+            // Load persistent state and increment session count (UX-1 onboarding)
+            let show_settings_hint = {
+                let mut glass_state = glass_core::state::GlassState::load();
+                let hint = glass_state.should_show_hint();
+                glass_state.session_count += 1;
+                glass_state.save();
+                hint
+            };
+
             let mut processor = Processor {
                 windows: HashMap::new(),
                 proxy,
@@ -10302,6 +10371,7 @@ fn main() {
                 cold_start,
                 config_error: None,
                 watcher_spawned: false,
+                show_settings_hint,
                 update_info: None,
                 coordination_state: Default::default(),
                 last_ticker_event_id: None,
