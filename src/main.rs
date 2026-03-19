@@ -9718,14 +9718,21 @@ fn parse_script_response(text: &str) -> Option<(String, String, String)> {
     Some((name, hooks, source))
 }
 
-/// Copy the current terminal selection to the system clipboard.
+/// Embedded shell integration scripts, compiled into the binary.
+/// These are the fallback when scripts are not found on disk (e.g. installed via MSI/DMG/DEB).
+const SHELL_INTEGRATION_BASH: &str = include_str!("../shell-integration/glass.bash");
+const SHELL_INTEGRATION_ZSH: &str = include_str!("../shell-integration/glass.zsh");
+const SHELL_INTEGRATION_FISH: &str = include_str!("../shell-integration/glass.fish");
+const SHELL_INTEGRATION_PS1: &str = include_str!("../shell-integration/glass.ps1");
+
 /// Locate the shell integration script relative to the executable.
 ///
 /// Platform-aware: selects glass.ps1/glass.zsh/glass.bash/glass.fish based on shell name.
 ///
-/// Checks two layouts:
-/// - Installed: `<exe_dir>/shell-integration/<script>`
-/// - Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
+/// Search order:
+/// 1. Installed: `<exe_dir>/shell-integration/<script>`
+/// 2. Development: `<exe_dir>/../../shell-integration/<script>` (exe in target/{debug,release}/)
+/// 3. Fallback: write embedded script to temp directory
 fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
     let script_name =
         if shell_name.contains("pwsh") || shell_name.to_lowercase().contains("powershell") {
@@ -9755,7 +9762,31 @@ fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
         }
     }
 
-    None
+    // Fallback: write embedded script to temp directory
+    let embedded = match script_name {
+        "glass.bash" => SHELL_INTEGRATION_BASH,
+        "glass.zsh" => SHELL_INTEGRATION_ZSH,
+        "glass.fish" => SHELL_INTEGRATION_FISH,
+        "glass.ps1" => SHELL_INTEGRATION_PS1,
+        _ => return None,
+    };
+
+    let temp_dir = std::env::temp_dir().join("glass-shell-integration");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let temp_path = temp_dir.join(script_name);
+    match std::fs::write(&temp_path, embedded) {
+        Ok(()) => {
+            tracing::info!(
+                "Wrote embedded shell integration to {}",
+                temp_path.display()
+            );
+            Some(temp_path)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to write embedded shell integration: {e}");
+            None
+        }
+    }
 }
 
 fn clipboard_copy(term: &Arc<FairMutex<Term<EventProxy>>>) {
