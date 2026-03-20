@@ -27,10 +27,7 @@ pub(crate) enum AnthropicSseEvent {
         name: String,
     },
     /// A fragment of tool input JSON.
-    InputJsonDelta {
-        index: usize,
-        partial_json: String,
-    },
+    InputJsonDelta { index: usize, partial_json: String },
     /// Message-level delta with stop reason and output token count.
     MessageDelta {
         stop_reason: Option<String>,
@@ -39,9 +36,7 @@ pub(crate) enum AnthropicSseEvent {
     /// The message stream is complete.
     MessageStop,
     /// The message has started; carries input token usage.
-    MessageStart {
-        input_tokens: Option<u64>,
-    },
+    MessageStart { input_tokens: Option<u64> },
 }
 
 // ── SSE line parser ──────────────────────────────────────────────────────────
@@ -497,8 +492,7 @@ fn do_turn(
             // Build assistant message with content blocks (Anthropic format).
             let mut content_blocks: Vec<serde_json::Value> = Vec::new();
             if !accumulated_text.is_empty() {
-                content_blocks
-                    .push(serde_json::json!({"type": "text", "text": accumulated_text}));
+                content_blocks.push(serde_json::json!({"type": "text", "text": accumulated_text}));
             }
             for tc in &tool_uses {
                 let input: serde_json::Value =
