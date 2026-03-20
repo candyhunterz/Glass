@@ -1,6 +1,6 @@
 # Glass Release Checklist
 
-**Target:** v3.0 public release
+**Target:** v1.0.0 public release
 **Last updated:** 2026-03-20
 
 ## Blocking — Must complete before release
@@ -29,16 +29,20 @@
   - Push to main branch
   - Verify GitHub Actions pass (fmt, clippy, build+test on Linux/macOS/Windows)
 
+- [ ] **Version bump to 1.0.0**
+  - Change `version = "2.5.0"` to `version = "1.0.0"` in root `Cargo.toml`
+  - `cargo build` to update `Cargo.lock`
+
 - [ ] **GitHub release with binaries**
-  - Tag v3.0
+  - Tag v1.0.0
   - Build release binaries for Windows, macOS, Linux
   - Create GitHub release with changelog
 
 ## Important — Should complete before or shortly after release
 
 - [ ] **CHANGELOG.md**
-  - Document v1.0 through v3.0 milestones
-  - Key features per version
+  - Document v1.0.0 features and highlights
+  - Internal milestones (v1.0-v3.0) stay in git history, not in public changelog
 
 - [ ] **CONTRIBUTING.md**
   - Build setup instructions
