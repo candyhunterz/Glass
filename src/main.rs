@@ -18,7 +18,6 @@ mod usage_tracker;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::sync::Arc;
 
 use alacritty_terminal::event::WindowSize;
@@ -302,12 +301,10 @@ struct ProposalToast {
 /// Lives as `Option<AgentRuntime>` on Processor -- None when agent.mode == Off
 /// or when no claude binary is found on PATH.
 struct AgentRuntime {
-    /// The claude child process (taken after stdin/stdout extracted for threads).
-    child: Option<std::process::Child>,
-    /// Rate-limit gate: checked on Processor side for restart timing.
-    /// The writer thread manages its own inline cooldown to avoid shared-state complexity.
-    #[allow(dead_code)]
-    cooldown: glass_core::agent_runtime::CooldownTracker,
+    /// The agent handle returned by the backend.
+    handle: glass_agent_backend::AgentHandle,
+    /// The backend implementation (for shutdown on Drop).
+    backend: Box<dyn glass_agent_backend::AgentBackend>,
     /// Accumulated cost gate: stops events when budget is exceeded.
     budget: glass_core::agent_runtime::BudgetTracker,
     /// Runtime configuration (mode, budget, cooldown, tools).
@@ -316,19 +313,11 @@ struct AgentRuntime {
     restart_count: u32,
     /// Timestamp of last crash, used for exponential backoff.
     last_crash: Option<std::time::Instant>,
-    /// Coordination agent ID (UUID), if registration succeeded (AGTC-05).
-    agent_id: Option<String>,
-    /// Session nonce for coordination operations (S-4 auth).
-    coord_nonce: Option<String>,
-    /// Project root path used for coordination lock, if registration succeeded.
-    #[allow(dead_code)]
-    project_root: Option<String>,
-    /// Shared writer for sending orchestrator messages to the agent's stdin.
-    orchestrator_writer:
-        Option<std::sync::Arc<parking_lot::Mutex<std::io::BufWriter<std::process::ChildStdin>>>>,
     /// Generation counter — incremented on each respawn. Used to ignore stale AgentCrashed
     /// events from orphaned reader threads of previously killed agents.
     generation: u64,
+    /// Project root path (for coordination event logging and handoff).
+    project_root: String,
 }
 
 /// Top-level application state. Holds all open windows.
@@ -465,36 +454,11 @@ struct Processor {
 
 impl Drop for AgentRuntime {
     fn drop(&mut self) {
-        // AGTC-05: Deregister from coordination (soft errors -- never prevent shutdown).
-        if let (Some(ref agent_id), Some(ref nonce)) = (&self.agent_id, &self.coord_nonce) {
-            if let Ok(mut db) = glass_coordination::CoordinationDb::open_default() {
-                if let Err(e) = db.unlock_all(agent_id, nonce) {
-                    tracing::warn!("AgentRuntime: failed to release coordination locks: {}", e);
-                }
-                if let Err(e) = db.deregister(agent_id, nonce) {
-                    tracing::warn!(
-                        "AgentRuntime: failed to deregister from coordination: {}",
-                        e
-                    );
-                }
-            }
-        }
-
-        if let Some(ref mut child) = self.child {
-            // Dropping stdin (done in writer thread) causes EOF to claude.
-            // Give it a moment to exit cleanly, then kill.
-            match child.try_wait() {
-                Ok(Some(_)) => {} // already exited
-                _ => {
-                    if let Err(e) = child.kill() {
-                        tracing::debug!("Agent child kill: {e}");
-                    }
-                    if let Err(e) = child.wait() {
-                        tracing::warn!("Agent child wait failed: {e}");
-                    }
-                }
-            }
-        }
+        let token = std::mem::replace(
+            &mut self.handle.shutdown_token,
+            glass_agent_backend::ShutdownToken::new(()),
+        );
+        self.backend.shutdown(token);
     }
 }
 
@@ -956,44 +920,43 @@ fn setup_windows_job_object() -> Option<JobObjectHandle> {
     }
 }
 
-/// Attempt to spawn the claude agent subprocess and wire up reader/writer threads.
+/// Build the system prompt for the agent subprocess.
 ///
-/// Returns Some(AgentRuntime) if spawn succeeded, None if claude was not found or
-/// spawn failed (graceful degradation per AGTR-04).
-fn try_spawn_agent(
-    config: glass_core::agent_runtime::AgentRuntimeConfig,
-    activity_rx: std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>,
-    proxy: winit::event_loop::EventLoopProxy<glass_core::event::AppEvent>,
-    restart_count: u32,
-    last_crash: Option<std::time::Instant>,
-    project_root: String,
-    initial_message: Option<String>,
-) -> Option<AgentRuntime> {
-    use std::io::{BufRead, BufReader, BufWriter, Write};
-    use std::process::{Command, Stdio};
+/// Get the command to launch the implementer CLI for crash recovery.
+/// Maps the `implementer` config field to a known CLI command.
+fn implementer_launch_command(config: &glass_core::config::GlassConfig) -> String {
+    let implementer = config
+        .agent
+        .as_ref()
+        .and_then(|a| a.orchestrator.as_ref())
+        .map(|o| o.implementer.as_str())
+        .unwrap_or("claude-code");
 
-    // Debug: write spawn diagnostics to file
-    let diag_path = dirs::home_dir()
-        .map(|h| h.join(".glass").join("agent-diag.txt"))
-        .unwrap_or_else(|| std::path::PathBuf::from("agent-diag.txt"));
-    let mut diag = format!(
-        "timestamp: {:?}\nPATH: {}\n",
-        std::time::SystemTime::now(),
-        std::env::var("PATH").unwrap_or_else(|_| "NOT SET".to_string()),
-    );
+    match implementer {
+        "claude-code" => "claude --dangerously-skip-permissions -p".to_string(),
+        "codex" => "codex --full-auto".to_string(),
+        "aider" => "aider --yes-always".to_string(),
+        "gemini" => "gemini".to_string(),
+        "custom" => config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .and_then(|o| o.implementer_command.clone())
+            .unwrap_or_default(),
+        _ => "claude --dangerously-skip-permissions -p".to_string(),
+    }
+}
 
-    // Write system prompt
-    let glass_dir = dirs::home_dir()
-        .map(|h| h.join(".glass"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".glass"));
-    let _ = std::fs::create_dir_all(&glass_dir);
-
-    let prompt_path = glass_dir.join("agent-system-prompt.txt");
-
+/// Uses orchestrator config (if enabled) to select the appropriate prompt variant.
+/// The project_root is embedded in the orchestrator prompt for project awareness.
+fn build_system_prompt(
+    config: &glass_core::agent_runtime::AgentRuntimeConfig,
+    project_root: &str,
+) -> String {
     let orchestrator_config = config.orchestrator.as_ref();
     let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
 
-    let system_prompt = if orchestrator_enabled {
+    if orchestrator_enabled {
         let artifact_path = orchestrator_config
             .map(|o| o.completion_artifact.as_str())
             .unwrap_or(".glass/done");
@@ -1129,493 +1092,242 @@ Session Continuity:
 - The next agent session will receive your handoff as context
 "#
         .to_string()
+    }
+}
+
+/// Attempt to spawn the agent subprocess via the backend trait and wire up
+/// event drain and activity stream bridge threads.
+///
+/// Returns Some(AgentRuntime) if spawn succeeded, None if the backend binary
+/// was not found or spawn failed (graceful degradation per AGTR-04).
+#[allow(clippy::too_many_arguments)]
+fn try_spawn_agent(
+    config: glass_core::agent_runtime::AgentRuntimeConfig,
+    activity_rx: std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>,
+    proxy: winit::event_loop::EventLoopProxy<glass_core::event::AppEvent>,
+    restart_count: u32,
+    last_crash: Option<std::time::Instant>,
+    project_root: String,
+    initial_message: Option<String>,
+    system_prompt: String,
+    generation: u64,
+) -> Option<AgentRuntime> {
+    let backend: Box<dyn glass_agent_backend::AgentBackend> =
+        Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new());
+
+    // Compute allowed tools based on orchestrator mode
+    let orchestrator_active = config
+        .orchestrator
+        .as_ref()
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+    let orch_mode = config
+        .orchestrator
+        .as_ref()
+        .map(|o| o.orchestrator_mode.as_str())
+        .unwrap_or("build");
+    let allowed_tools = if orchestrator_active && orch_mode == "audit" {
+        vec![
+            "Read",
+            "glass_history",
+            "glass_context",
+            "glass_undo",
+            "glass_file_diff",
+            "glass_pipe_inspect",
+            "glass_tab_create",
+            "glass_tab_list",
+            "glass_tab_send",
+            "glass_tab_output",
+            "glass_tab_close",
+            "glass_cache_check",
+            "glass_command_diff",
+            "glass_compressed_context",
+            "glass_extract_errors",
+            "glass_has_running_command",
+            "glass_cancel_command",
+            "glass_query",
+            "glass_query_trend",
+            "glass_query_drill",
+            "glass_agent_register",
+            "glass_agent_deregister",
+            "glass_agent_list",
+            "glass_agent_status",
+            "glass_agent_heartbeat",
+            "glass_agent_lock",
+            "glass_agent_unlock",
+            "glass_agent_locks",
+            "glass_agent_broadcast",
+            "glass_agent_send",
+            "glass_agent_messages",
+            "glass_ping",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+    } else if orchestrator_active {
+        vec!["glass_query".to_string(), "glass_context".to_string()]
+    } else {
+        config
+            .allowed_tools
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
     };
 
-    if let Err(e) = std::fs::write(&prompt_path, system_prompt) {
-        tracing::warn!("AgentRuntime: failed to write system prompt: {}", e);
-        return None;
-    }
-
-    // Generate MCP config JSON so the agent subprocess can discover Glass MCP tools.
-    // Always pass --mcp-config to override the user's global ~/.mcp.json.
-    let mcp_config_path = (|| -> Option<String> {
-        let exe_path = std::env::current_exe().ok()?;
-        let mcp_json_path = glass_dir.join("agent-mcp.json");
-        let mcp_json = serde_json::json!({
-            "mcpServers": {
-                "glass": {
-                    "command": exe_path.to_string_lossy(),
-                    "args": ["mcp", "serve"]
-                }
-            }
-        });
-        match std::fs::write(&mcp_json_path, mcp_json.to_string()) {
-            Ok(()) => Some(mcp_json_path.to_string_lossy().to_string()),
-            Err(e) => {
-                tracing::warn!("AgentRuntime: failed to write MCP config JSON: {}", e);
-                None
-            }
-        }
-    })()
-    .unwrap_or_default();
-
-    let args = glass_core::agent_runtime::build_agent_command_args(
-        &config,
-        &prompt_path.to_string_lossy(),
-        &mcp_config_path,
-    );
-
-    // Build the command
-    let mut cmd = Command::new("claude");
-    cmd.args(&args);
-    // Pipe stdout for stream-json. Stderr MUST be null — piping stderr causes
-    // a deadlock: the Claude CLI writes to stderr during initialization, fills
-    // the pipe buffer before Glass starts reading, and blocks forever.
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    // Windows: suppress the console window for the claude subprocess.
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-
-    // Linux: set PR_SET_PDEATHSIG so child is killed when parent dies.
-    // (prctl is Linux-specific; macOS does not have it)
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                Ok(())
-            });
-        }
-    }
-
-    // macOS: spawn a watchdog thread in the child process that polls getppid().
-    // When the parent (Glass) exits, the child is reparented to launchd (PID 1).
-    // The watchdog detects this and calls process::exit so the child does not
-    // become a long-running orphan.
-    //
-    // Implementation note: pre_exec runs *after* fork() but *before* exec(), so
-    // code here executes in the child process's context (single-threaded at that
-    // point). We use pre_exec to register the watchdog thread via the child's
-    // tokio-free environment; the thread is safe because exec() will replace the
-    // image immediately after, and if exec() fails the process exits anyway.
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                std::thread::Builder::new()
-                    .name("glass-orphan-watchdog".into())
-                    .spawn(|| loop {
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        // getppid() returns 1 when reparented to launchd after parent death
-                        if unsafe { libc::getppid() } == 1 {
-                            std::process::exit(1);
-                        }
-                    })
-                    .ok();
-                Ok(())
-            });
-        }
-    }
-
-    let args_str = args.join(" ");
-    diag.push_str(&format!("spawn args: claude {}\n", args_str));
-    let mut child = match cmd.spawn() {
-        Ok(c) => {
-            diag.push_str(&format!("spawn SUCCESS pid={}\n", c.id()));
-            let _ = std::fs::write(&diag_path, &diag);
-            c
-        }
-        Err(e) => {
-            diag.push_str(&format!("spawn FAILED: {}\n", e));
-            let _ = std::fs::write(&diag_path, &diag);
-            tracing::warn!("AgentRuntime: failed to spawn claude process: {}", e);
-            return None;
-        }
-    };
-
-    // Extract stdin/stdout before storing child (stderr is null).
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-
-    // Claude CLI 2.1.77+ requires a message on stdin before it completes
-    // initialization (MCP servers, plugins, init event). Write the initial
-    // message immediately so the CLI can proceed.
-    {
-        use std::io::Write;
-        // Always send an initial message — Claude CLI 2.1.77+ won't complete
-        // initialization without one. Use the handoff if provided, else GLASS_WAIT.
-        let content = initial_message.as_deref().unwrap_or("GLASS_WAIT");
-        let json_msg = serde_json::json!({
-            "type": "user",
-            "message": { "role": "user", "content": content }
-        })
-        .to_string();
-        match writeln!(stdin, "{json_msg}") {
-            Ok(()) => {
-                let _ = stdin.flush();
-            }
-            Err(e) => {
-                tracing::warn!("AgentRuntime: failed to write initial message: {}", e);
-            }
-        }
-    }
-
-    // Now safe to do slower I/O.
-    // Load prior handoff for this project and inject as first user message.
-    let prior_handoff_msg = {
-        match glass_agent::AgentSessionDb::open_default() {
-            Ok(db) => {
-                let canonical = std::fs::canonicalize(&project_root)
-                    .unwrap_or_else(|_| std::path::PathBuf::from(&project_root));
-                let canonical_str = canonical.to_string_lossy().to_string();
-                match db.load_prior_handoff(&canonical_str) {
-                    Ok(Some(record)) => {
-                        let handoff_data = glass_core::agent_runtime::AgentHandoffData {
-                            work_completed: record.handoff.work_completed,
-                            work_remaining: record.handoff.work_remaining,
-                            key_decisions: record.handoff.key_decisions,
-                            previous_session_id: record.previous_session_id.clone(),
-                        };
-                        let msg = glass_core::agent_runtime::format_handoff_as_user_message(
-                            &record.session_id,
-                            &handoff_data,
-                        );
-                        tracing::info!(
-                            "AgentRuntime: injecting prior session handoff (session_id={})",
-                            record.session_id
-                        );
-                        Some(msg)
-                    }
-                    Ok(None) => {
-                        tracing::debug!("AgentRuntime: no prior handoff found for project");
-                        None
-                    }
-                    Err(e) => {
-                        tracing::warn!("AgentRuntime: failed to load prior handoff: {}", e);
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("AgentRuntime: failed to open session db: {}", e);
-                None
-            }
-        }
-    };
-
-    let proxy_reader = proxy.clone();
-    let mode = config.mode;
-    let project_root_reader = project_root.clone();
-
-    // Reader thread: parses claude stdout JSON lines and routes AppEvents
-    std::thread::Builder::new()
-        .name("glass-agent-reader".into())
-        .spawn(move || {
-            let mut current_session_id = String::new();
-            // Buffer the last assistant text so we only emit OrchestratorResponse
-            // on "result" (end of conversation turn), not on intermediate tool-loop text.
-            let mut buffered_response: Option<String> = None;
-            let mut tool_id_to_name: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                match val.get("type").and_then(|t| t.as_str()) {
-                    Some("system") => {
-                        if val.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                            if let Some(id) = val.get("session_id").and_then(|v| v.as_str()) {
-                                current_session_id = id.to_string();
-                                tracing::info!("AgentRuntime: captured session_id={}", id);
-                            }
-                        }
-                    }
-                    Some("result") => {
-                        let cost_usd =
-                            glass_core::agent_runtime::parse_cost_from_result(&line).unwrap_or(0.0);
-                        let _ = proxy_reader
-                            .send_event(glass_core::event::AppEvent::AgentQueryResult { cost_usd });
-
-                        // Emit the buffered response now that the turn is complete.
-                        // This is the FINAL assistant text after all tool calls.
-                        if let Some(response) = buffered_response.take() {
-                            let _ = proxy_reader.send_event(
-                                glass_core::event::AppEvent::OrchestratorResponse {
-                                    response,
-                                },
-                            );
-                        }
-                    }
-                    Some("assistant") => {
-                        // Concatenate all text content blocks
-                        let mut full_text = String::new();
-                        if let Some(content) = val.get("message").and_then(|m| m.get("content")) {
-                            if let Some(arr) = content.as_array() {
-                                for block in arr {
-                                    match block.get("type").and_then(|t| t.as_str()) {
-                                        Some("text") => {
-                                            if let Some(text) =
-                                                block.get("text").and_then(|t| t.as_str())
-                                            {
-                                                full_text.push_str(text);
-                                            }
-                                        }
-                                        Some("thinking") => {
-                                            if let Some(text) =
-                                                block.get("thinking").and_then(|t| t.as_str())
-                                            {
-                                                let _ = proxy_reader.send_event(
-                                                    glass_core::event::AppEvent::OrchestratorThinking {
-                                                        text: text.to_string(),
-                                                    },
-                                                );
-                                            }
-                                        }
-                                        Some("tool_use") => {
-                                            let name = block
-                                                .get("name")
-                                                .and_then(|n| n.as_str())
-                                                .unwrap_or("?");
-                                            let id = block
-                                                .get("id")
-                                                .and_then(|i| i.as_str())
-                                                .unwrap_or("");
-                                            let input = block
-                                                .get("input")
-                                                .map(|i| i.to_string())
-                                                .unwrap_or_default();
-                                            let summary =
-                                                orchestrator_events::truncate_display(&input, 200);
-                                            if !id.is_empty() {
-                                                tool_id_to_name
-                                                    .insert(id.to_string(), name.to_string());
-                                            }
-                                            let _ = proxy_reader.send_event(
-                                                glass_core::event::AppEvent::OrchestratorToolCall {
-                                                    name: name.to_string(),
-                                                    params_summary: summary,
-                                                },
-                                            );
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(proposal) =
-                            glass_core::agent_runtime::extract_proposal(&full_text)
-                        {
-                            let _ = proxy_reader
-                                .send_event(glass_core::event::AppEvent::AgentProposal(proposal));
-                        }
-                        if let Some((handoff, raw_json)) =
-                            glass_core::agent_runtime::extract_handoff(&full_text)
-                        {
-                            let _ = proxy_reader.send_event(
-                                glass_core::event::AppEvent::AgentHandoff {
-                                    session_id: current_session_id.clone(),
-                                    handoff,
-                                    project_root: project_root_reader.clone(),
-                                    raw_json,
-                                },
-                            );
-                        }
-                        // Buffer text for orchestrator — only emitted on "result"
-                        if !full_text.is_empty() {
-                            buffered_response = Some(full_text);
-                        }
-                    }
-                    Some("user") => {
-                        // Tool results for orchestrator transcript
-                        if let Some(content) = val.get("message").and_then(|m| m.get("content")) {
-                            if let Some(arr) = content.as_array() {
-                                for block in arr {
-                                    if block.get("type").and_then(|t| t.as_str())
-                                        == Some("tool_result")
-                                    {
-                                        let tool_use_id = block
-                                            .get("tool_use_id")
-                                            .and_then(|t| t.as_str())
-                                            .unwrap_or("?");
-                                        let tool_name = tool_id_to_name
-                                            .remove(tool_use_id)
-                                            .unwrap_or_else(|| tool_use_id.to_string());
-                                        let content_text = match block.get("content") {
-                                            Some(c) if c.is_string() => {
-                                                c.as_str().unwrap_or("").to_string()
-                                            }
-                                            Some(c) if c.is_array() => c
-                                                .as_array()
-                                                .unwrap()
-                                                .iter()
-                                                .filter_map(|b| {
-                                                    b.get("text").and_then(|t| t.as_str())
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join("\n"),
-                                            _ => String::new(),
-                                        };
-                                        let summary = orchestrator_events::truncate_display(
-                                            &content_text,
-                                            200,
-                                        );
-                                        let _ = proxy_reader.send_event(
-                                            glass_core::event::AppEvent::OrchestratorToolResult {
-                                                name: tool_name,
-                                                output_summary: summary,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // stdout closed -- signal crash
-            let _ = proxy_reader.send_event(glass_core::event::AppEvent::AgentCrashed);
-        })
-        .ok();
-
-    // Shared stdin writer for both activity thread and orchestrator
-    let shared_writer = std::sync::Arc::new(parking_lot::Mutex::new(BufWriter::new(stdin)));
-    let writer_clone = std::sync::Arc::clone(&shared_writer);
-
-    // Writer thread: drains activity_stream_rx and writes JSON lines to claude stdin
-    let cooldown_secs = config.cooldown_secs;
-    std::thread::Builder::new()
-        .name("glass-agent-writer".into())
-        .spawn(move || {
-            let mut last_sent: Option<std::time::Instant> = None;
-            let cooldown = std::time::Duration::from_secs(cooldown_secs);
-
-            // Inject prior session handoff as first message before processing new events
-            if let Some(ref msg) = prior_handoff_msg {
-                {
-                    let mut w = writer_clone.lock();
-                    let _ = writeln!(w, "{msg}");
-                    let _ = w.flush();
-                }
-            }
-
-            for event in activity_rx.iter() {
-                // Mode gate: skip events that don't pass the severity filter
-                if !glass_core::agent_runtime::should_send_in_mode(mode, &event.severity) {
-                    continue;
-                }
-
-                // Cooldown gate: skip if within cooldown window
-                if let Some(last) = last_sent {
-                    if last.elapsed() < cooldown {
-                        continue;
-                    }
-                }
-
-                let msg = glass_core::agent_runtime::format_activity_as_user_message(&event);
-                {
-                    let mut w = writer_clone.lock();
-                    if writeln!(w, "{msg}").is_err() || w.flush().is_err() {
-                        // BrokenPipe: child process died
-                        break;
-                    }
-                }
-                last_sent = Some(std::time::Instant::now());
-            }
-        })
-        .ok();
-
-    tracing::info!(
-        "AgentRuntime: claude subprocess spawned (mode={:?}, restart_count={})",
-        config.mode,
-        restart_count
-    );
-
-    // AGTC-05: Register with coordination DB (soft errors -- agent starts regardless).
-    let (coord_agent_id, coord_nonce, coord_project_root) = {
-        // Use dunce::canonicalize (via glass_coordination) to avoid \\?\ UNC prefix on Windows.
-        // This must match the path format used by the coordination poller.
-        let canonical_str =
-            glass_coordination::canonicalize_path(std::path::Path::new(&project_root))
-                .unwrap_or_else(|_| project_root.clone());
-        match glass_coordination::CoordinationDb::open_default() {
-            Ok(mut db) => {
-                // Prune stale agents (dead PIDs or expired heartbeats) before registering.
-                // Timeout of 120s: agents that haven't heartbeated in 2 minutes are stale.
-                match db.prune_stale(120) {
-                    Ok(pruned) if !pruned.is_empty() => {
-                        tracing::info!(
-                            "AgentRuntime: pruned {} stale agent(s): {:?}",
-                            pruned.len(),
-                            pruned
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("AgentRuntime: prune_stale failed (soft): {}", e);
-                    }
-                    _ => {}
-                }
-                let cwd = std::env::current_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| canonical_str.clone());
-                match db.register("glass-agent", "claude-code", &canonical_str, &cwd, None) {
-                    Ok((agent_id, nonce)) => {
-                        // Advisory lock on the project root directory
-                        let lock_path = std::path::PathBuf::from(&canonical_str);
-                        match db.lock_files(&agent_id, &[lock_path], Some("agent session"), &nonce)
-                        {
-                            Ok(_) => tracing::info!(
-                                "AgentRuntime: registered with coordination (id={})",
-                                agent_id
-                            ),
-                            Err(e) => tracing::warn!(
-                                "AgentRuntime: coordination lock failed (soft): {}",
-                                e
-                            ),
-                        }
-                        (Some(agent_id), Some(nonce), Some(canonical_str))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "AgentRuntime: coordination registration failed (soft): {}",
-                            e
-                        );
-                        (None, None, None)
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("AgentRuntime: failed to open coordination DB (soft): {}", e);
-                (None, None, None)
-            }
-        }
-    };
-
-    Some(AgentRuntime {
-        child: Some(child),
-        cooldown: glass_core::agent_runtime::CooldownTracker::new(config.cooldown_secs),
-        budget: glass_core::agent_runtime::BudgetTracker::new(config.max_budget_usd),
-        config,
+    let spawn_config = glass_agent_backend::BackendSpawnConfig {
+        system_prompt,
+        initial_message,
+        project_root: project_root.clone(),
+        mcp_config_path: String::new(),
+        allowed_tools,
+        mode: config.mode,
+        cooldown_secs: config.cooldown_secs,
         restart_count,
         last_crash,
-        agent_id: coord_agent_id,
-        coord_nonce,
-        project_root: coord_project_root,
-        orchestrator_writer: Some(shared_writer),
-        generation: 0, // set by caller after spawn
-    })
+    };
+
+    match backend.spawn(&spawn_config, generation) {
+        Ok(mut handle) => {
+            // Take event_rx out of the handle for the drain thread.
+            // Replace with a dummy receiver so the handle can still be stored.
+            let event_rx_owned =
+                std::mem::replace(&mut handle.event_rx, std::sync::mpsc::channel().1);
+
+            // Drain thread: bridges AgentEvent → AppEvent, matching the old reader
+            // thread's behavior so all existing AppEvent handling code stays unchanged.
+            let proxy_drain = proxy.clone();
+            let project_root_drain = project_root.clone();
+            std::thread::Builder::new()
+                .name("glass-agent-event-drain".into())
+                .spawn(move || {
+                    let mut buffered_response: Option<String> = None;
+                    let mut tool_id_to_name: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+
+                    for event in event_rx_owned.iter() {
+                        match event {
+                            glass_agent_backend::AgentEvent::Init { session_id } => {
+                                tracing::info!("AgentRuntime: captured session_id={}", session_id);
+                            }
+                            glass_agent_backend::AgentEvent::AssistantText { text } => {
+                                if let Some(proposal) =
+                                    glass_core::agent_runtime::extract_proposal(&text)
+                                {
+                                    let _ = proxy_drain.send_event(
+                                        glass_core::event::AppEvent::AgentProposal(proposal),
+                                    );
+                                }
+                                if let Some((handoff, raw_json)) =
+                                    glass_core::agent_runtime::extract_handoff(&text)
+                                {
+                                    let _ = proxy_drain.send_event(
+                                        glass_core::event::AppEvent::AgentHandoff {
+                                            session_id: String::new(),
+                                            handoff,
+                                            project_root: project_root_drain.clone(),
+                                            raw_json,
+                                        },
+                                    );
+                                }
+                                if !text.is_empty() {
+                                    buffered_response = Some(text);
+                                }
+                            }
+                            glass_agent_backend::AgentEvent::Thinking { text } => {
+                                let _ = proxy_drain.send_event(
+                                    glass_core::event::AppEvent::OrchestratorThinking { text },
+                                );
+                            }
+                            glass_agent_backend::AgentEvent::ToolCall { name, id, input } => {
+                                let summary = orchestrator_events::truncate_display(&input, 200);
+                                tool_id_to_name.insert(id, name.clone());
+                                let _ = proxy_drain.send_event(
+                                    glass_core::event::AppEvent::OrchestratorToolCall {
+                                        name,
+                                        params_summary: summary,
+                                    },
+                                );
+                            }
+                            glass_agent_backend::AgentEvent::ToolResult {
+                                tool_use_id,
+                                content,
+                            } => {
+                                let tool_name =
+                                    tool_id_to_name.remove(&tool_use_id).unwrap_or(tool_use_id);
+                                let summary = orchestrator_events::truncate_display(&content, 200);
+                                let _ = proxy_drain.send_event(
+                                    glass_core::event::AppEvent::OrchestratorToolResult {
+                                        name: tool_name,
+                                        output_summary: summary,
+                                    },
+                                );
+                            }
+                            glass_agent_backend::AgentEvent::TurnComplete { cost_usd } => {
+                                let _ = proxy_drain.send_event(
+                                    glass_core::event::AppEvent::AgentQueryResult { cost_usd },
+                                );
+                                if let Some(response) = buffered_response.take() {
+                                    let _ = proxy_drain.send_event(
+                                        glass_core::event::AppEvent::OrchestratorResponse {
+                                            response,
+                                        },
+                                    );
+                                }
+                            }
+                            glass_agent_backend::AgentEvent::Crashed => {
+                                let _ = proxy_drain
+                                    .send_event(glass_core::event::AppEvent::AgentCrashed);
+                                break;
+                            }
+                        }
+                    }
+                })
+                .ok();
+
+            // Activity stream bridge: forwards activity events to the agent via message_tx
+            let mode = config.mode;
+            let cooldown_secs = config.cooldown_secs;
+            let bridge_tx = handle.message_tx.clone();
+            std::thread::Builder::new()
+                .name("glass-agent-activity-bridge".into())
+                .spawn(move || {
+                    let mut last_sent: Option<std::time::Instant> = None;
+                    let cooldown = std::time::Duration::from_secs(cooldown_secs);
+                    for event in activity_rx.iter() {
+                        if !glass_core::agent_runtime::should_send_in_mode(mode, &event.severity) {
+                            continue;
+                        }
+                        if let Some(last) = last_sent {
+                            if last.elapsed() < cooldown {
+                                continue;
+                            }
+                        }
+                        let msg =
+                            glass_core::agent_runtime::format_activity_as_user_message(&event);
+                        if bridge_tx.send(msg).is_err() {
+                            break;
+                        }
+                        last_sent = Some(std::time::Instant::now());
+                    }
+                })
+                .ok();
+
+            Some(AgentRuntime {
+                handle,
+                backend,
+                budget: glass_core::agent_runtime::BudgetTracker::new(config.max_budget_usd),
+                config,
+                restart_count,
+                last_crash,
+                generation,
+                project_root,
+            })
+        }
+        Err(e) => {
+            tracing::warn!("AgentRuntime: backend spawn failed: {}", e);
+            None
+        }
+    }
 }
 
 /// Resolve a tab by either tab_index or session_id from IPC params.
@@ -2265,21 +1977,51 @@ impl Processor {
         // 11. Set activation timestamp
         self.orchestrator_activated_at = Some(std::time::Instant::now());
 
-        // 12. Auto-detect orchestrator mode (do NOT write to config.toml)
-        let prd_content_for_detect = config_prd_path.as_ref().and_then(|p| {
-            std::fs::read_to_string(std::path::Path::new(&current_cwd).join(p)).ok()
-        });
-        let (detected_mode, detected_verify, detected_files) =
-            orchestrator::auto_detect_orchestrator_config(
-                &current_cwd,
-                prd_content_for_detect.as_deref(),
+        // 12. Resolve orchestrator mode (auto-detect when config is "auto")
+        let config_mode = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.orchestrator_mode.as_str())
+            .unwrap_or("auto");
+        let config_verify = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.verify_mode.as_str())
+            .unwrap_or("floor");
+
+        if config_mode == "auto" {
+            let prd_content_for_detect = config_prd_path.as_ref().and_then(|p| {
+                std::fs::read_to_string(std::path::Path::new(&current_cwd).join(p)).ok()
+            });
+            let (detected_mode, detected_verify, detected_files) =
+                orchestrator::auto_detect_orchestrator_config(
+                    &current_cwd,
+                    prd_content_for_detect.as_deref(),
+                );
+            tracing::info!(
+                "Orchestrator auto-detect: mode={}, verify={}, files={:?}",
+                detected_mode,
+                detected_verify,
+                detected_files
             );
-        tracing::info!(
-            "Orchestrator auto-detect: mode={}, verify={}, files={:?}",
-            detected_mode,
-            detected_verify,
-            detected_files
-        );
+            self.orchestrator.resolved_mode = detected_mode;
+            self.orchestrator.resolved_verify_mode = detected_verify;
+            if !detected_files.is_empty() {
+                self.orchestrator.prd_deliverable_files = detected_files;
+            }
+        } else {
+            tracing::info!(
+                "Orchestrator: using explicit config mode={}, verify={}",
+                config_mode,
+                config_verify
+            );
+            self.orchestrator.resolved_mode = config_mode.to_string();
+            self.orchestrator.resolved_verify_mode = config_verify.to_string();
+        }
 
         // 13. Build initial message from gathered context
         let initial_message = context.build_initial_message();
@@ -2287,14 +2029,8 @@ impl Processor {
         // 14. Respawn agent
         self.respawn_orchestrator_agent(&current_cwd, initial_message);
 
-        // 15. Initialize metric guard
-        let verify_mode = self
-            .config
-            .agent
-            .as_ref()
-            .and_then(|a| a.orchestrator.as_ref())
-            .map(|o| o.verify_mode.as_str())
-            .unwrap_or("floor");
+        // 15. Initialize metric guard (use resolved verify mode)
+        let verify_mode = self.orchestrator.resolved_verify_mode.as_str();
 
         if verify_mode == "floor" {
             let user_cmd = self
@@ -2362,10 +2098,7 @@ impl Processor {
         self.orchestrator.feedback_iteration_timestamps.clear();
 
         let feedback_config = self.build_feedback_config(&current_cwd);
-        self.feedback_state = Some(glass_feedback::on_run_start(
-            &current_cwd,
-            &feedback_config,
-        ));
+        self.feedback_state = Some(glass_feedback::on_run_start(&current_cwd, &feedback_config));
 
         // Cache PRD deliverables for scope guard
         if let Some(ref prd_rel) = config_prd_path {
@@ -2406,8 +2139,9 @@ impl Processor {
         let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
         self.activity_stream_tx = Some(new_tx);
 
-        // Build agent config — mark orchestrator enabled since this function
-        // is only called when the orchestrator is active at runtime
+        // Build agent config — mark orchestrator enabled and inject resolved mode
+        // since this function is only called when the orchestrator is active at runtime
+        let resolved_mode = self.orchestrator.resolved_mode.clone();
         let agent_config = self
             .config
             .agent
@@ -2418,6 +2152,9 @@ impl Processor {
                 // The TOML config may have enabled=false since it's toggled at runtime.
                 if let Some(ref mut orch) = a.orchestrator {
                     orch.enabled = true;
+                    // Inject resolved mode so the system prompt uses the auto-detected
+                    // value instead of the raw config "auto" string.
+                    orch.orchestrator_mode = resolved_mode.clone();
                 }
                 glass_core::agent_runtime::AgentRuntimeConfig {
                     mode: a.mode,
@@ -2431,6 +2168,7 @@ impl Processor {
 
         // Spawn new agent with handoff as the initial stdin message.
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
+        let system_prompt = build_system_prompt(&agent_config, cwd);
         self.agent_runtime = try_spawn_agent(
             agent_config,
             new_rx,
@@ -2439,6 +2177,8 @@ impl Processor {
             None,
             cwd.to_string(),
             Some(handoff_content),
+            system_prompt,
+            self.agent_generation,
         );
 
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
@@ -2464,11 +2204,6 @@ impl Processor {
         // Suppress silence trigger until the agent responds.
         self.orchestrator.response_pending = true;
         self.orchestrator.response_pending_since = Some(std::time::Instant::now());
-
-        // Tag with current generation so stale AgentCrashed events are ignored
-        if let Some(ref mut rt) = self.agent_runtime {
-            rt.generation = self.agent_generation;
-        }
         tracing::info!(
             "Orchestrator: respawned agent gen={} for {}",
             self.agent_generation,
@@ -2531,15 +2266,9 @@ impl Processor {
         }
 
         // Quality verification for general mode projects
-        let orchestrator_mode = self
-            .config
-            .agent
-            .as_ref()
-            .and_then(|a| a.orchestrator.as_ref())
-            .map(|o| o.orchestrator_mode.as_str())
-            .unwrap_or("build");
-
-        if orchestrator_mode == "general" && !self.orchestrator.prd_deliverable_files.is_empty() {
+        if self.orchestrator.resolved_mode == "general"
+            && !self.orchestrator.prd_deliverable_files.is_empty()
+        {
             // Read deliverable file contents
             let mut deliverable_content = String::new();
             for file in &self.orchestrator.prd_deliverable_files {
@@ -2812,14 +2541,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                 .unwrap_or_default();
 
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
+                let cwd = self.get_focused_cwd();
+                let system_prompt = build_system_prompt(&agent_config, &cwd);
                 self.agent_runtime = try_spawn_agent(
                     agent_config,
                     rx,
                     self.proxy.clone(),
                     0,
                     None,
-                    self.get_focused_cwd(),
+                    cwd,
                     None,
+                    system_prompt,
+                    self.agent_generation,
                 );
                 // Start usage polling if orchestrator is configured
                 if self
@@ -3640,20 +3373,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     // Build orchestrator dashboard data
                     let orch_dashboard = if self.orchestrator_activated_at.is_some() {
-                        let mode = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.orchestrator_mode.clone())
-                            .unwrap_or_else(|| "build".to_string());
-                        let verify_mode = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.verify_mode.clone())
-                            .unwrap_or_else(|| "floor".to_string());
+                        let mode = self.orchestrator.resolved_mode.clone();
+                        let verify_mode = self.orchestrator.resolved_verify_mode.clone();
                         let (tests_passed, keep_count, revert_count) =
                             if let Some(ref baseline) = self.orchestrator.metric_baseline {
                                 (
@@ -3994,20 +3715,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.prd_path.clone())
                                 .unwrap_or_else(|| "PRD.md".to_string()),
-                            orchestrator_mode: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.orchestrator_mode.clone())
-                                .unwrap_or_else(|| "build".to_string()),
-                            orchestrator_verify_mode: self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.verify_mode.clone())
-                                .unwrap_or_else(|| "floor".to_string()),
+                            orchestrator_mode: if self.orchestrator.resolved_mode.is_empty() {
+                                self.config
+                                    .agent
+                                    .as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.orchestrator_mode.clone())
+                                    .unwrap_or_else(|| "auto".to_string())
+                            } else {
+                                self.orchestrator.resolved_mode.clone()
+                            },
+                            orchestrator_verify_mode: if self
+                                .orchestrator
+                                .resolved_verify_mode
+                                .is_empty()
+                            {
+                                self.config
+                                    .agent
+                                    .as_ref()
+                                    .and_then(|a| a.orchestrator.as_ref())
+                                    .map(|o| o.verify_mode.clone())
+                                    .unwrap_or_else(|| "floor".to_string())
+                            } else {
+                                self.orchestrator.resolved_verify_mode.clone()
+                            },
                             orchestrator_feedback_llm: self
                                 .config
                                 .agent
@@ -6266,9 +5997,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Keep block_manager's history tracking in sync so
                         // resize delta computation is accurate.
                         let current_history = session.term.lock().grid().history_size();
-                        session
-                            .block_manager
-                            .update_history_size(current_history);
+                        session.block_manager.update_history_size(current_history);
 
                         // Fix #3: Orchestrator crash recovery with grace period.
                         // Only trigger if orchestrating, had iterations, AND not within
@@ -6288,9 +6017,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.checkpoint_path.as_str())
                                 .unwrap_or(".glass/checkpoint.md");
+                            let impl_cmd = implementer_launch_command(&self.config);
                             let restart_msg = format!(
-                                "claude --dangerously-skip-permissions -p \"Read {} and continue the project from where you left off. Follow the iteration protocol: plan, implement, commit, verify, decide.\"\r",
-                                cp_rel,
+                                "{} \"Read {} and continue the project from where you left off. Follow the iteration protocol: plan, implement, commit, verify, decide.\"\r",
+                                impl_cmd, cp_rel,
                             );
                             let bytes = restart_msg.into_bytes();
                             pty_send(
@@ -7022,14 +6752,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                             glass_core::activity_stream::ActivityFilter::new(activity_config);
 
                         if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
+                            let cwd = self.get_focused_cwd();
+                            let system_prompt = build_system_prompt(&new_agent_config, &cwd);
                             self.agent_runtime = try_spawn_agent(
                                 new_agent_config.clone(),
                                 new_rx,
                                 self.proxy.clone(),
                                 0,
                                 None,
-                                self.get_focused_cwd(),
+                                cwd,
                                 None,
+                                system_prompt,
+                                self.agent_generation,
                             );
                             // AGTC-04: Show hint if mode != Off but spawn failed.
                             if self.agent_runtime.is_none() {
@@ -7510,6 +7244,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
+                    let system_prompt = build_system_prompt(&config, &cwd);
+                    self.agent_generation += 1;
                     self.agent_runtime = try_spawn_agent(
                         config,
                         new_rx,
@@ -7518,6 +7254,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(std::time::Instant::now()),
                         cwd,
                         restart_msg,
+                        system_prompt,
+                        self.agent_generation,
                     );
                 } else {
                     tracing::error!(
@@ -8163,7 +7901,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     if spawn_result.is_ok() {
                                         // Block sending context until verification completes
                                         self.orchestrator.response_pending = true;
-                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
+                                        self.orchestrator.response_pending_since =
+                                            Some(std::time::Instant::now());
                                         self.orchestrator.last_verified_iteration =
                                             Some(self.orchestrator.iteration);
                                         return;
@@ -8257,7 +7996,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 self.orchestrator.response_pending = true;
-                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
+                                self.orchestrator.response_pending_since =
+                                    Some(std::time::Instant::now());
                                 for ctx_ref in self.windows.values_mut() {
                                     ctx_ref.mark_dirty_and_redraw();
                                 }
@@ -8509,7 +8249,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             }
                             self.orchestrator.response_pending = true;
-                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
+                            self.orchestrator.response_pending_since =
+                                Some(std::time::Instant::now());
                             tracing::info!(
                                 "Orchestrator: sent buffered instruction ({} remaining)",
                                 self.orchestrator.instruction_buffer.len()
@@ -8526,26 +8267,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                         })
                         .to_string();
 
-                        // Send to agent via shared stdin writer
+                        // Send to agent via message_tx channel
                         if let Some(ref runtime) = self.agent_runtime {
-                            if let Some(ref writer) = runtime.orchestrator_writer {
-                                {
-                                    let mut w = writer.lock();
-                                    let _ = writeln!(w, "{msg}");
-                                    let _ = w.flush();
-                                    self.orchestrator.response_pending = true;
-                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
+                            let _ = runtime.handle.message_tx.send(msg);
+                            self.orchestrator.response_pending = true;
+                            self.orchestrator.response_pending_since =
+                                Some(std::time::Instant::now());
 
-                                    self.orchestrator_event_buffer.push(
-                                        orchestrator_events::OrchestratorEvent::ContextSent {
-                                            line_count: lines.len(),
-                                            has_soi: soi_summary.is_some(),
-                                            has_nudge,
-                                        },
-                                        self.orchestrator.iteration,
-                                    );
-                                }
-                            }
+                            self.orchestrator_event_buffer.push(
+                                orchestrator_events::OrchestratorEvent::ContextSent {
+                                    line_count: lines.len(),
+                                    has_soi: soi_summary.is_some(),
+                                    has_nudge,
+                                },
+                                self.orchestrator.iteration,
+                            );
                         }
 
                         tracing::debug!(
@@ -8815,17 +8551,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .to_string();
 
                         if let Some(ref runtime) = self.agent_runtime {
-                            if let Some(ref writer) = runtime.orchestrator_writer {
-                                {
-                                    let mut w = writer.lock();
-                                    let _ = writeln!(w, "{msg}");
-                                    let _ = w.flush();
-                                    // Context was sent — mark pending so we wait for the
-                                    // agent's response before the next silence fires.
-                                    self.orchestrator.response_pending = true;
-                                    self.orchestrator.response_pending_since = Some(std::time::Instant::now());
-                                }
-                            }
+                            let _ = runtime.handle.message_tx.send(msg);
+                            // Context was sent — mark pending so we wait for the
+                            // agent's response before the next silence fires.
+                            self.orchestrator.response_pending = true;
+                            self.orchestrator.response_pending_since =
+                                Some(std::time::Instant::now());
                         }
 
                         tracing::debug!("Orchestrator: sent context to agent after verification");
@@ -9830,9 +9561,9 @@ fn url_encode(s: &str) -> String {
 /// Emit an observation event to the coordination event log.
 /// No-op if agent runtime has no project root or if DB access fails.
 fn emit_observe_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, summary: &str) {
-    let project = match agent_runtime.as_ref().and_then(|r| r.project_root.as_ref()) {
-        Some(p) => p.clone(),
-        None => return,
+    let project = match agent_runtime.as_ref() {
+        Some(r) if !r.project_root.is_empty() => r.project_root.clone(),
+        _ => return,
     };
     if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
         let _ = glass_coordination::event_log::insert_event(
@@ -9852,9 +9583,9 @@ fn emit_observe_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
 /// Emit a command context event to the coordination event log.
 /// No-op if agent runtime has no project root or if DB access fails.
 fn emit_command_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, summary: &str) {
-    let project = match agent_runtime.as_ref().and_then(|r| r.project_root.as_ref()) {
-        Some(p) => p.clone(),
-        None => return,
+    let project = match agent_runtime.as_ref() {
+        Some(r) if !r.project_root.is_empty() => r.project_root.clone(),
+        _ => return,
     };
     if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
         let _ = glass_coordination::event_log::insert_event(
