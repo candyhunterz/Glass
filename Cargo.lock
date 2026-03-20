@@ -1262,6 +1262,7 @@ dependencies = [
  "criterion",
  "dirs",
  "glass_agent",
+ "glass_agent_backend",
  "glass_coordination",
  "glass_core",
  "glass_feedback",
@@ -1310,6 +1311,23 @@ dependencies = [
  "tempfile",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "glass_agent_backend"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "glass_agent",
+ "glass_coordination",
+ "glass_core",
+ "libc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

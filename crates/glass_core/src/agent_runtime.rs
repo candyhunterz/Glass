@@ -364,6 +364,9 @@ pub fn should_quiet(quiet_rules: &QuietRules, summary: &str, severity: &str) -> 
 
 /// Build the CLI argument list for invoking the Claude agent subprocess.
 ///
+/// **Deprecated:** Production code now uses `glass_agent_backend::claude_cli::build_claude_args()`.
+/// This function remains for test coverage of the orchestrator-mode tool selection logic.
+///
 /// The `--mcp-config` flag is only included when `mcp_config_path` is non-empty.
 /// This prevents a dangling flag when no MCP config file is available.
 ///
