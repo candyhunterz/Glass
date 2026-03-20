@@ -79,7 +79,7 @@ max_retries_before_stuck = 3
 fast_trigger_secs = 5
 verify_mode = "floor"
 completion_artifact = ".glass/done"
-orchestrator_mode = "build"
+orchestrator_mode = "auto"
 feedback_llm = false
 max_prompt_hints = 10
 ablation_enabled = true
@@ -211,6 +211,10 @@ Controls the Glass AI agent integration. The agent runtime watches terminal acti
 | `max_budget_usd` | float | `1.0` | Maximum cumulative API spend in USD before Glass pauses agent actions and requires user confirmation to continue. |
 | `cooldown_secs` | int | `30` | Minimum seconds between consecutive agent-initiated actions. |
 | `allowed_tools` | string | `"glass_query,..."` | Comma-separated list of MCP tools the agent is allowed to use. |
+| `provider` | string | `"claude-code"` | LLM provider for the agent backend. Options: `"claude-code"` (Claude CLI), `"anthropic-api"` (Anthropic Messages API), `"openai-api"` (OpenAI-compatible), `"ollama"` (local Ollama), `"custom"` (any OpenAI-compatible endpoint). |
+| `model` | string | (none) | Model ID override. Empty uses the provider default. Examples: `"gpt-4o"`, `"claude-opus-4-6"`, `"llama3:70b"`. |
+| `api_key` | string | (none) | API key for API-based providers. Environment variables take precedence (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). |
+| `api_endpoint` | string | (none) | Custom API endpoint URL. Only needed for `"custom"` provider or self-hosted endpoints. |
 
 ### [agent.permissions]
 
@@ -248,12 +252,16 @@ Controls the orchestrator mode that drives autonomous project development. See [
 | `verify_command` | string | (none) | Optional user override for the verification command. When set, skips auto-detection and agent discovery. |
 | `completion_artifact` | string | `".glass/done"` | File path (relative to project root) that triggers the orchestrator when created. Set to empty string to disable. |
 | `max_iterations` | int | (none) | Maximum iterations before checkpoint-stop. Omit or set to 0 for unlimited. |
-| `orchestrator_mode` | string | `"build"` | Orchestrator mode. `"build"` gives agent observation-only tools. `"audit"` gives agent all MCP tools for interactive testing. |
+| `orchestrator_mode` | string | `"auto"` | Orchestrator mode. `"auto"` detects project type at activation. `"build"` gives agent observation-only tools. `"audit"` gives all MCP tools. `"general"` for non-code tasks. |
 | `verify_files` | array of strings | `[]` | Files to check for file-based verification. Auto-populated from PRD deliverables. |
 | `feedback_llm` | bool | `false` | Enable LLM qualitative analysis after each orchestrator run. Produces Tier 3 prompt hints. Requires an extra API call per run. |
 | `max_prompt_hints` | int | `10` | Maximum number of Tier 3 prompt hints retained per project. |
 | `ablation_enabled` | bool | `true` | Enable automatic ablation testing of confirmed feedback rules. |
 | `ablation_sweep_interval` | int | `20` | Number of runs between re-sweeps after full ablation coverage. |
+| `implementer` | string | `"claude-code"` | Which CLI to launch as the implementer. Options: `"claude-code"`, `"codex"`, `"aider"`, `"gemini"`, `"custom"`. |
+| `implementer_command` | string | (none) | Custom launch command when `implementer = "custom"`. |
+| `implementer_name` | string | `"Claude Code"` | Display name for the implementer in the orchestrator's system prompt. All prompt references update automatically. |
+| `persona` | string | (none) | Custom persona for the orchestrator agent. Can be an inline string or a path to a `.md` file (e.g., `".glass/agent-persona.md"`). |
 
 ---
 

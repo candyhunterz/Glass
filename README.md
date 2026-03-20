@@ -69,13 +69,25 @@ Code changes are isolated in git worktrees with SQLite crash recovery. A non-blo
 
 ### Orchestrator Mode
 
-An autonomous project execution engine that pairs a Glass Agent (reviewer/guide) with Claude Code (implementer) to build entire projects from a PRD or continue work you've started. Press Ctrl+Shift+O to enable.
+An autonomous project execution engine that pairs a Glass Agent (reviewer/guide) with an implementer CLI to build entire projects from a PRD or continue work you've started. The agent can use Claude (CLI or API), GPT, Gemini, Ollama, or any OpenAI-compatible model. The implementer defaults to Claude Code but supports Codex, Aider, Gemini CLI, or custom commands. Press Ctrl+Shift+O to enable.
 
 **Two primary workflows:**
 - **Fresh project**: Write a PRD.md, open Glass, press Ctrl+Shift+O. The orchestrator drives Claude Code through the plan, checkpointing progress and refreshing context automatically.
 - **Mid-work handoff**: Write `.glass/handoff.md` describing what needs finishing, press Ctrl+Shift+O, walk away. The orchestrator picks up from your terminal context and git history.
 
-The orchestrator monitors PTY silence to detect when Claude Code finishes working, sends terminal context to the Glass Agent for review, and types the agent's instructions back into the terminal. A checkpoint cycle kills and respawns the agent with fresh context every few features (or every 15 iterations). Stuck detection, crash recovery, and OAuth usage tracking with auto-pause keep overnight runs safe.
+The orchestrator monitors PTY silence to detect when the implementer finishes working, sends terminal context to the Glass Agent for review, and types the agent's instructions back into the terminal. A checkpoint cycle kills and respawns the agent with fresh context every few features (or every 15 iterations). Stuck detection, crash recovery, and OAuth usage tracking with auto-pause keep overnight runs safe.
+
+#### Provider Configuration
+
+```toml
+[agent]
+provider = "claude-code"     # Default: Claude Code CLI
+# provider = "openai-api"    # GPT-4o, o3, etc. (set OPENAI_API_KEY)
+# provider = "anthropic-api" # Claude via API (set ANTHROPIC_API_KEY)
+# provider = "ollama"        # Local models (no auth, localhost:11434)
+# provider = "custom"        # Any OpenAI-compatible endpoint
+model = ""                   # Empty = provider default
+```
 
 ---
 
@@ -131,7 +143,8 @@ The orchestrator monitors PTY silence to detect when Claude Code finishes workin
 **Orchestrator Mode -- new in v3.2**
 - Autonomous project execution from PRD.md (Ctrl+Shift+O)
 - Mid-work handoff via .glass/handoff.md
-- Silence-triggered feedback loop between Glass Agent (reviewer) and Claude Code (implementer)
+- Silence-triggered feedback loop between Glass Agent (reviewer) and implementer CLI
+- Multi-provider backend: Claude CLI, Anthropic API, OpenAI API, Ollama, custom endpoints
 - Periodic checkpoint cycle with agent respawn for context refresh
 - Stuck detection (3 identical responses triggers recovery)
 - Crash recovery with automatic Claude Code restart and context injection
@@ -433,7 +446,7 @@ glass undo 42
 
 ## Orchestrator Mode
 
-The orchestrator drives autonomous project development by pairing two AI agents: Claude Code (the implementer, running in the PTY) and the Glass Agent (the reviewer/guide, running as a background subprocess). Glass manages the feedback loop between them.
+The orchestrator drives autonomous project development by pairing two AI agents: the implementer (running in the PTY, default Claude Code) and the Glass Agent (the reviewer/guide, running as a background subprocess). Glass manages the feedback loop between them.
 
 ### How It Works
 
@@ -484,7 +497,7 @@ Context refresh prevents the Glass Agent from hitting its context limit during l
 |---|---|
 | Metric guard | Auto-detects project test/build commands, runs verification after each iteration, auto-reverts via git if tests regress or build breaks |
 | Stuck detection | After 3 identical responses, the orchestrator tells Claude Code to stash changes and try a different approach |
-| Crash recovery | If Claude Code exits unexpectedly, Glass restarts it with `-p "Read .glass/checkpoint.md and continue"` |
+| Crash recovery | If the implementer exits unexpectedly, Glass restarts it with the configured crash recovery command (e.g., `claude -p "Read .glass/checkpoint.md and continue"` for Claude Code) |
 | Usage tracking | Polls Anthropic OAuth usage API every 60 seconds. Auto-pause at 80%, hard stop at 95% with emergency checkpoint |
 | Bounded iterations | Optional iteration limit with checkpoint-stop and summary (configurable via `max_iterations`) |
 | Artifact completion | File watcher on configurable path (default `.glass/done`) triggers orchestrator instantly |

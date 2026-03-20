@@ -4,7 +4,7 @@
 Glass is a GPU-accelerated terminal emulator built in Rust. It looks like a normal terminal but understands command structure — providing command-level undo, visual pipe debugging, and queryable history. MIT licensed.
 
 ## Architecture
-Rust workspace with 14 crates + main binary:
+Rust workspace with 15 crates + main binary:
 
 ```
 src/main.rs              - App entry point, winit event loop, wires everything together
@@ -20,6 +20,7 @@ crates/glass_soi/        - Structured Output Intelligence: 19 format-specific pa
 crates/glass_mcp/        - MCP server for AI tool integration (history, context, undo, file diff, pipe inspect)
 crates/glass_coordination/ - Multi-agent coordination: agent registry, advisory file locks, inter-agent messaging (SQLite)
 crates/glass_agent/      - Agent runtime: event-driven AI agent with MCP tool access
+crates/glass_agent_backend/ - Multi-provider LLM backend: AgentBackend trait, Claude CLI, OpenAI, Anthropic, Ollama implementations
 crates/glass_feedback/   - Feedback loop: LLM-based qualitative analysis, rule extraction, prompt hints
 crates/glass_scripting/  - Self-improvement scripting: Rhai engine, hook system, sandbox, profiles
 ```
@@ -54,6 +55,9 @@ crates/glass_scripting/  - Self-improvement scripting: Rhai engine, hook system,
 - `crates/glass_feedback/src/lib.rs` - Feedback loop lifecycle, rule extraction, prompt hints
 - `crates/glass_scripting/src/engine.rs` - Rhai script execution engine with sandbox
 - `crates/glass_scripting/src/hooks.rs` - Hook registry mapping scripts to lifecycle events
+- `crates/glass_agent_backend/src/lib.rs` - AgentBackend trait, AgentEvent, resolve_backend() factory
+- `crates/glass_agent_backend/src/claude_cli.rs` - Claude CLI subprocess backend (extracted from main.rs)
+- `crates/glass_agent_backend/src/openai.rs` - OpenAI-compatible API backend with SSE streaming
 
 ## Tech Stack
 - Rust 2021 edition, Tokio async runtime
@@ -93,7 +97,7 @@ Scripts in `shell-integration/` auto-injected by PTY spawner:
 - Pipeline stages emit custom OSC 133;S (start) and OSC 133;P (stage data)
 
 ## Configuration
-`~/.glass/config.toml` — hot-reloaded via notify watcher. Sections: font, shell, history, snapshot, pipes, soi, agent (with orchestrator, permissions, quiet_rules sub-sections), scripting, terminal, theme. See `config.example.toml` for all fields with defaults.
+`~/.glass/config.toml` — hot-reloaded via notify watcher. Sections: font, shell, history, snapshot, pipes, soi, agent (with orchestrator, permissions, quiet_rules sub-sections; provider/model selection), scripting, terminal, theme. See `config.example.toml` for all fields with defaults.
 
 ## Conventions
 - Clippy with `-D warnings` — all warnings are errors

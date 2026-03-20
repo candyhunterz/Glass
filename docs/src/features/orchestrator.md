@@ -369,9 +369,16 @@ completion_artifact = ".glass/done"  # File path that triggers orchestrator when
 # Feedback loop
 feedback_llm = false           # Enable LLM qualitative analysis after each run (opt-in)
 # max_prompt_hints = 10        # Max Tier 3 prompt hints per project
+
+# Multi-provider backend
+# provider = "claude-code"         # "claude-code", "anthropic-api", "openai-api", "ollama", "custom"
+# model = ""                       # Provider default. Examples: "gpt-4o", "claude-opus-4-6"
+# implementer = "claude-code"      # "claude-code", "codex", "aider", "gemini", "custom"
+# implementer_name = "Claude Code" # Display name in system prompt
+# persona = ""                     # Inline persona or path to .md file
 ```
 
-The orchestrator requires Agent Mode to be configured (the `[agent]` section). The Glass Agent subprocess uses the same Claude CLI as Agent Mode.
+The orchestrator requires Agent Mode to be configured (the `[agent]` section). By default, the Glass Agent uses the Claude CLI. Set `provider` in `[agent]` to use other models (OpenAI, Anthropic API, Ollama, or any OpenAI-compatible endpoint). The `implementer` field controls which CLI runs in the terminal.
 
 ---
 

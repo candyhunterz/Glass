@@ -6,6 +6,75 @@ Read this file to understand the orchestrator mode before making any changes. Th
 
 The orchestrator drives Claude Code sessions autonomously. It spawns a separate "Glass Agent" (a claude subprocess) that reviews terminal output, makes product decisions, and types instructions into Claude Code running in the terminal. The flow is: silence detected → capture terminal context → send to Glass Agent → agent responds with instruction → type into PTY → repeat.
 
+## Multi-Provider Backend
+
+The orchestrator supports multiple LLM providers for the Glass Agent (the reviewer/guide). The implementer (the CLI running in the terminal) is independent — controlled by the `implementer` config field.
+
+### Supported Providers
+
+| Provider | Config Value | Auth | Default Model |
+|----------|-------------|------|---------------|
+| Claude Code CLI | `provider = "claude-code"` | CLI's own OAuth | (CLI decides) |
+| Anthropic API | `provider = "anthropic-api"` | `ANTHROPIC_API_KEY` env var | `claude-sonnet-4-6` |
+| OpenAI API | `provider = "openai-api"` | `OPENAI_API_KEY` env var | `gpt-4o` |
+| Ollama (local) | `provider = "ollama"` | None required | `llama3` |
+| Custom endpoint | `provider = "custom"` | Optional `GLASS_API_KEY` | `gpt-4o` |
+
+### Model Mixing
+
+The orchestrator (reviewer) and implementer (code writer) use different models independently:
+
+```toml
+[agent]
+provider = "openai-api"         # GPT-4o reviews and guides
+model = "gpt-4o"
+
+[agent.orchestrator]
+implementer = "claude-code"     # Claude Code writes the code
+```
+
+### Implementer Configuration
+
+| Implementer | Config Value | Crash Recovery Command |
+|-------------|-------------|----------------------|
+| Claude Code | `"claude-code"` | `claude --dangerously-skip-permissions -p` |
+| Codex | `"codex"` | `codex --full-auto` |
+| Aider | `"aider"` | `aider --yes-always` |
+| Gemini | `"gemini"` | `gemini` |
+| Custom | `"custom"` | Uses `implementer_command` value |
+
+### Persona
+
+The `persona` field customizes the orchestrator agent's behavior without modifying the protocol (GLASS_WAIT/GLASS_DONE). It's inserted as Layer 3 in the prompt:
+
+1. **Protocol** (hardcoded) — GLASS_WAIT, GLASS_DONE, response format
+2. **Mode behavior** (hardcoded) — build/audit/general iteration protocol
+3. **Persona** (user-editable) — tone, domain expertise, constraints
+4. **Project instructions** (.glass/agent-instructions.md)
+
+```toml
+[agent.orchestrator]
+persona = "You are a senior systems architect. Be concise. Prioritize correctness."
+# Or load from file:
+# persona = ".glass/agent-persona.md"
+```
+
+### Backend Architecture
+
+All providers normalize to the same `AgentEvent` stream. The orchestrator state machine in `main.rs` never sees provider-specific details:
+
+```
+Provider JSON/SSE → AgentEvent → AppEvent → Orchestrator State Machine
+```
+
+Tool calling for API backends (OpenAI, Anthropic, Ollama) uses Glass IPC to execute MCP tools:
+
+```
+API Backend → SyncIpcClient → Glass GUI IPC Listener → MCP Tool Execution → Result
+```
+
+The backend crate lives at `crates/glass_agent_backend/` with one file per provider.
+
 ## Key Files
 
 | File | Purpose |
