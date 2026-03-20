@@ -180,6 +180,45 @@ impl fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
+// ── Backend factory ──────────────────────────────────────────────────────────
+
+/// Resolve the appropriate backend from provider config.
+///
+/// Checks env vars first (takes precedence), then falls back to `api_key` param.
+/// Returns `Err(BackendError::MissingCredentials)` if an API provider is
+/// selected but no credentials are found.
+pub fn resolve_backend(
+    provider: &str,
+    model: &str,
+    api_key: Option<&str>,
+    api_endpoint: Option<&str>,
+) -> Result<Box<dyn AgentBackend>, BackendError> {
+    let endpoint = api_endpoint.unwrap_or("");
+
+    match provider {
+        "claude-code" | "" => Ok(Box::new(claude_cli::ClaudeCliBackend::new())),
+        "openai-api" => {
+            let key = std::env::var("OPENAI_API_KEY")
+                .ok()
+                .or_else(|| api_key.map(|s| s.to_string()))
+                .ok_or_else(|| BackendError::MissingCredentials {
+                    provider: "openai-api".into(),
+                    env_var: "OPENAI_API_KEY".into(),
+                })?;
+            Ok(Box::new(openai::OpenAiBackend::new(&key, model, endpoint)))
+        }
+        "custom" => {
+            // Custom endpoints may not require auth (e.g., local vLLM)
+            let key = std::env::var("GLASS_API_KEY")
+                .ok()
+                .or_else(|| api_key.map(|s| s.to_string()))
+                .unwrap_or_default();
+            Ok(Box::new(openai::OpenAiBackend::new(&key, model, endpoint)))
+        }
+        _ => Ok(Box::new(claude_cli::ClaudeCliBackend::new())),
+    }
+}
+
 // ── Backend trait ─────────────────────────────────────────────────────────────
 
 /// Abstraction over a concrete LLM provider backend.
@@ -208,4 +247,53 @@ pub trait AgentBackend: Send + Sync {
     /// [`spawn`](AgentBackend::spawn).  Implementations should use it to locate
     /// and terminate the underlying process or task.
     fn shutdown(&self, token: ShutdownToken);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_default_is_claude_cli() {
+        let b = resolve_backend("", "", None, None).unwrap();
+        assert_eq!(b.name(), "Claude CLI");
+    }
+
+    #[test]
+    fn resolve_claude_code_explicit() {
+        let b = resolve_backend("claude-code", "", None, None).unwrap();
+        assert_eq!(b.name(), "Claude CLI");
+    }
+
+    #[test]
+    fn resolve_unknown_falls_back_to_claude_cli() {
+        let b = resolve_backend("unknown-provider", "", None, None).unwrap();
+        assert_eq!(b.name(), "Claude CLI");
+    }
+
+    #[test]
+    fn resolve_openai_without_key_errors() {
+        // Temporarily unset the env var to ensure it's not set
+        let _guard = std::env::var("OPENAI_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        let result = resolve_backend("openai-api", "", None, None);
+        assert!(result.is_err());
+        // Restore if it was set
+        if let Ok(val) = _guard {
+            std::env::set_var("OPENAI_API_KEY", val);
+        }
+    }
+
+    #[test]
+    fn resolve_openai_with_config_key() {
+        let b = resolve_backend("openai-api", "gpt-4o", Some("sk-test"), None).unwrap();
+        assert_eq!(b.name(), "OpenAI API");
+    }
+
+    #[test]
+    fn resolve_custom_allows_empty_key() {
+        let b =
+            resolve_backend("custom", "local-model", None, Some("http://localhost:8080")).unwrap();
+        assert_eq!(b.name(), "OpenAI API");
+    }
 }
