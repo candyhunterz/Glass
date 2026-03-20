@@ -103,6 +103,12 @@ pub struct SettingsConfigSnapshot {
     pub orchestrator_max_prompt_hints: usize,
     pub orchestrator_ablation_enabled: bool,
     pub orchestrator_ablation_sweep_interval: u32,
+    // Provider
+    pub agent_provider: String,
+    pub agent_model: String,
+    // Orchestrator persona
+    pub orchestrator_persona: String,
+    pub orchestrator_implementer: String,
 }
 
 impl Default for SettingsConfigSnapshot {
@@ -141,12 +147,16 @@ impl Default for SettingsConfigSnapshot {
             orchestrator_max_iterations: 0,
             orchestrator_silence_secs: 60,
             orchestrator_prd_path: "PRD.md".to_string(),
-            orchestrator_mode: "build".to_string(),
+            orchestrator_mode: "auto".to_string(),
             orchestrator_verify_mode: "floor".to_string(),
             orchestrator_feedback_llm: false,
             orchestrator_max_prompt_hints: 10,
             orchestrator_ablation_enabled: true,
             orchestrator_ablation_sweep_interval: 20,
+            agent_provider: "claude-code".to_string(),
+            agent_model: "(default)".to_string(),
+            orchestrator_persona: "(default)".to_string(),
+            orchestrator_implementer: "claude-code".to_string(),
         }
     }
 }
@@ -943,7 +953,16 @@ impl SettingsOverlayRenderer {
                 ),
             ],
             6 => vec![
-                // Orchestrator — 3 editable + 3 display-only
+                // Orchestrator — provider/model/implementer/persona display + editable fields
+                ("Provider", config.agent_provider.clone(), false, false),
+                ("Model", config.agent_model.clone(), false, false),
+                (
+                    "Implementer",
+                    config.orchestrator_implementer.clone(),
+                    false,
+                    false,
+                ),
+                ("Persona", config.orchestrator_persona.clone(), false, false),
                 (
                     "Enabled",
                     if config.orchestrator_enabled {

@@ -3789,6 +3789,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.ablation_sweep_interval)
                                 .unwrap_or(20),
+                            agent_provider: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| a.provider.clone())
+                                .unwrap_or_else(|| "claude-code".to_string()),
+                            agent_model: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.model.clone())
+                                .unwrap_or_else(|| "(default)".to_string()),
+                            orchestrator_persona: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .and_then(|o| o.persona.clone())
+                                .unwrap_or_else(|| "(default)".to_string()),
+                            orchestrator_implementer: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.implementer_name.clone())
+                                .unwrap_or_else(|| "claude-code".to_string()),
                         };
 
                     let render_data = glass_renderer::SettingsOverlayRenderData {
