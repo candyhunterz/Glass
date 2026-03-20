@@ -8,9 +8,11 @@ use std::sync::mpsc;
 
 pub use glass_core::agent_runtime::AgentMode;
 
+pub mod anthropic;
 pub mod claude_cli;
 pub mod ipc_tools;
 pub mod model_cache;
+pub mod ollama;
 pub mod openai;
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -197,6 +199,18 @@ pub fn resolve_backend(
 
     match provider {
         "claude-code" | "" => Ok(Box::new(claude_cli::ClaudeCliBackend::new())),
+        "anthropic-api" => {
+            let key = std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .or_else(|| api_key.map(|s| s.to_string()))
+                .ok_or_else(|| BackendError::MissingCredentials {
+                    provider: "anthropic-api".into(),
+                    env_var: "ANTHROPIC_API_KEY".into(),
+                })?;
+            Ok(Box::new(anthropic::AnthropicBackend::new(
+                &key, model, endpoint,
+            )))
+        }
         "openai-api" => {
             let key = std::env::var("OPENAI_API_KEY")
                 .ok()
@@ -206,6 +220,10 @@ pub fn resolve_backend(
                     env_var: "OPENAI_API_KEY".into(),
                 })?;
             Ok(Box::new(openai::OpenAiBackend::new(&key, model, endpoint)))
+        }
+        "ollama" => {
+            // Ollama does not require auth — just model + endpoint.
+            Ok(Box::new(ollama::OllamaBackend::new(model, endpoint)))
         }
         "custom" => {
             // Custom endpoints may not require auth (e.g., local vLLM)
@@ -288,6 +306,12 @@ mod tests {
     fn resolve_openai_with_config_key() {
         let b = resolve_backend("openai-api", "gpt-4o", Some("sk-test"), None).unwrap();
         assert_eq!(b.name(), "OpenAI API");
+    }
+
+    #[test]
+    fn resolve_ollama() {
+        let b = resolve_backend("ollama", "llama3:70b", None, None).unwrap();
+        assert_eq!(b.name(), "Ollama");
     }
 
     #[test]
