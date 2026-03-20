@@ -988,7 +988,8 @@ fn build_system_prompt(
         };
 
         let mode_instructions = if orch_mode == "audit" {
-            format!(r#"ORCHESTRATOR MODE: AUDIT
+            format!(
+                r#"ORCHESTRATOR MODE: AUDIT
 You have access to ALL Glass MCP tools. Use them to test features interactively:
 - glass_tab_create / glass_tab_send / glass_tab_output — spawn tabs, run commands, read results
 - glass_history — verify commands are recorded correctly
@@ -1009,9 +1010,11 @@ For each audit area in the plan:
 6. COMMIT: Tell {implementer_name} to commit the fix
 
 You can test features YOURSELF using MCP tools. You CANNOT write code — tell {implementer_name} to do that.
-Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#)
+Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#
+            )
         } else if orch_mode == "general" {
-            format!(r#"ORCHESTRATOR MODE: GENERAL
+            format!(
+                r#"ORCHESTRATOR MODE: GENERAL
 You are orchestrating a general task (research, planning, design, or mixed work).
 
 ITERATION PROTOCOL:
@@ -1024,9 +1027,11 @@ ITERATION PROTOCOL:
 
 Use whatever tools are needed: web search, file creation, shell commands, code.
 Track progress by deliverable completion, not test counts.
-You CANNOT create files yourself — instruct {implementer_name} to do it."#)
+You CANNOT create files yourself — instruct {implementer_name} to do it."#
+            )
         } else {
-            format!(r#"ORCHESTRATOR MODE: BUILD
+            format!(
+                r#"ORCHESTRATOR MODE: BUILD
 ITERATION PROTOCOL:
 For each feature, guide {implementer_name} through this cycle:
 1. PLAN: Tell {implementer_name} what to build next and define acceptance criteria
@@ -1036,7 +1041,8 @@ For each feature, guide {implementer_name} through this cycle:
 5. DECIDE: Tests pass → move to next feature. Tests fail → tell {implementer_name} to fix.
    Stuck after 3 attempts → tell {implementer_name} to revert and try different approach.
 
-You CANNOT implement code yourself — you must instruct {implementer_name} to do it."#)
+You CANNOT implement code yourself — you must instruct {implementer_name} to do it."#
+            )
         };
 
         format!(
