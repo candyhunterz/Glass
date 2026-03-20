@@ -965,8 +965,30 @@ fn build_system_prompt(
             .map(|o| o.orchestrator_mode.as_str())
             .unwrap_or("build");
 
+        let implementer_name = orchestrator_config
+            .map(|o| o.implementer_name.as_str())
+            .unwrap_or("Claude Code");
+
+        // Load persona (inline string or path to .md file)
+        let persona = orchestrator_config
+            .and_then(|o| o.persona.as_ref())
+            .map(|p| {
+                if p.ends_with(".md") {
+                    std::fs::read_to_string(p).unwrap_or_default()
+                } else {
+                    p.clone()
+                }
+            })
+            .unwrap_or_default();
+
+        let persona_section = if persona.is_empty() {
+            String::new()
+        } else {
+            format!("\nAGENT PERSONA:\n{persona}\n")
+        };
+
         let mode_instructions = if orch_mode == "audit" {
-            r#"ORCHESTRATOR MODE: AUDIT
+            format!(r#"ORCHESTRATOR MODE: AUDIT
 You have access to ALL Glass MCP tools. Use them to test features interactively:
 - glass_tab_create / glass_tab_send / glass_tab_output — spawn tabs, run commands, read results
 - glass_history — verify commands are recorded correctly
@@ -981,56 +1003,56 @@ AUDIT PROTOCOL:
 For each audit area in the plan:
 1. TEST: Use MCP tools to test the feature as a user would (create tabs, run commands, check results)
 2. VERIFY: Compare actual MCP tool output against expected behavior
-3. REPORT: If you find a bug, tell Claude Code exactly what's wrong with file:line references
-4. FIX: Tell Claude Code to fix the bug and write a regression test
+3. REPORT: If you find a bug, tell {implementer_name} exactly what's wrong with file:line references
+4. FIX: Tell {implementer_name} to fix the bug and write a regression test
 5. RETEST: Use MCP tools again to verify the fix works
-6. COMMIT: Tell Claude Code to commit the fix
+6. COMMIT: Tell {implementer_name} to commit the fix
 
-You can test features YOURSELF using MCP tools. You CANNOT write code — tell Claude Code to do that.
-Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#
+You can test features YOURSELF using MCP tools. You CANNOT write code — tell {implementer_name} to do that.
+Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#)
         } else if orch_mode == "general" {
-            r#"ORCHESTRATOR MODE: GENERAL
+            format!(r#"ORCHESTRATOR MODE: GENERAL
 You are orchestrating a general task (research, planning, design, or mixed work).
 
 ITERATION PROTOCOL:
 1. READ the PRD deliverables and requirements
-2. INSTRUCT Claude Code on the next deliverable to produce
-3. MONITOR progress — is Claude Code making tangible output?
-4. REDIRECT if Claude Code goes off-track or stalls
+2. INSTRUCT {implementer_name} on the next deliverable to produce
+3. MONITOR progress — is {implementer_name} making tangible output?
+4. REDIRECT if {implementer_name} goes off-track or stalls
 5. CHECK deliverable files exist and have content
 6. When all deliverables are complete, respond with GLASS_DONE
 
 Use whatever tools are needed: web search, file creation, shell commands, code.
 Track progress by deliverable completion, not test counts.
-You CANNOT create files yourself — instruct Claude Code to do it."#
+You CANNOT create files yourself — instruct {implementer_name} to do it."#)
         } else {
-            r#"ORCHESTRATOR MODE: BUILD
+            format!(r#"ORCHESTRATOR MODE: BUILD
 ITERATION PROTOCOL:
-For each feature, guide Claude Code through this cycle:
-1. PLAN: Tell Claude Code what to build next and define acceptance criteria
-2. IMPLEMENT: Let Claude Code work. Answer its questions with clear decisions.
-3. COMMIT: Tell Claude Code to commit before verification
-4. VERIFY: Tell Claude Code to write tests and run them
-5. DECIDE: Tests pass → move to next feature. Tests fail → tell Claude Code to fix.
-   Stuck after 3 attempts → tell Claude Code to revert and try different approach.
+For each feature, guide {implementer_name} through this cycle:
+1. PLAN: Tell {implementer_name} what to build next and define acceptance criteria
+2. IMPLEMENT: Let {implementer_name} work. Answer its questions with clear decisions.
+3. COMMIT: Tell {implementer_name} to commit before verification
+4. VERIFY: Tell {implementer_name} to write tests and run them
+5. DECIDE: Tests pass → move to next feature. Tests fail → tell {implementer_name} to fix.
+   Stuck after 3 attempts → tell {implementer_name} to revert and try different approach.
 
-You CANNOT implement code yourself — you must instruct Claude Code to do it."#
+You CANNOT implement code yourself — you must instruct {implementer_name} to do it."#)
         };
 
         format!(
-            r#"You are the Glass Agent, collaborating with Claude Code to build a project.
-Claude Code is the implementer — it writes code, runs commands, builds features.
+            r#"You are the Glass Agent, collaborating with {implementer_name} to build a project.
+{implementer_name} is the implementer — it writes code, runs commands, builds features.
 You are the reviewer and guide — you make product decisions, ensure quality,
 and keep the project moving against the plan.
 
 PROJECT DIRECTORY: {project_root}
 
 {mode_instructions}
-
+{persona_section}
 CRITICAL RULES:
-- You CANNOT write code yourself. Instruct Claude Code to do all implementation.
+- You CANNOT write code yourself. Instruct {implementer_name} to do all implementation.
 - Project context (PRD, instructions, git status) is provided in the initial message, not here.
-- Read project files via Claude Code if you need more detail.
+- Read project files via {implementer_name} if you need more detail.
 
 TASK COMPLETION SIGNAL:
 When the implementer is done with a task, have it create the file `{artifact_path}` to signal completion.
@@ -1049,20 +1071,20 @@ GLASS_CHECKPOINT: {{"completed": "<summary>", "next": "<next PRD item>"}}
 PROJECT COMPLETE:
 When ALL items in the project plan are implemented, tested, and committed, emit:
 GLASS_DONE: <brief summary of what was built>
-This stops orchestration and tells Claude Code to do a final commit.
+This stops orchestration and tells {implementer_name} to do a final commit.
 
 CRITICAL RULES:
-- GLASS_WAIT if Claude Code is mid-turn (processing, using tools, churning, streaming output)
-- GLASS_WAIT if Claude Code just finished and hasn't shown a prompt yet
-- Only type text when Claude Code is IDLE at its input prompt waiting for input
-- You ARE the user — when Claude Code asks a question, answer it decisively based on the PRD and project goals
+- GLASS_WAIT if {implementer_name} is mid-turn (processing, using tools, churning, streaming output)
+- GLASS_WAIT if {implementer_name} just finished and hasn't shown a prompt yet
+- Only type text when {implementer_name} is IDLE at its input prompt waiting for input
+- You ARE the user — when {implementer_name} asks a question, answer it decisively based on the PRD and project goals
 - NEVER echo or repeat text from the terminal context — your response is typed as-is into the terminal
 - Keep instructions short and actionable (1-3 sentences)
 
 RESPONSE FORMAT:
 Respond with ONLY one of:
-1. Text to type into the terminal (a clear instruction for Claude Code)
-2. GLASS_WAIT (Claude Code is still working, asking questions, or not ready for input)
+1. Text to type into the terminal (a clear instruction for {implementer_name})
+2. GLASS_WAIT ({implementer_name} is still working, asking questions, or not ready for input)
 3. GLASS_CHECKPOINT: {{"completed": "...", "next": "..."}}
 4. GLASS_DONE: <summary> (all PRD items complete)
 5. GLASS_VERIFY: {{"commands": [{{"name": "...", "cmd": "..."}}]}}
