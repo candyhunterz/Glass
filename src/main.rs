@@ -1139,9 +1139,18 @@ fn try_spawn_agent(
     initial_message: Option<String>,
     system_prompt: String,
     generation: u64,
+    provider: &str,
+    model: &str,
+    api_key: Option<&str>,
+    api_endpoint: Option<&str>,
 ) -> Option<AgentRuntime> {
-    let backend: Box<dyn glass_agent_backend::AgentBackend> =
-        Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new());
+    let backend = glass_agent_backend::resolve_backend(
+        provider, model, api_key, api_endpoint,
+    )
+    .unwrap_or_else(|e| {
+        tracing::warn!("resolve_backend: {}, falling back to Claude CLI", e);
+        Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new())
+    });
 
     // Compute allowed tools based on orchestrator mode
     let orchestrator_active = config
@@ -2197,6 +2206,10 @@ impl Processor {
         // Spawn new agent with handoff as the initial stdin message.
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
         let system_prompt = build_system_prompt(&agent_config, cwd);
+        let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
+        let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
+        let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
+        let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
         self.agent_runtime = try_spawn_agent(
             agent_config,
             new_rx,
@@ -2207,6 +2220,10 @@ impl Processor {
             Some(handoff_content),
             system_prompt,
             self.agent_generation,
+            provider,
+            model,
+            api_key,
+            api_endpoint,
         );
 
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
@@ -2571,6 +2588,10 @@ impl ApplicationHandler<AppEvent> for Processor {
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                 let cwd = self.get_focused_cwd();
                 let system_prompt = build_system_prompt(&agent_config, &cwd);
+                let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
+                let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
+                let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
+                let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
                 self.agent_runtime = try_spawn_agent(
                     agent_config,
                     rx,
@@ -2581,6 +2602,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                     None,
                     system_prompt,
                     self.agent_generation,
+                    provider,
+                    model,
+                    api_key,
+                    api_endpoint,
                 );
                 // Start usage polling if orchestrator is configured
                 if self
@@ -6808,6 +6833,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                             let cwd = self.get_focused_cwd();
                             let system_prompt = build_system_prompt(&new_agent_config, &cwd);
+                            let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
+                            let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
+                            let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
+                            let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
                             self.agent_runtime = try_spawn_agent(
                                 new_agent_config.clone(),
                                 new_rx,
@@ -6818,6 +6847,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 None,
                                 system_prompt,
                                 self.agent_generation,
+                                provider,
+                                model,
+                                api_key,
+                                api_endpoint,
                             );
                             // AGTC-04: Show hint if mode != Off but spawn failed.
                             if self.agent_runtime.is_none() {
@@ -7300,6 +7333,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let system_prompt = build_system_prompt(&config, &cwd);
                     self.agent_generation += 1;
+                    let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
+                    let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
+                    let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
+                    let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
                     self.agent_runtime = try_spawn_agent(
                         config,
                         new_rx,
@@ -7310,6 +7347,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         restart_msg,
                         system_prompt,
                         self.agent_generation,
+                        provider,
+                        model,
+                        api_key,
+                        api_endpoint,
                     );
                 } else {
                     tracing::error!(

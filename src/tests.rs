@@ -194,7 +194,7 @@ mod settings_sync_tests {
         assert_eq!(snap.orchestrator_max_iterations, 0);
         assert_eq!(snap.orchestrator_silence_secs, 60);
         assert_eq!(snap.orchestrator_prd_path, "PRD.md");
-        assert_eq!(snap.orchestrator_mode, "build");
+        assert_eq!(snap.orchestrator_mode, "auto");
         assert_eq!(snap.orchestrator_verify_mode, "floor");
     }
 
