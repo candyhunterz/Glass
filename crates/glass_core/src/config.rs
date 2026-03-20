@@ -136,6 +136,18 @@ pub struct AgentSection {
     /// Rules for suppressing low-signal notifications. None when section is absent.
     #[serde(default)]
     pub quiet_rules: Option<QuietRules>,
+    /// LLM provider for the agent backend. Default: "claude-code".
+    #[serde(default = "default_agent_provider")]
+    pub provider: String,
+    /// Model ID override. Empty = provider default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// API key for API-based providers. Env var takes precedence if set.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Custom API endpoint URL.
+    #[serde(default)]
+    pub api_endpoint: Option<String>,
     /// Orchestrator sub-section. Optional; None when absent.
     #[serde(default)]
     pub orchestrator: Option<OrchestratorSection>,
@@ -177,7 +189,8 @@ pub struct OrchestratorSection {
     /// Maximum iterations before checkpoint-stop. None = unlimited.
     #[serde(default)]
     pub max_iterations: Option<u32>,
-    /// Orchestrator mode: "build" (default) or "audit".
+    /// Orchestrator mode: "auto" (default), "build", "audit", or "general".
+    /// Auto mode: detects project type at activation time (build for code projects, general otherwise).
     /// Build mode: agent has observation-only tools, delegates implementation to Claude Code.
     /// Audit mode: agent gets all MCP tools to test features interactively, delegates code fixes to Claude Code.
     #[serde(default = "default_orch_mode")]
@@ -200,6 +213,18 @@ pub struct OrchestratorSection {
     /// Fallback agent instructions when .glass/agent-instructions.md doesn't exist.
     #[serde(default)]
     pub agent_instructions: Option<String>,
+    /// Which CLI to launch as the implementer. Default: "claude-code".
+    #[serde(default = "default_implementer")]
+    pub implementer: String,
+    /// Custom launch command when implementer = "custom".
+    #[serde(default)]
+    pub implementer_command: Option<String>,
+    /// Display name for the implementer in system prompts. Default: "Claude Code".
+    #[serde(default = "default_implementer_name")]
+    pub implementer_name: String,
+    /// Custom persona for the orchestrator agent. Inline string or path to .md file.
+    #[serde(default)]
+    pub persona: Option<String>,
 }
 
 /// Validate a config-supplied file path is safe to use.
@@ -234,7 +259,7 @@ fn default_orch_completion_artifact() -> String {
     ".glass/done".to_string()
 }
 fn default_orch_mode() -> String {
-    "build".to_string()
+    "auto".to_string()
 }
 fn default_max_prompt_hints() -> usize {
     10
@@ -255,6 +280,15 @@ fn default_agent_cooldown_secs() -> u64 {
 fn default_agent_allowed_tools() -> String {
     "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read".to_string()
 }
+fn default_agent_provider() -> String {
+    "claude-code".to_string()
+}
+fn default_implementer() -> String {
+    "claude-code".to_string()
+}
+fn default_implementer_name() -> String {
+    "Claude Code".to_string()
+}
 
 impl Default for AgentSection {
     fn default() -> Self {
@@ -265,6 +299,10 @@ impl Default for AgentSection {
             allowed_tools: default_agent_allowed_tools(),
             permissions: None,
             quiet_rules: None,
+            provider: default_agent_provider(),
+            model: None,
+            api_key: None,
+            api_endpoint: None,
             orchestrator: None,
         }
     }

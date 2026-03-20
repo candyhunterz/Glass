@@ -64,6 +64,10 @@
 # max_budget_usd = 1.0
 # cooldown_secs = 30
 # allowed_tools = "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
+# provider = "claude-code"    # "claude-code", "anthropic-api", "openai-api", "ollama", "custom"
+# model = ""                  # empty = provider default
+# api_key = ""                # optional — env var used if empty (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+# api_endpoint = ""           # optional — for custom/self-hosted endpoints
 
 # [agent.permissions]
 # edit_files = "approve"    # "approve", "auto", "never"
@@ -86,12 +90,16 @@
 # verify_command = ""
 # completion_artifact = ".glass/done"
 # max_iterations = 0        # 0 = unlimited
-# orchestrator_mode = "build"  # "build" or "audit"
+# orchestrator_mode = "auto"   # "auto", "build", "audit", or "general"
 # verify_files = []
 # feedback_llm = false
 # max_prompt_hints = 10
 # ablation_enabled = true
 # ablation_sweep_interval = 20
+# implementer = "claude-code"       # "claude-code", "codex", "aider", "gemini", "custom"
+# implementer_command = ""          # custom launch command (when implementer = "custom")
+# implementer_name = "Claude Code"  # display name used in system prompt
+# persona = ""                      # inline persona string, or path to .md file
 
 # --- Scripting ---------------------------------------------------------
 # [scripting]
