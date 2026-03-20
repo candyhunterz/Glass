@@ -125,6 +125,7 @@ glass_soi = { path = "crates/glass_soi" }
 glass_agent = { path = "crates/glass_agent" }
 glass_feedback = { path = "crates/glass_feedback" }
 glass_scripting = { path = "crates/glass_scripting" }
+glass_agent_backend = { path = "crates/glass_agent_backend" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-chrome = { version = "0.7", optional = true }
 serde_json = { workspace = true }

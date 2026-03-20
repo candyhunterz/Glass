@@ -1,0 +1,25 @@
+[package]
+name = "glass_agent_backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+glass_core = { path = "../glass_core" }
+glass_agent = { path = "../glass_agent" }
+glass_coordination = { path = "../glass_coordination" }
+
+# Platform-specific
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
