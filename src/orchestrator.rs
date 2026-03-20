@@ -518,6 +518,10 @@ pub struct OrchestratorState {
     /// Used for all file operations instead of get_focused_cwd() because the
     /// shell's OSC 7 CWD stops updating once Claude Code starts.
     pub project_root: String,
+    /// Resolved orchestrator mode (auto-detected or explicit). Set at activation time.
+    pub resolved_mode: String,
+    /// Resolved verification mode. Set at activation time.
+    pub resolved_verify_mode: String,
 }
 
 impl OrchestratorState {
@@ -562,6 +566,8 @@ impl OrchestratorState {
             coverage_gaps_context: String::new(),
             last_quality_score: None,
             project_root: String::new(),
+            resolved_mode: String::new(),
+            resolved_verify_mode: String::new(),
         }
     }
 
