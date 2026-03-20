@@ -4,7 +4,7 @@
 //! and communicating with agent subprocesses regardless of provider.
 
 use std::fmt;
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 
 pub use glass_core::agent_runtime::AgentMode;
 

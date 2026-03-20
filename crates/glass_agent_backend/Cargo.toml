@@ -9,7 +9,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
-tokio = { workspace = true }
 glass_core = { path = "../glass_core" }
 glass_agent = { path = "../glass_agent" }
 glass_coordination = { path = "../glass_coordination" }
