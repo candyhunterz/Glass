@@ -9,6 +9,9 @@ use std::sync::mpsc;
 pub use glass_core::agent_runtime::AgentMode;
 
 pub mod claude_cli;
+pub mod ipc_tools;
+pub mod model_cache;
+pub mod openai;
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
