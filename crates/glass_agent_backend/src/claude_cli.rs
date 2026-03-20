@@ -12,7 +12,9 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
-use crate::{AgentBackend, AgentEvent, AgentHandle, BackendError, BackendSpawnConfig, ShutdownToken};
+use crate::{
+    AgentBackend, AgentEvent, AgentHandle, BackendError, BackendSpawnConfig, ShutdownToken,
+};
 
 // ── Shutdown state ────────────────────────────────────────────────────────────
 
@@ -89,10 +91,7 @@ impl AgentBackend for ClaudeCliBackend {
                 match std::fs::write(&mcp_json_path, mcp_json.to_string()) {
                     Ok(()) => Some(mcp_json_path.to_string_lossy().to_string()),
                     Err(e) => {
-                        tracing::warn!(
-                            "ClaudeCliBackend: failed to write MCP config JSON: {}",
-                            e
-                        );
+                        tracing::warn!("ClaudeCliBackend: failed to write MCP config JSON: {}", e);
                         None
                     }
                 }
@@ -189,10 +188,7 @@ impl AgentBackend for ClaudeCliBackend {
         {
             // Always send an initial message -- Claude CLI 2.1.77+ won't complete
             // initialization without one. Use the initial_message if provided, else GLASS_WAIT.
-            let content = config
-                .initial_message
-                .as_deref()
-                .unwrap_or("GLASS_WAIT");
+            let content = config.initial_message.as_deref().unwrap_or("GLASS_WAIT");
             let json_msg = serde_json::json!({
                 "type": "user",
                 "message": { "role": "user", "content": content }
@@ -203,10 +199,7 @@ impl AgentBackend for ClaudeCliBackend {
                     let _ = stdin.flush();
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "ClaudeCliBackend: failed to write initial message: {}",
-                        e
-                    );
+                    tracing::warn!("ClaudeCliBackend: failed to write initial message: {}", e);
                 }
             }
         }
@@ -237,16 +230,11 @@ impl AgentBackend for ClaudeCliBackend {
                             Some(msg)
                         }
                         Ok(None) => {
-                            tracing::debug!(
-                                "ClaudeCliBackend: no prior handoff found for project"
-                            );
+                            tracing::debug!("ClaudeCliBackend: no prior handoff found for project");
                             None
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "ClaudeCliBackend: failed to load prior handoff: {}",
-                                e
-                            );
+                            tracing::warn!("ClaudeCliBackend: failed to load prior handoff: {}", e);
                             None
                         }
                     }
@@ -280,8 +268,7 @@ impl AgentBackend for ClaudeCliBackend {
             .ok();
 
         // ── (j) Spawn writer thread ─────────────────────────────────────────
-        let shared_writer =
-            std::sync::Arc::new(parking_lot::Mutex::new(BufWriter::new(stdin)));
+        let shared_writer = std::sync::Arc::new(parking_lot::Mutex::new(BufWriter::new(stdin)));
         let writer_clone = std::sync::Arc::clone(&shared_writer);
 
         std::thread::Builder::new()
@@ -327,10 +314,7 @@ impl AgentBackend for ClaudeCliBackend {
                             );
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "ClaudeCliBackend: prune_stale failed (soft): {}",
-                                e
-                            );
+                            tracing::warn!("ClaudeCliBackend: prune_stale failed (soft): {}", e);
                         }
                         _ => {}
                     }
@@ -411,9 +395,7 @@ impl AgentBackend for ClaudeCliBackend {
         state.child = None;
 
         // Deregister from coordination DB
-        if let (Some(ref agent_id), Some(ref nonce)) =
-            (&state.coord_agent_id, &state.coord_nonce)
-        {
+        if let (Some(ref agent_id), Some(ref nonce)) = (&state.coord_agent_id, &state.coord_nonce) {
             if let Ok(mut db) = glass_coordination::CoordinationDb::open_default() {
                 let _ = db.unlock_all(agent_id, nonce);
                 let _ = db.deregister(agent_id, nonce);
@@ -553,8 +535,7 @@ pub(crate) fn parse_stream_json_line(line: &str) -> Vec<AgentEvent> {
 
         // -- result ----------------------------------------------------------------
         Some("result") => {
-            let cost_usd =
-                glass_core::agent_runtime::parse_cost_from_result(line).unwrap_or(0.0);
+            let cost_usd = glass_core::agent_runtime::parse_cost_from_result(line).unwrap_or(0.0);
             vec![AgentEvent::TurnComplete { cost_usd }]
         }
 
@@ -575,9 +556,7 @@ pub(crate) fn parse_stream_json_line(line: &str) -> Vec<AgentEvent> {
                             .unwrap_or("?")
                             .to_string();
                         let content = match block.get("content") {
-                            Some(c) if c.is_string() => {
-                                c.as_str().unwrap_or("").to_string()
-                            }
+                            Some(c) if c.is_string() => c.as_str().unwrap_or("").to_string(),
                             Some(c) if c.is_array() => c
                                 .as_array()
                                 .unwrap()
@@ -611,7 +590,12 @@ mod tests {
     // Helper: assert exactly one event is returned and return it.
     fn single(line: &str) -> AgentEvent {
         let mut events = parse_stream_json_line(line);
-        assert_eq!(events.len(), 1, "expected exactly 1 event, got {:?}", events);
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly 1 event, got {:?}",
+            events
+        );
         events.remove(0)
     }
 
@@ -636,7 +620,8 @@ mod tests {
 
     #[test]
     fn parse_assistant_text() {
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello!"}]}}"#;
+        let line =
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello!"}]}}"#;
         match single(line) {
             AgentEvent::AssistantText { text } => assert_eq!(text, "Hello!"),
             other => panic!("expected AssistantText, got {:?}", other),
@@ -660,7 +645,10 @@ mod tests {
                 assert_eq!(name, "Bash");
                 assert_eq!(id, "tool-abc");
                 // input is the JSON-serialised representation
-                assert!(input.contains("ls"), "input should contain 'ls', got: {input}");
+                assert!(
+                    input.contains("ls"),
+                    "input should contain 'ls', got: {input}"
+                );
             }
             other => panic!("expected ToolCall, got {:?}", other),
         }
@@ -697,7 +685,10 @@ mod tests {
         let line = r#"{"type":"result","cost_usd":0.0042}"#;
         match single(line) {
             AgentEvent::TurnComplete { cost_usd } => {
-                assert!((cost_usd - 0.0042).abs() < 1e-9, "cost mismatch: {cost_usd}")
+                assert!(
+                    (cost_usd - 0.0042).abs() < 1e-9,
+                    "cost mismatch: {cost_usd}"
+                )
             }
             other => panic!("expected TurnComplete, got {:?}", other),
         }
