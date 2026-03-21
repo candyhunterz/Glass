@@ -7601,11 +7601,42 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .deferred_type_text
                                         .push(text_to_type.clone());
                                 } else {
-                                    let bytes = format!("{}\r", text_to_type).into_bytes();
-                                    pty_send(
-                                        &session.pty_sender,
-                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
-                                    );
+                                    // Chunk long text to avoid ConPTY input buffer limits.
+                                    // Split into ~1500-byte chunks on newline boundaries.
+                                    let full_text = format!("{}\r", text_to_type);
+                                    let max_chunk = 1500;
+                                    if full_text.len() <= max_chunk {
+                                        let bytes = full_text.into_bytes();
+                                        pty_send(
+                                            &session.pty_sender,
+                                            PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                        );
+                                    } else {
+                                        // Split on newline boundaries
+                                        let mut remaining = full_text.as_str();
+                                        while !remaining.is_empty() {
+                                            let chunk_end = if remaining.len() <= max_chunk {
+                                                remaining.len()
+                                            } else {
+                                                // Find last newline within max_chunk
+                                                remaining[..max_chunk]
+                                                    .rfind('\n')
+                                                    .map(|i| i + 1)
+                                                    .unwrap_or(max_chunk)
+                                            };
+                                            let chunk = &remaining[..chunk_end];
+                                            let bytes = chunk.as_bytes().to_vec();
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                            );
+                                            remaining = &remaining[chunk_end..];
+                                            // Small delay between chunks so ConPTY can process
+                                            if !remaining.is_empty() {
+                                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                            }
+                                        }
+                                    }
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
