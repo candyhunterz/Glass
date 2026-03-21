@@ -7603,7 +7603,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .deferred_type_text
                                         .push(text_to_type.clone());
                                 } else {
-                                    let bytes = format!("{}\r", text_to_type).into_bytes();
+                                    // Collapse newlines to spaces so Claude Code treats
+                                    // it as typed input, not a multi-line paste.
+                                    let single_line = text_to_type
+                                        .replace('\n', " ")
+                                        .replace('\r', " ");
+                                    let bytes = format!("{}\r", single_line).into_bytes();
                                     pty_send(
                                         &session.pty_sender,
                                         PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
