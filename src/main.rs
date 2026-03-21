@@ -7576,23 +7576,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                         };
 
                         if let Some(ctx) = self.windows.values().next() {
-                            // Type the text into the active PTY — but only if a command
-                            // isn't actively executing (avoid interrupting Claude Code mid-turn)
+                            // Type the text into the active PTY.
+                            // In orchestrator mode, skip the block_executing check — silence
+                            // detection already confirms the implementer is idle. The block
+                            // manager sees long-running CLIs (like `claude`) as perpetually
+                            // "Executing" which would block all orchestrator input.
                             if let Some(session) = ctx.session_mux.focused_session() {
-                                let block_executing = session
-                                    .block_manager
-                                    .current_block_index()
-                                    .and_then(|idx| session.block_manager.blocks().get(idx))
-                                    .map(|b| {
-                                        b.state
-                                            == glass_terminal::block_manager::BlockState::Executing
-                                    })
-                                    .unwrap_or(false);
+                                let block_executing = if self.orchestrator.active {
+                                    false // Silence detection already confirmed idle
+                                } else {
+                                    session
+                                        .block_manager
+                                        .current_block_index()
+                                        .and_then(|idx| session.block_manager.blocks().get(idx))
+                                        .map(|b| {
+                                            b.state
+                                                == glass_terminal::block_manager::BlockState::Executing
+                                        })
+                                        .unwrap_or(false)
+                                };
 
                                 if block_executing {
-                                    tracing::debug!(
-                                        "Orchestrator: deferring TypeText — command is executing"
-                                    );
                                     self.orchestrator
                                         .deferred_type_text
                                         .push(text_to_type.clone());
