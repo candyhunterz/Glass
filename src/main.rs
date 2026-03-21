@@ -1085,7 +1085,7 @@ CRITICAL RULES:
 - Only type text when {implementer_name} is IDLE at its input prompt waiting for input
 - You ARE the user — when {implementer_name} asks a question, answer it decisively based on the PRD and project goals
 - NEVER echo or repeat text from the terminal context — your response is typed as-is into the terminal
-- Keep instructions short and actionable (1-3 sentences)
+- Keep instructions short and actionable (1-3 sentences, MAX 500 characters). Long text gets truncated by the terminal. If you need to give detailed specs, tell {implementer_name} to read the PRD file instead of pasting the spec inline
 
 RESPONSE FORMAT:
 Respond with ONLY one of:
@@ -7601,42 +7601,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .deferred_type_text
                                         .push(text_to_type.clone());
                                 } else {
-                                    // Chunk long text to avoid ConPTY input buffer limits.
-                                    // Split into ~1500-byte chunks on newline boundaries.
-                                    let full_text = format!("{}\r", text_to_type);
-                                    let max_chunk = 1500;
-                                    if full_text.len() <= max_chunk {
-                                        let bytes = full_text.into_bytes();
-                                        pty_send(
-                                            &session.pty_sender,
-                                            PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
-                                        );
-                                    } else {
-                                        // Split on newline boundaries
-                                        let mut remaining = full_text.as_str();
-                                        while !remaining.is_empty() {
-                                            let chunk_end = if remaining.len() <= max_chunk {
-                                                remaining.len()
-                                            } else {
-                                                // Find last newline within max_chunk
-                                                remaining[..max_chunk]
-                                                    .rfind('\n')
-                                                    .map(|i| i + 1)
-                                                    .unwrap_or(max_chunk)
-                                            };
-                                            let chunk = &remaining[..chunk_end];
-                                            let bytes = chunk.as_bytes().to_vec();
-                                            pty_send(
-                                                &session.pty_sender,
-                                                PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
-                                            );
-                                            remaining = &remaining[chunk_end..];
-                                            // Small delay between chunks so ConPTY can process
-                                            if !remaining.is_empty() {
-                                                std::thread::sleep(std::time::Duration::from_millis(50));
-                                            }
-                                        }
-                                    }
+                                    let bytes = format!("{}\r", text_to_type).into_bytes();
+                                    pty_send(
+                                        &session.pty_sender,
+                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                    );
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
