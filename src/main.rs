@@ -1041,6 +1041,13 @@ For each feature, guide {implementer_name} through this cycle:
 5. DECIDE: Tests pass → move to next feature. Tests fail → tell {implementer_name} to fix.
    Stuck after 3 attempts → tell {implementer_name} to revert and try different approach.
 
+CRITICAL: Break large files into incremental steps. NEVER ask {implementer_name} to create an entire large file (500+ lines) in one go — the API will time out. Instead:
+- Step 1: Create the file with the skeleton (HTML structure, CSS variables, nav)
+- Step 2: Add section 1 content
+- Step 3: Add section 2 content
+- Continue until complete
+Each step should produce a working file that can be committed.
+
 You CANNOT implement code yourself — you must instruct {implementer_name} to do it."#
             )
         };
