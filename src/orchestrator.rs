@@ -522,6 +522,8 @@ pub struct OrchestratorState {
     pub resolved_mode: String,
     /// Resolved verification mode. Set at activation time.
     pub resolved_verify_mode: String,
+    /// Iterations between automatic context refresh checkpoints.
+    pub checkpoint_interval: u32,
 }
 
 impl OrchestratorState {
@@ -568,6 +570,7 @@ impl OrchestratorState {
             project_root: String::new(),
             resolved_mode: String::new(),
             resolved_verify_mode: String::new(),
+            checkpoint_interval: AUTO_CHECKPOINT_INTERVAL,
         }
     }
 
@@ -585,7 +588,8 @@ impl OrchestratorState {
 
     /// Check if automatic checkpoint should trigger.
     pub fn should_auto_checkpoint(&self) -> bool {
-        self.iterations_since_checkpoint >= AUTO_CHECKPOINT_INTERVAL
+        self.checkpoint_interval > 0
+            && self.iterations_since_checkpoint >= self.checkpoint_interval
     }
 
     /// Record a response and check if we're stuck (N identical consecutive responses).

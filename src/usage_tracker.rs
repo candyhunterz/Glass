@@ -189,15 +189,27 @@ pub fn start_polling(
 }
 
 /// Format usage for status bar display.
-/// Returns something like "5h: 42% | 7d: 15%" or "5h: --% | 7d: --%" if unavailable.
+/// Returns something like "5h: 42% | 7d: 15%".
+/// When data is stale (>5 min since last fetch), shows last known values
+/// with a "~" prefix (e.g., "5h: ~42% | 7d: ~15%").
+/// Shows "5h: --% | 7d: --%" only when no data has ever been fetched.
 pub fn format_status_bar(state: &UsageState) -> String {
+    // If too many consecutive failures, hide the display entirely
+    // to avoid stale data confusion.
+    if state.consecutive_failures >= 3 && state.data.is_none() {
+        return String::new();
+    }
+
     match &state.data {
         Some(data) => {
-            // Show stale data with a marker if recent polls are failing,
-            // but still display the last known values rather than --.
             let stale = data.fetched_at.elapsed() > Duration::from_secs(300);
             if stale {
-                "5h: --% | 7d: --%".to_string()
+                // Show last known values with ~ prefix so user still has info
+                format!(
+                    "5h: ~{:.0}% | 7d: ~{:.0}%",
+                    data.five_hour_utilization * 100.0,
+                    data.seven_day_utilization * 100.0
+                )
             } else {
                 format!(
                     "5h: {:.0}% | 7d: {:.0}%",
@@ -267,8 +279,8 @@ mod tests {
     }
 
     #[test]
-    fn format_status_bar_stale_data_shows_dashes() {
-        // Data older than 5 minutes should show --
+    fn format_status_bar_stale_data_shows_approximate() {
+        // Data older than 5 minutes should show last known values with ~ prefix
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.50,
@@ -280,7 +292,18 @@ mod tests {
             paused: false,
             consecutive_failures: 0,
         };
-        assert_eq!(format_status_bar(&state), "5h: --% | 7d: --%");
+        assert_eq!(format_status_bar(&state), "5h: ~50% | 7d: ~10%");
+    }
+
+    #[test]
+    fn format_status_bar_no_data_many_failures_hides() {
+        // No data + many failures should return empty string
+        let state = UsageState {
+            data: None,
+            paused: false,
+            consecutive_failures: 3,
+        };
+        assert_eq!(format_status_bar(&state), "");
     }
 
     #[test]

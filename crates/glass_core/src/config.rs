@@ -189,6 +189,9 @@ pub struct OrchestratorSection {
     /// Maximum iterations before checkpoint-stop. None = unlimited.
     #[serde(default)]
     pub max_iterations: Option<u32>,
+    /// Iterations between automatic context refresh checkpoints. Default 15.
+    #[serde(default = "default_orch_checkpoint_interval")]
+    pub checkpoint_interval: u32,
     /// Orchestrator mode: "auto" (default), "build", "audit", or "general".
     /// Auto mode: detects project type at activation time (build for code projects, general otherwise).
     /// Build mode: agent has observation-only tools, delegates implementation to Claude Code.
@@ -245,6 +248,9 @@ fn default_orch_prd_path() -> String {
 }
 fn default_orch_checkpoint_path() -> String {
     ".glass/checkpoint.md".to_string()
+}
+fn default_orch_checkpoint_interval() -> u32 {
+    15
 }
 fn default_orch_max_retries() -> u32 {
     3

@@ -1325,8 +1325,8 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
- "tokio",
  "tracing",
+ "ureq",
  "windows-sys 0.59.0",
 ]
 

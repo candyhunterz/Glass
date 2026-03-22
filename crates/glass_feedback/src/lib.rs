@@ -607,6 +607,205 @@ Respond with at most ONE script. Keep it under 30 lines.",
 }
 
 // ---------------------------------------------------------------------------
+// Run summary
+// ---------------------------------------------------------------------------
+
+/// Summary data for a single orchestrator run's feedback loop activity.
+/// Passed to [`build_run_summary`] to generate the markdown report.
+pub struct RunSummaryInput<'a> {
+    pub run_id: &'a str,
+    pub data: &'a RunData,
+    pub result: &'a FeedbackResult,
+    pub ablation_target: Option<&'a str>,
+    pub active_rules: &'a [types::Rule],
+    pub attribution_scores: &'a [types::AttributionScore],
+}
+
+/// Build a per-run feedback summary in markdown.
+///
+/// Covers what the feedback loop did across all four tiers:
+/// config tuning, behavioral rules, prompt hints, and script generation.
+pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
+    let d = input.data;
+    let r = input.result;
+    let iter_nz = d.iterations.max(1);
+
+    let mut out = String::with_capacity(2048);
+
+    // Header
+    out.push_str(&format!(
+        "# Feedback Loop Summary — {}\n\n",
+        input.run_id
+    ));
+
+    // Run overview
+    let mins = d.duration_secs / 60;
+    let secs = d.duration_secs % 60;
+    out.push_str("## Run Overview\n\n");
+    out.push_str(&format!(
+        "| Metric | Value |\n|--------|-------|\n\
+         | Iterations | {} |\n\
+         | Duration | {}m {}s |\n\
+         | Commits | {} |\n\
+         | Stuck events | {} ({:.0}%) |\n\
+         | Reverts | {} ({:.0}%) |\n\
+         | Checkpoints | {} ({:.0}%) |\n\
+         | Completion | {} |\n\n",
+        d.iterations,
+        mins,
+        secs,
+        d.commit_count,
+        d.stuck_count,
+        d.stuck_count as f64 / iter_nz as f64 * 100.0,
+        d.revert_count,
+        d.revert_count as f64 / (d.revert_count + d.keep_count).max(1) as f64 * 100.0,
+        d.checkpoint_count,
+        d.checkpoint_count as f64 / iter_nz as f64 * 100.0,
+        d.completion_reason,
+    ));
+
+    // Tier 1: Config Tuning
+    out.push_str("## Tier 1: Config Tuning\n\n");
+    if r.config_changes.is_empty() {
+        out.push_str("No config changes applied this run.\n\n");
+    } else {
+        out.push_str("| Field | Old | New |\n|-------|-----|-----|\n");
+        for (field, old, new) in &r.config_changes {
+            out.push_str(&format!("| {} | {} | {} |\n", field, old, new));
+        }
+        out.push('\n');
+    }
+
+    // Tier 2: Behavioral Rules
+    out.push_str("## Tier 2: Behavioral Rules\n\n");
+
+    // New findings
+    if r.findings.is_empty() {
+        out.push_str("No new findings detected.\n\n");
+    } else {
+        out.push_str(&format!(
+            "**{} new finding(s):**\n\n",
+            r.findings.len()
+        ));
+        for f in &r.findings {
+            out.push_str(&format!(
+                "- `{}` ({:?}, {:?}) — {}\n",
+                f.id, f.severity, f.category, f.evidence
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Promotions / rejections
+    if !r.rules_promoted.is_empty() {
+        out.push_str(&format!(
+            "**Promoted** (provisional → confirmed): {}\n\n",
+            r.rules_promoted.join(", ")
+        ));
+    }
+    if !r.rules_rejected.is_empty() {
+        out.push_str(&format!(
+            "**Rejected** (regression detected): {}\n\n",
+            r.rules_rejected.join(", ")
+        ));
+    }
+
+    // Regression
+    match &r.regression {
+        Some(regression::RegressionResult::Regressed { reasons }) => {
+            out.push_str(&format!("**Regression detected:** {}\n\n", reasons.join(", ")));
+        }
+        Some(regression::RegressionResult::Improved) => {
+            out.push_str("**Improved** vs previous run.\n\n");
+        }
+        _ => {
+            out.push_str("Metrics: neutral (no regression or improvement).\n\n");
+        }
+    }
+
+    // Active rules + firings
+    if input.active_rules.is_empty() {
+        out.push_str("No active rules.\n\n");
+    } else {
+        out.push_str("**Active rules this run:**\n\n");
+        out.push_str("| Rule | Status | Action | Fired |\n|------|--------|--------|-------|\n");
+        for rule in input.active_rules {
+            out.push_str(&format!(
+                "| {} | {:?} | {} | {}x |\n",
+                rule.id, rule.status, rule.action, rule.trigger_count
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Ablation
+    out.push_str("## Ablation Testing\n\n");
+    if let Some(target) = input.ablation_target {
+        let result_str = input
+            .active_rules
+            .iter()
+            .find(|r| r.id == target)
+            .map(|r| format!("{:?}", r.ablation_result))
+            .unwrap_or_else(|| "unknown".to_string());
+        out.push_str(&format!(
+            "Target: `{}` — Result: **{}**\n\n",
+            target, result_str
+        ));
+    } else {
+        out.push_str("No ablation target this run.\n\n");
+    }
+
+    // Attribution
+    out.push_str("## Rule Attribution\n\n");
+    if input.attribution_scores.is_empty() {
+        out.push_str("No attribution data yet.\n\n");
+    } else {
+        out.push_str("| Rule | Passenger Score | Runs Fired | Runs Not Fired |\n|------|----------------|------------|----------------|\n");
+        for score in input.attribution_scores {
+            out.push_str(&format!(
+                "| {} | {:.0}% | {} | {} |\n",
+                score.rule_id,
+                score.passenger_score * 100.0,
+                score.runs_fired,
+                score.runs_not_fired,
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Tier 3: Prompt Hints
+    out.push_str("## Tier 3: Prompt Hints\n\n");
+    let hint_count = input
+        .active_rules
+        .iter()
+        .filter(|r| r.action == "prompt_hint")
+        .count();
+    if hint_count == 0 {
+        out.push_str("No prompt hints active.\n\n");
+    } else {
+        out.push_str(&format!("{} prompt hint(s) injected into agent context.\n\n", hint_count));
+    }
+
+    // Tier 4: Script Generation
+    out.push_str("## Tier 4: Script Generation\n\n");
+    if r.script_prompt.is_some() {
+        out.push_str("Script generation **triggered** — ephemeral agent spawned.\n\n");
+    } else {
+        out.push_str("Not triggered (findings sufficient or waste/stuck rates low).\n\n");
+    }
+
+    // LLM Analysis
+    out.push_str("## LLM Analysis\n\n");
+    if r.llm_prompt.is_some() {
+        out.push_str("LLM analysis **triggered** — ephemeral agent spawned for qualitative review.\n\n");
+    } else {
+        out.push_str("Not triggered (feedback_llm disabled).\n\n");
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 

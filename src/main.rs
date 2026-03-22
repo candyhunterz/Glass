@@ -313,9 +313,6 @@ struct AgentRuntime {
     restart_count: u32,
     /// Timestamp of last crash, used for exponential backoff.
     last_crash: Option<std::time::Instant>,
-    /// Generation counter — incremented on each respawn. Used to ignore stale AgentCrashed
-    /// events from orphaned reader threads of previously killed agents.
-    generation: u64,
     /// Project root path (for coordination event logging and handoff).
     project_root: String,
 }
@@ -1236,6 +1233,7 @@ fn try_spawn_agent(
             // thread's behavior so all existing AppEvent handling code stays unchanged.
             let proxy_drain = proxy.clone();
             let project_root_drain = project_root.clone();
+            let drain_generation = generation;
             std::thread::Builder::new()
                 .name("glass-agent-event-drain".into())
                 .spawn(move || {
@@ -1314,8 +1312,11 @@ fn try_spawn_agent(
                                 }
                             }
                             glass_agent_backend::AgentEvent::Crashed => {
-                                let _ = proxy_drain
-                                    .send_event(glass_core::event::AppEvent::AgentCrashed);
+                                let _ = proxy_drain.send_event(
+                                    glass_core::event::AppEvent::AgentCrashed {
+                                        generation: drain_generation,
+                                    },
+                                );
                                 break;
                             }
                         }
@@ -1358,7 +1359,6 @@ fn try_spawn_agent(
                 config,
                 restart_count,
                 last_crash,
-                generation,
                 project_root,
             })
         }
@@ -1697,6 +1697,14 @@ impl Processor {
     fn run_feedback_on_end(&mut self) {
         if let Some(feedback_state) = self.feedback_state.take() {
             let run_data = self.build_feedback_run_data();
+            let ablation_target = feedback_state.ablation_target.clone();
+            let active_rules: Vec<glass_feedback::types::Rule> =
+                feedback_state.engine.rules.clone();
+            let attribution_scores = feedback_state.attribution_scores.clone();
+            let run_id = feedback_state.snapshot.run_id.clone();
+            // Clone run_data for summary (on_run_end consumes it)
+            let run_data_for_summary = run_data.clone();
+
             let result = glass_feedback::on_run_end(feedback_state, run_data);
             if !result.config_changes.is_empty() {
                 self.feedback_write_pending = true;
@@ -1720,6 +1728,33 @@ impl Processor {
                 result.rules_rejected.len(),
                 result.config_changes.len(),
             );
+
+            // Write per-run feedback summary
+            {
+                let summary_input = glass_feedback::RunSummaryInput {
+                    run_id: &run_id,
+                    data: &run_data_for_summary,
+                    result: &result,
+                    ablation_target: ablation_target.as_deref(),
+                    active_rules: &active_rules,
+                    attribution_scores: &attribution_scores,
+                };
+                let summary = glass_feedback::build_run_summary(&summary_input);
+                let summary_path = std::path::Path::new(&self.orchestrator.project_root)
+                    .join(".glass")
+                    .join(format!(
+                        "feedback-{}.md",
+                        chrono::Local::now().format("%Y%m%d-%H%M%S")
+                    ));
+                if let Some(parent) = summary_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&summary_path, &summary) {
+                    tracing::warn!("Failed to write feedback summary: {e}");
+                } else {
+                    tracing::info!("Feedback summary written to {}", summary_path.display());
+                }
+            }
 
             // Apply script lifecycle transitions based on regression result.
             let regressed = matches!(
@@ -1937,6 +1972,25 @@ impl Processor {
             .as_ref()
             .and_then(|a| a.orchestrator.as_ref())
             .and_then(|o| o.max_iterations);
+        self.orchestrator.checkpoint_interval = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.checkpoint_interval)
+            .unwrap_or(orchestrator::AUTO_CHECKPOINT_INTERVAL);
+
+        // 1b. Kill existing agent EARLY — before context gathering.
+        // On Windows, the old `claude` process holds ~/.glass/agent-system-prompt.txt
+        // locked. If we kill it and immediately spawn a new one (as respawn_orchestrator_agent
+        // does), the file is still locked and the spawn fails. By killing here, the
+        // ~100-200ms of context gathering (steps 2-9: CWD capture, git log, file reads)
+        // gives the old process time to fully exit and release file locks.
+        if self.agent_runtime.is_some() {
+            tracing::info!("Orchestrator: killing existing agent early to release file locks");
+            self.agent_runtime = None;
+            self.agent_generation += 1;
+        }
 
         // 2. Capture current CWD from the terminal (not Glass's CWD)
         let current_cwd = self
@@ -2003,10 +2057,19 @@ impl Processor {
         if context.has_no_files() {
             self.orchestrator.active = false;
             self.centered_toast = Some((
-                "Orchestrator: no project context found (add PRD.md or .glass/agent-instructions.md)".to_string(),
+                format!(
+                    "Orchestrator: no context files found in {} (add PRD.md or .glass/agent-instructions.md)",
+                    current_cwd
+                ),
                 std::time::Instant::now(),
             ));
-            tracing::warn!("Orchestrator activation aborted — no context files found");
+            tracing::warn!(
+                "Orchestrator activation aborted — no context files found in CWD={}. \
+                 config_prd_path={:?}, config_instructions_present={}",
+                current_cwd,
+                config_prd_path,
+                config_instructions.is_some(),
+            );
             if let Some(ctx) = self.windows.get_mut(&window_id) {
                 ctx.mark_dirty_and_redraw();
             }
@@ -2170,13 +2233,9 @@ impl Processor {
         self.agent_runtime = None;
         self.agent_generation += 1;
 
-        // Clear instruction buffer on respawn (fresh context)
+        // Clear instruction buffer and bounded stop flag on respawn (fresh context)
         self.orchestrator.instruction_buffer.clear();
-
-        // Create new activity channel
-        let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
-        let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
-        self.activity_stream_tx = Some(new_tx);
+        self.orchestrator.bounded_stop_pending = false;
 
         // Build agent config — mark orchestrator enabled and inject resolved mode
         // since this function is only called when the orchestrator is active at runtime
@@ -2207,11 +2266,18 @@ impl Processor {
 
         // Spawn new agent with handoff as the initial stdin message.
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
+        // Retry up to 2 times with a brief delay if spawn fails (process cleanup race).
         let system_prompt = build_system_prompt(&agent_config, cwd);
         let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
         let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
         let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
         let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
+
+        // Create new activity channel
+        let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
+        let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
+        self.activity_stream_tx = Some(new_tx);
+
         self.agent_runtime = try_spawn_agent(
             agent_config,
             new_rx,
@@ -2230,7 +2296,13 @@ impl Processor {
 
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
         if self.agent_runtime.is_none() {
-            tracing::error!("Orchestrator: agent respawn failed — deactivating orchestrator");
+            tracing::error!(
+                "Orchestrator: agent respawn failed — deactivating. Check ~/.glass/agent-diag.txt"
+            );
+            self.centered_toast = Some((
+                "Orchestrator: agent respawn failed (check ~/.glass/agent-diag.txt)".to_string(),
+                std::time::Instant::now(),
+            ));
             {
                 let mut event = glass_scripting::HookEventData::new();
                 event.set("iterations", self.orchestrator.iteration as i64);
@@ -2244,6 +2316,9 @@ impl Processor {
             self.run_feedback_on_end();
             self.orchestrator.active = false;
             self.orchestrator.response_pending = false;
+            for ctx in self.windows.values_mut() {
+                ctx.mark_dirty_and_redraw();
+            }
             return;
         }
 
@@ -2360,6 +2435,64 @@ impl Processor {
         }
     }
 
+    /// Clear the implementer's conversation context during checkpoint.
+    ///
+    /// Types the appropriate clear command into the PTY based on the configured
+    /// implementer. This ensures both the Glass Agent (reviewer) AND the
+    /// implementer start with fresh context after a checkpoint.
+    fn clear_implementer_context(&self) {
+        let implementer = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.orchestrator.as_ref())
+            .map(|o| o.implementer.as_str())
+            .unwrap_or("claude-code");
+
+        // Determine the clear command based on implementer type.
+        // Some implementers support /clear, others need exit+restart.
+        let clear_cmd = match implementer {
+            "claude-code" => "/clear",
+            "aider" => "/clear",
+            "gemini" => "/clear",
+            // Codex and custom don't have a known clear command — skip
+            _ => {
+                tracing::info!(
+                    "Orchestrator: no clear command for implementer '{}', skipping context clear",
+                    implementer
+                );
+                return;
+            }
+        };
+
+        if let Some(ctx) = self.windows.values().next() {
+            if let Some(session) = ctx.session_mux.focused_session() {
+                tracing::info!(
+                    "Orchestrator: clearing implementer context ({}): {}",
+                    implementer,
+                    clear_cmd
+                );
+                let bytes = clear_cmd.as_bytes().to_vec();
+                pty_send(
+                    &session.pty_sender,
+                    PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                );
+                // Send Enter separately to avoid paste mode
+                let sender = session.pty_sender.clone();
+                std::thread::Builder::new()
+                    .name("glass-orch-enter".into())
+                    .spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                        pty_send(
+                            &sender,
+                            PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
+                        );
+                    })
+                    .ok();
+            }
+        }
+    }
+
     /// Write the cached fallback checkpoint and respawn.
     fn write_checkpoint_and_respawn(&mut self, cwd: &str) {
         let content = self
@@ -2384,7 +2517,69 @@ impl Processor {
         self.orchestrator.checkpoint_phase = orchestrator::CheckpointPhase::Idle;
         self.orchestrator.cached_checkpoint_fallback = None;
         self.orchestrator.reset_stuck();
-        // Respawn the agent
+
+        // If this checkpoint was triggered by a bounded stop, deactivate
+        // the orchestrator instead of respawning. Write the bounded summary
+        // to the terminal so the user sees a clean finish.
+        if self.orchestrator.bounded_stop_pending {
+            tracing::info!(
+                "Orchestrator: bounded stop complete after {} iterations",
+                self.orchestrator.iteration
+            );
+
+            let summary = orchestrator::build_bounded_summary(
+                self.orchestrator.iteration,
+                self.orchestrator.metric_baseline.as_ref(),
+                &cp_path.to_string_lossy(),
+            );
+
+            // Write summary to terminal
+            if let Some(ctx) = self.windows.values().next() {
+                if let Some(session) = ctx.session_mux.focused_session() {
+                    let bytes = format!("\r\n{}\r\n", summary).into_bytes();
+                    pty_send(
+                        &session.pty_sender,
+                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                    );
+                }
+            }
+
+            orchestrator::generate_postmortem(
+                &self.orchestrator.project_root,
+                self.orchestrator.iteration,
+                self.orchestrator_activated_at.map(|t| t.elapsed()),
+                self.orchestrator.metric_baseline.as_ref(),
+                &format!("Bounded limit ({})", self.orchestrator.iteration),
+                &[],
+            );
+
+            {
+                let mut event = glass_scripting::HookEventData::new();
+                event.set("iterations", self.orchestrator.iteration as i64);
+                fire_hook_on_bridge(
+                    &mut self.script_bridge,
+                    &self.orchestrator.project_root,
+                    glass_scripting::HookPoint::OrchestratorRunEnd,
+                    &event,
+                );
+            }
+            self.run_feedback_on_end();
+            self.agent_runtime = None;
+            self.orchestrator.active = false;
+            self.orchestrator.bounded_stop_pending = false;
+            if let Some(handle) = self.artifact_watcher_thread.take() {
+                handle.thread().unpark();
+            }
+            for ctx in self.windows.values_mut() {
+                ctx.mark_dirty_and_redraw();
+            }
+            return;
+        }
+
+        // Normal checkpoint — clear implementer context THEN respawn the agent.
+        // The /clear must happen before respawn so the implementer has fresh
+        // context when the new Glass Agent starts sending instructions.
+        self.clear_implementer_context();
         let handoff =
             "Resume from checkpoint. Read .glass/checkpoint.md and continue.\n".to_string();
         self.respawn_orchestrator_agent(cwd, handoff);
@@ -3822,6 +4017,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .and_then(|a| a.orchestrator.as_ref())
                                 .map(|o| o.ablation_sweep_interval)
                                 .unwrap_or(20),
+                            orchestrator_checkpoint_interval: self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.orchestrator.as_ref())
+                                .map(|o| o.checkpoint_interval)
+                                .unwrap_or(15),
                             agent_provider: self
                                 .config
                                 .agent
@@ -5929,8 +6131,14 @@ impl ApplicationHandler<AppEvent> for Processor {
         match event {
             AppEvent::TerminalDirty { window_id } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
-                    tracing::trace!("Terminal output received — requesting redraw");
-                    ctx.mark_dirty_and_redraw();
+                    tracing::trace!("Terminal output received — marking dirty");
+                    // Only set the dirty flag — do NOT call request_redraw() here.
+                    // On Windows, TerminalDirty floods the message queue via PostMessage.
+                    // PostMessage has higher priority than WM_PAINT, so request_redraw()
+                    // (which generates WM_PAINT) never gets processed during continuous
+                    // output. Instead, about_to_wait() coalesces all dirty flags into a
+                    // single request_redraw() call when the event queue is drained.
+                    ctx.render_dirty = true;
                 }
             }
             AppEvent::SetTitle {
@@ -7252,19 +7460,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.mark_dirty_and_redraw();
                 }
             }
-            AppEvent::AgentCrashed => {
-                // Ignore stale crashes from orphaned reader threads of previously killed agents.
-                // After respawn, self.agent_generation is incremented. If the current runtime's
-                // generation doesn't match, this crash is from an old agent — ignore it.
-                let current_gen = self
-                    .agent_runtime
-                    .as_ref()
-                    .map(|r| r.generation)
-                    .unwrap_or(0);
-                if current_gen != self.agent_generation {
+            AppEvent::AgentCrashed { generation: crash_gen } => {
+                // Ignore stale crashes from orphaned reader threads of previously
+                // killed agents. The crash event carries the generation of the agent
+                // that died. Only process if it matches the CURRENT agent's generation.
+                if crash_gen != self.agent_generation {
                     tracing::info!(
-                        "AgentRuntime: ignoring stale AgentCrashed (gen {} vs current {})",
-                        current_gen,
+                        "AgentRuntime: ignoring stale AgentCrashed (crash gen {} vs current {})",
+                        crash_gen,
                         self.agent_generation
                     );
                     return;
@@ -7531,12 +7734,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                             // Tell Claude Code to revert
                             if let Some(ctx) = self.windows.values().next() {
                                 if let Some(session) = ctx.session_mux.focused_session() {
-                                    let msg = "You've tried this same approach multiple times without making progress. STOP and take a different approach:\n1. If you have uncommitted changes, stash them: git stash\n2. Think about WHY the current approach isn't working\n3. Try a fundamentally different strategy, not a minor variation\n";
+                                    let msg = "You've tried this same approach multiple times without making progress. STOP and take a different approach: 1. If you have uncommitted changes, stash them: git stash 2. Think about WHY the current approach isn't working 3. Try a fundamentally different strategy, not a minor variation";
                                     let bytes = msg.as_bytes().to_vec();
                                     pty_send(
                                         &session.pty_sender,
                                         PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
                                     );
+                                    // Send Enter separately to avoid paste mode detection
+                                    let sender = session.pty_sender.clone();
+                                    std::thread::Builder::new()
+                                        .name("glass-orch-enter".into())
+                                        .spawn(move || {
+                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            pty_send(
+                                                &sender,
+                                                PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
+                                            );
+                                        })
+                                        .ok();
                                 }
                             }
 
@@ -7605,14 +7820,38 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     // Collapse newlines to spaces so Claude Code treats
                                     // it as typed input, not a multi-line paste.
-                                    let single_line = text_to_type
-                                        .replace('\n', " ")
-                                        .replace('\r', " ");
-                                    let bytes = format!("{}\r", single_line).into_bytes();
+                                    let single_line =
+                                        text_to_type.replace(['\n', '\r'], " ");
+
+                                    // Send text and Enter as SEPARATE writes with a delay.
+                                    // When sent together in one write, Claude Code's readline
+                                    // detects the batch as a paste and shows "[Pasted text]",
+                                    // waiting for manual Enter to confirm. By splitting them:
+                                    // 1. Text arrives → Claude Code may detect it as paste
+                                    //    (single-line, no newline)
+                                    // 2. After 150ms, Enter arrives as a separate event →
+                                    //    Claude Code treats it as confirmation/submit
+                                    let text_bytes = single_line.into_bytes();
                                     pty_send(
                                         &session.pty_sender,
-                                        PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
+                                        PtyMsg::Input(std::borrow::Cow::Owned(text_bytes)),
                                     );
+
+                                    // Schedule the Enter key after a delay via a background
+                                    // thread. This ensures the PTY reader processes the text
+                                    // before Enter arrives as a separate input event.
+                                    let sender = session.pty_sender.clone();
+                                    std::thread::Builder::new()
+                                        .name("glass-orch-enter".into())
+                                        .spawn(move || {
+                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            pty_send(
+                                                &sender,
+                                                PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
+                                            );
+                                        })
+                                        .ok();
+
                                     self.orchestrator.mark_pty_write();
                                 }
                             }
@@ -7695,7 +7934,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if let Some(ctx) = self.windows.values().next() {
                             if let Some(session) = ctx.session_mux.focused_session() {
                                 let msg = format!(
-                                    "All PRD items are complete. Commit any remaining changes with a summary commit message.{}\r",
+                                    "All PRD items are complete. Commit any remaining changes with a summary commit message.{}",
                                     if summary.is_empty() { String::new() } else { format!(" Summary: {}", summary) }
                                 );
                                 let bytes = msg.into_bytes();
@@ -7703,6 +7942,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     &session.pty_sender,
                                     PtyMsg::Input(std::borrow::Cow::Owned(bytes)),
                                 );
+                                // Send Enter separately to avoid paste mode
+                                let sender = session.pty_sender.clone();
+                                std::thread::Builder::new()
+                                    .name("glass-orch-enter".into())
+                                    .spawn(move || {
+                                        std::thread::sleep(std::time::Duration::from_millis(150));
+                                        pty_send(
+                                            &sender,
+                                            PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
+                                        );
+                                    })
+                                    .ok();
                                 self.orchestrator.mark_pty_write();
                             }
                         }
@@ -9394,8 +9645,33 @@ impl ApplicationHandler<AppEvent> for Processor {
         }
     }
 
-    /// Called when the event queue is drained. No-op for Phase 1.
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
+    /// Called when the event queue is drained.
+    ///
+    /// On Windows, `request_redraw()` generates WM_PAINT which has the LOWEST
+    /// message priority — `PeekMessage` only returns it when no posted messages
+    /// exist. PTY output generates `PostMessage` events (TerminalDirty, Shell,
+    /// etc.) that can starve WM_PAINT during continuous output.
+    ///
+    /// Fix: use `ControlFlow::Poll` when any window is dirty. Poll mode runs
+    /// the event loop without blocking, so `PeekMessage` is called in a tight
+    /// loop. Combined with the 16ms Wakeup throttle in the PTY reader (at most
+    /// ~60 TerminalDirty events/sec), there are many poll iterations between
+    /// PostMessage events where WM_PAINT can be returned. When all windows are
+    /// clean, switch back to `Wait` to avoid burning CPU.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let mut any_dirty = false;
+        for ctx in self.windows.values() {
+            if ctx.render_dirty {
+                any_dirty = true;
+                ctx.window.request_redraw();
+            }
+        }
+        if any_dirty {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+        } else {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        }
+    }
 }
 
 /// Parse a Tier 4 script generation response from an ephemeral LLM agent.
@@ -10346,6 +10622,21 @@ fn handle_settings_increment(
             Some((
                 Some("agent.orchestrator"),
                 "ablation_sweep_interval",
+                new_val.to_string(),
+            ))
+        }
+        // Orchestrator: checkpoint_interval: step 5 (field index 10)
+        (6, 10) => {
+            let current = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.checkpoint_interval)
+                .unwrap_or(15) as i64;
+            let new_val = (current + delta * 5).clamp(5, 100);
+            Some((
+                Some("agent.orchestrator"),
+                "checkpoint_interval",
                 new_val.to_string(),
             ))
         }

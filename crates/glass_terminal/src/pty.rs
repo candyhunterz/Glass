@@ -290,6 +290,14 @@ fn glass_pty_loop(
     let mut interest = PollingEvent::readable(0);
     let mut output_buffer = OutputBuffer::new((max_output_capture_kb as usize) * 1024);
 
+    // Throttle Wakeup events to prevent flooding the winit event loop.
+    // On Windows, EventLoopProxy::send_event uses PostMessage which has
+    // higher priority than WM_PAINT. Without throttling, rapid Wakeups
+    // starve rendering — the terminal grid updates but never repaints.
+    let mut last_wakeup = Instant::now();
+    let wakeup_interval = std::time::Duration::from_millis(16); // ~60fps
+    let mut wakeup_pending = false; // true if a wakeup was suppressed by throttle
+
     // Orchestrator silence detection (periodic, not one-shot)
     let mut smart_trigger = if orchestrator_silence_secs > 0 {
         Some(crate::silence::SmartTrigger::new(
@@ -317,6 +325,19 @@ fn glass_pty_loop(
             });
         }
 
+        // If a wakeup was suppressed by the throttle, cap the poll timeout
+        // so we wake up when the throttle expires and send it. Without this,
+        // the poller can block for seconds (silence timeout) leaving the
+        // terminal grid updated but never triggering a redraw.
+        if wakeup_pending {
+            let elapsed = Instant::now().duration_since(last_wakeup);
+            let remaining = wakeup_interval.saturating_sub(elapsed);
+            timeout = Some(match timeout {
+                Some(t) => t.min(remaining),
+                None => remaining,
+            });
+        }
+
         events.clear();
         if let Err(err) = poll.wait(&mut events, timeout) {
             match err.kind() {
@@ -325,6 +346,16 @@ fn glass_pty_loop(
                     tracing::error!("PTY poll error: {err}");
                     break 'event_loop;
                 }
+            }
+        }
+
+        // Flush any suppressed wakeup now that the throttle has expired.
+        if wakeup_pending {
+            let now = Instant::now();
+            if now.duration_since(last_wakeup) >= wakeup_interval {
+                event_proxy.send_event(Event::Wakeup);
+                last_wakeup = now;
+                wakeup_pending = false;
             }
         }
 
@@ -372,7 +403,7 @@ fn glass_pty_loop(
                         if let Some(code) = code {
                             event_proxy.send_event(Event::ChildExit(code));
                         }
-                        // Drain remaining bytes on exit
+                        // Drain remaining bytes on exit (always send final wakeup)
                         let _ = pty_read_with_scan(
                             &mut pty,
                             &terminal,
@@ -386,7 +417,7 @@ fn glass_pty_loop(
                             smart_trigger.as_mut(),
                         );
                         terminal.lock().exit();
-                        event_proxy.send_event(Event::Wakeup);
+                        event_proxy.send_event(Event::Wakeup); // final wakeup on exit
                         break 'event_loop;
                     }
                 }
@@ -396,7 +427,7 @@ fn glass_pty_loop(
                     }
 
                     if event.readable {
-                        if let Err(err) = pty_read_with_scan(
+                        match pty_read_with_scan(
                             &mut pty,
                             &terminal,
                             &event_proxy,
@@ -408,8 +439,26 @@ fn glass_pty_loop(
                             &mut output_buffer,
                             smart_trigger.as_mut(),
                         ) {
-                            tracing::error!("Error reading from PTY: {err}");
-                            break 'event_loop;
+                            Ok(needs_wakeup) => {
+                                // Throttle Wakeup events to ~60fps so the main
+                                // thread's WM_PAINT isn't starved on Windows.
+                                if needs_wakeup {
+                                    let now = Instant::now();
+                                    if now.duration_since(last_wakeup) >= wakeup_interval {
+                                        event_proxy.send_event(Event::Wakeup);
+                                        last_wakeup = now;
+                                        wakeup_pending = false;
+                                    } else {
+                                        // Suppressed — will be flushed when throttle
+                                        // expires (poll timeout is capped above).
+                                        wakeup_pending = true;
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!("Error reading from PTY: {err}");
+                                break 'event_loop;
+                            }
                         }
                     }
 
@@ -468,7 +517,7 @@ fn pty_read_with_scan(
     buf: &mut [u8],
     output_buffer: &mut OutputBuffer,
     mut smart_trigger: Option<&mut crate::silence::SmartTrigger>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let mut unprocessed = 0;
     let mut processed = 0;
 
@@ -570,12 +619,15 @@ fn pty_read_with_scan(
         }
     }
 
-    // Queue terminal redraw unless all processed bytes were synchronized.
+    // Return whether a wakeup is needed (data was processed and not fully
+    // synchronized). The caller throttles Wakeup sends to avoid flooding the
+    // event loop — on Windows, PostMessage has higher priority than WM_PAINT,
+    // so rapid Wakeup events starve rendering.
     if parser.sync_bytes_count() < processed && processed > 0 {
-        event_proxy.send_event(Event::Wakeup);
+        return Ok(true);
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// Write pending data from the write list to a writer (PTY stdin).

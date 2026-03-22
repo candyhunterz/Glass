@@ -66,20 +66,30 @@ impl AgentBackend for ClaudeCliBackend {
         );
 
         // ── (b) Write system prompt ──────────────────────────────────────────
-        let prompt_path = glass_dir.join("agent-system-prompt.txt");
+        // Use a generation-specific filename to avoid file-locking conflicts on
+        // Windows. The old agent process may still hold the previous file open
+        // when the new agent tries to write. With unique names per generation,
+        // there is zero contention.
+        let prompt_path = glass_dir.join(format!("agent-system-prompt-{generation}.txt"));
         if let Err(e) = std::fs::write(&prompt_path, &config.system_prompt) {
             tracing::warn!("ClaudeCliBackend: failed to write system prompt: {}", e);
             return Err(BackendError::SpawnFailed(format!(
                 "failed to write system prompt: {e}"
             )));
         }
+        // Clean up old generation files (best-effort, ignore errors)
+        if generation > 0 {
+            let old_path = glass_dir.join(format!("agent-system-prompt-{}.txt", generation - 1));
+            let _ = std::fs::remove_file(old_path);
+        }
 
         // ── (c) Generate MCP config JSON ─────────────────────────────────────
         let mcp_config_path = if config.mcp_config_path.is_empty() {
             // Generate default MCP config pointing at Glass's own MCP server
+            // Use generation-specific filename to avoid file-locking conflicts.
             (|| -> Option<String> {
                 let exe_path = std::env::current_exe().ok()?;
-                let mcp_json_path = glass_dir.join("agent-mcp.json");
+                let mcp_json_path = glass_dir.join(format!("agent-mcp-{generation}.json"));
                 let mcp_json = serde_json::json!({
                     "mcpServers": {
                         "glass": {

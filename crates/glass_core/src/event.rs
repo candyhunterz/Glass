@@ -178,7 +178,9 @@ pub enum AppEvent {
     /// The agent subprocess completed a query and reported its cost.
     AgentQueryResult { cost_usd: f64 },
     /// The agent subprocess terminated unexpectedly.
-    AgentCrashed,
+    /// `generation` identifies which agent instance crashed, so stale crashes
+    /// from previously killed agents can be filtered out.
+    AgentCrashed { generation: u64 },
     /// Orchestrator: the Glass Agent produced a response to route.
     OrchestratorResponse {
         /// The raw text from the Glass Agent.

@@ -103,6 +103,7 @@ pub struct SettingsConfigSnapshot {
     pub orchestrator_max_prompt_hints: usize,
     pub orchestrator_ablation_enabled: bool,
     pub orchestrator_ablation_sweep_interval: u32,
+    pub orchestrator_checkpoint_interval: u32,
     // Provider
     pub agent_provider: String,
     pub agent_model: String,
@@ -153,6 +154,7 @@ impl Default for SettingsConfigSnapshot {
             orchestrator_max_prompt_hints: 10,
             orchestrator_ablation_enabled: true,
             orchestrator_ablation_sweep_interval: 20,
+            orchestrator_checkpoint_interval: 15,
             agent_provider: "claude-code".to_string(),
             agent_model: "(default)".to_string(),
             orchestrator_persona: "(default)".to_string(),
@@ -1032,6 +1034,12 @@ impl SettingsOverlayRenderer {
                 (
                     "Ablation Sweep Interval",
                     format!("{}", config.orchestrator_ablation_sweep_interval),
+                    false,
+                    false,
+                ),
+                (
+                    "Checkpoint Interval",
+                    format!("{}", config.orchestrator_checkpoint_interval),
                     false,
                     false,
                 ),

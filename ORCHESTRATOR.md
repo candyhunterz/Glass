@@ -228,16 +228,31 @@ The Glass Agent's text response is parsed into structured actions:
 
 ## Checkpoint Cycle
 
-When a checkpoint fires (agent-requested, auto after 15 iterations, or bounded limit):
+When a checkpoint fires (agent-requested, auto after `checkpoint_interval` iterations (default 15), or bounded limit):
 
 1. `trigger_checkpoint_synthesis()` gathers git state, iterations log, metric summary
 2. Builds fallback checkpoint content (pure Rust, no AI)
 3. Spawns ephemeral claude subprocess for AI-synthesized checkpoint (120s timeout)
 4. On completion (or timeout/failure): writes `.glass/checkpoint.md`
-5. Kills current Glass Agent, spawns fresh agent with handoff: "Read .glass/checkpoint.md and continue"
-6. Resets stuck detection, iterations_since_checkpoint counter
+5. **Clears implementer context** — types `/clear` into the PTY so the implementer (Claude Code, Aider, etc.) starts fresh alongside the reviewer. Without this, the implementer's context window fills up over 15+ iterations even though the Glass Agent has fresh context.
+6. If bounded stop: deactivates orchestrator, writes bounded summary, generates post-mortem. Otherwise:
+7. Kills current Glass Agent, spawns fresh agent with handoff: "Read .glass/checkpoint.md and continue"
+8. Resets stuck detection, iterations_since_checkpoint counter, bounded_stop_pending flag
+
+**Generation-specific files:** Each agent spawn writes `agent-system-prompt-{generation}.txt` and `agent-mcp-{generation}.json` to avoid file-locking conflicts on Windows when the old process hasn't fully exited yet.
+
+**Stale crash filtering:** `AppEvent::AgentCrashed` carries the generation of the agent that died. Old agent crashes (from a killed predecessor) are filtered by comparing against the current `agent_generation`.
 
 **Checkpoint.md contains:** completed work summary, current errors, abandoned approaches, key decisions, git state, next steps.
+
+**Implementer clear commands:**
+| Implementer | Clear Command | Notes |
+|-------------|--------------|-------|
+| claude-code | `/clear` | Clears conversation history, keeps session alive |
+| aider | `/clear` | Clears conversation history |
+| gemini | `/clear` | Clears conversation history |
+| codex | (skipped) | No known clear command — context managed externally |
+| custom | (skipped) | User must handle context management |
 
 ## Metric Guard (Verification)
 
@@ -277,8 +292,8 @@ When stuck:
 The Glass Agent is a `claude` subprocess spawned with:
 ```
 claude -p --verbose --output-format stream-json --input-format stream-json
-  --system-prompt-file ~/.glass/agent-system-prompt.txt
-  --mcp-config ~/.glass/agent-mcp.json
+  --system-prompt-file ~/.glass/agent-system-prompt-{generation}.txt
+  --mcp-config ~/.glass/agent-mcp-{generation}.json
   --allowedTools <mode-specific tools>
   --dangerously-skip-permissions
   --disable-slash-commands
@@ -289,7 +304,8 @@ claude -p --verbose --output-format stream-json --input-format stream-json
 - **stderr:** null (prevents deadlock from stderr buffer fill)
 - **Windows:** CREATE_NO_WINDOW flag
 - **Crash recovery:** 3 restart attempts with exponential backoff (5s → 15s → 45s)
-- **Generation tracking:** Each respawn increments `agent_generation` to filter stale AgentCrashed events
+- **Generation tracking:** Each respawn increments `agent_generation`. `AgentCrashed` events carry the generation so stale crashes from killed predecessors are filtered out.
+- **File isolation:** System prompt and MCP config use generation-specific filenames to prevent file-locking conflicts during respawn
 
 ## Usage Tracking
 
@@ -304,6 +320,12 @@ Background thread polls Anthropic OAuth usage API every 60 seconds.
 ## Deferred TypeText
 
 TypeText responses are buffered (not typed immediately) when a block is executing (Claude Code is actively running a command). The deferred queue is flushed one item at a time on each silence trigger. Each flush types one deferred message and returns (letting the terminal process it before the next).
+
+**PTY write protocol:** All orchestrator text→PTY writes use a split-write pattern to avoid Claude Code's paste detection:
+1. Text (newlines collapsed to spaces) is sent as one write
+2. Enter (`\r`) is sent 150ms later via a background thread
+
+Without the split, Claude Code treats `text\r` arriving in a single `read()` as pasted content and shows `[Pasted text #1 +1 lines]`, waiting for manual Enter confirmation.
 
 ## Course Correction (Nudge)
 
@@ -336,6 +358,7 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `iterations.tsv` | Per-iteration log (TSV: iteration, commit, feature, metric, status, description) | `append_iteration_log()` during run |
 | `checkpoint.md` | Last checkpoint for agent context handoff | Checkpoint synthesis |
 | `postmortem-YYYYMMDD-HHMMSS.md` | Run summary report | `generate_postmortem()` on Done/deactivate |
+| `feedback-YYYYMMDD-HHMMSS.md` | Per-run feedback loop summary (tiers fired, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
 | `nudge.md` | User course correction (read and deleted per iteration) | User-created |
 | `agent-instructions.md` | Persistent agent steering file with optional frontmatter (supersedes handoff.md) | User-created |
 | `done` | Completion artifact signal (configurable path) | Agent creates, orchestrator deletes |
@@ -667,6 +690,7 @@ verify_command = ""                # Override auto-detected verify command
 verify_files = []                  # Files to check (general mode)
 completion_artifact = ".glass/done"
 max_iterations = 120               # Bounded run limit (0 = unlimited)
+checkpoint_interval = 15           # Iterations between auto context refresh (5-100)
 agent_prompt_pattern = ""          # Regex for instant prompt detection
 feedback_llm = false               # Enable LLM qualitative analysis (Tier 3 prompt hints)
 max_prompt_hints = 10              # Max Tier 3 prompt hint rules per project
@@ -687,7 +711,7 @@ script_generation = true           # Allow feedback loop to generate Tier 4 scri
 
 | Constant | Value | Location | Purpose |
 |----------|-------|----------|---------|
-| `AUTO_CHECKPOINT_INTERVAL` | 15 | orchestrator.rs:377 | Iterations before auto-checkpoint |
+| `AUTO_CHECKPOINT_INTERVAL` | 15 | orchestrator.rs:378 | Default iterations before auto-checkpoint (overridden by `checkpoint_interval` config) |
 | `CRASH_RECOVERY_GRACE_SECS` | 10 | orchestrator.rs:381 | Ignore PromptStart after typing |
 | `DEPENDENCY_BLOCK_MAX_ITERATIONS` | 3 | orchestrator.rs:384 | Auto-clear dependency block |
 | `SYNTHESIS_TIMEOUT_SECS` | 120 | orchestrator.rs:387 | Fallback if ephemeral agent hangs |
