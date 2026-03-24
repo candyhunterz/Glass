@@ -8922,7 +8922,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                 }
                 self.run_feedback_on_end();
+
+                // Write checkpoint before pausing so auto-resume has context
+                if let Some(ctx) = self.windows.values().next() {
+                    if let Some(session) = ctx.session_mux.focused_session() {
+                        let lines = extract_term_lines(&session.term, 50);
+                        let cwd = self.orchestrator.project_root.clone();
+                        let checkpoint = format!(
+                            "# Usage Pause Checkpoint\n\
+                             Paused at iteration: {}\n\
+                             Reason: OAuth usage at 80%+, will auto-resume when <20%\n\
+                             Last terminal lines:\n{}\n\
+                             Working directory: {}\n",
+                            self.orchestrator.iteration,
+                            lines.join("\n"),
+                            cwd,
+                        );
+                        let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
+                        let _ = std::fs::create_dir_all(&checkpoint_dir);
+                        let _ = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint);
+                    }
+                }
+
+                // Kill agent so resume gets fresh context
+                self.agent_runtime = None;
                 self.orchestrator.active = false;
+                self.orchestrator.usage_paused = true;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
                 }
@@ -8943,7 +8968,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     );
                 }
                 self.run_feedback_on_end();
+                self.agent_runtime = None;
                 self.orchestrator.active = false;
+                self.orchestrator.usage_paused = true;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
                 }
@@ -8976,7 +9003,17 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::UsageResume => {
                 tracing::info!("Orchestrator: usage resume triggered (<20%)");
-                // Don't auto-enable orchestrator — user must toggle with Ctrl+Shift+O
+                // Auto-resume only if orchestrator was paused due to usage limits
+                if self.orchestrator.usage_paused {
+                    tracing::info!("Orchestrator: auto-resuming from usage pause");
+                    self.orchestrator.usage_paused = false;
+                    self.orchestrator.active = true;
+                    let cwd = self.orchestrator.project_root.clone();
+                    let handoff =
+                        "Resume from usage pause. Read .glass/checkpoint.md and continue.\n"
+                            .to_string();
+                    self.respawn_orchestrator_agent(&cwd, handoff);
+                }
                 for ctx in self.windows.values_mut() {
                     ctx.mark_dirty_and_redraw();
                 }

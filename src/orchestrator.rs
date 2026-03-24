@@ -439,6 +439,8 @@ impl StateFingerprint {
 pub struct OrchestratorState {
     /// Whether orchestration is active (toggled by Ctrl+Shift+O).
     pub active: bool,
+    /// Whether the orchestrator was paused due to usage limits (eligible for auto-resume).
+    pub usage_paused: bool,
     /// Iteration counter (for status bar display and logging).
     pub iteration: u32,
     /// Iteration count since the last checkpoint (resets on refresh).
@@ -530,6 +532,7 @@ impl OrchestratorState {
     pub fn new(max_retries: u32) -> Self {
         Self {
             active: false,
+            usage_paused: false,
             iteration: 0,
             iterations_since_checkpoint: 0,
             max_retries,
