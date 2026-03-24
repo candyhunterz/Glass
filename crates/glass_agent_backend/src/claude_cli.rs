@@ -208,8 +208,12 @@ impl AgentBackend for ClaudeCliBackend {
         };
 
         // Extract stdin/stdout before storing child (stderr is null).
-        let stdout = child.stdout.take().expect("stdout was piped");
-        let mut stdin = child.stdin.take().expect("stdin was piped");
+        let stdout = child.stdout.take().ok_or_else(|| {
+            BackendError::SpawnFailed("stdout was not piped".to_string())
+        })?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            BackendError::SpawnFailed("stdin was not piped".to_string())
+        })?;
 
         // ── (f) Write initial stdin message for CLI 2.1.77+ compat ───────────
         {
@@ -586,11 +590,13 @@ pub(crate) fn parse_stream_json_line(line: &str) -> Vec<AgentEvent> {
                             Some(c) if c.is_string() => c.as_str().unwrap_or("").to_string(),
                             Some(c) if c.is_array() => c
                                 .as_array()
-                                .unwrap()
-                                .iter()
-                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                .collect::<Vec<_>>()
-                                .join("\n"),
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                })
+                                .unwrap_or_default(),
                             _ => String::new(),
                         };
                         events.push(AgentEvent::ToolResult {
