@@ -722,6 +722,36 @@ pub fn append_iteration_log(
         file,
         "{iteration}\t{commit}\t{feature}\t\t{status}\t{clean_desc}"
     );
+
+    // Prune to last 200 entries periodically to prevent unbounded growth.
+    drop(file);
+    prune_iterations_log(project_root, 200);
+}
+
+/// Prune iterations.tsv to keep only the header + last `max_entries` rows.
+/// No-op if the file has fewer than `max_entries + 50` rows (avoids rewriting on every append).
+fn prune_iterations_log(project_root: &str, max_entries: usize) {
+    let path = std::path::Path::new(project_root)
+        .join(".glass")
+        .join("iterations.tsv");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    // Only prune when we exceed max_entries + 50 buffer to avoid rewriting on every append.
+    if lines.len() <= max_entries + 50 {
+        return;
+    }
+    let header = lines[0];
+    let tail = &lines[lines.len() - max_entries..];
+    let mut result = String::from(header);
+    result.push('\n');
+    for line in tail {
+        result.push_str(line);
+        result.push('\n');
+    }
+    let _ = std::fs::write(&path, result);
 }
 
 /// Read the iterations.tsv file content for inclusion in the system prompt.

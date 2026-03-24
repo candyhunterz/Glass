@@ -361,6 +361,9 @@ fn do_turn(
     stop: &Arc<AtomicBool>,
 ) -> bool {
     let max_tool_rounds = 10;
+    // Accumulates text across continuation rounds when max_tokens truncation occurs.
+    let mut full_response = String::new();
+    let mut continuations_remaining: u8 = 3;
 
     for _round in 0..max_tool_rounds {
         if stop.load(Ordering::Relaxed) {
@@ -370,7 +373,7 @@ fn do_turn(
         // Build request body (Anthropic Messages API format).
         let mut body = serde_json::json!({
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "system": system_prompt,
             "messages": messages,
             "stream": true,
@@ -536,15 +539,30 @@ fn do_turn(
             continue;
         }
 
+        // Handle max_tokens truncation — automatically continue the response.
+        // Uses a separate counter so continuations don't starve tool call rounds.
+        if stop_reason.as_deref() == Some("max_tokens") && !accumulated_text.is_empty() {
+            full_response.push_str(&accumulated_text);
+            if continuations_remaining > 0 {
+                continuations_remaining -= 1;
+                tracing::info!("AnthropicBackend: response truncated at max_tokens, requesting continuation ({} remaining)", continuations_remaining);
+                messages.push(serde_json::json!({"role": "assistant", "content": accumulated_text}));
+                messages.push(serde_json::json!({"role": "user", "content": "Your previous response was truncated due to length. Please continue exactly where you left off."}));
+                continue;
+            }
+            tracing::warn!("AnthropicBackend: max continuations exhausted, emitting partial response");
+        }
+
         // No tool calls — this is the final response.
-        if !accumulated_text.is_empty() {
+        full_response.push_str(&accumulated_text);
+        if !full_response.is_empty() {
             let _ = event_tx.send(AgentEvent::AssistantText {
-                text: accumulated_text.clone(),
+                text: full_response.clone(),
             });
         }
 
         // Add to history.
-        messages.push(serde_json::json!({"role": "assistant", "content": accumulated_text}));
+        messages.push(serde_json::json!({"role": "assistant", "content": full_response}));
 
         // Emit turn complete with cost estimate.
         // Sonnet pricing: ~$3/1M input, ~$15/1M output.

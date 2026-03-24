@@ -319,6 +319,7 @@ pub struct RunData {
     pub fingerprint_sequence: Vec<u64>,
     pub config_silence_timeout: u64,
     pub config_max_retries: u32,
+    pub config_checkpoint_interval: u32,
 }
 
 // ---------------------------------------------------------------------------

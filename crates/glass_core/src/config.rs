@@ -192,10 +192,10 @@ pub struct OrchestratorSection {
     /// Iterations between automatic context refresh checkpoints. Default 15.
     #[serde(default = "default_orch_checkpoint_interval")]
     pub checkpoint_interval: u32,
-    /// Orchestrator mode: "auto" (default), "build", "audit", or "general".
+    /// Orchestrator mode: "auto" (default), "build", or "general".
     /// Auto mode: detects project type at activation time (build for code projects, general otherwise).
-    /// Build mode: agent has observation-only tools, delegates implementation to Claude Code.
-    /// Audit mode: agent gets all MCP tools to test features interactively, delegates code fixes to Claude Code.
+    /// Build mode: TDD cycle (plan→test→implement→verify→commit) with active MCP verification.
+    /// General mode: deliverable-tracking for research/planning/design tasks.
     #[serde(default = "default_orch_mode")]
     pub orchestrator_mode: String,
     /// Files to check for file-based verification. Auto-populated from PRD deliverables.
@@ -761,12 +761,69 @@ impl GlassConfig {
 /// If `section` is None, updates a top-level key. If `section` is Some,
 /// updates a key within that `[section]`. Creates the section if it doesn't
 /// exist. The hot-reload watcher will detect the file change.
+/// Known valid field names per config section, used to reject bad writes.
+/// Must match the serde field names in the config structs above.
+fn is_valid_config_field(section: Option<&str>, key: &str) -> bool {
+    match section {
+        None => matches!(key, "font_size" | "font_family" | "shell"),
+        Some("agent") => matches!(
+            key,
+            "mode" | "allowed_tools" | "max_budget_usd" | "cooldown_secs"
+                | "provider" | "model" | "api_key" | "api_endpoint"
+        ),
+        Some("agent.orchestrator") => matches!(
+            key,
+            "enabled" | "silence_timeout_secs" | "fast_trigger_secs"
+                | "prd_path" | "checkpoint_path" | "checkpoint_interval"
+                | "max_iterations" | "max_retries_before_stuck"
+                | "orchestrator_mode" | "verify_mode" | "verify_command"
+                | "verify_files" | "completion_artifact"
+                | "feedback_llm" | "max_prompt_hints"
+                | "ablation_enabled" | "ablation_sweep_interval"
+                | "agent_prompt_pattern" | "agent_instructions"
+                | "implementer" | "implementer_command" | "implementer_name"
+                | "persona"
+        ),
+        Some("agent.orchestrator.quiet_rules") | Some("agent.quiet_rules") => true, // dynamic keys
+        Some("agent.permissions") => true, // dynamic keys
+        Some("soi") => matches!(key, "enabled" | "shell_summary" | "format" | "min_lines"),
+        Some("pipes") => matches!(key, "enabled" | "max_capture_mb" | "auto_expand"),
+        Some("history") => matches!(key, "max_output_capture_kb"),
+        Some("snapshot") => matches!(
+            key,
+            "enabled" | "max_count" | "max_size_mb" | "retention_days"
+        ),
+        Some("scripting") => matches!(
+            key,
+            "enabled" | "max_operations" | "max_timeout_ms"
+                | "max_scripts_per_hook" | "max_total_scripts"
+                | "max_mcp_tools" | "script_generation"
+        ),
+        Some("terminal") => matches!(key, "scrollback"),
+        Some("theme") => true, // dynamic color keys
+        _ => false,
+    }
+}
+
 pub fn update_config_field(
     path: &std::path::Path,
     section: Option<&str>,
     key: &str,
     value: &str,
 ) -> Result<(), ConfigError> {
+    if !is_valid_config_field(section, key) {
+        return Err(ConfigError {
+            message: format!(
+                "Unknown config field '{}' in section '{}'",
+                key,
+                section.unwrap_or("(root)")
+            ),
+            line: None,
+            column: None,
+            snippet: None,
+        });
+    }
+
     let content = std::fs::read_to_string(path).unwrap_or_default();
     // Use toml::Table deserialization which correctly handles full TOML documents
     // with multiple table headers (e.g., [agent] + [agent.orchestrator]).

@@ -146,11 +146,12 @@ When the user re-enables (Ctrl+Shift+O on):
 
 Set via `orchestrator_mode` in config. Auto-detected at activation.
 
-| Mode | When | Agent Tools | Agent Role |
-|------|------|-------------|------------|
-| **build** | Cargo.toml, package.json, etc. exist | glass_query, glass_context (observe only) | Guide Claude Code through plan→implement→commit→verify |
-| **general** | PRD has deliverables but no code project | glass_query, glass_context | Orchestrate research/planning/design, track by deliverable files |
-| **audit** | Manual selection | All MCP tools (tab control, history, etc.) | Test features interactively via MCP, delegate code fixes |
+| Mode | When | Agent Role |
+|------|------|------------|
+| **build** | Cargo.toml, package.json, etc. exist | TDD cycle: plan→test first→implement→verify→commit. Uses MCP tools for active verification. |
+| **general** | PRD has deliverables but no code project | Deliverable tracking for research/planning/design tasks. |
+
+All modes have full MCP tool access.
 
 ## Activation Flow
 
@@ -294,7 +295,7 @@ The Glass Agent is a `claude` subprocess spawned with:
 claude -p --verbose --output-format stream-json --input-format stream-json
   --system-prompt-file ~/.glass/agent-system-prompt-{generation}.txt
   --mcp-config ~/.glass/agent-mcp-{generation}.json
-  --allowedTools <mode-specific tools>
+  --allowedTools <all Glass MCP tools>
   --dangerously-skip-permissions
   --disable-slash-commands
 ```
@@ -684,7 +685,7 @@ fast_trigger_secs = 5              # Fast trigger after output stops
 prd_path = "PRD.md"                # Relative path to project plan
 checkpoint_path = ".glass/checkpoint.md"
 max_retries_before_stuck = 3       # N identical responses = stuck
-orchestrator_mode = "build"        # "build" | "general" | "audit"
+orchestrator_mode = "build"        # "build" | "general"
 verify_mode = "floor"              # "floor" | "files" | "off"
 verify_command = ""                # Override auto-detected verify command
 verify_files = []                  # Files to check (general mode)
@@ -723,7 +724,7 @@ script_generation = true           # Allow feedback loop to generate Tier 4 scri
 
 - **`project_root` is captured at Ctrl+Shift+O time.** The shell's OSC 7 CWD stops updating once Claude Code starts, so all file operations use the stored `project_root`, not live CWD.
 - **All git commands use `git_cmd()`** which adds `CREATE_NO_WINDOW` on Windows to prevent console flashing.
-- **The Glass Agent cannot write code.** In build/general mode it only has `glass_query` and `glass_context` tools. It must instruct Claude Code (running in the terminal) to do implementation work.
+- **The Glass Agent cannot write code.** It has full MCP tool access for observability (history, context, diffs, queries) but must instruct Claude Code (running in the terminal) to do implementation work.
 - **Deferred TypeText is a Vec, not Option.** Multiple responses can queue up while a block is executing. They flush one at a time on each silence trigger.
 - **Metric guard reverts use `git reset --hard`.** The `last_good_commit` is captured at the start of each iteration before verification runs.
 - **Iterations.tsv format:** `iteration\tcommit\tfeature\t(metric)\tstatus\tdescription` — note the empty metric column (index 3), status is at index 4.

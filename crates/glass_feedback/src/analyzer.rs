@@ -149,47 +149,53 @@ fn detect_stuck_leniency(data: &RunData) -> Vec<Finding> {
 }
 
 /// If checkpoints are disproportionately frequent for a small run (>= 3 checkpoints and
-/// < 15 iterations), flag it as overhead.
+/// < 15 iterations), suggest increasing checkpoint interval by 50%.
 fn detect_checkpoint_overhead(data: &RunData) -> Vec<Finding> {
     if data.checkpoint_count < 3 || data.iterations >= 15 {
         return vec![];
     }
+
+    let current = data.config_checkpoint_interval;
+    let new_value = ((current as f64) * 1.5).round() as u64;
 
     vec![Finding {
         id: "checkpoint-overhead".to_string(),
         category: FindingCategory::ConfigTuning,
         severity: Severity::Low,
         action: FindingAction::ConfigTuning {
-            field: "checkpoint_interval_iterations".to_string(),
-            current_value: data.checkpoint_count.to_string(),
-            new_value: "review".to_string(),
+            field: "checkpoint_interval".to_string(),
+            current_value: current.to_string(),
+            new_value: new_value.to_string(),
         },
         evidence: format!(
-            "{} checkpoints in only {} iterations; checkpoint frequency may be too high for short runs, adding overhead.",
-            data.checkpoint_count, data.iterations
+            "{} checkpoints in only {} iterations; increasing checkpoint interval from {} to {} (+50%).",
+            data.checkpoint_count, data.iterations, current, new_value
         ),
         scope: Scope::Project,
     }]
 }
 
-/// If iterations >= 20 and checkpoint_count == 0, suggest more frequent checkpoints.
+/// If iterations >= 20 and checkpoint_count == 0, suggest decreasing checkpoint interval by 25%.
 fn detect_checkpoint_frequency(data: &RunData) -> Vec<Finding> {
     if data.iterations < 20 || data.checkpoint_count != 0 {
         return vec![];
     }
+
+    let current = data.config_checkpoint_interval;
+    let new_value = ((current as f64) * 0.75).round() as u64;
 
     vec![Finding {
         id: "checkpoint-frequency".to_string(),
         category: FindingCategory::ConfigTuning,
         severity: Severity::Medium,
         action: FindingAction::ConfigTuning {
-            field: "checkpoint_interval_iterations".to_string(),
-            current_value: "0".to_string(),
-            new_value: "lower".to_string(),
+            field: "checkpoint_interval".to_string(),
+            current_value: current.to_string(),
+            new_value: new_value.to_string(),
         },
         evidence: format!(
-            "{} iterations completed with 0 checkpoints; consider lowering checkpoint interval for long runs.",
-            data.iterations
+            "{} iterations completed with 0 checkpoints; decreasing checkpoint interval from {} to {} (-25%).",
+            data.iterations, current, new_value
         ),
         scope: Scope::Project,
     }]
@@ -906,7 +912,7 @@ mod tests {
         // Severity should be Low
         assert!(matches!(f.severity, Severity::Low));
         let (field, ..) = make_config_tuning(f);
-        assert_eq!(field, "checkpoint_interval_iterations");
+        assert_eq!(field, "checkpoint_interval");
     }
 
     #[test]
@@ -954,9 +960,10 @@ mod tests {
         let f = &findings[0];
         assert_eq!(f.id, "checkpoint-frequency");
         let (field, cur, new) = make_config_tuning(f);
-        assert_eq!(field, "checkpoint_interval_iterations");
+        assert_eq!(field, "checkpoint_interval");
+        // Default config_checkpoint_interval is 0; 0 * 0.75 = 0
         assert_eq!(cur, "0");
-        assert_eq!(new, "lower");
+        assert_eq!(new, "0");
     }
 
     #[test]

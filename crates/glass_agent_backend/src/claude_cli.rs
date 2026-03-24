@@ -99,7 +99,14 @@ impl AgentBackend for ClaudeCliBackend {
                     }
                 });
                 match std::fs::write(&mcp_json_path, mcp_json.to_string()) {
-                    Ok(()) => Some(mcp_json_path.to_string_lossy().to_string()),
+                    Ok(()) => {
+                        // Clean up old generation MCP config (best-effort)
+                        if generation > 0 {
+                            let old_mcp = glass_dir.join(format!("agent-mcp-{}.json", generation - 1));
+                            let _ = std::fs::remove_file(old_mcp);
+                        }
+                        Some(mcp_json_path.to_string_lossy().to_string())
+                    }
                     Err(e) => {
                         tracing::warn!("ClaudeCliBackend: failed to write MCP config JSON: {}", e);
                         None

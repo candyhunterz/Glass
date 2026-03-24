@@ -984,32 +984,7 @@ fn build_system_prompt(
             format!("\nAGENT PERSONA:\n{persona}\n")
         };
 
-        let mode_instructions = if orch_mode == "audit" {
-            format!(
-                r#"ORCHESTRATOR MODE: AUDIT
-You have access to ALL Glass MCP tools. Use them to test features interactively:
-- glass_tab_create / glass_tab_send / glass_tab_output — spawn tabs, run commands, read results
-- glass_history — verify commands are recorded correctly
-- glass_undo / glass_file_diff — test undo and snapshot features
-- glass_pipe_inspect — verify pipeline capture
-- glass_extract_errors — test error extraction
-- glass_compressed_context — test token-budgeted summaries
-- glass_query / glass_query_trend / glass_query_drill — test SOI queries
-- glass_agent_* tools — test multi-agent coordination
-
-AUDIT PROTOCOL:
-For each audit area in the plan:
-1. TEST: Use MCP tools to test the feature as a user would (create tabs, run commands, check results)
-2. VERIFY: Compare actual MCP tool output against expected behavior
-3. REPORT: If you find a bug, tell {implementer_name} exactly what's wrong with file:line references
-4. FIX: Tell {implementer_name} to fix the bug and write a regression test
-5. RETEST: Use MCP tools again to verify the fix works
-6. COMMIT: Tell {implementer_name} to commit the fix
-
-You can test features YOURSELF using MCP tools. You CANNOT write code — tell {implementer_name} to do that.
-Do NOT use Bash or Read tools — you don't have them. Use Glass MCP tools instead."#
-            )
-        } else if orch_mode == "general" {
+        let mode_instructions = if orch_mode == "general" {
             format!(
                 r#"ORCHESTRATOR MODE: GENERAL
 You are orchestrating a general task (research, planning, design, or mixed work).
@@ -1028,15 +1003,17 @@ You CANNOT create files yourself — instruct {implementer_name} to do it."#
             )
         } else {
             format!(
-                r#"ORCHESTRATOR MODE: BUILD
-ITERATION PROTOCOL:
+                r#"ITERATION PROTOCOL:
 For each feature, guide {implementer_name} through this cycle:
 1. PLAN: Tell {implementer_name} what to build next and define acceptance criteria
-2. IMPLEMENT: Let {implementer_name} work. Answer its questions with clear decisions.
-3. COMMIT: Tell {implementer_name} to commit before verification
-4. VERIFY: Tell {implementer_name} to write tests and run them
-5. DECIDE: Tests pass → move to next feature. Tests fail → tell {implementer_name} to fix.
+2. TEST FIRST: Tell {implementer_name} to write tests for the feature BEFORE implementation. Tests should cover the acceptance criteria and fail initially.
+3. IMPLEMENT: Let {implementer_name} work. Answer its questions with clear decisions.
+4. VERIFY: Tell {implementer_name} to run tests and confirm they pass. {implementer_name} must show test output — do not accept "tests pass" without evidence.
+5. COMMIT: Tell {implementer_name} to commit only after tests pass
+6. DECIDE: Tests pass → move to next feature. Tests fail → tell {implementer_name} to fix.
    Stuck after 3 attempts → tell {implementer_name} to revert and try different approach.
+
+ACTIVE VERIFICATION: You have Glass MCP tools. Use them to verify features yourself when test output alone is insufficient — spawn tabs, run commands, check results, inspect diffs. Don't rely solely on {implementer_name}'s self-reported status.
 
 CRITICAL: Break large tasks into incremental steps. NEVER ask {implementer_name} to create an entire large file (500+ lines) in one go — the API will time out. Instead, build incrementally: skeleton first, then add sections one at a time. Each step should produce a working state that can be committed.
 
@@ -1151,18 +1128,13 @@ fn try_spawn_agent(
         Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new())
     });
 
-    // Compute allowed tools based on orchestrator mode
+    // Compute allowed tools — orchestrator always gets full MCP access.
     let orchestrator_active = config
         .orchestrator
         .as_ref()
         .map(|o| o.enabled)
         .unwrap_or(false);
-    let orch_mode = config
-        .orchestrator
-        .as_ref()
-        .map(|o| o.orchestrator_mode.as_str())
-        .unwrap_or("build");
-    let allowed_tools = if orchestrator_active && orch_mode == "audit" {
+    let allowed_tools = if orchestrator_active {
         vec![
             "Read",
             "glass_history",
@@ -1200,8 +1172,6 @@ fn try_spawn_agent(
         .into_iter()
         .map(|s| s.to_string())
         .collect()
-    } else if orchestrator_active {
-        vec!["glass_query".to_string(), "glass_context".to_string()]
     } else {
         config
             .allowed_tools
@@ -1938,6 +1908,13 @@ impl Processor {
                 .and_then(|a| a.orchestrator.as_ref())
                 .map(|o| o.max_retries_before_stuck)
                 .unwrap_or(3),
+            config_checkpoint_interval: self
+                .config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.checkpoint_interval)
+                .unwrap_or(15),
         }
     }
 
