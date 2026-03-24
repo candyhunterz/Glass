@@ -192,7 +192,9 @@ async fn spawn_ipc_listener(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!("Failed to set IPC socket permissions on {}: {e}", path.display());
+        }
     }
     tracing::info!("IPC listening on {}", path.display());
 

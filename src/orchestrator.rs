@@ -679,7 +679,9 @@ pub fn append_iteration_log(
     description: &str,
 ) {
     let glass_dir = std::path::Path::new(project_root).join(".glass");
-    let _ = std::fs::create_dir_all(&glass_dir);
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass directory for iterations log: {e}");
+    }
     let path = glass_dir.join("iterations.tsv");
 
     let needs_header = !path.exists();
@@ -698,10 +700,12 @@ pub fn append_iteration_log(
 
     use std::io::Write;
     if needs_header {
-        let _ = writeln!(
+        if let Err(e) = writeln!(
             file,
             "iteration\tcommit\tfeature\tmetric\tstatus\tdescription"
-        );
+        ) {
+            tracing::warn!("Failed to write iterations.tsv header: {e}");
+        }
     }
 
     // Get current git commit hash (short)
@@ -723,10 +727,12 @@ pub fn append_iteration_log(
 
     // Sanitize description: replace newlines/tabs to prevent TSV corruption
     let clean_desc = description.replace(['\n', '\r', '\t'], " ");
-    let _ = writeln!(
+    if let Err(e) = writeln!(
         file,
         "{iteration}\t{commit}\t{feature}\t\t{status}\t{clean_desc}"
-    );
+    ) {
+        tracing::warn!("Failed to append iteration row to iterations.tsv: {e}");
+    }
 
     // Prune to last 200 entries periodically to prevent unbounded growth.
     drop(file);
@@ -756,7 +762,9 @@ fn prune_iterations_log(project_root: &str, max_entries: usize) {
         result.push_str(line);
         result.push('\n');
     }
-    let _ = std::fs::write(&path, result);
+    if let Err(e) = std::fs::write(&path, result) {
+        tracing::warn!("Failed to write pruned iterations.tsv: {e}");
+    }
 }
 
 /// Read the iterations.tsv file content for inclusion in the system prompt.
@@ -805,7 +813,9 @@ pub fn generate_postmortem(
     context_files: &[String],
 ) {
     let glass_dir = std::path::Path::new(project_root).join(".glass");
-    let _ = std::fs::create_dir_all(&glass_dir);
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass directory for postmortem: {e}");
+    }
 
     // Read iterations.tsv for analysis
     let iterations_content = read_iterations_log(project_root);

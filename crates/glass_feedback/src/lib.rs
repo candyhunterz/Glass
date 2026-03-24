@@ -385,9 +385,15 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     let mut current_metrics = current_metrics;
     current_metrics.rule_firings = rule_firings;
     metrics_file.runs.push(current_metrics);
-    let _ = save_metrics_file(&state.metrics_path, &metrics_file);
-    let _ = save_rules_file(&state.rules_path, &project_rules_file);
-    let _ = save_archived_rules(&state.archived_path, &archived_file);
+    if let Err(e) = save_metrics_file(&state.metrics_path, &metrics_file) {
+        tracing::warn!("Failed to save metrics file {:?}: {e}", state.metrics_path);
+    }
+    if let Err(e) = save_rules_file(&state.rules_path, &project_rules_file) {
+        tracing::warn!("Failed to save rules file {:?}: {e}", state.rules_path);
+    }
+    if let Err(e) = save_archived_rules(&state.archived_path, &archived_file) {
+        tracing::warn!("Failed to save archived rules {:?}: {e}", state.archived_path);
+    }
 
     // --- Step 10b: sync global-scoped rules to ~/.glass/global-rules.toml ---
     // Rules with scope=Global are useful across projects. Merge them into the
@@ -429,14 +435,18 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
             .collect();
         global_file.rules.retain(|r| !rejected_ids.contains(&r.id));
 
-        let _ = save_rules_file(&state.global_rules_path, &global_file);
+        if let Err(e) = save_rules_file(&state.global_rules_path, &global_file) {
+            tracing::warn!("Failed to save global rules {:?}: {e}", state.global_rules_path);
+        }
     }
 
     // --- Step 10c: persist attribution ---
     let attribution_file = types::AttributionFile {
         scores: attribution_scores,
     };
-    let _ = save_attribution_file(&state.attribution_path, &attribution_file);
+    if let Err(e) = save_attribution_file(&state.attribution_path, &attribution_file) {
+        tracing::warn!("Failed to save attribution file {:?}: {e}", state.attribution_path);
+    }
 
     FeedbackResult {
         findings,
@@ -507,7 +517,9 @@ pub fn apply_llm_findings(project_root: &str, llm_response: &str, max_prompt_hin
             .unwrap_or(0)
     );
     lifecycle::apply_findings(&mut rules_file.rules, &deduped, &run_id, false);
-    let _ = save_rules_file(&rules_path, &rules_file);
+    if let Err(e) = save_rules_file(&rules_path, &rules_file) {
+        tracing::warn!("Failed to save rules file {:?}: {e}", rules_path);
+    }
 
     tracing::info!(
         "Feedback LLM: applied {} prompt hint(s) to {}",

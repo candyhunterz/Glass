@@ -56,7 +56,9 @@ impl AgentBackend for ClaudeCliBackend {
         let glass_dir = dirs::home_dir()
             .map(|h| h.join(".glass"))
             .unwrap_or_else(|| std::path::PathBuf::from(".glass"));
-        let _ = std::fs::create_dir_all(&glass_dir);
+        if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+            tracing::warn!("ClaudeCliBackend: failed to create .glass dir: {}", e);
+        }
 
         let diag_path = glass_dir.join("agent-diag.txt");
         let mut diag = format!(
@@ -80,7 +82,9 @@ impl AgentBackend for ClaudeCliBackend {
         // Clean up old generation files (best-effort, ignore errors)
         if generation > 0 {
             let old_path = glass_dir.join(format!("agent-system-prompt-{}.txt", generation - 1));
-            let _ = std::fs::remove_file(old_path);
+            if let Err(e) = std::fs::remove_file(&old_path) {
+                tracing::warn!("ClaudeCliBackend: failed to remove old system prompt {:?}: {}", old_path, e);
+            }
         }
 
         // ── (c) Generate MCP config JSON ─────────────────────────────────────
@@ -103,7 +107,9 @@ impl AgentBackend for ClaudeCliBackend {
                         // Clean up old generation MCP config (best-effort)
                         if generation > 0 {
                             let old_mcp = glass_dir.join(format!("agent-mcp-{}.json", generation - 1));
-                            let _ = std::fs::remove_file(old_mcp);
+                            if let Err(e) = std::fs::remove_file(&old_mcp) {
+                                tracing::warn!("ClaudeCliBackend: failed to remove old MCP config {:?}: {}", old_mcp, e);
+                            }
                         }
                         Some(mcp_json_path.to_string_lossy().to_string())
                     }
@@ -184,12 +190,16 @@ impl AgentBackend for ClaudeCliBackend {
         let mut child = match cmd.spawn() {
             Ok(c) => {
                 diag.push_str(&format!("spawn SUCCESS pid={}\n", c.id()));
-                let _ = std::fs::write(&diag_path, &diag);
+                if let Err(e) = std::fs::write(&diag_path, &diag) {
+                    tracing::warn!("ClaudeCliBackend: failed to write diag file: {}", e);
+                }
                 c
             }
             Err(e) => {
                 diag.push_str(&format!("spawn FAILED: {}\n", e));
-                let _ = std::fs::write(&diag_path, &diag);
+                if let Err(e2) = std::fs::write(&diag_path, &diag) {
+                    tracing::warn!("ClaudeCliBackend: failed to write diag file: {}", e2);
+                }
                 tracing::warn!("ClaudeCliBackend: failed to spawn claude process: {}", e);
                 return Err(BackendError::SpawnFailed(format!(
                     "failed to spawn claude: {e}"

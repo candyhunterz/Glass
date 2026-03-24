@@ -32,7 +32,9 @@ impl SnapshotDb {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                tracing::warn!("Failed to set DB file permissions on {}: {e}", path.display());
+            }
         }
         let pragma_result = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -59,7 +61,9 @@ impl SnapshotDb {
             drop(conn);
             let backup = path.with_extension("db.corrupt");
             tracing::warn!("Renaming corrupt DB to {}", backup.display());
-            let _ = std::fs::rename(path, &backup);
+            if let Err(e) = std::fs::rename(path, &backup) {
+                tracing::warn!("Failed to rename corrupt DB to {}: {e}", backup.display());
+            }
             // Reopen fresh database
             let conn = Connection::open(path)?;
             conn.execute_batch(

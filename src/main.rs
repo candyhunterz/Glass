@@ -1567,7 +1567,9 @@ fn start_artifact_watcher(
     let watch_dir = full_path.parent()?.to_path_buf();
 
     // Ensure parent directory exists so the watcher can be created.
-    let _ = std::fs::create_dir_all(&watch_dir);
+    if let Err(e) = std::fs::create_dir_all(&watch_dir) {
+        tracing::warn!("Failed to create artifact watch dir {}: {e}", watch_dir.display());
+    }
 
     let handle = std::thread::Builder::new()
         .name("Glass artifact watcher".into())
@@ -1675,12 +1677,14 @@ impl Processor {
                     dirs::home_dir().map(|h| h.join(".glass").join("config.toml"))
                 {
                     for (field, _old, new_val) in &result.config_changes {
-                        let _ = glass_core::config::update_config_field(
+                        if let Err(e) = glass_core::config::update_config_field(
                             &config_path,
                             Some("agent.orchestrator"),
                             field,
                             new_val,
-                        );
+                        ) {
+                            tracing::warn!("Failed to update config field {field}: {e}");
+                        }
                     }
                 }
             }
@@ -1710,7 +1714,9 @@ impl Processor {
                         chrono::Local::now().format("%Y%m%d-%H%M%S")
                     ));
                 if let Some(parent) = summary_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        tracing::warn!("Failed to create feedback summary dir {}: {e}", parent.display());
+                    }
                 }
                 if let Err(e) = std::fs::write(&summary_path, &summary) {
                     tracing::warn!("Failed to write feedback summary: {e}");
@@ -2479,7 +2485,9 @@ impl Processor {
             .join(".glass")
             .join("checkpoint.md");
         if let Some(parent) = cp_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("Failed to create checkpoint dir {}: {e}", parent.display());
+            }
         }
         if let Err(e) = std::fs::write(&cp_path, content) {
             tracing::warn!("Failed to write checkpoint.md: {e}");
@@ -4839,12 +4847,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .join(".glass")
                                             .join("checkpoint.md");
                                         if let Some(parent) = cp_path.parent() {
-                                            let _ = std::fs::create_dir_all(parent);
+                                            if let Err(e) = std::fs::create_dir_all(parent) {
+                                                tracing::warn!("Failed to create checkpoint dir {}: {e}", parent.display());
+                                            }
                                         }
                                         if let Some(fallback) =
                                             self.orchestrator.cached_checkpoint_fallback.take()
                                         {
-                                            let _ = std::fs::write(&cp_path, &fallback);
+                                            if let Err(e) = std::fs::write(&cp_path, &fallback) {
+                                                tracing::warn!("Failed to write fallback checkpoint {}: {e}", cp_path.display());
+                                            }
                                         }
                                         self.orchestrator.checkpoint_phase =
                                             orchestrator::CheckpointPhase::Idle;
@@ -6339,7 +6351,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             }
                                         }
 
-                                        let _ = std::fs::remove_file(temp_path);
+                                        if let Err(e) = std::fs::remove_file(temp_path) {
+                                            tracing::warn!("Failed to remove pipeline temp file {temp_path}: {e}");
+                                        }
                                     }
                                     Err(e) => {
                                         tracing::warn!(
@@ -8090,7 +8104,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let nudge_path = std::path::Path::new(&cwd).join(".glass").join("nudge.md");
                         let nudge = std::fs::read_to_string(&nudge_path).ok();
                         if nudge.is_some() {
-                            let _ = std::fs::remove_file(&nudge_path);
+                            if let Err(e) = std::fs::remove_file(&nudge_path) {
+                                tracing::warn!("Failed to remove nudge file {}: {e}", nudge_path.display());
+                            }
                         }
 
                         // Clean up artifact file if it exists (one-shot signal)
@@ -8104,7 +8120,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if !artifact_path_cfg.is_empty() {
                             let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
                             if full.exists() {
-                                let _ = std::fs::remove_file(&full);
+                                if let Err(e) = std::fs::remove_file(&full) {
+                                    tracing::warn!("Failed to remove artifact file {}: {e}", full.display());
+                                }
                             }
                         }
 
@@ -8929,8 +8947,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                             cwd,
                         );
                         let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
-                        let _ = std::fs::create_dir_all(&checkpoint_dir);
-                        let _ = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint);
+                        if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
+                            tracing::warn!("Failed to create checkpoint dir {}: {e}", checkpoint_dir.display());
+                        }
+                        if let Err(e) = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint) {
+                            tracing::warn!("Failed to write usage-pause checkpoint: {e}");
+                        }
                     }
                 }
 
@@ -8982,8 +9004,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                             cwd,
                         );
                         let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
-                        let _ = std::fs::create_dir_all(&checkpoint_dir);
-                        let _ = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint);
+                        if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
+                            tracing::warn!("Failed to create checkpoint dir {}: {e}", checkpoint_dir.display());
+                        }
+                        if let Err(e) = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint) {
+                            tracing::warn!("Failed to write hard-stop checkpoint: {e}");
+                        }
                     }
                 }
 
@@ -9586,7 +9612,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .join(".glass")
                                             .join("scripts")
                                             .join("feedback");
-                                        let _ = std::fs::create_dir_all(&scripts_dir);
+                                        if let Err(e) = std::fs::create_dir_all(&scripts_dir) {
+                                            tracing::warn!("Failed to create scripts dir {}: {e}", scripts_dir.display());
+                                        }
 
                                         // Deduplicate: skip if a non-archived manifest already exists.
                                         // Only archived scripts may be overwritten by a new generation.
@@ -9616,14 +9644,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             let manifest = format!(
                                                 "name = \"{name}\"\nhooks = [{hooks}]\nstatus = \"provisional\"\norigin = \"feedback\"\nversion = 1\napi_version = \"1\"\ncreated = \"{now_secs}\"\ntype = \"hook\"\n"
                                             );
-                                            let _ = std::fs::write(
+                                            if let Err(e) = std::fs::write(
                                                 scripts_dir.join(format!("{name}.toml")),
                                                 &manifest,
-                                            );
-                                            let _ = std::fs::write(
+                                            ) {
+                                                tracing::warn!("Failed to write script manifest {name}.toml: {e}");
+                                            }
+                                            if let Err(e) = std::fs::write(
                                                 scripts_dir.join(format!("{name}.rhai")),
                                                 &source,
-                                            );
+                                            ) {
+                                                tracing::warn!("Failed to write script source {name}.rhai: {e}");
+                                            }
                                             tracing::info!(
                                                 "Tier 4: wrote provisional script '{name}'"
                                             );
@@ -9767,7 +9799,9 @@ fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
     };
 
     let temp_dir = std::env::temp_dir().join("glass-shell-integration");
-    let _ = std::fs::create_dir_all(&temp_dir);
+    if let Err(e) = std::fs::create_dir_all(&temp_dir) {
+        tracing::warn!("Failed to create shell integration dir {}: {e}", temp_dir.display());
+    }
     let temp_path = temp_dir.join(script_name);
     match std::fs::write(&temp_path, embedded) {
         Ok(()) => {
@@ -9873,7 +9907,9 @@ fn install_crash_handler() {
         // Write to ~/.glass/crash.log (append mode)
         if let Some(home) = dirs::home_dir() {
             let glass_dir = home.join(".glass");
-            let _ = std::fs::create_dir_all(&glass_dir);
+            if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+                tracing::warn!("Failed to create crash log dir {}: {e}", glass_dir.display());
+            }
             let crash_log = glass_dir.join("crash.log");
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -9881,7 +9917,9 @@ fn install_crash_handler() {
                 .open(&crash_log)
             {
                 use std::io::Write;
-                let _ = file.write_all(report.as_bytes());
+                if let Err(e) = file.write_all(report.as_bytes()) {
+                    tracing::warn!("Failed to write crash log: {e}");
+                }
             }
         }
 

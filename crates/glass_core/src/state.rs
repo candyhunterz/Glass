@@ -38,10 +38,14 @@ impl GlassState {
             return;
         };
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("Failed to create state directory {}: {e}", parent.display());
+            }
         }
         if let Ok(contents) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(&path, contents);
+            if let Err(e) = std::fs::write(&path, contents) {
+                tracing::warn!("Failed to write state file {}: {e}", path.display());
+            }
         }
     }
 

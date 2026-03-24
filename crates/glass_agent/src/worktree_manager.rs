@@ -243,7 +243,9 @@ impl WorktreeManager {
                         let _ = wt.prune(Some(&mut opts));
                     }
                 }
-                let _ = std::fs::remove_dir_all(&row.worktree_path);
+                if let Err(e) = std::fs::remove_dir_all(&row.worktree_path) {
+                    tracing::warn!("Failed to remove orphan worktree dir {}: {e}", row.worktree_path.display());
+                }
             }
             self.db.borrow_mut().delete_pending_worktree(&row.id)?;
         }
