@@ -369,7 +369,9 @@ pub enum CheckpointPhase {
     /// Waiting for ephemeral agent to synthesize checkpoint.md.
     Synthesizing {
         started_at: std::time::Instant,
+        #[allow(dead_code)] // read in tests only
         completed: String,
+        #[allow(dead_code)] // read in tests only
         next: String,
     },
 }
@@ -1148,14 +1150,10 @@ pub fn build_orchestrator_context(
 }
 
 /// Resolve the checkpoint file path for a given project root.
+#[allow(dead_code)] // called from tests only
 pub fn checkpoint_path(project_root: &str, config: Option<&str>) -> std::path::PathBuf {
     let rel = config.unwrap_or(".glass/checkpoint.md");
     std::path::Path::new(project_root).join(rel)
-}
-
-/// Get the current mtime of a file, or None if it doesn't exist.
-pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
 
 /// Build the summary string for a bounded run completion.

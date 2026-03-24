@@ -9,15 +9,16 @@ use zeroize::Zeroizing;
 
 /// Cached usage data from the Anthropic usage API.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct UsageData {
     /// 5-hour utilization (0.0 to 1.0).
     pub five_hour_utilization: f64,
     /// 5-hour reset time (ISO 8601).
+    #[allow(dead_code)] // constructed in poll_usage, read in tests only
     pub five_hour_resets_at: String,
     /// 7-day utilization (0.0 to 1.0).
     pub seven_day_utilization: f64,
     /// 7-day reset time (ISO 8601).
+    #[allow(dead_code)] // constructed in poll_usage, read in tests only
     pub seven_day_resets_at: String,
     /// When this data was fetched.
     pub fetched_at: Instant,

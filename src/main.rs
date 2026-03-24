@@ -3,16 +3,12 @@
 #![windows_subsystem = "windows"]
 
 mod agent_instructions;
-#[allow(dead_code)]
 mod checkpoint_synth;
-#[allow(dead_code)]
 mod ephemeral_agent;
 mod history;
-#[allow(dead_code)]
 mod orchestrator;
 mod orchestrator_context;
 mod orchestrator_events;
-#[allow(dead_code)]
 mod script_bridge;
 mod usage_tracker;
 
@@ -289,9 +285,6 @@ impl WindowContext {
 struct ProposalToast {
     /// Description text shown in the toast.
     description: String,
-    /// Index into agent_proposal_worktrees for the proposal that triggered this toast.
-    #[allow(dead_code)]
-    proposal_idx: usize,
     /// When the toast was created -- used to compute remaining seconds.
     created_at: std::time::Instant,
 }
@@ -7399,7 +7392,6 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Show brief auto-applied toast (no worktree in list).
                         self.active_toast = Some(ProposalToast {
                             description: format!("Auto-applied: {}", proposal.description),
-                            proposal_idx: self.agent_proposal_worktrees.len(),
                             created_at: std::time::Instant::now(),
                         });
                     } else {
@@ -7407,10 +7399,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Clone description before push (push takes ownership of proposal).
                         let toast_description = proposal.description.clone();
                         self.agent_proposal_worktrees.push((proposal, handle));
-                        let proposal_idx = self.agent_proposal_worktrees.len() - 1;
                         self.active_toast = Some(ProposalToast {
                             description: toast_description,
-                            proposal_idx,
                             created_at: std::time::Instant::now(),
                         });
                     }

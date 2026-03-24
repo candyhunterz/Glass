@@ -20,8 +20,6 @@ struct IpcRequest {
 /// A response received from the Glass GUI over IPC.
 #[derive(Debug, Deserialize)]
 struct IpcResponse {
-    #[allow(dead_code)]
-    id: u64,
     result: Option<serde_json::Value>,
     error: Option<String>,
 }

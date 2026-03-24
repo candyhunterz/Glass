@@ -16,14 +16,16 @@ use crate::{
 
 /// A parsed chunk from one JSON line in an Ollama streaming response.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum OllamaChunk {
     /// A fragment of assistant text content.
     TextDelta(String),
     /// One or more complete tool calls (Ollama sends them in a single line).
     ToolCalls(Vec<OllamaToolCall>),
     /// The stream is complete. Carries optional `eval_count` (tokens generated).
-    Done { eval_count: Option<u64> },
+    Done {
+        #[allow(dead_code)] // read in tests only
+        eval_count: Option<u64>,
+    },
 }
 
 /// A single tool call returned by Ollama.
