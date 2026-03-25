@@ -13,6 +13,14 @@ pub struct GlassState {
     /// Number of sessions (app launches) completed.
     #[serde(default)]
     pub session_count: u32,
+
+    /// Whether the first-run welcome overlay has been dismissed.
+    #[serde(default)]
+    pub welcome_completed: bool,
+
+    /// Hint IDs that have already been shown (e.g., "undo", "pipe_viz").
+    #[serde(default)]
+    pub hints_shown: Vec<String>,
 }
 
 impl GlassState {
@@ -53,11 +61,6 @@ impl GlassState {
     pub fn is_first_run(&self) -> bool {
         self.session_count == 0
     }
-
-    /// True if the settings hint should be shown (first 3 sessions).
-    pub fn should_show_hint(&self) -> bool {
-        self.session_count <= 3
-    }
 }
 
 #[cfg(test)]
@@ -68,7 +71,6 @@ mod tests {
     fn default_state_is_first_run() {
         let state = GlassState::default();
         assert!(state.is_first_run());
-        assert!(state.should_show_hint());
     }
 
     #[test]
@@ -76,21 +78,47 @@ mod tests {
         let mut state = GlassState::default();
         state.session_count += 1;
         assert!(!state.is_first_run());
-        assert!(state.should_show_hint()); // still within first 3
-    }
-
-    #[test]
-    fn hint_stops_after_three_sessions() {
-        let state = GlassState { session_count: 4 };
-        assert!(!state.is_first_run());
-        assert!(!state.should_show_hint());
     }
 
     #[test]
     fn roundtrip_serialize() {
-        let state = GlassState { session_count: 42 };
+        let state = GlassState {
+            session_count: 42,
+            ..GlassState::default()
+        };
         let toml_str = toml::to_string_pretty(&state).unwrap();
         let loaded: GlassState = toml::from_str(&toml_str).unwrap();
         assert_eq!(loaded.session_count, 42);
+    }
+
+    #[test]
+    fn default_state_has_onboarding_defaults() {
+        let state = GlassState::default();
+        assert!(!state.welcome_completed);
+        assert!(state.hints_shown.is_empty());
+    }
+
+    #[test]
+    fn roundtrip_with_onboarding_fields() {
+        let state = GlassState {
+            session_count: 5,
+            welcome_completed: true,
+            hints_shown: vec!["undo".to_string(), "pipe_viz".to_string()],
+        };
+        let toml_str = toml::to_string_pretty(&state).unwrap();
+        let loaded: GlassState = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.session_count, 5);
+        assert!(loaded.welcome_completed);
+        assert_eq!(loaded.hints_shown, vec!["undo", "pipe_viz"]);
+    }
+
+    #[test]
+    fn backward_compat_old_state_toml() {
+        // Old state.toml only has session_count — new fields should default
+        let old_toml = "session_count = 10\n";
+        let state: GlassState = toml::from_str(old_toml).unwrap();
+        assert_eq!(state.session_count, 10);
+        assert!(!state.welcome_completed);
+        assert!(state.hints_shown.is_empty());
     }
 }
