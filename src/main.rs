@@ -289,6 +289,13 @@ struct ProposalToast {
     created_at: std::time::Instant,
 }
 
+/// Transient state for the onboarding hint toast notification.
+struct OnboardingToastState {
+    hint_id: glass_core::onboarding::HintId,
+    pipe_stages: Option<usize>,
+    created_at: std::time::Instant,
+}
+
 /// Encapsulates the agent subprocess lifecycle.
 ///
 /// Lives as `Option<AgentRuntime>` on Processor -- None when agent.mode == Off
@@ -328,8 +335,6 @@ struct Processor {
     config_error: Option<glass_core::config::ConfigError>,
     /// Whether the config file watcher has been spawned (only once).
     watcher_spawned: bool,
-    /// Show settings hint in status bar for the first few sessions (UX-1).
-    show_settings_hint: bool,
     /// Available update info, if a newer version was found.
     update_info: Option<glass_core::updater::UpdateInfo>,
     /// Current coordination state from background poller.
@@ -368,6 +373,16 @@ struct Processor {
     )>,
     /// Active toast notification for the most recent proposal. Auto-dismisses after 30s.
     active_toast: Option<ProposalToast>,
+    /// Onboarding coordinator: manages welcome overlay and contextual hints.
+    onboarding: glass_core::onboarding::OnboardingCoordinator,
+    /// Active onboarding toast notification. Auto-dismisses after 5s.
+    onboarding_toast: Option<OnboardingToastState>,
+    /// Running count of commands completed this session (for history search hint).
+    onboarding_command_count: u32,
+    /// Whether the welcome overlay is visible.
+    welcome_overlay_visible: bool,
+    /// Current step in the welcome overlay wizard.
+    welcome_overlay_step: glass_renderer::WelcomeStep,
     /// Whether the activity stream overlay is visible.
     activity_overlay_visible: bool,
     /// Current filter tab in the activity overlay.
@@ -1113,13 +1128,11 @@ fn try_spawn_agent(
     api_key: Option<&str>,
     api_endpoint: Option<&str>,
 ) -> Option<AgentRuntime> {
-    let backend = glass_agent_backend::resolve_backend(
-        provider, model, api_key, api_endpoint,
-    )
-    .unwrap_or_else(|e| {
-        tracing::warn!("resolve_backend: {}, falling back to Claude CLI", e);
-        Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new())
-    });
+    let backend = glass_agent_backend::resolve_backend(provider, model, api_key, api_endpoint)
+        .unwrap_or_else(|e| {
+            tracing::warn!("resolve_backend: {}, falling back to Claude CLI", e);
+            Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new())
+        });
 
     // Compute allowed tools — orchestrator always gets full MCP access.
     let orchestrator_active = config
@@ -1568,7 +1581,10 @@ fn start_artifact_watcher(
 
     // Ensure parent directory exists so the watcher can be created.
     if let Err(e) = std::fs::create_dir_all(&watch_dir) {
-        tracing::warn!("Failed to create artifact watch dir {}: {e}", watch_dir.display());
+        tracing::warn!(
+            "Failed to create artifact watch dir {}: {e}",
+            watch_dir.display()
+        );
     }
 
     let handle = std::thread::Builder::new()
@@ -1666,6 +1682,31 @@ impl Processor {
             })
     }
 
+    /// Process onboarding coordinator actions, updating overlay/toast state.
+    fn handle_onboarding_actions(
+        &mut self,
+        actions: Vec<glass_core::onboarding::OnboardingAction>,
+        pipe_stages: Option<usize>,
+    ) {
+        for action in actions {
+            match action {
+                glass_core::onboarding::OnboardingAction::ShowWelcome => {
+                    self.welcome_overlay_visible = true;
+                }
+                glass_core::onboarding::OnboardingAction::ShowToast(hint_id) => {
+                    self.onboarding_toast = Some(OnboardingToastState {
+                        hint_id,
+                        pipe_stages,
+                        created_at: std::time::Instant::now(),
+                    });
+                    let mut state = glass_core::state::GlassState::load();
+                    self.onboarding.save_to_state(&mut state);
+                    state.save();
+                }
+            }
+        }
+    }
+
     /// Run the feedback loop on_run_end, applying any config changes and logging results.
     fn run_feedback_on_end(&mut self) {
         if let Some(feedback_state) = self.feedback_state.take() {
@@ -1723,7 +1764,10 @@ impl Processor {
                     ));
                 if let Some(parent) = summary_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        tracing::warn!("Failed to create feedback summary dir {}: {e}", parent.display());
+                        tracing::warn!(
+                            "Failed to create feedback summary dir {}: {e}",
+                            parent.display()
+                        );
                     }
                 }
                 if let Err(e) = std::fs::write(&summary_path, &summary) {
@@ -2274,10 +2318,28 @@ impl Processor {
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
         // Retry up to 2 times with a brief delay if spawn fails (process cleanup race).
         let system_prompt = build_system_prompt(&agent_config, cwd);
-        let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-        let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-        let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-        let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
+        let provider = self
+            .config
+            .agent
+            .as_ref()
+            .map(|a| a.provider.as_str())
+            .unwrap_or("claude-code");
+        let model = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.model.as_deref())
+            .unwrap_or("");
+        let api_key = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.api_key.as_deref());
+        let api_endpoint = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.api_endpoint.as_deref());
 
         // Create new activity channel
         let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
@@ -2489,10 +2551,7 @@ impl Processor {
                     .name("glass-orch-enter".into())
                     .spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(150));
-                        pty_send(
-                            &sender,
-                            PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
-                        );
+                        pty_send(&sender, PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")));
                     })
                     .ok();
             }
@@ -2793,10 +2852,28 @@ impl ApplicationHandler<AppEvent> for Processor {
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                 let cwd = self.get_focused_cwd();
                 let system_prompt = build_system_prompt(&agent_config, &cwd);
-                let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-                let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-                let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-                let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
+                let provider = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .map(|a| a.provider.as_str())
+                    .unwrap_or("claude-code");
+                let model = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.model.as_deref())
+                    .unwrap_or("");
+                let api_key = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.api_key.as_deref());
+                let api_endpoint = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.api_endpoint.as_deref());
                 self.agent_runtime = try_spawn_agent(
                     agent_config,
                     rx,
@@ -3029,12 +3106,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 format!("Update v{} available (Ctrl+Shift+U)", info.latest)
                             })
                         }
-                    } else if let Some(ref info) = self.update_info {
-                        Some(format!("Update v{} available (Ctrl+Shift+U)", info.latest))
-                    } else if self.show_settings_hint {
-                        Some("Tip: Ctrl+Shift+, = settings & shortcuts".to_string())
                     } else {
-                        None
+                        self.update_info
+                            .as_ref()
+                            .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest))
                     };
 
                     let has_agents = !self.coordination_state.agents.is_empty();
@@ -3206,6 +3281,37 @@ impl ApplicationHandler<AppEvent> for Processor {
                             None
                         };
 
+                    // Auto-dismiss onboarding toast after 5 seconds
+                    let onboarding_toast_data = self.onboarding_toast.as_ref().and_then(|t| {
+                        let elapsed = t.created_at.elapsed().as_secs();
+                        if elapsed >= 5 {
+                            None
+                        } else {
+                            Some(glass_renderer::OnboardingToastRenderData {
+                                hint_id: t.hint_id,
+                                remaining_secs: 5 - elapsed,
+                                pipe_stages: t.pipe_stages,
+                            })
+                        }
+                    });
+                    if self
+                        .onboarding_toast
+                        .as_ref()
+                        .is_some_and(|t| t.created_at.elapsed().as_secs() >= 5)
+                    {
+                        self.onboarding_toast = None;
+                        self.onboarding.toast_dismissed();
+                    }
+
+                    let welcome_overlay_data = if self.welcome_overlay_visible {
+                        Some(glass_renderer::WelcomeOverlayRenderData {
+                            step: self.welcome_overlay_step,
+                            providers: self.onboarding.providers().to_vec(),
+                        })
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -3231,6 +3337,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         proposal_overlay_data.as_ref(),
                         agent_activity_line.as_deref(),
                         self.orchestrator.active,
+                        onboarding_toast_data.as_ref(),
+                        welcome_overlay_data.as_ref(),
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -3511,6 +3619,37 @@ impl ApplicationHandler<AppEvent> for Processor {
                             None
                         };
 
+                    // Auto-dismiss onboarding toast after 5 seconds (multi-pane path)
+                    let onboarding_toast_data_mp = self.onboarding_toast.as_ref().and_then(|t| {
+                        let elapsed = t.created_at.elapsed().as_secs();
+                        if elapsed >= 5 {
+                            None
+                        } else {
+                            Some(glass_renderer::OnboardingToastRenderData {
+                                hint_id: t.hint_id,
+                                remaining_secs: 5 - elapsed,
+                                pipe_stages: t.pipe_stages,
+                            })
+                        }
+                    });
+                    if self
+                        .onboarding_toast
+                        .as_ref()
+                        .is_some_and(|t| t.created_at.elapsed().as_secs() >= 5)
+                    {
+                        self.onboarding_toast = None;
+                        self.onboarding.toast_dismissed();
+                    }
+
+                    let welcome_overlay_data_mp = if self.welcome_overlay_visible {
+                        Some(glass_renderer::WelcomeOverlayRenderData {
+                            step: self.welcome_overlay_step,
+                            providers: self.onboarding.providers().to_vec(),
+                        })
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
@@ -3534,6 +3673,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         proposal_overlay_data_mp.as_ref(),
                         agent_activity_line_mp.as_deref(),
                         self.orchestrator.active,
+                        onboarding_toast_data_mp.as_ref(),
+                        welcome_overlay_data_mp.as_ref(),
                     );
                 }
 
@@ -4380,6 +4521,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
 
+                    // Welcome overlay: intercept all keys while visible.
+                    if self.welcome_overlay_visible {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::ArrowRight) => {
+                                self.welcome_overlay_step = self.welcome_overlay_step.next();
+                            }
+                            Key::Named(NamedKey::ArrowLeft) => {
+                                self.welcome_overlay_step = self.welcome_overlay_step.prev();
+                            }
+                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
+                                self.welcome_overlay_visible = false;
+                                self.onboarding.complete_welcome();
+                                let mut state = glass_core::state::GlassState::load();
+                                self.onboarding.save_to_state(&mut state);
+                                state.save();
+                            }
+                            _ => {}
+                        }
+                        ctx.mark_dirty_and_redraw();
+                        return; // Consume input while welcome is showing
+                    }
+
                     let Some(session) = ctx.session() else {
                         return;
                     };
@@ -4886,14 +5049,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .join("checkpoint.md");
                                         if let Some(parent) = cp_path.parent() {
                                             if let Err(e) = std::fs::create_dir_all(parent) {
-                                                tracing::warn!("Failed to create checkpoint dir {}: {e}", parent.display());
+                                                tracing::warn!(
+                                                    "Failed to create checkpoint dir {}: {e}",
+                                                    parent.display()
+                                                );
                                             }
                                         }
                                         if let Some(fallback) =
                                             self.orchestrator.cached_checkpoint_fallback.take()
                                         {
                                             if let Err(e) = std::fs::write(&cp_path, &fallback) {
-                                                tracing::warn!("Failed to write fallback checkpoint {}: {e}", cp_path.display());
+                                                tracing::warn!(
+                                                    "Failed to write fallback checkpoint {}: {e}",
+                                                    cp_path.display()
+                                                );
                                             }
                                         }
                                         self.orchestrator.checkpoint_phase =
@@ -6272,6 +6441,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Holds data for scripting hooks (fired outside windows borrow).
                 let mut hook_command_start_text: Option<String> = None;
                 let mut hook_command_complete_data: Option<(String, Option<i32>, i64)> = None;
+                // Onboarding trigger flags (processed outside session borrow).
+                let mut onboarding_files_modified = false;
+                let mut onboarding_command_finished = false;
+                let mut onboarding_pipe_stages: Option<usize> = None;
 
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Route to session by session_id
@@ -6307,6 +6480,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // resize delta computation is accurate.
                         let current_history = session.term.lock().grid().history_size();
                         session.block_manager.update_history_size(current_history);
+
+                        // Onboarding: capture pipe detection event
+                        if let ShellEvent::PipelineStart { stage_count } = &shell_event {
+                            onboarding_pipe_stages = Some(*stage_count);
+                        }
 
                         // Fix #3: Orchestrator crash recovery with grace period.
                         // Only trigger if orchestrating, had iterations, AND not within
@@ -6563,6 +6741,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
 
                         // Insert CommandRecord on CommandFinished
+                        if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
+                            onboarding_command_finished = true;
+                        }
                         if let ShellEvent::CommandFinished { exit_code } = &shell_event {
                             if let Some(ref db) = session.history_db {
                                 let now = std::time::SystemTime::now();
@@ -6689,6 +6870,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(watcher) = session.active_watcher.take() {
                                 let events = watcher.drain_events();
                                 if !events.is_empty() {
+                                    onboarding_files_modified = true;
                                     tracing::debug!("FS watcher captured {} events", events.len());
                                     if let Some(ref store) = session.snapshot_store {
                                         let command_id = session.last_command_id.unwrap_or(0);
@@ -6830,6 +7012,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                         glass_scripting::HookPoint::CommandComplete,
                         &event,
                     );
+                }
+
+                // Onboarding triggers (outside session/windows borrow)
+                if onboarding_files_modified {
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CommandModifiedFiles,
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, None);
+                }
+                if let Some(stages) = onboarding_pipe_stages {
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::PipeDetected { stages },
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, Some(stages));
+                }
+                if onboarding_command_finished {
+                    self.onboarding_command_count += 1;
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CommandCount(
+                            self.onboarding_command_count,
+                        ),
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, None);
                 }
             }
             AppEvent::CommandOutput {
@@ -7065,10 +7273,28 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                             let cwd = self.get_focused_cwd();
                             let system_prompt = build_system_prompt(&new_agent_config, &cwd);
-                            let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-                            let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-                            let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-                            let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
+                            let provider = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| a.provider.as_str())
+                                .unwrap_or("claude-code");
+                            let model = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.model.as_deref())
+                                .unwrap_or("");
+                            let api_key = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.api_key.as_deref());
+                            let api_endpoint = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.api_endpoint.as_deref());
                             self.agent_runtime = try_spawn_agent(
                                 new_agent_config.clone(),
                                 new_rx,
@@ -7351,6 +7577,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                 }
+
+                // Onboarding: SOI parsed trigger
+                {
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::SoiParsed,
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, None);
+                }
             }
             AppEvent::AgentProposal(proposal) => {
                 tracing::info!(
@@ -7457,6 +7692,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         });
                     }
 
+                    // Onboarding: agent proposal trigger
+                    {
+                        let actions = self.onboarding.process(
+                            glass_core::onboarding::OnboardingEvent::ProposalReady,
+                            self.active_toast.is_some(),
+                        );
+                        self.handle_onboarding_actions(actions, None);
+                    }
+
                     for ctx in self.windows.values_mut() {
                         ctx.mark_dirty_and_redraw();
                     }
@@ -7479,7 +7723,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.mark_dirty_and_redraw();
                 }
             }
-            AppEvent::AgentCrashed { generation: crash_gen } => {
+            AppEvent::AgentCrashed {
+                generation: crash_gen,
+            } => {
                 // Ignore stale crashes from orphaned reader threads of previously
                 // killed agents. The crash event carries the generation of the agent
                 // that died. Only process if it matches the CURRENT agent's generation.
@@ -7557,10 +7803,28 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                     let system_prompt = build_system_prompt(&config, &cwd);
                     self.agent_generation += 1;
-                    let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-                    let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-                    let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-                    let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
+                    let provider = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .map(|a| a.provider.as_str())
+                        .unwrap_or("claude-code");
+                    let model = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.model.as_deref())
+                        .unwrap_or("");
+                    let api_key = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.api_key.as_deref());
+                    let api_endpoint = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.api_endpoint.as_deref());
                     self.agent_runtime = try_spawn_agent(
                         config,
                         new_rx,
@@ -7764,7 +8028,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     std::thread::Builder::new()
                                         .name("glass-orch-enter".into())
                                         .spawn(move || {
-                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                150,
+                                            ));
                                             pty_send(
                                                 &sender,
                                                 PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
@@ -7839,8 +8105,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     // Collapse newlines to spaces so Claude Code treats
                                     // it as typed input, not a multi-line paste.
-                                    let single_line =
-                                        text_to_type.replace(['\n', '\r'], " ");
+                                    let single_line = text_to_type.replace(['\n', '\r'], " ");
 
                                     // Send text and Enter as SEPARATE writes with a delay.
                                     // When sent together in one write, Claude Code's readline
@@ -7863,7 +8128,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     std::thread::Builder::new()
                                         .name("glass-orch-enter".into())
                                         .spawn(move || {
-                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                150,
+                                            ));
                                             pty_send(
                                                 &sender,
                                                 PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
@@ -8143,7 +8410,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let nudge = std::fs::read_to_string(&nudge_path).ok();
                         if nudge.is_some() {
                             if let Err(e) = std::fs::remove_file(&nudge_path) {
-                                tracing::warn!("Failed to remove nudge file {}: {e}", nudge_path.display());
+                                tracing::warn!(
+                                    "Failed to remove nudge file {}: {e}",
+                                    nudge_path.display()
+                                );
                             }
                         }
 
@@ -8159,7 +8429,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
                             if full.exists() {
                                 if let Err(e) = std::fs::remove_file(&full) {
-                                    tracing::warn!("Failed to remove artifact file {}: {e}", full.display());
+                                    tracing::warn!(
+                                        "Failed to remove artifact file {}: {e}",
+                                        full.display()
+                                    );
                                 }
                             }
                         }
@@ -8986,9 +9259,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
                         if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
-                            tracing::warn!("Failed to create checkpoint dir {}: {e}", checkpoint_dir.display());
+                            tracing::warn!(
+                                "Failed to create checkpoint dir {}: {e}",
+                                checkpoint_dir.display()
+                            );
                         }
-                        if let Err(e) = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint) {
+                        if let Err(e) =
+                            std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint)
+                        {
                             tracing::warn!("Failed to write usage-pause checkpoint: {e}");
                         }
                     }
@@ -9043,9 +9321,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
                         if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
-                            tracing::warn!("Failed to create checkpoint dir {}: {e}", checkpoint_dir.display());
+                            tracing::warn!(
+                                "Failed to create checkpoint dir {}: {e}",
+                                checkpoint_dir.display()
+                            );
                         }
-                        if let Err(e) = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint) {
+                        if let Err(e) =
+                            std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint)
+                        {
                             tracing::warn!("Failed to write hard-stop checkpoint: {e}");
                         }
                     }
@@ -9651,7 +9934,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .join("scripts")
                                             .join("feedback");
                                         if let Err(e) = std::fs::create_dir_all(&scripts_dir) {
-                                            tracing::warn!("Failed to create scripts dir {}: {e}", scripts_dir.display());
+                                            tracing::warn!(
+                                                "Failed to create scripts dir {}: {e}",
+                                                scripts_dir.display()
+                                            );
                                         }
 
                                         // Deduplicate: skip if a non-archived manifest already exists.
@@ -9838,7 +10124,10 @@ fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
 
     let temp_dir = std::env::temp_dir().join("glass-shell-integration");
     if let Err(e) = std::fs::create_dir_all(&temp_dir) {
-        tracing::warn!("Failed to create shell integration dir {}: {e}", temp_dir.display());
+        tracing::warn!(
+            "Failed to create shell integration dir {}: {e}",
+            temp_dir.display()
+        );
     }
     let temp_path = temp_dir.join(script_name);
     match std::fs::write(&temp_path, embedded) {
@@ -9946,7 +10235,10 @@ fn install_crash_handler() {
         if let Some(home) = dirs::home_dir() {
             let glass_dir = home.join(".glass");
             if let Err(e) = std::fs::create_dir_all(&glass_dir) {
-                tracing::warn!("Failed to create crash log dir {}: {e}", glass_dir.display());
+                tracing::warn!(
+                    "Failed to create crash log dir {}: {e}",
+                    glass_dir.display()
+                );
             }
             let crash_log = glass_dir.join("crash.log");
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -10222,14 +10514,34 @@ fn main() {
 
             let script_bridge = script_bridge::ScriptBridge::new(&config);
 
-            // Load persistent state and increment session count (UX-1 onboarding)
-            let show_settings_hint = {
-                let mut glass_state = glass_core::state::GlassState::load();
-                let hint = glass_state.should_show_hint();
-                glass_state.session_count += 1;
-                glass_state.save();
-                hint
+            // Load persistent state and increment session count (onboarding)
+            let glass_state = {
+                let mut s = glass_core::state::GlassState::load();
+                s.session_count += 1;
+                s.save();
+                s
             };
+            let mut onboarding =
+                glass_core::onboarding::OnboardingCoordinator::from_state(&glass_state);
+
+            // Detect LLM providers (async — Ollama probe has 200ms timeout)
+            let detected_providers = {
+                let rt =
+                    tokio::runtime::Runtime::new().expect("tokio runtime for provider detection");
+                rt.block_on(glass_core::provider_detect::detect_providers())
+            };
+            onboarding.set_providers(detected_providers);
+
+            // Process initial session start
+            let mut welcome_overlay_visible = false;
+            let welcome_overlay_step = glass_renderer::WelcomeStep::default();
+            let onboarding_actions =
+                onboarding.process(glass_core::onboarding::OnboardingEvent::SessionStart, false);
+            for action in onboarding_actions {
+                if let glass_core::onboarding::OnboardingAction::ShowWelcome = action {
+                    welcome_overlay_visible = true;
+                }
+            }
 
             let mut processor = Processor {
                 windows: HashMap::new(),
@@ -10239,7 +10551,6 @@ fn main() {
                 cold_start,
                 config_error: None,
                 watcher_spawned: false,
-                show_settings_hint,
                 update_info: None,
                 coordination_state: Default::default(),
                 last_ticker_event_id: None,
@@ -10271,6 +10582,11 @@ fn main() {
                 },
                 agent_proposal_worktrees: Vec::new(),
                 active_toast: None,
+                onboarding,
+                onboarding_toast: None,
+                onboarding_command_count: 0,
+                welcome_overlay_visible,
+                welcome_overlay_step,
                 activity_overlay_visible: false,
                 activity_view_filter: Default::default(),
                 activity_scroll_offset: 0,

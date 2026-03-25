@@ -46,7 +46,7 @@ impl HintId {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_id(s: &str) -> Option<Self> {
         match s {
             "undo" => Some(Self::Undo),
             "pipe_viz" => Some(Self::PipeViz),
@@ -81,7 +81,7 @@ impl OnboardingCoordinator {
         let hints_shown: HashSet<HintId> = state
             .hints_shown
             .iter()
-            .filter_map(|s| HintId::from_str(s))
+            .filter_map(|s| HintId::parse_id(s))
             .collect();
 
         Self {
@@ -97,7 +97,11 @@ impl OnboardingCoordinator {
     /// Persist current state back to GlassState.
     pub fn save_to_state(&self, state: &mut GlassState) {
         state.welcome_completed = self.welcome_completed;
-        state.hints_shown = self.hints_shown.iter().map(|h| h.as_str().to_string()).collect();
+        state.hints_shown = self
+            .hints_shown
+            .iter()
+            .map(|h| h.as_str().to_string())
+            .collect();
     }
 
     /// Set detected provider results (called from main.rs after async detection).
@@ -127,7 +131,11 @@ impl OnboardingCoordinator {
     }
 
     /// Process a trigger event, return zero or more display actions.
-    pub fn process(&mut self, event: OnboardingEvent, proposal_toast_active: bool) -> Vec<OnboardingAction> {
+    pub fn process(
+        &mut self,
+        event: OnboardingEvent,
+        proposal_toast_active: bool,
+    ) -> Vec<OnboardingAction> {
         let mut actions = Vec::new();
 
         // Show welcome on first session start
@@ -283,7 +291,10 @@ mod tests {
         let actions = coord.process(OnboardingEvent::CommandCount(9), false);
         assert!(actions.is_empty());
         let actions = coord.process(OnboardingEvent::CommandCount(10), false);
-        assert_eq!(actions, vec![OnboardingAction::ShowToast(HintId::HistorySearch)]);
+        assert_eq!(
+            actions,
+            vec![OnboardingAction::ShowToast(HintId::HistorySearch)]
+        );
     }
 
     #[test]
