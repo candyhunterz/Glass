@@ -8,6 +8,7 @@ pub mod frame;
 pub mod glyph_cache;
 pub mod grid_renderer;
 pub mod proposal_overlay_renderer;
+pub mod onboarding_toast_renderer;
 pub mod proposal_toast_renderer;
 pub mod rect_renderer;
 pub mod scrollbar;
@@ -30,6 +31,9 @@ pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;
 pub use proposal_overlay_renderer::{
     ProposalOverlayRenderData, ProposalOverlayRenderer, ProposalOverlayTextLabel,
+};
+pub use onboarding_toast_renderer::{
+    OnboardingToastRenderData, OnboardingToastRenderer, OnboardingToastTextLabel,
 };
 pub use proposal_toast_renderer::{
     ProposalToastRenderData, ProposalToastRenderer, ProposalToastTextLabel,
