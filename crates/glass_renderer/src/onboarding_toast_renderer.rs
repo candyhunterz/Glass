@@ -74,7 +74,11 @@ impl OnboardingToastRenderer {
             text: icon.to_string(),
             x: x + self.cell_width * 0.8,
             y: y + toast_h * 0.3,
-            color: Rgb { r: 56, g: 189, b: 248 }, // cyan
+            color: Rgb {
+                r: 56,
+                g: 189,
+                b: 248,
+            }, // cyan
         });
 
         // Description
@@ -82,7 +86,11 @@ impl OnboardingToastRenderer {
             text: description,
             x: x + self.cell_width * 2.5,
             y: y + toast_h * 0.25,
-            color: Rgb { r: 220, g: 220, b: 220 }, // light gray
+            color: Rgb {
+                r: 220,
+                g: 220,
+                b: 220,
+            }, // light gray
         });
 
         // Shortcut hint
@@ -90,7 +98,11 @@ impl OnboardingToastRenderer {
             text: shortcut,
             x: x + self.cell_width * 2.5,
             y: y + toast_h * 0.6,
-            color: Rgb { r: 160, g: 180, b: 190 }, // muted cyan-gray
+            color: Rgb {
+                r: 160,
+                g: 180,
+                b: 190,
+            }, // muted cyan-gray
         });
 
         // Countdown
@@ -98,7 +110,11 @@ impl OnboardingToastRenderer {
             text: format!("{}s", data.remaining_secs),
             x: x + toast_w - self.cell_width * 2.0,
             y: y + toast_h * 0.25,
-            color: Rgb { r: 102, g: 102, b: 102 }, // dim gray
+            color: Rgb {
+                r: 102,
+                g: 102,
+                b: 102,
+            }, // dim gray
         });
 
         labels

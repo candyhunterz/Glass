@@ -113,12 +113,36 @@ impl WelcomeOverlayRenderer {
         let panel_x = (viewport_w - panel_w) / 2.0;
         let panel_y = (viewport_h - panel_h) / 2.0;
 
-        let white = Rgb { r: 255, g: 255, b: 255 };
-        let gray = Rgb { r: 136, g: 136, b: 136 };
-        let cyan = Rgb { r: 56, g: 189, b: 248 };
-        let green = Rgb { r: 74, g: 222, b: 128 };
-        let red = Rgb { r: 248, g: 113, b: 113 };
-        let purple = Rgb { r: 167, g: 139, b: 250 };
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let gray = Rgb {
+            r: 136,
+            g: 136,
+            b: 136,
+        };
+        let cyan = Rgb {
+            r: 56,
+            g: 189,
+            b: 248,
+        };
+        let green = Rgb {
+            r: 74,
+            g: 222,
+            b: 128,
+        };
+        let red = Rgb {
+            r: 248,
+            g: 113,
+            b: 113,
+        };
+        let purple = Rgb {
+            r: 167,
+            g: 139,
+            b: 250,
+        };
 
         let cx = panel_x + panel_w / 2.0;
         let mut labels = Vec::new();
@@ -201,13 +225,21 @@ impl WelcomeOverlayRenderer {
                     text: "Starts the Orchestrator \u{2014} autonomous".to_string(),
                     x: cx - self.cell_width * 18.0,
                     y: panel_y + self.cell_height * 8.5,
-                    color: Rgb { r: 204, g: 204, b: 204 },
+                    color: Rgb {
+                        r: 204,
+                        g: 204,
+                        b: 204,
+                    },
                 });
                 labels.push(WelcomeOverlayTextLabel {
                     text: "TDD-driven building from a PRD.".to_string(),
                     x: cx - self.cell_width * 15.0,
                     y: panel_y + self.cell_height * 10.0,
-                    color: Rgb { r: 204, g: 204, b: 204 },
+                    color: Rgb {
+                        r: 204,
+                        g: 204,
+                        b: 204,
+                    },
                 });
                 labels.push(WelcomeOverlayTextLabel {
                     text: "Write a PRD.md, press the shortcut, walk away.".to_string(),
@@ -286,7 +318,13 @@ impl WelcomeOverlayRenderer {
         // Step indicator (all steps)
         let step_idx = data.step.index();
         let dots: String = (0..3)
-            .map(|i| if i == step_idx { "\u{25CF}" } else { "\u{25CB}" })
+            .map(|i| {
+                if i == step_idx {
+                    "\u{25CF}"
+                } else {
+                    "\u{25CB}"
+                }
+            })
             .collect::<Vec<_>>()
             .join("  ");
         labels.push(WelcomeOverlayTextLabel {
@@ -347,15 +385,17 @@ mod tests {
     #[test]
     fn build_text_returns_labels_for_each_step() {
         let renderer = WelcomeOverlayRenderer::new(8.0, 16.0);
-        let providers = vec![
-            ProviderStatus {
-                name: "Claude CLI",
-                available: true,
-                detail: "found".to_string(),
-            },
-        ];
+        let providers = vec![ProviderStatus {
+            name: "Claude CLI",
+            available: true,
+            detail: "found".to_string(),
+        }];
 
-        for step in [WelcomeStep::Providers, WelcomeStep::Orchestrator, WelcomeStep::QuickRef] {
+        for step in [
+            WelcomeStep::Providers,
+            WelcomeStep::Orchestrator,
+            WelcomeStep::QuickRef,
+        ] {
             let data = WelcomeOverlayRenderData {
                 step,
                 providers: providers.clone(),

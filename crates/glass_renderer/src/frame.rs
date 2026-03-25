@@ -15,6 +15,7 @@ use glass_terminal::{Block, GridSnapshot, StatusState};
 use crate::block_renderer::BlockRenderer;
 use crate::glyph_cache::GlyphCache;
 use crate::grid_renderer::GridRenderer;
+use crate::onboarding_toast_renderer::{OnboardingToastRenderData, OnboardingToastRenderer};
 use crate::proposal_overlay_renderer::{ProposalOverlayRenderData, ProposalOverlayRenderer};
 use crate::proposal_toast_renderer::{ProposalToastRenderData, ProposalToastRenderer};
 use crate::rect_renderer::RectRenderer;
@@ -22,6 +23,7 @@ use crate::scrollbar::ScrollbarRenderer;
 use crate::search_overlay_renderer::SearchOverlayRenderer;
 use crate::status_bar::StatusBarRenderer;
 use crate::tab_bar::TabBarRenderer;
+use crate::welcome_overlay::{WelcomeOverlayRenderData, WelcomeOverlayRenderer};
 
 /// Display data for the search overlay, extracted from SearchOverlay state.
 /// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
@@ -237,6 +239,8 @@ impl FrameRenderer {
         proposal_overlay: Option<&ProposalOverlayRenderData>,
         agent_activity_line: Option<&str>,
         orchestrating: bool,
+        onboarding_toast: Option<&OnboardingToastRenderData>,
+        welcome_overlay: Option<&WelcomeOverlayRenderData>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -351,6 +355,14 @@ impl FrameRenderer {
             let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
             let toast_rects = toast_renderer.build_toast_rects(w, h);
             rect_instances.extend(toast_rects);
+        }
+
+        // 1d4. Onboarding toast rect (above status bar, right-aligned)
+        if let Some(_onb_toast) = onboarding_toast {
+            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let onb_rects = onb_renderer.build_toast_rects(w, h);
+            rect_instances.extend(onb_rects);
         }
 
         // Record where background rects end (overlay rects rendered after text come next)
@@ -810,8 +822,7 @@ impl FrameRenderer {
             // Center text (update notification / onboarding tip)
             // Only show if there is enough horizontal space between left CWD and right-side items.
             if let Some(ref center_text) = status_label.center_text {
-                let left_text_width =
-                    status_label.left_text.len() as f32 * cell_width + cell_width;
+                let left_text_width = status_label.left_text.len() as f32 * cell_width + cell_width;
                 let right_side_width = {
                     let mut rw = 0.0f32;
                     if let Some(ref rt) = status_label.right_text {
@@ -835,11 +846,8 @@ impl FrameRenderer {
                 let center_x = (w - center_text_width) / 2.0;
                 let right_items_start = w - right_side_width;
                 // Check actual pixel positions: center text must not overlap left OR right items
-                if center_x > left_text_width
-                    && center_x + center_text_width < right_items_start
-                {
-                    let mut buffer =
-                        Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                if center_x > left_text_width && center_x + center_text_width < right_items_start {
+                    let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                     buffer.set_size(
                         &mut self.glyph_cache.font_system,
                         Some(w),
@@ -1046,6 +1054,42 @@ impl FrameRenderer {
             let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
             let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
             for label in &toast_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
+        // Onboarding toast text buffers
+        if let Some(onb_data) = onboarding_toast {
+            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let onb_labels = onb_renderer.build_toast_text(onb_data, w, h);
+            for label in &onb_labels {
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,
@@ -1308,6 +1352,11 @@ impl FrameRenderer {
             }
             queue.submit([encoder2.finish()]);
         }
+
+        // Welcome overlay: separate render pass on top of everything (like settings/activity overlays)
+        if let Some(welcome_data) = welcome_overlay {
+            self.draw_welcome_overlay(device, queue, view, width, height, welcome_data);
+        }
     }
 
     /// Draw a complete frame with multiple split panes.
@@ -1343,6 +1392,8 @@ impl FrameRenderer {
         proposal_overlay: Option<&ProposalOverlayRenderData>,
         agent_activity_line: Option<&str>,
         orchestrating: bool,
+        onboarding_toast: Option<&OnboardingToastRenderData>,
+        welcome_overlay: Option<&WelcomeOverlayRenderData>,
     ) {
         let w = width as f32;
         let h = height as f32;
@@ -1478,6 +1529,14 @@ impl FrameRenderer {
             let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
             let toast_rects = toast_renderer.build_toast_rects(w, h);
             rect_instances.extend(toast_rects);
+        }
+
+        // Onboarding toast rect (window-global, above status bar)
+        if let Some(_onb_toast) = onboarding_toast {
+            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let onb_rects = onb_renderer.build_toast_rects(w, h);
+            rect_instances.extend(onb_rects);
         }
 
         let total_rect_count = rect_instances.len() as u32;
@@ -1911,8 +1970,7 @@ impl FrameRenderer {
             // Center text (update notification / onboarding tip) -- multi-pane path
             // Only show if there is enough horizontal space between left CWD and right-side items.
             if let Some(ref center_text) = status_label.center_text {
-                let left_text_width =
-                    status_label.left_text.len() as f32 * cell_width + cell_width;
+                let left_text_width = status_label.left_text.len() as f32 * cell_width + cell_width;
                 let right_side_width = {
                     let mut rw = 0.0f32;
                     if let Some(ref rt) = status_label.right_text {
@@ -1936,11 +1994,8 @@ impl FrameRenderer {
                 let center_x = (w - center_text_width) / 2.0;
                 let right_items_start = w - right_side_width;
                 // Check actual pixel positions: center text must not overlap left OR right items
-                if center_x > left_text_width
-                    && center_x + center_text_width < right_items_start
-                {
-                    let mut buffer =
-                        Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                if center_x > left_text_width && center_x + center_text_width < right_items_start {
+                    let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                     buffer.set_size(
                         &mut self.glyph_cache.font_system,
                         Some(w),
@@ -2137,6 +2192,42 @@ impl FrameRenderer {
             }
         }
 
+        // Onboarding toast text buffers (window-global, after tab bar)
+        if let Some(onb_data) = onboarding_toast {
+            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let onb_labels = onb_renderer.build_toast_text(onb_data, w, h);
+            for label in &onb_labels {
+                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+                buffer.set_size(
+                    &mut self.glyph_cache.font_system,
+                    Some(w - label.x),
+                    Some(cell_height),
+                );
+                buffer.set_text(
+                    &mut self.glyph_cache.font_system,
+                    &label.text,
+                    &Attrs::new()
+                        .family(Family::Name(font_family))
+                        .color(GlyphonColor::rgba(
+                            label.color.r,
+                            label.color.g,
+                            label.color.b,
+                            255,
+                        )),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+                self.overlay_buffers.push(buffer);
+                overlay_metas.push(OverlayMeta {
+                    left: label.x,
+                    top: label.y,
+                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                });
+            }
+        }
+
         // Create TextAreas from overlay buffers
         for (i, meta) in overlay_metas.iter().enumerate() {
             text_areas.push(TextArea {
@@ -2215,6 +2306,11 @@ impl FrameRenderer {
             }
         }
         queue.submit([encoder.finish()]);
+
+        // Welcome overlay: separate render pass on top of everything (like settings/activity overlays)
+        if let Some(welcome_data) = welcome_overlay {
+            self.draw_welcome_overlay(device, queue, view, width, height, welcome_data);
+        }
     }
 
     /// Draw a config error overlay banner on top of existing frame content.
@@ -2725,6 +2821,130 @@ impl FrameRenderer {
         queue.submit([encoder.finish()]);
     }
 
+    /// Draw the welcome overlay (fullscreen, on top of everything).
+    ///
+    /// Uses LoadOp::Load to preserve the existing frame content underneath.
+    /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
+    fn draw_welcome_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        data: &WelcomeOverlayRenderData,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        let overlay = WelcomeOverlayRenderer::new(cell_width, cell_height);
+
+        // 1. Build rects (backdrop + panel)
+        let rects = overlay.build_rects(width as f32, height as f32);
+        let rect_count = rects.len() as u32;
+        self.rect_renderer
+            .prepare(device, queue, &rects, width, height);
+
+        // 2. Build text labels
+        let labels = overlay.build_text(data, width as f32, height as f32);
+
+        // 3. Build per-label text buffers
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut welcome_buffers: Vec<Buffer> = Vec::with_capacity(labels.len());
+        for label in &labels {
+            let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
+            buffer.set_size(
+                &mut self.glyph_cache.font_system,
+                Some(width as f32 - label.x),
+                Some(cell_height),
+            );
+            buffer.set_text(
+                &mut self.glyph_cache.font_system,
+                &label.text,
+                &Attrs::new()
+                    .family(Family::Name(font_family))
+                    .color(GlyphonColor::rgba(
+                        label.color.r,
+                        label.color.g,
+                        label.color.b,
+                        255,
+                    )),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
+            welcome_buffers.push(buffer);
+        }
+
+        // 4. Build text areas referencing the buffers
+        let text_areas: Vec<TextArea<'_>> = labels
+            .iter()
+            .zip(welcome_buffers.iter())
+            .map(|(label, buffer)| TextArea {
+                buffer,
+                left: label.x,
+                top: label.y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                custom_glyphs: &[],
+            })
+            .collect();
+
+        // 5. Prepare text renderer
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Welcome overlay text prepare error: {:?}", e);
+        }
+
+        // 6. Render pass: rects then text
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("welcome_overlay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer.render(&mut pass, rect_count);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Welcome overlay text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Draw a centered toast notification on top of existing frame content.
     ///
     /// Renders a small dark rect centered on the viewport with the given text.
@@ -2764,11 +2984,7 @@ impl FrameRenderer {
         let font_family = &self.grid_renderer.font_family;
 
         let mut toast_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-        toast_buffer.set_size(
-            &mut self.glyph_cache.font_system,
-            Some(box_w),
-            Some(box_h),
-        );
+        toast_buffer.set_size(&mut self.glyph_cache.font_system, Some(box_w), Some(box_h));
         toast_buffer.set_text(
             &mut self.glyph_cache.font_system,
             text,
