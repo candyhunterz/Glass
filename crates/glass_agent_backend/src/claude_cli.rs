@@ -83,7 +83,11 @@ impl AgentBackend for ClaudeCliBackend {
         if generation > 0 {
             let old_path = glass_dir.join(format!("agent-system-prompt-{}.txt", generation - 1));
             if let Err(e) = std::fs::remove_file(&old_path) {
-                tracing::warn!("ClaudeCliBackend: failed to remove old system prompt {:?}: {}", old_path, e);
+                tracing::warn!(
+                    "ClaudeCliBackend: failed to remove old system prompt {:?}: {}",
+                    old_path,
+                    e
+                );
             }
         }
 
@@ -106,9 +110,14 @@ impl AgentBackend for ClaudeCliBackend {
                     Ok(()) => {
                         // Clean up old generation MCP config (best-effort)
                         if generation > 0 {
-                            let old_mcp = glass_dir.join(format!("agent-mcp-{}.json", generation - 1));
+                            let old_mcp =
+                                glass_dir.join(format!("agent-mcp-{}.json", generation - 1));
                             if let Err(e) = std::fs::remove_file(&old_mcp) {
-                                tracing::warn!("ClaudeCliBackend: failed to remove old MCP config {:?}: {}", old_mcp, e);
+                                tracing::warn!(
+                                    "ClaudeCliBackend: failed to remove old MCP config {:?}: {}",
+                                    old_mcp,
+                                    e
+                                );
                             }
                         }
                         Some(mcp_json_path.to_string_lossy().to_string())
@@ -208,12 +217,14 @@ impl AgentBackend for ClaudeCliBackend {
         };
 
         // Extract stdin/stdout before storing child (stderr is null).
-        let stdout = child.stdout.take().ok_or_else(|| {
-            BackendError::SpawnFailed("stdout was not piped".to_string())
-        })?;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            BackendError::SpawnFailed("stdin was not piped".to_string())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| BackendError::SpawnFailed("stdout was not piped".to_string()))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| BackendError::SpawnFailed("stdin was not piped".to_string()))?;
 
         // ── (f) Write initial stdin message for CLI 2.1.77+ compat ───────────
         {

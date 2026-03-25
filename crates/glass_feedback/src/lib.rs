@@ -392,7 +392,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         tracing::warn!("Failed to save rules file {:?}: {e}", state.rules_path);
     }
     if let Err(e) = save_archived_rules(&state.archived_path, &archived_file) {
-        tracing::warn!("Failed to save archived rules {:?}: {e}", state.archived_path);
+        tracing::warn!(
+            "Failed to save archived rules {:?}: {e}",
+            state.archived_path
+        );
     }
 
     // --- Step 10b: sync global-scoped rules to ~/.glass/global-rules.toml ---
@@ -436,7 +439,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         global_file.rules.retain(|r| !rejected_ids.contains(&r.id));
 
         if let Err(e) = save_rules_file(&state.global_rules_path, &global_file) {
-            tracing::warn!("Failed to save global rules {:?}: {e}", state.global_rules_path);
+            tracing::warn!(
+                "Failed to save global rules {:?}: {e}",
+                state.global_rules_path
+            );
         }
     }
 
@@ -445,7 +451,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         scores: attribution_scores,
     };
     if let Err(e) = save_attribution_file(&state.attribution_path, &attribution_file) {
-        tracing::warn!("Failed to save attribution file {:?}: {e}", state.attribution_path);
+        tracing::warn!(
+            "Failed to save attribution file {:?}: {e}",
+            state.attribution_path
+        );
     }
 
     FeedbackResult {
@@ -645,10 +654,7 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     let mut out = String::with_capacity(2048);
 
     // Header
-    out.push_str(&format!(
-        "# Feedback Loop Summary — {}\n\n",
-        input.run_id
-    ));
+    out.push_str(&format!("# Feedback Loop Summary — {}\n\n", input.run_id));
 
     // Run overview
     let mins = d.duration_secs / 60;
@@ -695,10 +701,7 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     if r.findings.is_empty() {
         out.push_str("No new findings detected.\n\n");
     } else {
-        out.push_str(&format!(
-            "**{} new finding(s):**\n\n",
-            r.findings.len()
-        ));
+        out.push_str(&format!("**{} new finding(s):**\n\n", r.findings.len()));
         for f in &r.findings {
             out.push_str(&format!(
                 "- `{}` ({:?}, {:?}) — {}\n",
@@ -725,7 +728,10 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     // Regression
     match &r.regression {
         Some(regression::RegressionResult::Regressed { reasons }) => {
-            out.push_str(&format!("**Regression detected:** {}\n\n", reasons.join(", ")));
+            out.push_str(&format!(
+                "**Regression detected:** {}\n\n",
+                reasons.join(", ")
+            ));
         }
         Some(regression::RegressionResult::Improved) => {
             out.push_str("**Improved** vs previous run.\n\n");
@@ -795,7 +801,10 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     if hint_count == 0 {
         out.push_str("No prompt hints active.\n\n");
     } else {
-        out.push_str(&format!("{} prompt hint(s) injected into agent context.\n\n", hint_count));
+        out.push_str(&format!(
+            "{} prompt hint(s) injected into agent context.\n\n",
+            hint_count
+        ));
     }
 
     // Tier 4: Script Generation
@@ -809,7 +818,9 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     // LLM Analysis
     out.push_str("## LLM Analysis\n\n");
     if r.llm_prompt.is_some() {
-        out.push_str("LLM analysis **triggered** — ephemeral agent spawned for qualitative review.\n\n");
+        out.push_str(
+            "LLM analysis **triggered** — ephemeral agent spawned for qualitative review.\n\n",
+        );
     } else {
         out.push_str("Not triggered (feedback_llm disabled).\n\n");
     }
