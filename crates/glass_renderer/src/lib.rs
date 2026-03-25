@@ -15,6 +15,7 @@ pub mod scrollbar;
 pub mod search_overlay_renderer;
 pub mod settings_overlay;
 pub mod status_bar;
+mod welcome_overlay;
 pub mod surface;
 pub mod tab_bar;
 
@@ -43,6 +44,9 @@ pub use scrollbar::{ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
 pub use search_overlay_renderer::{SearchOverlayRenderer, SearchOverlayTextLabel};
 pub use settings_overlay::{SettingsOverlayRenderData, SettingsOverlayTextLabel, SettingsTab};
 pub use status_bar::{StatusBarRenderer, StatusLabel};
+pub use welcome_overlay::{
+    WelcomeOverlayRenderData, WelcomeOverlayRenderer, WelcomeOverlayTextLabel, WelcomeStep,
+};
 pub use surface::GlassRenderer;
 pub use tab_bar::{TabBarRenderer, TabDisplayInfo, TabLabel};
 
