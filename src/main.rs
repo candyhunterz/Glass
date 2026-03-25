@@ -1623,9 +1623,17 @@ fn parse_iteration_log(project_root: &str) -> Vec<glass_renderer::IterationLogEn
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    content
-        .lines()
-        .skip(1) // skip header
+    let lines: Vec<&str> = content.lines().skip(1).collect(); // skip header
+
+    // Find the last run separator (iteration column == "---") to show only current run
+    let start = lines
+        .iter()
+        .rposition(|line| line.starts_with("---\t"))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    lines[start..]
+        .iter()
         .filter_map(|line| {
             let cols: Vec<&str> = line.split('\t').collect();
             if cols.len() < 6 {
@@ -2013,6 +2021,12 @@ impl Processor {
             .map(|o| o.prd_path.clone())
             .filter(|p| std::path::Path::new(&current_cwd).join(p).exists());
 
+        // 7b. Write run separator to iterations.tsv
+        orchestrator::append_run_separator(
+            &current_cwd,
+            config_prd_path.as_deref().unwrap_or("(no PRD)"),
+        );
+
         // 8. Config instructions fallback
         let config_instructions: Option<String> = self
             .config
@@ -2054,6 +2068,21 @@ impl Processor {
 
         // 11. Set activation timestamp
         self.orchestrator_activated_at = Some(std::time::Instant::now());
+
+        // 11b. Parse PRD deliverable names for progress tracking
+        if let Some(ref prd_path) = config_prd_path {
+            if let Ok(prd_content) =
+                std::fs::read_to_string(std::path::Path::new(&current_cwd).join(prd_path))
+            {
+                self.orchestrator.prd_deliverables =
+                    orchestrator::parse_prd_deliverable_names(&prd_content);
+                self.orchestrator.current_deliverable = 0;
+                tracing::info!(
+                    "Orchestrator: parsed {} deliverables from PRD",
+                    self.orchestrator.prd_deliverables.len()
+                );
+            }
+        }
 
         // 12. Resolve orchestrator mode (auto-detect when config is "auto")
         let config_mode = self
@@ -2208,6 +2237,7 @@ impl Processor {
         // Kill old agent and increment generation to ignore stale AgentCrashed events
         self.agent_runtime = None;
         self.agent_generation += 1;
+        self.orchestrator.respawn_count += 1;
 
         // Clear instruction buffer and bounded stop flag on respawn (fresh context)
         self.orchestrator.instruction_buffer.clear();
@@ -3630,6 +3660,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             None
                         };
+                        let elapsed_secs = self
+                            .orchestrator_activated_at
+                            .map(|at| at.elapsed().as_secs())
+                            .unwrap_or(0);
                         Some(glass_renderer::OrchestratorDashboard {
                             iteration: self.orchestrator.iteration,
                             iterations_since_checkpoint: self
@@ -3647,6 +3681,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             response_pending: self.orchestrator.response_pending,
                             checkpoint_phase,
                             paused_reason,
+                            elapsed_secs,
+                            respawn_count: self.orchestrator.respawn_count,
+                            deliverables: self.orchestrator.prd_deliverables.clone(),
+                            current_deliverable: self.orchestrator.current_deliverable,
                         })
                     } else {
                         None

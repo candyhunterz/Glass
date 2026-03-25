@@ -443,6 +443,8 @@ pub struct OrchestratorState {
     pub active: bool,
     /// Whether the orchestrator was paused due to usage limits (eligible for auto-resume).
     pub usage_paused: bool,
+    /// Number of times the agent has been respawned (checkpoints + crash recovery).
+    pub respawn_count: u64,
     /// Iteration counter (for status bar display and logging).
     pub iteration: u32,
     /// Iteration count since the last checkpoint (resets on refresh).
@@ -508,6 +510,10 @@ pub struct OrchestratorState {
     pub dependency_block_iterations: u32,
     /// Cached PRD deliverable file paths (for scope guard).
     pub prd_deliverable_files: Vec<String>,
+    /// Parsed PRD deliverable names (from `### N. Name` headers).
+    pub prd_deliverables: Vec<String>,
+    /// Index of the current deliverable being worked on (0-based).
+    pub current_deliverable: usize,
     /// Iterations since the last detected git commit.
     pub iterations_since_last_commit: u32,
     /// Last known git HEAD SHA (for commit detection).
@@ -535,6 +541,7 @@ impl OrchestratorState {
         Self {
             active: false,
             usage_paused: false,
+            respawn_count: 0,
             iteration: 0,
             iterations_since_checkpoint: 0,
             max_retries,
@@ -567,6 +574,8 @@ impl OrchestratorState {
             dependency_block: None,
             dependency_block_iterations: 0,
             prd_deliverable_files: Vec::new(),
+            prd_deliverables: Vec::new(),
+            current_deliverable: 0,
             iterations_since_last_commit: 0,
             last_known_head: None,
             cached_checkpoint_fallback: None,
@@ -651,11 +660,40 @@ impl OrchestratorState {
         self.iterations_since_checkpoint = 0;
         self.response_pending = false;
         self.cached_checkpoint_fallback = Some(fallback_content);
+
+        // Advance deliverable tracker: match completed/next against deliverable names
+        self.advance_deliverable(completed, next);
         self.checkpoint_phase = CheckpointPhase::Synthesizing {
             started_at: std::time::Instant::now(),
             completed: completed.to_string(),
             next: next.to_string(),
         };
+    }
+
+    /// Advance the deliverable tracker by fuzzy-matching completed/next text against names.
+    fn advance_deliverable(&mut self, completed: &str, next: &str) {
+        if self.prd_deliverables.is_empty() {
+            return;
+        }
+        let completed_lower = completed.to_lowercase();
+        let next_lower = next.to_lowercase();
+
+        // Try to find which deliverable was completed or which is next
+        for (i, name) in self.prd_deliverables.iter().enumerate() {
+            let name_lower = name.to_lowercase();
+            // Check if the completed text or next text contains the deliverable name
+            if completed_lower.contains(&name_lower) || name_lower.contains(&completed_lower) {
+                // This deliverable was just completed — move to next
+                if i + 1 > self.current_deliverable {
+                    self.current_deliverable = i + 1;
+                }
+            }
+            if next_lower.contains(&name_lower) || name_lower.contains(&next_lower) {
+                if i > self.current_deliverable {
+                    self.current_deliverable = i;
+                }
+            }
+        }
     }
 
     /// Check if the bounded iteration limit has been reached.
@@ -671,6 +709,78 @@ impl OrchestratorState {
 /// Append an iteration row to .glass/iterations.tsv.
 ///
 /// Format: iteration\tcommit\tfeature\tmetric\tstatus\tdescription
+/// Write a run separator line to iterations.tsv when a new orchestrator run starts.
+/// Parse deliverable names from PRD content by matching `### N. Name` headers.
+pub fn parse_prd_deliverable_names(prd_content: &str) -> Vec<String> {
+    prd_content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("### ") {
+                // Match "### 1. Name" or "### 1. Name (annotation)"
+                let after_hash = trimmed.strip_prefix("### ")?;
+                // Check if it starts with a digit followed by ". "
+                let dot_pos = after_hash.find(". ")?;
+                if after_hash[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
+                    Some(after_hash[dot_pos + 2..].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub fn append_run_separator(project_root: &str, prd_name: &str) {
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass directory for iterations log: {e}");
+    }
+    let path = glass_dir.join("iterations.tsv");
+
+    let needs_header = !path.exists();
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open iterations.tsv for run separator: {e}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+    if needs_header {
+        let _ = writeln!(
+            file,
+            "iteration\tcommit\tfeature\tmetric\tstatus\tdescription"
+        );
+    }
+
+    // Timestamp for the run separator
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| {
+            let secs = d.as_secs();
+            let hours = (secs / 3600) % 24;
+            let mins = (secs / 60) % 60;
+            // Simple UTC time — good enough for a log separator
+            format!("{:02}:{:02} UTC", hours, mins)
+        })
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let _ = writeln!(
+        file,
+        "---\t---\t---\t---\t---\t=== New Run: {} ({}) ==="
+        , prd_name, now
+    );
+}
+
 pub fn append_iteration_log(
     project_root: &str,
     iteration: u32,

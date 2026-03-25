@@ -202,7 +202,14 @@ model = ""                   # Empty = provider default
 
 ### Pre-built binaries
 
-Download the latest release from [github.com/candyhunterz/Glass/releases](https://github.com/candyhunterz/Glass/releases).
+| Platform | Download | Format |
+|----------|----------|--------|
+| Windows | [Glass-1.0.0-x86_64.msi](https://github.com/candyhunterz/Glass/releases/latest) | MSI installer |
+| macOS (Apple Silicon) | [Glass-1.0.0-aarch64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
+| macOS (Intel) | [Glass-1.0.0-x86_64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
+| Linux (Debian/Ubuntu) | [glass_1.0.0_amd64.deb](https://github.com/candyhunterz/Glass/releases/latest) | deb package |
+
+Or download from [github.com/candyhunterz/Glass/releases](https://github.com/candyhunterz/Glass/releases).
 
 > **macOS Gatekeeper:** If macOS blocks Glass with "cannot be opened because the developer cannot be verified", run:
 > ```bash

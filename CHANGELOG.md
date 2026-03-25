@@ -6,7 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [3.0] - 2026-03-18
+## [1.0.0] - 2026-03-24
+
+First public release.
+
+### Highlights
+- GPU-accelerated terminal emulator with command structure awareness
+- 16 crates, 1,700+ tests, cross-platform (Windows, macOS, Linux)
+- Command blocks with exit codes, durations, CWD badges
+- Command-level undo via pre-execution filesystem snapshots (blake3 content-addressed)
+- Visual pipeline debugging with per-stage inspection
+- SQLite + FTS5 command history with full-text search
+- Structured Output Intelligence: 19 format-specific parsers
+- 33 MCP tools for AI agent integration
+- Multi-agent coordination (registry, advisory locks, messaging)
+- Orchestrator mode: autonomous project execution from PRD with TDD, metric guard, checkpoint/resume, auto-pause on usage limits
+- Multi-provider agent backend (Claude CLI, OpenAI, Anthropic API, Ollama)
+- Self-improving feedback loop with config auto-tuning and behavioral rules
+- Rhai scripting engine with hook system and sandboxing
+- Tabs with drag-to-reorder, binary-tree split panes
+- Hot-reloadable TOML configuration with field validation
+
+### Changed (from internal versioning)
+- Version reset from internal 3.0 to public 1.0.0
+- Internal design docs moved to docs/internal/
+- PRD files excluded from public repo
+
+## [3.0] - 2026-03-18 (internal)
 
 ### Added
 - Ablation testing for confirmed feedback rules

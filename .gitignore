@@ -24,3 +24,11 @@ perf.data
 
 # Git worktrees
 .worktrees/
+
+# Internal planning docs (not for public repo)
+.planning/
+PRD*.md
+.claude/
+.superpowers/
+docs/superpowers/
+docs/internal/

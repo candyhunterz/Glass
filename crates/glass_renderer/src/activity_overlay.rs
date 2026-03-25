@@ -141,6 +141,10 @@ pub struct OrchestratorDashboard {
     pub response_pending: bool,
     pub checkpoint_phase: String,
     pub paused_reason: Option<String>,
+    pub elapsed_secs: u64,
+    pub respawn_count: u64,
+    pub deliverables: Vec<String>,
+    pub current_deliverable: usize,
 }
 
 /// Kind of orchestrator event for rendering color/icon selection.
@@ -683,16 +687,25 @@ impl ActivityOverlayRenderer {
                 }
             };
 
-            // Line 1: Title + iteration
+            // Line 1: Title + iteration + elapsed time
+            let elapsed = {
+                let mins = dash.elapsed_secs / 60;
+                let secs = dash.elapsed_secs % 60;
+                if mins > 0 {
+                    format!("{}m {:02}s", mins, secs)
+                } else {
+                    format!("{}s", secs)
+                }
+            };
             let iter_text = if let Some(max) = dash.max_iterations {
                 format!(
-                    "ORCHESTRATOR                iter #{} ({} since checkpoint, max {})",
-                    dash.iteration, dash.iterations_since_checkpoint, max
+                    "ORCHESTRATOR    iter #{}/{} | {} | {} respawns",
+                    dash.iteration, max, elapsed, dash.respawn_count
                 )
             } else {
                 format!(
-                    "ORCHESTRATOR                iter #{} ({} since checkpoint)",
-                    dash.iteration, dash.iterations_since_checkpoint
+                    "ORCHESTRATOR    iter #{} | {} | {} respawns",
+                    dash.iteration, elapsed, dash.respawn_count
                 )
             };
             labels.push(ActivityOverlayTextLabel {
@@ -746,7 +759,52 @@ impl ActivityOverlayRenderer {
             });
             y += line_h;
 
-            // Line 4: Checkpoint info
+            // Line 4: Deliverable progress
+            if !dash.deliverables.is_empty() {
+                let total = dash.deliverables.len();
+                let done = dash.current_deliverable.min(total);
+                let current_name = if done < total {
+                    dash.deliverables[done].as_str()
+                } else {
+                    "all complete"
+                };
+                // Progress bar: [====>     ] 2/5 Current Name
+                let bar_width = 20usize;
+                let filled = if total > 0 {
+                    (done * bar_width) / total
+                } else {
+                    0
+                };
+                let bar = format!(
+                    "[{}{}] {}/{} {}",
+                    "=".repeat(filled),
+                    " ".repeat(bar_width - filled),
+                    done,
+                    total,
+                    current_name
+                );
+                labels.push(ActivityOverlayTextLabel {
+                    text: bar,
+                    x: margin,
+                    y,
+                    color: if done >= total {
+                        Rgb {
+                            r: 0,
+                            g: 200,
+                            b: 120,
+                        }
+                    } else {
+                        Rgb {
+                            r: 100,
+                            g: 180,
+                            b: 255,
+                        }
+                    },
+                });
+                y += line_h;
+            }
+
+            // Line 5: Checkpoint info
             if !dash.last_completed.is_empty() || !dash.next_item.is_empty() {
                 labels.push(ActivityOverlayTextLabel {
                     text: format!(
