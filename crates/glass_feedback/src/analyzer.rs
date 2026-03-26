@@ -3,6 +3,27 @@ use std::collections::HashMap;
 use crate::types::{Finding, FindingAction, FindingCategory, RunData, Scope, Severity};
 
 // ---------------------------------------------------------------------------
+// Clamping helper
+// ---------------------------------------------------------------------------
+
+/// Clamp a ConfigTuning value to its hard floor/ceiling.
+/// Returns None if clamped value equals current (no change needed).
+fn clamp_config_value(field: &str, value: u64, current: u64) -> Option<u64> {
+    let (min, max) = match field {
+        "silence_timeout_secs" => (5, 300),
+        "max_retries_before_stuck" => (2, 10),
+        "checkpoint_interval" => (5, 50),
+        _ => (0, u64::MAX),
+    };
+    let clamped = value.clamp(min, max);
+    if clamped == current {
+        None
+    } else {
+        Some(clamped)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -38,23 +59,27 @@ fn detect_silence_mismatch(data: &RunData) -> Vec<Finding> {
     }
 
     let current = data.config_silence_timeout;
-    let new_value = ((current as f64) * 1.5).round() as u64;
+    let raw = ((current as f64) * 1.5).round() as u64;
 
-    vec![Finding {
-        id: "silence-mismatch".to_string(),
-        category: FindingCategory::ConfigTuning,
-        severity: Severity::High,
-        action: FindingAction::ConfigTuning {
-            field: "silence_timeout_secs".to_string(),
-            current_value: current.to_string(),
-            new_value: new_value.to_string(),
-        },
-        evidence: format!(
-            "Silence timeout fired {} time(s) during active output; increasing timeout from {}s to {}s (+50%).",
-            data.fast_trigger_during_output, current, new_value
-        ),
-        scope: Scope::Project,
-    }]
+    if let Some(new_value) = clamp_config_value("silence_timeout_secs", raw, current) {
+        vec![Finding {
+            id: "silence-mismatch".to_string(),
+            category: FindingCategory::ConfigTuning,
+            severity: Severity::High,
+            action: FindingAction::ConfigTuning {
+                field: "silence_timeout_secs".to_string(),
+                current_value: current.to_string(),
+                new_value: new_value.to_string(),
+            },
+            evidence: format!(
+                "Silence timeout fired {} time(s) during active output; increasing timeout from {}s to {}s (+50%).",
+                data.fast_trigger_during_output, current, new_value
+            ),
+            scope: Scope::Project,
+        }]
+    } else {
+        vec![]
+    }
 }
 
 /// If the average idle time between iterations is more than 2× the configured silence timeout
@@ -66,23 +91,27 @@ fn detect_silence_waste(data: &RunData) -> Vec<Finding> {
     }
 
     let current = data.config_silence_timeout;
-    let new_value = ((current as f64) * 0.75).round() as u64;
+    let raw = ((current as f64) * 0.75).round() as u64;
 
-    vec![Finding {
-        id: "silence-waste".to_string(),
-        category: FindingCategory::ConfigTuning,
-        severity: Severity::Medium,
-        action: FindingAction::ConfigTuning {
-            field: "silence_timeout_secs".to_string(),
-            current_value: current.to_string(),
-            new_value: new_value.to_string(),
-        },
-        evidence: format!(
-            "Average idle between iterations ({:.1}s) is more than 2× the silence timeout ({}s); decreasing timeout to {}s (-25%).",
-            data.avg_idle_between_iterations_secs, current, new_value
-        ),
-        scope: Scope::Project,
-    }]
+    if let Some(new_value) = clamp_config_value("silence_timeout_secs", raw, current) {
+        vec![Finding {
+            id: "silence-waste".to_string(),
+            category: FindingCategory::ConfigTuning,
+            severity: Severity::Medium,
+            action: FindingAction::ConfigTuning {
+                field: "silence_timeout_secs".to_string(),
+                current_value: current.to_string(),
+                new_value: new_value.to_string(),
+            },
+            evidence: format!(
+                "Average idle between iterations ({:.1}s) is more than 2× the silence timeout ({}s); decreasing timeout to {}s (-25%).",
+                data.avg_idle_between_iterations_secs, current, new_value
+            ),
+            scope: Scope::Project,
+        }]
+    } else {
+        vec![]
+    }
 }
 
 /// If we got stuck at least once but waste is low (< 15% of iterations), the agent recovered
@@ -98,26 +127,30 @@ fn detect_stuck_sensitivity(data: &RunData) -> Vec<Finding> {
     }
 
     let current = data.config_max_retries;
-    let new_value = current + 1;
+    let raw = (current + 1) as u64;
 
-    vec![Finding {
-        id: "stuck-sensitivity".to_string(),
-        category: FindingCategory::ConfigTuning,
-        severity: Severity::Medium,
-        action: FindingAction::ConfigTuning {
-            field: "max_retries_before_stuck".to_string(),
-            current_value: current.to_string(),
-            new_value: new_value.to_string(),
-        },
-        evidence: format!(
-            "Agent was stuck {} time(s) but waste ratio was only {:.0}% (< 15%), suggesting progress after interruption; relaxing stuck threshold from {} to {}.",
-            data.stuck_count,
-            waste_ratio * 100.0,
-            current,
-            new_value
-        ),
-        scope: Scope::Project,
-    }]
+    if let Some(new_value) = clamp_config_value("max_retries_before_stuck", raw, current as u64) {
+        vec![Finding {
+            id: "stuck-sensitivity".to_string(),
+            category: FindingCategory::ConfigTuning,
+            severity: Severity::Medium,
+            action: FindingAction::ConfigTuning {
+                field: "max_retries_before_stuck".to_string(),
+                current_value: current.to_string(),
+                new_value: new_value.to_string(),
+            },
+            evidence: format!(
+                "Agent was stuck {} time(s) but waste ratio was only {:.0}% (< 15%), suggesting progress after interruption; relaxing stuck threshold from {} to {}.",
+                data.stuck_count,
+                waste_ratio * 100.0,
+                current,
+                new_value
+            ),
+            scope: Scope::Project,
+        }]
+    } else {
+        vec![]
+    }
 }
 
 /// Count the maximum run of consecutive identical fingerprints. If that run is >= 5 AND
@@ -129,23 +162,27 @@ fn detect_stuck_leniency(data: &RunData) -> Vec<Finding> {
     }
 
     let current = data.config_max_retries;
-    let new_value = current.saturating_sub(1).max(2);
+    let raw = current.saturating_sub(1) as u64;
 
-    vec![Finding {
-        id: "stuck-leniency".to_string(),
-        category: FindingCategory::ConfigTuning,
-        severity: Severity::Medium,
-        action: FindingAction::ConfigTuning {
-            field: "max_retries_before_stuck".to_string(),
-            current_value: current.to_string(),
-            new_value: new_value.to_string(),
-        },
-        evidence: format!(
-            "Fingerprint sequence had a run of {} identical values (> max_retries {}); decreasing stuck threshold from {} to {} (min 2).",
-            max_run, current, current, new_value
-        ),
-        scope: Scope::Project,
-    }]
+    if let Some(new_value) = clamp_config_value("max_retries_before_stuck", raw, current as u64) {
+        vec![Finding {
+            id: "stuck-leniency".to_string(),
+            category: FindingCategory::ConfigTuning,
+            severity: Severity::Medium,
+            action: FindingAction::ConfigTuning {
+                field: "max_retries_before_stuck".to_string(),
+                current_value: current.to_string(),
+                new_value: new_value.to_string(),
+            },
+            evidence: format!(
+                "Fingerprint sequence had a run of {} identical values (> max_retries {}); decreasing stuck threshold from {} to {} (min 2).",
+                max_run, current, current, new_value
+            ),
+            scope: Scope::Project,
+        }]
+    } else {
+        vec![]
+    }
 }
 
 /// If checkpoints are disproportionately frequent for a small run (>= 3 checkpoints and
@@ -156,23 +193,27 @@ fn detect_checkpoint_overhead(data: &RunData) -> Vec<Finding> {
     }
 
     let current = data.config_checkpoint_interval;
-    let new_value = ((current as f64) * 1.5).round() as u64;
+    let raw = ((current as f64) * 1.5).round() as u64;
 
-    vec![Finding {
-        id: "checkpoint-overhead".to_string(),
-        category: FindingCategory::ConfigTuning,
-        severity: Severity::Low,
-        action: FindingAction::ConfigTuning {
-            field: "checkpoint_interval".to_string(),
-            current_value: current.to_string(),
-            new_value: new_value.to_string(),
-        },
-        evidence: format!(
-            "{} checkpoints in only {} iterations; increasing checkpoint interval from {} to {} (+50%).",
-            data.checkpoint_count, data.iterations, current, new_value
-        ),
-        scope: Scope::Project,
-    }]
+    if let Some(new_value) = clamp_config_value("checkpoint_interval", raw, current as u64) {
+        vec![Finding {
+            id: "checkpoint-overhead".to_string(),
+            category: FindingCategory::ConfigTuning,
+            severity: Severity::Low,
+            action: FindingAction::ConfigTuning {
+                field: "checkpoint_interval".to_string(),
+                current_value: current.to_string(),
+                new_value: new_value.to_string(),
+            },
+            evidence: format!(
+                "{} checkpoints in only {} iterations; increasing checkpoint interval from {} to {} (+50%).",
+                data.checkpoint_count, data.iterations, current, new_value
+            ),
+            scope: Scope::Project,
+        }]
+    } else {
+        vec![]
+    }
 }
 
 /// If iterations >= 20 and checkpoint_count == 0, suggest decreasing checkpoint interval by 25%.
@@ -182,23 +223,27 @@ fn detect_checkpoint_frequency(data: &RunData) -> Vec<Finding> {
     }
 
     let current = data.config_checkpoint_interval;
-    let new_value = ((current as f64) * 0.75).round() as u64;
+    let raw = ((current as f64) * 0.75).round() as u64;
 
-    vec![Finding {
-        id: "checkpoint-frequency".to_string(),
-        category: FindingCategory::ConfigTuning,
-        severity: Severity::Medium,
-        action: FindingAction::ConfigTuning {
-            field: "checkpoint_interval".to_string(),
-            current_value: current.to_string(),
-            new_value: new_value.to_string(),
-        },
-        evidence: format!(
-            "{} iterations completed with 0 checkpoints; decreasing checkpoint interval from {} to {} (-25%).",
-            data.iterations, current, new_value
-        ),
-        scope: Scope::Project,
-    }]
+    if let Some(new_value) = clamp_config_value("checkpoint_interval", raw, current as u64) {
+        vec![Finding {
+            id: "checkpoint-frequency".to_string(),
+            category: FindingCategory::ConfigTuning,
+            severity: Severity::Medium,
+            action: FindingAction::ConfigTuning {
+                field: "checkpoint_interval".to_string(),
+                current_value: current.to_string(),
+                new_value: new_value.to_string(),
+            },
+            evidence: format!(
+                "{} iterations completed with 0 checkpoints; decreasing checkpoint interval from {} to {} (-25%).",
+                data.iterations, current, new_value
+            ),
+            scope: Scope::Project,
+        }]
+    } else {
+        vec![]
+    }
 }
 
 /// For each file in reverted_files appearing >= 3 times, produce a BehavioralRule
@@ -852,16 +897,16 @@ mod tests {
 
     #[test]
     fn stuck_leniency_min_new_value_is_2() {
-        // config_max_retries=2 → saturating_sub(1)=1, max(2)=2
+        // config_max_retries=3 → saturating_sub(1)=2, clamped to 2, != 3 → emits finding
         let data = RunData {
             fingerprint_sequence: vec![5, 5, 5, 5, 5, 5],
-            config_max_retries: 2,
+            config_max_retries: 3,
             ..Default::default()
         };
         let findings = detect_stuck_leniency(&data);
         assert_eq!(findings.len(), 1);
         let (_, _, new) = make_config_tuning(&findings[0]);
-        assert_eq!(new, "2"); // stays at 2, not below
+        assert_eq!(new, "2"); // clamped at floor of 2
     }
 
     #[test]
@@ -953,6 +998,7 @@ mod tests {
         let data = RunData {
             iterations: 20,
             checkpoint_count: 0,
+            config_checkpoint_interval: 10,
             ..Default::default()
         };
         let findings = detect_checkpoint_frequency(&data);
@@ -961,9 +1007,9 @@ mod tests {
         assert_eq!(f.id, "checkpoint-frequency");
         let (field, cur, new) = make_config_tuning(f);
         assert_eq!(field, "checkpoint_interval");
-        // Default config_checkpoint_interval is 0; 0 * 0.75 = 0
-        assert_eq!(cur, "0");
-        assert_eq!(new, "0");
+        // 10 * 0.75 = 7.5 → rounds to 8, clamped to [5,50] = 8
+        assert_eq!(cur, "10");
+        assert_eq!(new, "8");
     }
 
     #[test]
@@ -1516,6 +1562,81 @@ mod tests {
         assert!(
             ids.contains(&"checkpoint-overhead"),
             "missing checkpoint-overhead"
+        );
+    }
+
+    // --- clamping floor/ceiling tests ---
+
+    /// Helper that returns a RunData with safe defaults that don't trigger any detectors.
+    fn make_run_data() -> RunData {
+        RunData {
+            iterations: 10,
+            config_silence_timeout: 30,
+            config_max_retries: 5,
+            config_checkpoint_interval: 10,
+            commit_count: 5,
+            avg_idle_between_iterations_secs: 5.0,
+            fingerprint_sequence: vec![1, 2, 3],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn silence_waste_respects_floor() {
+        let mut data = make_run_data();
+        data.config_silence_timeout = 5; // at floor
+        data.avg_idle_between_iterations_secs = 100.0;
+        data.iterations = 10;
+        let findings = analyze(&data);
+        let tuning = findings.iter().find(|f| f.id == "silence-waste");
+        // 5 * 0.75 = 3.75 → rounds to 4, but floor is 5 → clamped to 5
+        // Should NOT emit a finding since new == current
+        assert!(
+            tuning.is_none(),
+            "should not emit finding when clamped to same value"
+        );
+    }
+
+    #[test]
+    fn silence_mismatch_respects_ceiling() {
+        let mut data = make_run_data();
+        data.config_silence_timeout = 250;
+        data.fast_trigger_during_output = 3;
+        let findings = analyze(&data);
+        let tuning = findings.iter().find(|f| f.id == "silence-mismatch");
+        assert!(tuning.is_some());
+        if let FindingAction::ConfigTuning { new_value, .. } = &tuning.unwrap().action {
+            let val: u64 = new_value.parse().unwrap();
+            assert!(val <= 300, "silence_timeout should be capped at 300");
+        }
+    }
+
+    #[test]
+    fn stuck_leniency_respects_floor() {
+        let mut data = make_run_data();
+        data.config_max_retries = 2; // at floor
+        data.fingerprint_sequence = vec![1, 1, 1, 1, 1, 1];
+        let findings = analyze(&data);
+        let tuning = findings.iter().find(|f| f.id == "stuck-leniency");
+        // 2 - 1 = 1, but floor is 2 → clamped, no change → no finding
+        assert!(
+            tuning.is_none(),
+            "should not emit finding when clamped to same value"
+        );
+    }
+
+    #[test]
+    fn checkpoint_frequency_respects_floor() {
+        let mut data = make_run_data();
+        data.config_checkpoint_interval = 5; // at floor
+        data.iterations = 25;
+        data.checkpoint_count = 0;
+        let findings = analyze(&data);
+        let tuning = findings.iter().find(|f| f.id == "checkpoint-frequency");
+        // 5 * 0.75 = 3.75 → rounds to 4, but floor is 5 → clamped, no change
+        assert!(
+            tuning.is_none(),
+            "should not emit finding when clamped to same value"
         );
     }
 }
