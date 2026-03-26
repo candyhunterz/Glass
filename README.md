@@ -492,7 +492,7 @@ A loop script reruns your agent until it stops. Glass does that plus: auto-rever
 
 **Is it safe to leave running unattended?**
 
-That's the intended use case. The metric guard auto-reverts any change that breaks tests. The test floor only goes up. Stuck detection forces new approaches after 3 identical responses. Usage auto-pause stops at 80% API usage and resumes at 20%. Bounded iterations cap the run length. The worst case is wasted API tokens on a stuck loop, not broken code — the guard catches regressions before they're committed.
+That's the intended use case. The metric guard auto-reverts any change that breaks tests. The test floor only goes up. Stuck detection forces new approaches after 3 identical responses. Usage auto-pause stops at 80% API usage and resumes when it drops below 20%. Bounded iterations cap the run length. The worst case is wasted API tokens on a stuck loop, not broken code — the guard catches regressions before they're committed.
 
 **How do I install it?**
 
