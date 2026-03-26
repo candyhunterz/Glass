@@ -2864,8 +2864,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         Some(ref cfg) => (cfg.retention_days, cfg.max_count),
                         None => (30, 1000), // defaults matching SnapshotSection
                     };
-                    let pruner =
-                        glass_snapshot::Pruner::new(&store, retention_days, max_count);
+                    let pruner = glass_snapshot::Pruner::new(&store, retention_days, max_count);
                     match pruner.prune() {
                         Ok(result) => tracing::info!(
                             "Pruning complete: {} snapshots, {} blobs removed",
@@ -5378,10 +5377,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         self.settings_edit_key,
                                         &value,
                                     ) {
-                                        tracing::warn!(
-                                            "Settings: failed to write config: {}",
-                                            e
-                                        );
+                                        tracing::warn!("Settings: failed to write config: {}", e);
                                     }
                                 }
                                 self.settings_editing = false;
@@ -5491,13 +5487,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     return;
                                 }
 
-                                if let Some((section, key, value)) =
-                                    handle_settings_activate(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                    )
-                                {
+                                if let Some((section, key, value)) = handle_settings_activate(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                ) {
                                     // Toggle field
                                     if let Some(config_path) =
                                         glass_core::config::GlassConfig::config_path()
@@ -5546,14 +5540,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         if let Some(config_path) =
                                             glass_core::config::GlassConfig::config_path()
                                         {
-                                            if let Err(e) =
-                                                glass_core::config::update_config_field(
-                                                    &config_path,
-                                                    section,
-                                                    key,
-                                                    &value,
-                                                )
-                                            {
+                                            if let Err(e) = glass_core::config::update_config_field(
+                                                &config_path,
+                                                section,
+                                                key,
+                                                &value,
+                                            ) {
                                                 tracing::warn!(
                                                     "Settings: failed to write config: {}",
                                                     e
@@ -11332,7 +11324,11 @@ fn settings_editable_field(
         (0, 1) => Some((None, "font_size", format!("{:.1}", config.font_size), false)),
         // Agent Budget (numeric)
         (1, 2) => {
-            let v = config.agent.as_ref().map(|a| a.max_budget_usd).unwrap_or(1.0);
+            let v = config
+                .agent
+                .as_ref()
+                .map(|a| a.max_budget_usd)
+                .unwrap_or(1.0);
             Some((Some("agent"), "max_budget_usd", format!("{:.2}", v), false))
         }
         // Agent Cooldown (numeric)
@@ -11347,53 +11343,119 @@ fn settings_editable_field(
         }
         // Snapshot Max Storage MB (numeric)
         (3, 1) => {
-            let v = config.snapshot.as_ref().map(|s| s.max_size_mb).unwrap_or(500);
+            let v = config
+                .snapshot
+                .as_ref()
+                .map(|s| s.max_size_mb)
+                .unwrap_or(500);
             Some((Some("snapshot"), "max_size_mb", v.to_string(), false))
         }
         // Snapshot Retention Days (numeric)
         (3, 2) => {
-            let v = config.snapshot.as_ref().map(|s| s.retention_days).unwrap_or(30);
+            let v = config
+                .snapshot
+                .as_ref()
+                .map(|s| s.retention_days)
+                .unwrap_or(30);
             Some((Some("snapshot"), "retention_days", v.to_string(), false))
         }
         // Pipes Max Capture MB (numeric)
         (4, 2) => {
-            let v = config.pipes.as_ref().map(|p| p.max_capture_mb).unwrap_or(10);
+            let v = config
+                .pipes
+                .as_ref()
+                .map(|p| p.max_capture_mb)
+                .unwrap_or(10);
             Some((Some("pipes"), "max_capture_mb", v.to_string(), false))
         }
         // History Max Output KB (numeric)
         (5, 0) => {
-            let v = config.history.as_ref().map(|h| h.max_output_capture_kb).unwrap_or(50);
-            Some((Some("history"), "max_output_capture_kb", v.to_string(), false))
+            let v = config
+                .history
+                .as_ref()
+                .map(|h| h.max_output_capture_kb)
+                .unwrap_or(50);
+            Some((
+                Some("history"),
+                "max_output_capture_kb",
+                v.to_string(),
+                false,
+            ))
         }
         // Orchestrator Max Iterations (numeric)
         (6, 5) => {
-            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
-                .and_then(|o| o.max_iterations).unwrap_or(0);
-            Some((Some("agent.orchestrator"), "max_iterations", v.to_string(), false))
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .and_then(|o| o.max_iterations)
+                .unwrap_or(0);
+            Some((
+                Some("agent.orchestrator"),
+                "max_iterations",
+                v.to_string(),
+                false,
+            ))
         }
         // Orchestrator Silence Timeout (numeric)
         (6, 6) => {
-            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.silence_timeout_secs).unwrap_or(60);
-            Some((Some("agent.orchestrator"), "silence_timeout_secs", v.to_string(), false))
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.silence_timeout_secs)
+                .unwrap_or(60);
+            Some((
+                Some("agent.orchestrator"),
+                "silence_timeout_secs",
+                v.to_string(),
+                false,
+            ))
         }
         // Orchestrator Max Prompt Hints (numeric)
         (6, 11) => {
-            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.max_prompt_hints).unwrap_or(10);
-            Some((Some("agent.orchestrator"), "max_prompt_hints", v.to_string(), false))
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_prompt_hints)
+                .unwrap_or(10);
+            Some((
+                Some("agent.orchestrator"),
+                "max_prompt_hints",
+                v.to_string(),
+                false,
+            ))
         }
         // Orchestrator Ablation Sweep Interval (numeric)
         (6, 13) => {
-            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.ablation_sweep_interval).unwrap_or(20);
-            Some((Some("agent.orchestrator"), "ablation_sweep_interval", v.to_string(), false))
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.ablation_sweep_interval)
+                .unwrap_or(20);
+            Some((
+                Some("agent.orchestrator"),
+                "ablation_sweep_interval",
+                v.to_string(),
+                false,
+            ))
         }
         // Orchestrator Checkpoint Interval (numeric)
         (6, 14) => {
-            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
-                .map(|o| o.checkpoint_interval).unwrap_or(15);
-            Some((Some("agent.orchestrator"), "checkpoint_interval", v.to_string(), false))
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.checkpoint_interval)
+                .unwrap_or(15);
+            Some((
+                Some("agent.orchestrator"),
+                "checkpoint_interval",
+                v.to_string(),
+                false,
+            ))
         }
         _ => None,
     }

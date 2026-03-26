@@ -22,9 +22,7 @@ pub(crate) enum OllamaChunk {
     /// One or more complete tool calls (Ollama sends them in a single line).
     ToolCalls(Vec<OllamaToolCall>),
     /// The stream is complete. Carries optional token count (tokens generated).
-    Done {
-        _eval_count: Option<u64>,
-    },
+    Done { _eval_count: Option<u64> },
 }
 
 /// A single tool call returned by Ollama.
@@ -51,7 +49,9 @@ pub(crate) fn parse_ollama_line(line: &str) -> Option<OllamaChunk> {
     // Check for `done: true` first — the terminal line.
     if v.get("done").and_then(|d| d.as_bool()) == Some(true) {
         let eval_count = v.get("eval_count").and_then(|e| e.as_u64());
-        return Some(OllamaChunk::Done { _eval_count: eval_count });
+        return Some(OllamaChunk::Done {
+            _eval_count: eval_count,
+        });
     }
 
     let message = v.get("message")?;
