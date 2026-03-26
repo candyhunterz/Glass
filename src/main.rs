@@ -9847,8 +9847,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                     "tab_send" => {
-                        if let Some(ctx) = self.windows.values().next() {
-                            match resolve_tab_index(&ctx.session_mux, &request.params) {
+                        if let Some(ctx) = self.windows.values_mut().next() {
+                            let response = match resolve_tab_index(&ctx.session_mux, &request.params) {
                                 Ok(tab_idx) => {
                                     let command = request
                                         .params
@@ -9877,7 +9877,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
-                            }
+                            };
+                            ctx.mark_dirty_and_redraw();
+                            response
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
@@ -10049,8 +10051,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                     "cancel_command" => {
-                        if let Some(ctx) = self.windows.values().next() {
-                            match resolve_tab_index(&ctx.session_mux, &request.params) {
+                        if let Some(ctx) = self.windows.values_mut().next() {
+                            let response = match resolve_tab_index(&ctx.session_mux, &request.params) {
                                 Ok(tab_idx) => {
                                     let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
                                     if let Some(session) = ctx.session_mux.session(focused_sid) {
@@ -10084,7 +10086,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     }
                                 }
                                 Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
-                            }
+                            };
+                            ctx.mark_dirty_and_redraw();
+                            response
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
