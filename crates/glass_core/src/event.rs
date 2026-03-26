@@ -191,6 +191,19 @@ pub enum AppEvent {
         window_id: winit::window::WindowId,
         session_id: SessionId,
     },
+    /// Orchestrator: background context gathering completed.
+    OrchestratorContextReady {
+        window_id: winit::window::WindowId,
+        session_id: SessionId,
+        terminal_lines: Vec<String>,
+        exit_code: Option<i32>,
+        soi_summary: Option<String>,
+        soi_errors: Vec<String>,
+        git_diff_stat: Option<String>,
+        current_head: Option<String>,
+        nudge: Option<String>,
+        cwd: String,
+    },
     /// Metric guard verification completed on background thread.
     VerifyComplete {
         window_id: winit::window::WindowId,

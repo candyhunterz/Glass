@@ -8676,637 +8676,711 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return; // Don't send context while synthesizing
                 }
 
-                // Capture terminal context
+                // Capture terminal context on UI thread, then spawn background
+                // thread for git subprocess calls to avoid blocking rendering.
                 if let Some(ctx) = self.windows.get(&window_id) {
                     if let Some(session) = ctx.session_mux.session(session_id) {
                         let lines = extract_term_lines(&session.term, 80);
                         let (exit_code, soi_summary, soi_errors) =
                             fetch_latest_soi_context(session);
-                        let mut context = orchestrator::build_orchestrator_context(
-                            &lines,
-                            exit_code,
-                            soi_summary.as_deref(),
-                            &soi_errors,
-                        );
-                        if !self.orchestrator.coverage_gaps_context.is_empty() {
-                            context.push_str(&self.orchestrator.coverage_gaps_context);
-                        }
-
-                        // Build environment fingerprint for stuck detection
                         let cwd = session.status.cwd().to_string();
-                        let git_diff = git_cmd()
-                            .args(["diff", "--stat"])
-                            .current_dir(&cwd)
-                            .output()
-                            .ok()
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    String::from_utf8(o.stdout).ok()
-                                } else {
-                                    None
-                                }
-                            });
 
-                        // Reuse the 80-line extraction for fingerprint (last 50 of 80)
-                        let fp_start = lines.len().saturating_sub(50);
-                        let soi_for_fp = if exit_code.is_some_and(|c| c != 0) {
-                            Some(soi_errors.as_slice())
-                        } else {
-                            None
-                        };
-                        let fingerprint = orchestrator::StateFingerprint::compute(
-                            &lines[fp_start..],
-                            soi_for_fp,
-                            git_diff.as_deref(),
-                        );
-                        self.orchestrator.fingerprint_stuck =
-                            self.orchestrator.record_fingerprint(fingerprint);
+                        // Set response_pending before spawning background thread
+                        self.orchestrator.response_pending = true;
+                        self.orchestrator.response_pending_since =
+                            Some(std::time::Instant::now());
 
-                        // Commit detection: track HEAD changes
-                        let current_head = git_cmd()
-                            .args(["rev-parse", "HEAD"])
-                            .current_dir(&cwd)
-                            .output()
-                            .ok()
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    String::from_utf8(o.stdout)
-                                        .ok()
-                                        .map(|s| s.trim().to_string())
-                                } else {
-                                    None
-                                }
-                            });
-                        if let Some(ref head_sha) = current_head {
-                            if self.orchestrator.last_known_head.as_ref() != Some(head_sha) {
-                                self.orchestrator.iterations_since_last_commit = 0;
-                                self.orchestrator.last_known_head = Some(head_sha.clone());
-                            } else {
-                                self.orchestrator.iterations_since_last_commit += 1;
-                            }
-                        }
-
-                        // Fix #4/#5: Check for nudge.md (course correction while running)
-                        let nudge_path = std::path::Path::new(&cwd).join(".glass").join("nudge.md");
-                        let nudge = std::fs::read_to_string(&nudge_path).ok();
-                        if nudge.is_some() {
-                            if let Err(e) = std::fs::remove_file(&nudge_path) {
-                                tracing::warn!(
-                                    "Failed to remove nudge file {}: {e}",
-                                    nudge_path.display()
-                                );
-                            }
-                        }
-
-                        // Clean up artifact file if it exists (one-shot signal)
-                        let artifact_path_cfg = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.completion_artifact.clone())
-                            .unwrap_or_default();
-                        if !artifact_path_cfg.is_empty() {
-                            let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
-                            if full.exists() {
-                                if let Err(e) = std::fs::remove_file(&full) {
-                                    tracing::warn!(
-                                        "Failed to remove artifact file {}: {e}",
-                                        full.display()
-                                    );
-                                }
-                            }
-                        }
-
-                        // Record current commit for metric guard revert (reuse HEAD from commit detection above)
-                        if self.orchestrator.metric_baseline.is_some() {
-                            self.orchestrator.last_good_commit = current_head.clone();
-                        }
-
-                        // Metric guard: run verification on background thread
-                        let verify_mode = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.verify_mode.as_str())
-                            .unwrap_or("floor");
-
-                        let already_verified = self
-                            .orchestrator
-                            .last_verified_iteration
-                            .map(|v| v == self.orchestrator.iteration)
-                            .unwrap_or(false);
-
-                        // Don't verify while the implementer is actively executing a command
-                        let block_executing = if let Some(ctx) = self.windows.values().next() {
-                            ctx.session_mux
-                                .focused_session()
-                                .and_then(|s| {
-                                    s.block_manager
-                                        .current_block_index()
-                                        .and_then(|idx| s.block_manager.blocks().get(idx))
-                                        .map(|b| {
-                                            b.state
-                                                == glass_terminal::block_manager::BlockState::Executing
-                                        })
-                                })
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-
-                        if block_executing {
-                            tracing::debug!(
-                                "Orchestrator: skipping verification — block still executing"
-                            );
-                            // Don't set response_pending, let next silence trigger try again
-                        } else if verify_mode == "floor" && !already_verified {
-                            if let Some(ref baseline) = self.orchestrator.metric_baseline {
-                                if !baseline.commands.is_empty() {
-                                    let commands = baseline.commands.clone();
-                                    let verify_cwd = cwd.clone();
-                                    let proxy = self.proxy.clone();
-                                    let spawn_result = std::thread::Builder::new()
-                                        .name("Glass verify".into())
-                                        .spawn(move || {
-                                            let deadline = std::time::Instant::now()
-                                                + std::time::Duration::from_secs(300); // 5 min timeout
-                                            let results: Vec<VerifyEventResult> = commands
-                                                .iter()
-                                                .map(|cmd| {
-                                                    // Check deadline before starting each command
-                                                    if std::time::Instant::now() > deadline {
-                                                        return VerifyEventResult {
-                                                            command_name: cmd.name.clone(),
-                                                            exit_code: -1,
-                                                            tests_passed: None,
-                                                            tests_failed: None,
-                                                            output: "Verification timeout (5 min)"
-                                                                .to_string(),
-                                                        };
-                                                    }
-                                                    let mut proc = if cfg!(target_os = "windows") {
-                                                        let mut c = std::process::Command::new("cmd");
-                                                        c.args(["/C", &cmd.cmd]);
-                                                        #[cfg(target_os = "windows")]
-                                                        {
-                                                            use std::os::windows::process::CommandExt;
-                                                            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                                                        }
-                                                        c
-                                                    } else {
-                                                        let mut c = std::process::Command::new("sh");
-                                                        c.args(["-c", &cmd.cmd]);
-                                                        c
-                                                    };
-                                                    let output = proc.current_dir(&verify_cwd)
-                                                            .output();
-                                                    match output {
-                                                        Ok(o) => {
-                                                            let stdout =
-                                                                String::from_utf8_lossy(&o.stdout)
-                                                                    .to_string();
-                                                            let stderr =
-                                                                String::from_utf8_lossy(&o.stderr)
-                                                                    .to_string();
-                                                            let combined =
-                                                                format!("{stdout}\n{stderr}");
-                                                            let (passed, failed) =
-                                                                parse_test_counts_from_output(
-                                                                    &combined,
-                                                                );
-                                                            let exit_code =
-                                                                o.status.code().unwrap_or(-1);
-                                                            // If exit code is non-zero but parser
-                                                            // found no test counts, it's a build
-                                                            // failure — report 0/0 so the metric
-                                                            // guard display isn't "? / ?".
-                                                            let (passed, failed) =
-                                                                if exit_code != 0
-                                                                    && passed.is_none()
-                                                                    && failed.is_none()
-                                                                {
-                                                                    (Some(0), Some(0))
-                                                                } else {
-                                                                    (passed, failed)
-                                                                };
-                                                            VerifyEventResult {
-                                                                command_name: cmd.name.clone(),
-                                                                exit_code,
-                                                                tests_passed: passed,
-                                                                tests_failed: failed,
-                                                                output: combined,
-                                                            }
-                                                        }
-                                                        Err(e) => VerifyEventResult {
-                                                            command_name: cmd.name.clone(),
-                                                            exit_code: -1,
-                                                            tests_passed: None,
-                                                            tests_failed: None,
-                                                            output: format!("Failed to run: {e}"),
-                                                        },
-                                                    }
-                                                })
-                                                .collect();
-                                            let _ = proxy.send_event(AppEvent::VerifyComplete {
-                                                window_id,
-                                                session_id,
-                                                results,
-                                            });
-                                        });
-                                    if spawn_result.is_ok() {
-                                        // Block sending context until verification completes
-                                        self.orchestrator.response_pending = true;
-                                        self.orchestrator.response_pending_since =
-                                            Some(std::time::Instant::now());
-                                        self.orchestrator.last_verified_iteration =
-                                            Some(self.orchestrator.iteration);
-                                        return;
-                                    } else {
-                                        tracing::warn!(
-                                            "Orchestrator: failed to spawn verify thread"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // File-based verification for general mode
-                        if verify_mode == "files" && !already_verified {
-                            let verify_files = self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.verify_files.clone())
-                                .unwrap_or_default();
-                            if !verify_files.is_empty() {
-                                let (regressed, summary) = orchestrator::check_file_verification(
-                                    &cwd,
-                                    &verify_files,
-                                    &mut self.file_verify_baseline,
-                                );
-                                orchestrator::append_iteration_log(
-                                    &cwd,
-                                    self.orchestrator.iteration,
-                                    "verify",
-                                    if regressed { "revert" } else { "keep" },
-                                    &summary,
-                                );
-                                if regressed {
-                                    if let Some(ref commit) = self.orchestrator.last_good_commit {
-                                        let _ = git_cmd()
-                                            .args(["reset", "--hard", commit])
-                                            .current_dir(&cwd)
-                                            .output();
-                                        tracing::info!("File verify: reverted to {commit}");
-                                    }
-                                }
-                                self.orchestrator.last_verified_iteration =
-                                    Some(self.orchestrator.iteration);
-                            }
-                        }
-
-                        // Dependency block check: if blocked, repeat the block message
-                        if let Some(block_msg) = self.orchestrator.dependency_block.clone() {
-                            self.orchestrator.dependency_block_iterations += 1;
-
-                            // Check if resolved: look at last block's exit code
-                            let resolved = if let Some(ctx_ref) = self.windows.get(&window_id) {
-                                ctx_ref
-                                    .session_mux
-                                    .session(session_id)
-                                    .and_then(|s| {
-                                        s.block_manager
-                                            .current_block_index()
-                                            .and_then(|idx| s.block_manager.blocks().get(idx))
-                                            .and_then(|b| b.exit_code)
-                                    })
-                                    .map(|code| code == 0)
-                                    .unwrap_or(false)
-                            } else {
-                                false
-                            };
-
-                            if resolved
-                                || self.orchestrator.dependency_block_iterations
-                                    >= orchestrator::DEPENDENCY_BLOCK_MAX_ITERATIONS
-                            {
-                                self.orchestrator.dependency_block = None;
-                                self.orchestrator.dependency_block_iterations = 0;
-                                tracing::info!("Orchestrator: dependency block cleared");
-                            } else {
-                                // Type block message directly into PTY
-                                if let Some(ctx_ref) = self.windows.get(&window_id) {
-                                    if let Some(session_ref) =
-                                        ctx_ref.session_mux.session(session_id)
-                                    {
-                                        let msg = format!("STOP current task. {}\r", block_msg);
-                                        pty_send(
-                                            &session_ref.pty_sender,
-                                            PtyMsg::Input(std::borrow::Cow::Owned(
-                                                msg.into_bytes(),
-                                            )),
-                                        );
-                                        self.orchestrator.mark_pty_write();
-                                    }
-                                }
-                                self.orchestrator.response_pending = true;
-                                self.orchestrator.response_pending_since =
-                                    Some(std::time::Instant::now());
-                                for ctx_ref in self.windows.values_mut() {
-                                    ctx_ref.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                        }
-
-                        // Feedback loop: check rules and enforce actions
-                        let mut feedback_notifications = Vec::new();
-                        if let Some(ref mut feedback_state) = self.feedback_state {
-                            let run_state = glass_feedback::RunState {
-                                iteration: self.orchestrator.iteration,
-                                iterations_since_last_commit: self
-                                    .orchestrator
-                                    .iterations_since_last_commit,
-                                revert_rate: if self.orchestrator.iteration > 0 {
-                                    self.orchestrator
-                                        .metric_baseline
-                                        .as_ref()
-                                        .map(|m| {
-                                            m.revert_count as f64
-                                                / self.orchestrator.iteration as f64
-                                        })
-                                        .unwrap_or(0.0)
-                                } else {
-                                    0.0
-                                },
-                                stuck_rate: if self.orchestrator.iteration > 0 {
-                                    self.orchestrator.feedback_stuck_count as f64
-                                        / self.orchestrator.iteration as f64
-                                } else {
-                                    0.0
-                                },
-                                waste_rate: if self.orchestrator.iteration > 0 {
-                                    self.orchestrator.feedback_waste_iterations as f64
-                                        / self.orchestrator.iteration as f64
-                                } else {
-                                    0.0
-                                },
-                                recent_reverted_files: self
-                                    .orchestrator
-                                    .feedback_reverted_files
-                                    .clone(),
-                                verify_alternations: self
-                                    .orchestrator
-                                    .feedback_verify_sequence
-                                    .windows(2)
-                                    .filter(|w| w[0] != w[1])
-                                    .count()
-                                    as u32,
-                            };
-                            let actions = glass_feedback::check_rules(feedback_state, &run_state);
-                            for action in &actions {
-                                match action {
-                                    glass_feedback::RuleAction::ForceCommit => {
-                                        // Check last verify wasn't regression before committing
-                                        let last_regressed = self
-                                            .orchestrator
-                                            .metric_baseline
-                                            .as_ref()
-                                            .map(|m| {
-                                                orchestrator::MetricBaseline::check_regression(
-                                                    &m.baseline_results,
-                                                    &m.last_results,
-                                                )
-                                            })
-                                            .unwrap_or(false);
-                                        if !last_regressed {
-                                            let result = git_cmd()
-                                                .args([
-                                                    "commit",
-                                                    "-am",
-                                                    "checkpoint: auto-commit by orchestrator",
-                                                ])
-                                                .current_dir(&cwd)
-                                                .output();
-                                            if let Ok(o) = result {
-                                                if o.status.success() {
-                                                    self.orchestrator.last_good_commit = git_cmd()
-                                                        .args(["rev-parse", "HEAD"])
-                                                        .current_dir(&cwd)
-                                                        .output()
-                                                        .ok()
-                                                        .and_then(|o2| {
-                                                            if o2.status.success() {
-                                                                String::from_utf8(o2.stdout)
-                                                                    .ok()
-                                                                    .map(|s| s.trim().to_string())
-                                                            } else {
-                                                                None
-                                                            }
-                                                        });
-                                                    self.orchestrator
-                                                        .iterations_since_last_commit = 0;
-                                                    self.orchestrator.feedback_commit_count += 1;
-                                                    tracing::info!(
-                                                        "Enforcement: force-committed changes"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    glass_feedback::RuleAction::IsolateCommit { file } => {
-                                        // Check if file appears in git diff
-                                        let in_diff = git_diff
-                                            .as_deref()
-                                            .map(|d| {
-                                                parse_diff_stat_files(d).iter().any(|f| f == file)
-                                            })
-                                            .unwrap_or(false);
-                                        if in_diff {
-                                            let _ = git_cmd()
-                                                .args(["add", file])
-                                                .current_dir(&cwd)
-                                                .output();
-                                            let msg =
-                                                format!("checkpoint: isolate-commit {}", file);
-                                            let result = git_cmd()
-                                                .args(["commit", "-m", &msg])
-                                                .current_dir(&cwd)
-                                                .output();
-                                            if let Ok(o) = result {
-                                                if o.status.success() {
-                                                    self.orchestrator.last_good_commit = git_cmd()
-                                                        .args(["rev-parse", "HEAD"])
-                                                        .current_dir(&cwd)
-                                                        .output()
-                                                        .ok()
-                                                        .and_then(|o2| {
-                                                            if o2.status.success() {
-                                                                String::from_utf8(o2.stdout)
-                                                                    .ok()
-                                                                    .map(|s| s.trim().to_string())
-                                                            } else {
-                                                                None
-                                                            }
-                                                        });
-                                                    self.orchestrator
-                                                        .iterations_since_last_commit = 0;
-                                                    tracing::info!(
-                                                        "Enforcement: isolate-committed {}",
-                                                        file
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    glass_feedback::RuleAction::RevertOutOfScope { .. } => {
-                                        // Compute out-of-scope files from git diff vs prd_deliverable_files
-                                        let diff_files = git_diff
-                                            .as_deref()
-                                            .map(parse_diff_stat_files)
-                                            .unwrap_or_default();
-                                        let deliverables = &self.orchestrator.prd_deliverable_files;
-                                        if !deliverables.is_empty() {
-                                            let out_of_scope: Vec<String> = diff_files
-                                                .iter()
-                                                .filter(|f| {
-                                                    !deliverables.iter().any(|d| {
-                                                        f.contains(d) || d.contains(f.as_str())
-                                                    })
-                                                })
-                                                .cloned()
-                                                .collect();
-                                            if out_of_scope.len() >= 3 {
-                                                for oos_file in &out_of_scope {
-                                                    let _ = git_cmd()
-                                                        .args(["checkout", "--", oos_file])
-                                                        .current_dir(&cwd)
-                                                        .output();
-                                                }
-                                                tracing::info!(
-                                                    "Enforcement: reverted {} out-of-scope files",
-                                                    out_of_scope.len()
-                                                );
-                                                feedback_notifications.push(format!(
-                                                    "Reverted {} out-of-scope files. Stay focused on PRD deliverables.",
-                                                    out_of_scope.len()
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    glass_feedback::RuleAction::BlockUntilResolved { message } => {
-                                        self.orchestrator.dependency_block = Some(message.clone());
-                                        self.orchestrator.dependency_block_iterations = 0;
-                                        tracing::info!(
-                                            "Enforcement: dependency block set — {}",
-                                            message
-                                        );
-                                    }
-                                    glass_feedback::RuleAction::SplitInstructions => {
-                                        // Handled in OrchestratorResponse handler
-                                    }
-                                    glass_feedback::RuleAction::ExtendSilence { .. }
-                                    | glass_feedback::RuleAction::RunVerifyTwice
-                                    | glass_feedback::RuleAction::EarlyStuck { .. } => {
-                                        // These are flag-based; handled elsewhere
-                                    }
-                                    glass_feedback::RuleAction::TextInjection(text) => {
-                                        feedback_notifications.push(text.clone());
-                                    }
-                                }
-                            }
-                        }
-
-                        // Fire scripting OrchestratorIteration hook
+                        // Start redraw tick for spinner animation before thread spawn
                         {
-                            let mut event = glass_scripting::HookEventData::new();
-                            event.set("iteration", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(
-                                &mut self.script_bridge,
-                                &self.orchestrator.project_root,
-                                glass_scripting::HookPoint::OrchestratorIteration,
-                                &event,
+                            self.stop_orchestrator_redraw_tick();
+                            let tick_proxy = self.proxy.clone();
+                            let pending = std::sync::Arc::new(
+                                std::sync::atomic::AtomicBool::new(true),
                             );
-                        }
-
-                        // If no verification needed, proceed with normal context send
-                        let has_nudge = nudge.is_some();
-                        let mut content = String::from("[TERMINAL_CONTEXT]\n");
-                        if let Some(nudge_text) = nudge {
-                            content.push_str(&format!(
-                                "[USER_NUDGE] The user left this course correction:\n{}\n\n",
-                                nudge_text.trim()
-                            ));
-                            tracing::info!("Orchestrator: including nudge.md in context");
-                        }
-                        content.push_str(&context);
-
-                        // Append feedback rule notifications
-                        if !feedback_notifications.is_empty() {
-                            content.push_str("\n[FEEDBACK_RULES]\n");
-                            for instr in &feedback_notifications {
-                                content.push_str(&format!("- {}\n", instr));
-                            }
-                        }
-
-                        // Instruction buffer: if buffered instructions exist, send next one
-                        if !self.orchestrator.instruction_buffer.is_empty() {
-                            let next = self.orchestrator.instruction_buffer.remove(0);
-                            if let Some(ctx_ib) = self.windows.get(&window_id) {
-                                if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
-                                    let msg = format!("{}\r", next);
-                                    pty_send(
-                                        &session_ib.pty_sender,
-                                        PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
-                                    );
-                                    self.orchestrator.mark_pty_write();
+                            self.orchestrator_redraw_pending = Some(pending.clone());
+                            std::thread::spawn(move || {
+                                while pending
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                {
+                                    std::thread::sleep(std::time::Duration::from_secs(1));
+                                    if pending
+                                        .load(std::sync::atomic::Ordering::Relaxed)
+                                        && tick_proxy
+                                            .send_event(AppEvent::RedrawRequest)
+                                            .is_err()
+                                    {
+                                        break;
+                                    }
                                 }
-                            }
-                            self.orchestrator.response_pending = true;
-                            self.orchestrator.response_pending_since =
-                                Some(std::time::Instant::now());
-                            tracing::info!(
-                                "Orchestrator: sent buffered instruction ({} remaining)",
-                                self.orchestrator.instruction_buffer.len()
-                            );
-                            return;
+                            });
                         }
 
-                        let msg = serde_json::json!({
-                            "type": "user",
-                            "message": {
-                                "role": "user",
-                                "content": content
-                            }
-                        })
-                        .to_string();
+                        // Spawn background thread for git + nudge I/O
+                        let bg_lines = lines;
+                        let bg_exit_code = exit_code;
+                        let bg_soi_summary = soi_summary;
+                        let bg_soi_errors = soi_errors;
+                        let bg_cwd = cwd;
+                        let bg_proxy = self.proxy.clone();
+                        let bg_window_id = window_id;
+                        let bg_session_id = session_id;
 
-                        // Send to agent via message_tx channel
-                        if let Some(ref runtime) = self.agent_runtime {
-                            let _ = runtime.handle.message_tx.send(msg);
-                            self.orchestrator.response_pending = true;
-                            self.orchestrator.response_pending_since =
-                                Some(std::time::Instant::now());
+                        std::thread::Builder::new()
+                            .name("Glass orch-context".into())
+                            .spawn(move || {
+                                // git diff --stat
+                                let git_diff_stat = git_cmd()
+                                    .args(["diff", "--stat"])
+                                    .current_dir(&bg_cwd)
+                                    .output()
+                                    .ok()
+                                    .and_then(|o| {
+                                        if o.status.success() {
+                                            String::from_utf8(o.stdout).ok()
+                                        } else {
+                                            None
+                                        }
+                                    });
 
-                            self.orchestrator_event_buffer.push(
-                                orchestrator_events::OrchestratorEvent::ContextSent {
-                                    line_count: lines.len(),
-                                    has_soi: soi_summary.is_some(),
-                                    has_nudge,
-                                },
-                                self.orchestrator.iteration,
-                            );
-                        }
+                                // git rev-parse HEAD
+                                let current_head = git_cmd()
+                                    .args(["rev-parse", "HEAD"])
+                                    .current_dir(&bg_cwd)
+                                    .output()
+                                    .ok()
+                                    .and_then(|o| {
+                                        if o.status.success() {
+                                            String::from_utf8(o.stdout)
+                                                .ok()
+                                                .map(|s| s.trim().to_string())
+                                        } else {
+                                            None
+                                        }
+                                    });
 
-                        tracing::debug!(
-                            "Orchestrator: sent {} lines of terminal context to agent",
-                            lines.len()
-                        );
+                                // Read nudge.md
+                                let nudge_path = std::path::Path::new(&bg_cwd)
+                                    .join(".glass")
+                                    .join("nudge.md");
+                                let nudge = std::fs::read_to_string(&nudge_path).ok();
+                                if nudge.is_some() {
+                                    let _ = std::fs::remove_file(&nudge_path);
+                                }
+
+                                let _ =
+                                    bg_proxy.send_event(AppEvent::OrchestratorContextReady {
+                                        window_id: bg_window_id,
+                                        session_id: bg_session_id,
+                                        terminal_lines: bg_lines,
+                                        exit_code: bg_exit_code,
+                                        soi_summary: bg_soi_summary,
+                                        soi_errors: bg_soi_errors,
+                                        git_diff_stat,
+                                        current_head,
+                                        nudge,
+                                        cwd: bg_cwd,
+                                    });
+                            })
+                            .ok();
                     }
                 }
+            }
+            AppEvent::OrchestratorContextReady {
+                window_id,
+                session_id,
+                terminal_lines: lines,
+                exit_code,
+                soi_summary,
+                soi_errors,
+                git_diff_stat,
+                current_head,
+                nudge,
+                cwd,
+            } => {
+                // Alias git_diff_stat as git_diff so existing code referencing it continues to work
+                let git_diff = git_diff_stat;
+
+                let mut context = orchestrator::build_orchestrator_context(
+                    &lines,
+                    exit_code,
+                    soi_summary.as_deref(),
+                    &soi_errors,
+                );
+                if !self.orchestrator.coverage_gaps_context.is_empty() {
+                    context.push_str(&self.orchestrator.coverage_gaps_context);
+                }
+
+                // Build environment fingerprint for stuck detection
+                // Reuse the 80-line extraction for fingerprint (last 50 of 80)
+                let fp_start = lines.len().saturating_sub(50);
+                let soi_for_fp = if exit_code.is_some_and(|c| c != 0) {
+                    Some(soi_errors.as_slice())
+                } else {
+                    None
+                };
+                let fingerprint = orchestrator::StateFingerprint::compute(
+                    &lines[fp_start..],
+                    soi_for_fp,
+                    git_diff.as_deref(),
+                );
+                self.orchestrator.fingerprint_stuck =
+                    self.orchestrator.record_fingerprint(fingerprint);
+
+                // Commit detection: track HEAD changes
+                if let Some(ref head_sha) = current_head {
+                    if self.orchestrator.last_known_head.as_ref() != Some(head_sha) {
+                        self.orchestrator.iterations_since_last_commit = 0;
+                        self.orchestrator.last_known_head = Some(head_sha.clone());
+                    } else {
+                        self.orchestrator.iterations_since_last_commit += 1;
+                    }
+                }
+
+                // Clean up artifact file if it exists (one-shot signal)
+                let artifact_path_cfg = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.orchestrator.as_ref())
+                    .map(|o| o.completion_artifact.clone())
+                    .unwrap_or_default();
+                if !artifact_path_cfg.is_empty() {
+                    let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
+                    if full.exists() {
+                        if let Err(e) = std::fs::remove_file(&full) {
+                            tracing::warn!(
+                                "Failed to remove artifact file {}: {e}",
+                                full.display()
+                            );
+                        }
+                    }
+                }
+
+                // Record current commit for metric guard revert (reuse HEAD from commit detection above)
+                if self.orchestrator.metric_baseline.is_some() {
+                    self.orchestrator.last_good_commit = current_head.clone();
+                }
+
+                // Metric guard: run verification on background thread
+                let verify_mode = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.orchestrator.as_ref())
+                    .map(|o| o.verify_mode.clone())
+                    .unwrap_or_else(|| "floor".to_string());
+
+                let already_verified = self
+                    .orchestrator
+                    .last_verified_iteration
+                    .map(|v| v == self.orchestrator.iteration)
+                    .unwrap_or(false);
+
+                // Don't verify while the implementer is actively executing a command
+                let block_executing = if let Some(ctx) = self.windows.values().next() {
+                    ctx.session_mux
+                        .focused_session()
+                        .and_then(|s| {
+                            s.block_manager
+                                .current_block_index()
+                                .and_then(|idx| s.block_manager.blocks().get(idx))
+                                .map(|b| {
+                                    b.state
+                                        == glass_terminal::block_manager::BlockState::Executing
+                                })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                if block_executing {
+                    tracing::debug!(
+                        "Orchestrator: skipping verification — block still executing"
+                    );
+                    // Don't set response_pending, let next silence trigger try again
+                    self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
+                } else if verify_mode == "floor" && !already_verified {
+                    if let Some(ref baseline) = self.orchestrator.metric_baseline {
+                        if !baseline.commands.is_empty() {
+                            let commands = baseline.commands.clone();
+                            let verify_cwd = cwd.clone();
+                            let proxy = self.proxy.clone();
+                            let spawn_result = std::thread::Builder::new()
+                                .name("Glass verify".into())
+                                .spawn(move || {
+                                    let deadline = std::time::Instant::now()
+                                        + std::time::Duration::from_secs(300); // 5 min timeout
+                                    let results: Vec<VerifyEventResult> = commands
+                                        .iter()
+                                        .map(|cmd| {
+                                            // Check deadline before starting each command
+                                            if std::time::Instant::now() > deadline {
+                                                return VerifyEventResult {
+                                                    command_name: cmd.name.clone(),
+                                                    exit_code: -1,
+                                                    tests_passed: None,
+                                                    tests_failed: None,
+                                                    output: "Verification timeout (5 min)"
+                                                        .to_string(),
+                                                };
+                                            }
+                                            let mut proc = if cfg!(target_os = "windows") {
+                                                let mut c = std::process::Command::new("cmd");
+                                                c.args(["/C", &cmd.cmd]);
+                                                #[cfg(target_os = "windows")]
+                                                {
+                                                    use std::os::windows::process::CommandExt;
+                                                    c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                                                }
+                                                c
+                                            } else {
+                                                let mut c = std::process::Command::new("sh");
+                                                c.args(["-c", &cmd.cmd]);
+                                                c
+                                            };
+                                            let output = proc.current_dir(&verify_cwd)
+                                                    .output();
+                                            match output {
+                                                Ok(o) => {
+                                                    let stdout =
+                                                        String::from_utf8_lossy(&o.stdout)
+                                                            .to_string();
+                                                    let stderr =
+                                                        String::from_utf8_lossy(&o.stderr)
+                                                            .to_string();
+                                                    let combined =
+                                                        format!("{stdout}\n{stderr}");
+                                                    let (passed, failed) =
+                                                        parse_test_counts_from_output(
+                                                            &combined,
+                                                        );
+                                                    let exit_code =
+                                                        o.status.code().unwrap_or(-1);
+                                                    // If exit code is non-zero but parser
+                                                    // found no test counts, it's a build
+                                                    // failure — report 0/0 so the metric
+                                                    // guard display isn't "? / ?".
+                                                    let (passed, failed) =
+                                                        if exit_code != 0
+                                                            && passed.is_none()
+                                                            && failed.is_none()
+                                                        {
+                                                            (Some(0), Some(0))
+                                                        } else {
+                                                            (passed, failed)
+                                                        };
+                                                    VerifyEventResult {
+                                                        command_name: cmd.name.clone(),
+                                                        exit_code,
+                                                        tests_passed: passed,
+                                                        tests_failed: failed,
+                                                        output: combined,
+                                                    }
+                                                }
+                                                Err(e) => VerifyEventResult {
+                                                    command_name: cmd.name.clone(),
+                                                    exit_code: -1,
+                                                    tests_passed: None,
+                                                    tests_failed: None,
+                                                    output: format!("Failed to run: {e}"),
+                                                },
+                                            }
+                                        })
+                                        .collect();
+                                    let _ = proxy.send_event(AppEvent::VerifyComplete {
+                                        window_id,
+                                        session_id,
+                                        results,
+                                    });
+                                });
+                            if spawn_result.is_ok() {
+                                // Block sending context until verification completes
+                                // response_pending already set by OrchestratorSilence
+                                self.orchestrator.last_verified_iteration =
+                                    Some(self.orchestrator.iteration);
+                                return;
+                            } else {
+                                tracing::warn!(
+                                    "Orchestrator: failed to spawn verify thread"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // File-based verification for general mode
+                if verify_mode == "files" && !already_verified {
+                    let verify_files = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.orchestrator.as_ref())
+                        .map(|o| o.verify_files.clone())
+                        .unwrap_or_default();
+                    if !verify_files.is_empty() {
+                        let (regressed, summary) = orchestrator::check_file_verification(
+                            &cwd,
+                            &verify_files,
+                            &mut self.file_verify_baseline,
+                        );
+                        orchestrator::append_iteration_log(
+                            &cwd,
+                            self.orchestrator.iteration,
+                            "verify",
+                            if regressed { "revert" } else { "keep" },
+                            &summary,
+                        );
+                        if regressed {
+                            if let Some(ref commit) = self.orchestrator.last_good_commit {
+                                let _ = git_cmd()
+                                    .args(["reset", "--hard", commit])
+                                    .current_dir(&cwd)
+                                    .output();
+                                tracing::info!("File verify: reverted to {commit}");
+                            }
+                        }
+                        self.orchestrator.last_verified_iteration =
+                            Some(self.orchestrator.iteration);
+                    }
+                }
+
+                // Dependency block check: if blocked, repeat the block message
+                if let Some(block_msg) = self.orchestrator.dependency_block.clone() {
+                    self.orchestrator.dependency_block_iterations += 1;
+
+                    // Check if resolved: look at last block's exit code
+                    let resolved = if let Some(ctx_ref) = self.windows.get(&window_id) {
+                        ctx_ref
+                            .session_mux
+                            .session(session_id)
+                            .and_then(|s| {
+                                s.block_manager
+                                    .current_block_index()
+                                    .and_then(|idx| s.block_manager.blocks().get(idx))
+                                    .and_then(|b| b.exit_code)
+                            })
+                            .map(|code| code == 0)
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
+                    if resolved
+                        || self.orchestrator.dependency_block_iterations
+                            >= orchestrator::DEPENDENCY_BLOCK_MAX_ITERATIONS
+                    {
+                        self.orchestrator.dependency_block = None;
+                        self.orchestrator.dependency_block_iterations = 0;
+                        tracing::info!("Orchestrator: dependency block cleared");
+                    } else {
+                        // Type block message directly into PTY
+                        if let Some(ctx_ref) = self.windows.get(&window_id) {
+                            if let Some(session_ref) =
+                                ctx_ref.session_mux.session(session_id)
+                            {
+                                let msg = format!("STOP current task. {}\r", block_msg);
+                                pty_send(
+                                    &session_ref.pty_sender,
+                                    PtyMsg::Input(std::borrow::Cow::Owned(
+                                        msg.into_bytes(),
+                                    )),
+                                );
+                                self.orchestrator.mark_pty_write();
+                            }
+                        }
+                        // response_pending already set by OrchestratorSilence
+                        for ctx_ref in self.windows.values_mut() {
+                            ctx_ref.mark_dirty_and_redraw();
+                        }
+                        return;
+                    }
+                }
+
+                // Feedback loop: check rules and enforce actions
+                let mut feedback_notifications = Vec::new();
+                if let Some(ref mut feedback_state) = self.feedback_state {
+                    let run_state = glass_feedback::RunState {
+                        iteration: self.orchestrator.iteration,
+                        iterations_since_last_commit: self
+                            .orchestrator
+                            .iterations_since_last_commit,
+                        revert_rate: if self.orchestrator.iteration > 0 {
+                            self.orchestrator
+                                .metric_baseline
+                                .as_ref()
+                                .map(|m| {
+                                    m.revert_count as f64
+                                        / self.orchestrator.iteration as f64
+                                })
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        },
+                        stuck_rate: if self.orchestrator.iteration > 0 {
+                            self.orchestrator.feedback_stuck_count as f64
+                                / self.orchestrator.iteration as f64
+                        } else {
+                            0.0
+                        },
+                        waste_rate: if self.orchestrator.iteration > 0 {
+                            self.orchestrator.feedback_waste_iterations as f64
+                                / self.orchestrator.iteration as f64
+                        } else {
+                            0.0
+                        },
+                        recent_reverted_files: self
+                            .orchestrator
+                            .feedback_reverted_files
+                            .clone(),
+                        verify_alternations: self
+                            .orchestrator
+                            .feedback_verify_sequence
+                            .windows(2)
+                            .filter(|w| w[0] != w[1])
+                            .count()
+                            as u32,
+                    };
+                    let actions = glass_feedback::check_rules(feedback_state, &run_state);
+                    for action in &actions {
+                        match action {
+                            glass_feedback::RuleAction::ForceCommit => {
+                                // Check last verify wasn't regression before committing
+                                let last_regressed = self
+                                    .orchestrator
+                                    .metric_baseline
+                                    .as_ref()
+                                    .map(|m| {
+                                        orchestrator::MetricBaseline::check_regression(
+                                            &m.baseline_results,
+                                            &m.last_results,
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                                if !last_regressed {
+                                    let result = git_cmd()
+                                        .args([
+                                            "commit",
+                                            "-am",
+                                            "checkpoint: auto-commit by orchestrator",
+                                        ])
+                                        .current_dir(&cwd)
+                                        .output();
+                                    if let Ok(o) = result {
+                                        if o.status.success() {
+                                            self.orchestrator.last_good_commit = git_cmd()
+                                                .args(["rev-parse", "HEAD"])
+                                                .current_dir(&cwd)
+                                                .output()
+                                                .ok()
+                                                .and_then(|o2| {
+                                                    if o2.status.success() {
+                                                        String::from_utf8(o2.stdout)
+                                                            .ok()
+                                                            .map(|s| s.trim().to_string())
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            self.orchestrator
+                                                .iterations_since_last_commit = 0;
+                                            self.orchestrator.feedback_commit_count += 1;
+                                            tracing::info!(
+                                                "Enforcement: force-committed changes"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            glass_feedback::RuleAction::IsolateCommit { file } => {
+                                // Check if file appears in git diff
+                                let in_diff = git_diff
+                                    .as_deref()
+                                    .map(|d| {
+                                        parse_diff_stat_files(d).iter().any(|f| f == file)
+                                    })
+                                    .unwrap_or(false);
+                                if in_diff {
+                                    let _ = git_cmd()
+                                        .args(["add", file])
+                                        .current_dir(&cwd)
+                                        .output();
+                                    let msg =
+                                        format!("checkpoint: isolate-commit {}", file);
+                                    let result = git_cmd()
+                                        .args(["commit", "-m", &msg])
+                                        .current_dir(&cwd)
+                                        .output();
+                                    if let Ok(o) = result {
+                                        if o.status.success() {
+                                            self.orchestrator.last_good_commit = git_cmd()
+                                                .args(["rev-parse", "HEAD"])
+                                                .current_dir(&cwd)
+                                                .output()
+                                                .ok()
+                                                .and_then(|o2| {
+                                                    if o2.status.success() {
+                                                        String::from_utf8(o2.stdout)
+                                                            .ok()
+                                                            .map(|s| s.trim().to_string())
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            self.orchestrator
+                                                .iterations_since_last_commit = 0;
+                                            tracing::info!(
+                                                "Enforcement: isolate-committed {}",
+                                                file
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            glass_feedback::RuleAction::RevertOutOfScope { .. } => {
+                                // Compute out-of-scope files from git diff vs prd_deliverable_files
+                                let diff_files = git_diff
+                                    .as_deref()
+                                    .map(parse_diff_stat_files)
+                                    .unwrap_or_default();
+                                let deliverables = &self.orchestrator.prd_deliverable_files;
+                                if !deliverables.is_empty() {
+                                    let out_of_scope: Vec<String> = diff_files
+                                        .iter()
+                                        .filter(|f| {
+                                            !deliverables.iter().any(|d| {
+                                                f.contains(d) || d.contains(f.as_str())
+                                            })
+                                        })
+                                        .cloned()
+                                        .collect();
+                                    if out_of_scope.len() >= 3 {
+                                        for oos_file in &out_of_scope {
+                                            let _ = git_cmd()
+                                                .args(["checkout", "--", oos_file])
+                                                .current_dir(&cwd)
+                                                .output();
+                                        }
+                                        tracing::info!(
+                                            "Enforcement: reverted {} out-of-scope files",
+                                            out_of_scope.len()
+                                        );
+                                        feedback_notifications.push(format!(
+                                            "Reverted {} out-of-scope files. Stay focused on PRD deliverables.",
+                                            out_of_scope.len()
+                                        ));
+                                    }
+                                }
+                            }
+                            glass_feedback::RuleAction::BlockUntilResolved { message } => {
+                                self.orchestrator.dependency_block = Some(message.clone());
+                                self.orchestrator.dependency_block_iterations = 0;
+                                tracing::info!(
+                                    "Enforcement: dependency block set — {}",
+                                    message
+                                );
+                            }
+                            glass_feedback::RuleAction::SplitInstructions => {
+                                // Handled in OrchestratorResponse handler
+                            }
+                            glass_feedback::RuleAction::ExtendSilence { .. }
+                            | glass_feedback::RuleAction::RunVerifyTwice
+                            | glass_feedback::RuleAction::EarlyStuck { .. } => {
+                                // These are flag-based; handled elsewhere
+                            }
+                            glass_feedback::RuleAction::TextInjection(text) => {
+                                feedback_notifications.push(text.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Fire scripting OrchestratorIteration hook
+                {
+                    let mut event = glass_scripting::HookEventData::new();
+                    event.set("iteration", self.orchestrator.iteration as i64);
+                    fire_hook_on_bridge(
+                        &mut self.script_bridge,
+                        &self.orchestrator.project_root,
+                        glass_scripting::HookPoint::OrchestratorIteration,
+                        &event,
+                    );
+                }
+
+                // If no verification needed, proceed with normal context send
+                let has_nudge = nudge.is_some();
+                let mut content = String::from("[TERMINAL_CONTEXT]\n");
+                if let Some(nudge_text) = nudge {
+                    content.push_str(&format!(
+                        "[USER_NUDGE] The user left this course correction:\n{}\n\n",
+                        nudge_text.trim()
+                    ));
+                    tracing::info!("Orchestrator: including nudge.md in context");
+                }
+                content.push_str(&context);
+
+                // Append feedback rule notifications
+                if !feedback_notifications.is_empty() {
+                    content.push_str("\n[FEEDBACK_RULES]\n");
+                    for instr in &feedback_notifications {
+                        content.push_str(&format!("- {}\n", instr));
+                    }
+                }
+
+                // Instruction buffer: if buffered instructions exist, send next one
+                if !self.orchestrator.instruction_buffer.is_empty() {
+                    let next = self.orchestrator.instruction_buffer.remove(0);
+                    if let Some(ctx_ib) = self.windows.get(&window_id) {
+                        if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
+                            let msg = format!("{}\r", next);
+                            pty_send(
+                                &session_ib.pty_sender,
+                                PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
+                            );
+                            self.orchestrator.mark_pty_write();
+                        }
+                    }
+                    // response_pending already set by OrchestratorSilence
+                    tracing::info!(
+                        "Orchestrator: sent buffered instruction ({} remaining)",
+                        self.orchestrator.instruction_buffer.len()
+                    );
+                    return;
+                }
+
+                let msg = serde_json::json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": content
+                    }
+                })
+                .to_string();
+
+                // Send to agent via message_tx channel
+                if let Some(ref runtime) = self.agent_runtime {
+                    let _ = runtime.handle.message_tx.send(msg);
+                    // response_pending already set by OrchestratorSilence
+
+                    self.orchestrator_event_buffer.push(
+                        orchestrator_events::OrchestratorEvent::ContextSent {
+                            line_count: lines.len(),
+                            has_soi: soi_summary.is_some(),
+                            has_nudge,
+                        },
+                        self.orchestrator.iteration,
+                    );
+                } else {
+                    // No agent runtime — clear response_pending since nothing was sent
+                    self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
+                }
+
+                tracing::debug!(
+                    "Orchestrator: sent {} lines of terminal context to agent",
+                    lines.len()
+                );
             }
             AppEvent::VerifyComplete {
                 window_id,
