@@ -743,14 +743,16 @@ fn create_session(
         event_proxy,
         proxy.clone(),
         window_id,
-        config.shell.as_deref(),
-        working_directory,
-        max_output_kb,
-        pipes_enabled,
-        orchestrator_silence_secs,
-        fast_trigger,
-        prompt_pattern,
-        scrollback,
+        &glass_terminal::PtySpawnConfig {
+            shell_override: config.shell.as_deref(),
+            working_directory,
+            max_output_capture_kb: max_output_kb,
+            pipes_enabled,
+            orchestrator_silence_secs,
+            orchestrator_fast_trigger_secs: fast_trigger,
+            orchestrator_prompt_pattern: prompt_pattern,
+            scrollback,
+        },
     )?;
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
