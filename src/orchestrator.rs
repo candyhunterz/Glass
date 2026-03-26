@@ -534,6 +534,8 @@ pub struct OrchestratorState {
     pub resolved_verify_mode: String,
     /// Iterations between automatic context refresh checkpoints.
     pub checkpoint_interval: u32,
+    /// True from agent spawn until first response arrives. Used to emit AgentResponded event once.
+    pub awaiting_first_response: bool,
 }
 
 impl OrchestratorState {
@@ -585,6 +587,7 @@ impl OrchestratorState {
             resolved_mode: String::new(),
             resolved_verify_mode: String::new(),
             checkpoint_interval: AUTO_CHECKPOINT_INTERVAL,
+            awaiting_first_response: false,
         }
     }
 

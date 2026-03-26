@@ -40,6 +40,12 @@ pub enum OrchestratorEvent {
         failed: Option<u32>,
         regressed: bool,
     },
+    /// Orchestrator gathered context files (PRD, instructions, etc.).
+    ContextGathered { files: String, size_bytes: usize },
+    /// Agent process was spawned (initial activation only, not checkpoints).
+    AgentSpawned,
+    /// Agent sent its first response after spawn.
+    AgentResponded { elapsed_secs: u64 },
 }
 
 /// A timestamped event entry with monotonic ID.

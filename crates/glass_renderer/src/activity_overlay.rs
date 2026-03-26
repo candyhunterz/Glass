@@ -157,6 +157,9 @@ pub enum OrchestratorEventKind {
     ContextSent,
     Respawn,
     Verify,
+    ContextGathered,
+    AgentSpawned,
+    AgentResponded,
 }
 
 /// Display-ready orchestrator event for the transcript.
