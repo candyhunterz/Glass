@@ -925,7 +925,8 @@ pub fn read_iterations_log_truncated(project_root: &str, max_entries: usize) -> 
 /// Generate a post-mortem report for a completed orchestrator run.
 ///
 /// Reads iterations.tsv, git log, and metric baseline data to produce
-/// a structured markdown report at `.glass/postmortem-{timestamp}.md`.
+/// a structured markdown report string. The caller is responsible for
+/// writing the report to disk (combined with the feedback summary).
 pub fn generate_postmortem(
     project_root: &str,
     iteration: u32,
@@ -933,11 +934,7 @@ pub fn generate_postmortem(
     metric_baseline: Option<&MetricBaseline>,
     completion_reason: &str,
     context_files: &[String],
-) {
-    let glass_dir = std::path::Path::new(project_root).join(".glass");
-    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
-        tracing::warn!("Failed to create .glass directory for postmortem: {e}");
-    }
+) -> String {
 
     // Read iterations.tsv for analysis
     let iterations_content = read_iterations_log(project_root);
@@ -1082,17 +1079,10 @@ pub fn generate_postmortem(
         ),
     );
 
-    // Write report
-    let timestamp = chrono_free_timestamp();
-    let filename = format!("postmortem-{timestamp}.md");
-    let path = glass_dir.join(&filename);
-    if let Err(e) = std::fs::write(&path, &report) {
-        tracing::warn!("Failed to write postmortem report: {e}");
-    } else {
-        tracing::info!("Orchestrator: post-mortem report written to .glass/{filename}");
-    }
+    report
 }
 
+#[cfg(test)]
 fn chrono_free_timestamp() -> String {
     // Use SystemTime for a timestamp without chrono dependency
     let secs = std::time::SystemTime::now()
@@ -1142,6 +1132,7 @@ fn chrono_free_timestamp() -> String {
     format!("{year:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
 }
 
+#[cfg(test)]
 fn is_leap_year(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
