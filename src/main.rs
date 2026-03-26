@@ -2861,12 +2861,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                             return;
                         }
                     };
-                    let (retention_days, max_count, max_size_mb) = match snap_config {
-                        Some(ref cfg) => (cfg.retention_days, cfg.max_count, cfg.max_size_mb),
-                        None => (30, 1000, 500), // defaults matching SnapshotSection
+                    let (retention_days, max_count) = match snap_config {
+                        Some(ref cfg) => (cfg.retention_days, cfg.max_count),
+                        None => (30, 1000), // defaults matching SnapshotSection
                     };
                     let pruner =
-                        glass_snapshot::Pruner::new(&store, retention_days, max_count, max_size_mb);
+                        glass_snapshot::Pruner::new(&store, retention_days, max_count);
                     match pruner.prune() {
                         Ok(result) => tracing::info!(
                             "Pruning complete: {} snapshots, {} blobs removed",
