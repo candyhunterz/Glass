@@ -174,6 +174,9 @@ pub struct OrchestratorSection {
     /// Seconds after output stops before fast-triggering the orchestrator. Default 5.
     #[serde(default = "default_orch_fast_trigger")]
     pub fast_trigger_secs: u64,
+    /// Minimum PTY output bytes before fast trigger can arm. Default 512.
+    #[serde(default = "default_orch_min_output_bytes")]
+    pub min_output_bytes: usize,
     /// Optional regex pattern to detect the agent's prompt for instant triggering.
     #[serde(default)]
     pub agent_prompt_pattern: Option<String>,
@@ -257,6 +260,9 @@ fn default_orch_max_retries() -> u32 {
 }
 fn default_orch_fast_trigger() -> u64 {
     5
+}
+fn default_orch_min_output_bytes() -> usize {
+    512
 }
 fn default_orch_verify_mode() -> String {
     "floor".to_string()

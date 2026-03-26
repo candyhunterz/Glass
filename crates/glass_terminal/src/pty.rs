@@ -148,6 +148,7 @@ pub struct PtySpawnConfig<'a> {
     pub orchestrator_silence_secs: u64,
     pub orchestrator_fast_trigger_secs: u64,
     pub orchestrator_prompt_pattern: Option<String>,
+    pub min_output_bytes: usize,
     pub scrollback: Option<usize>,
 }
 
@@ -164,6 +165,7 @@ struct PtyLoopConfig {
     orchestrator_silence_secs: u64,
     orchestrator_fast_trigger_secs: u64,
     orchestrator_prompt_pattern: Option<String>,
+    min_output_bytes: usize,
 }
 
 /// Owned parser/scanner state for the PTY read loop.
@@ -275,6 +277,7 @@ pub fn spawn_pty(
         orchestrator_silence_secs: config.orchestrator_silence_secs,
         orchestrator_fast_trigger_secs: config.orchestrator_fast_trigger_secs,
         orchestrator_prompt_pattern: config.orchestrator_prompt_pattern.clone(),
+        min_output_bytes: config.min_output_bytes,
     };
 
     // Spawn the dedicated PTY reader thread with OscScanner integration
@@ -330,6 +333,9 @@ fn glass_pty_loop(
     } else {
         None
     };
+    if let Some(ref mut trigger) = smart_trigger {
+        trigger.set_min_output_bytes(config.min_output_bytes);
+    }
 
     'event_loop: loop {
         // Handle synchronized update timeout.

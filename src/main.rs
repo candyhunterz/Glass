@@ -747,6 +747,12 @@ fn create_session(
         .as_ref()
         .and_then(|a| a.orchestrator.as_ref())
         .and_then(|o| o.agent_prompt_pattern.clone());
+    let min_output_bytes = config
+        .agent
+        .as_ref()
+        .and_then(|a| a.orchestrator.as_ref())
+        .map(|o| o.min_output_bytes)
+        .unwrap_or(512);
     let scrollback = config.terminal.as_ref().map(|t| t.scrollback);
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
@@ -760,6 +766,7 @@ fn create_session(
             orchestrator_silence_secs,
             orchestrator_fast_trigger_secs: fast_trigger,
             orchestrator_prompt_pattern: prompt_pattern,
+            min_output_bytes,
             scrollback,
         },
     )?;

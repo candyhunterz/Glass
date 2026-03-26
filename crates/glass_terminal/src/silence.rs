@@ -25,6 +25,10 @@ pub struct SmartTrigger {
     prompt_detected: bool,
     /// Set when OSC 133;A (shell prompt) received.
     shell_prompt_returned: bool,
+    /// Minimum output bytes required before fast trigger can arm.
+    min_output_bytes: usize,
+    /// Bytes accumulated since last fire.
+    output_bytes_since_fire: usize,
 }
 
 impl SmartTrigger {
@@ -47,14 +51,23 @@ impl SmartTrigger {
             was_output_flowing: false,
             prompt_detected: false,
             shell_prompt_returned: false,
+            min_output_bytes: 0,
+            output_bytes_since_fire: 0,
         }
+    }
+
+    pub fn set_min_output_bytes(&mut self, min: usize) {
+        self.min_output_bytes = min;
     }
 
     /// Call when PTY produces output bytes. Resets timers, checks prompt regex.
     pub fn on_output_bytes(&mut self, bytes: &[u8]) {
         self.last_output_at = Instant::now();
         self.last_fired_at = None;
-        self.was_output_flowing = true;
+        self.output_bytes_since_fire += bytes.len();
+        if self.output_bytes_since_fire >= self.min_output_bytes {
+            self.was_output_flowing = true;
+        }
 
         // Check prompt regex against the last line of output
         if let Some(ref regex) = self.prompt_regex {
@@ -80,6 +93,7 @@ impl SmartTrigger {
         // Priority 1: Prompt regex matched
         if self.prompt_detected {
             self.prompt_detected = false;
+            self.output_bytes_since_fire = 0;
             self.last_fired_at = Some(Instant::now());
             return true;
         }
@@ -87,6 +101,7 @@ impl SmartTrigger {
         // Priority 2: Shell prompt returned (agent exited)
         if self.shell_prompt_returned {
             self.shell_prompt_returned = false;
+            self.output_bytes_since_fire = 0;
             self.last_fired_at = Some(Instant::now());
             return true;
         }
@@ -96,6 +111,7 @@ impl SmartTrigger {
         // Priority 3: Output was flowing and stopped for fast_threshold
         if self.was_output_flowing && silence >= self.fast_threshold {
             self.was_output_flowing = false;
+            self.output_bytes_since_fire = 0;
             self.last_fired_at = Some(Instant::now());
             return true;
         }
@@ -107,6 +123,7 @@ impl SmartTrigger {
                 .map(|t| t.elapsed() >= self.threshold)
                 .unwrap_or(true);
             if should {
+                self.output_bytes_since_fire = 0;
                 self.last_fired_at = Some(Instant::now());
             }
             return should;
@@ -236,5 +253,35 @@ mod tests {
         let mut trigger = SmartTrigger::new(30, 5, Some("[invalid".to_string()));
         trigger.on_output_bytes(b"some output");
         assert!(!trigger.should_fire());
+    }
+
+    #[test]
+    fn fast_trigger_requires_minimum_output_volume() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.set_min_output_bytes(256);
+        trigger.on_output_bytes(b"short");
+        thread::sleep(Duration::from_millis(1100));
+        assert!(!trigger.should_fire(), "fast trigger should not fire below min_output_bytes");
+    }
+
+    #[test]
+    fn fast_trigger_fires_above_volume_threshold() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.set_min_output_bytes(256);
+        let big_output = vec![b'x'; 300];
+        trigger.on_output_bytes(&big_output);
+        thread::sleep(Duration::from_millis(1100));
+        assert!(trigger.should_fire(), "fast trigger should fire above min_output_bytes");
+    }
+
+    #[test]
+    fn fast_trigger_accumulates_across_calls() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.set_min_output_bytes(256);
+        for _ in 0..30 {
+            trigger.on_output_bytes(b"1234567890");
+        }
+        thread::sleep(Duration::from_millis(1100));
+        assert!(trigger.should_fire(), "accumulated output should arm fast trigger");
     }
 }
