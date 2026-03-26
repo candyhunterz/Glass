@@ -8569,7 +8569,10 @@ impl ApplicationHandler<AppEvent> for Processor {
             }
             AppEvent::RedrawRequest => {
                 for ctx in self.windows.values_mut() {
-                    ctx.mark_dirty_and_redraw();
+                    if !ctx.render_dirty {
+                        ctx.render_dirty = true;
+                        ctx.window.request_redraw();
+                    }
                 }
             }
             AppEvent::OrchestratorSilence {
