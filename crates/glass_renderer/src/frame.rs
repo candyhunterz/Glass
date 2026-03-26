@@ -32,6 +32,11 @@ const HINT_TEXT_GRAY: GlyphonColor = GlyphonColor::rgba(85, 85, 85, 255);
 /// Pure white used for general text rendering.
 const TEXT_WHITE: GlyphonColor = GlyphonColor::rgba(255, 255, 255, 255);
 
+/// Half-cell horizontal padding used for status bar edge margins.
+const HALF_CELL_GAP: f32 = 0.5;
+/// Two-cell horizontal gap between status bar sections.
+const SECTION_PADDING_CELLS: f32 = 2.0;
+
 /// Display data for the search overlay, extracted from SearchOverlay state.
 /// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
 pub struct SearchOverlayRenderData {
@@ -505,7 +510,7 @@ impl FrameRenderer {
                 buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
+                    left: cell_width * HALF_CELL_GAP,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
                         status_label.left_color.r,
@@ -542,7 +547,7 @@ impl FrameRenderer {
                 buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
-                    left: w - right_text_width - cell_width * 0.5,
+                    left: w - right_text_width - cell_width * HALF_CELL_GAP,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
                         status_label.right_color.r,
@@ -563,9 +568,9 @@ impl FrameRenderer {
                     .unwrap_or(0);
                 let coord_text_width = coord_text.len() as f32 * cell_width;
                 let gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_x = w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
@@ -615,14 +620,14 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let agent_text_width = agent_text.len() as f32 * cell_width;
                 let agent_x = w
@@ -684,12 +689,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -765,12 +770,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -833,10 +838,10 @@ impl FrameRenderer {
                 let right_side_width = {
                     let mut rw = 0.0f32;
                     if let Some(ref rt) = status_label.right_text {
-                        rw += rt.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += rt.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref ct) = status_label.coordination_text {
-                        rw += ct.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += ct.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref at) = status_label.agent_cost_text {
                         rw += at.len() as f32 * cell_width + cell_width;
@@ -911,7 +916,7 @@ impl FrameRenderer {
                 buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
+                    left: cell_width * HALF_CELL_GAP,
                     top: activity_y,
                     color: activity_color,
                 });
@@ -938,7 +943,7 @@ impl FrameRenderer {
                 hint_buf.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(hint_buf);
                 overlay_metas.push(OverlayMeta {
-                    left: w - hint_width - cell_width * 0.5,
+                    left: w - hint_width - cell_width * HALF_CELL_GAP,
                     top: activity_y,
                     color: hint_color,
                 });
@@ -1654,7 +1659,7 @@ impl FrameRenderer {
                 buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
+                    left: cell_width * HALF_CELL_GAP,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
                         status_label.left_color.r,
@@ -1691,7 +1696,7 @@ impl FrameRenderer {
                 buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
-                    left: w - right_text_width - cell_width * 0.5,
+                    left: w - right_text_width - cell_width * HALF_CELL_GAP,
                     top: status_label.y,
                     color: GlyphonColor::rgba(
                         status_label.right_color.r,
@@ -1711,9 +1716,9 @@ impl FrameRenderer {
                     .unwrap_or(0);
                 let coord_text_width = coord_text.len() as f32 * cell_width;
                 let gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_x = w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
@@ -1763,14 +1768,14 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let agent_text_width = agent_text.len() as f32 * cell_width;
                 let agent_x = w
@@ -1832,12 +1837,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -1913,12 +1918,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -1981,10 +1986,10 @@ impl FrameRenderer {
                 let right_side_width = {
                     let mut rw = 0.0f32;
                     if let Some(ref rt) = status_label.right_text {
-                        rw += rt.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += rt.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref ct) = status_label.coordination_text {
-                        rw += ct.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += ct.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref at) = status_label.agent_cost_text {
                         rw += at.len() as f32 * cell_width + cell_width;
@@ -2059,7 +2064,7 @@ impl FrameRenderer {
                 buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(buffer);
                 overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
+                    left: cell_width * HALF_CELL_GAP,
                     top: activity_y,
                     color: activity_color,
                 });
@@ -2086,7 +2091,7 @@ impl FrameRenderer {
                 hint_buf.shape_until_scroll(&mut self.glyph_cache.font_system, false);
                 self.overlay_buffers.push(hint_buf);
                 overlay_metas.push(OverlayMeta {
-                    left: w - hint_width - cell_width * 0.5,
+                    left: w - hint_width - cell_width * HALF_CELL_GAP,
                     top: activity_y,
                     color: hint_color,
                 });
