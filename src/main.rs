@@ -694,22 +694,31 @@ fn resize_all_panes(
     }
 }
 
+/// Window layout metrics needed when creating a new terminal session.
+struct SessionLayout {
+    cell_w: f32,
+    cell_h: f32,
+    window_width: u32,
+    window_height: u32,
+    tab_bar_lines: u16,
+}
+
 /// Create a new terminal session with PTY, shell integration, history DB, and snapshot store.
 ///
 /// Encapsulates all the setup needed when creating a new tab.
-#[allow(clippy::too_many_arguments)]
 fn create_session(
     proxy: &EventLoopProxy<AppEvent>,
     window_id: WindowId,
     session_id: SessionId,
     config: &GlassConfig,
     working_directory: Option<&std::path::Path>,
-    cell_w: f32,
-    cell_h: f32,
-    window_width: u32,
-    window_height: u32,
-    tab_bar_lines: u16,
+    layout: &SessionLayout,
 ) -> anyhow::Result<Session> {
+    let cell_w = layout.cell_w;
+    let cell_h = layout.cell_h;
+    let window_width = layout.window_width;
+    let window_height = layout.window_height;
+    let tab_bar_lines = layout.tab_bar_lines;
     let event_proxy = EventProxy::new(proxy.clone(), window_id, session_id);
 
     let max_output_kb = config
@@ -1149,13 +1158,8 @@ Session Continuity:
     }
 }
 
-/// Attempt to spawn the agent subprocess via the backend trait and wire up
-/// event drain and activity stream bridge threads.
-///
-/// Returns Some(AgentRuntime) if spawn succeeded, None if the backend binary
-/// was not found or spawn failed (graceful degradation per AGTR-04).
-#[allow(clippy::too_many_arguments)]
-fn try_spawn_agent(
+/// Parameters for spawning the Glass Agent backend.
+struct AgentSpawnParams<'a> {
     config: glass_core::agent_runtime::AgentRuntimeConfig,
     activity_rx: std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>,
     proxy: winit::event_loop::EventLoopProxy<glass_core::event::AppEvent>,
@@ -1165,11 +1169,31 @@ fn try_spawn_agent(
     initial_message: Option<String>,
     system_prompt: String,
     generation: u64,
-    provider: &str,
-    model: &str,
-    api_key: Option<&str>,
-    api_endpoint: Option<&str>,
-) -> Option<AgentRuntime> {
+    provider: &'a str,
+    model: &'a str,
+    api_key: Option<&'a str>,
+    api_endpoint: Option<&'a str>,
+}
+
+/// Attempt to spawn the agent subprocess via the backend trait and wire up
+/// event drain and activity stream bridge threads.
+///
+/// Returns Some(AgentRuntime) if spawn succeeded, None if the backend binary
+/// was not found or spawn failed (graceful degradation per AGTR-04).
+fn try_spawn_agent(params: AgentSpawnParams<'_>) -> Option<AgentRuntime> {
+    let config = params.config;
+    let activity_rx = params.activity_rx;
+    let proxy = params.proxy;
+    let restart_count = params.restart_count;
+    let last_crash = params.last_crash;
+    let project_root = params.project_root;
+    let initial_message = params.initial_message;
+    let system_prompt = params.system_prompt;
+    let generation = params.generation;
+    let provider = params.provider;
+    let model = params.model;
+    let api_key = params.api_key;
+    let api_endpoint = params.api_endpoint;
     let backend = glass_agent_backend::resolve_backend(provider, model, api_key, api_endpoint)
         .unwrap_or_else(|e| {
             tracing::warn!("resolve_backend: {}, falling back to Claude CLI", e);
@@ -2419,21 +2443,21 @@ impl Processor {
         let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
         self.activity_stream_tx = Some(new_tx);
 
-        self.agent_runtime = try_spawn_agent(
-            agent_config,
-            new_rx,
-            self.proxy.clone(),
-            0,
-            None,
-            cwd.to_string(),
-            Some(handoff_content),
+        self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+            config: agent_config,
+            activity_rx: new_rx,
+            proxy: self.proxy.clone(),
+            restart_count: 0,
+            last_crash: None,
+            project_root: cwd.to_string(),
+            initial_message: Some(handoff_content),
             system_prompt,
-            self.agent_generation,
+            generation: self.agent_generation,
             provider,
             model,
             api_key,
             api_endpoint,
-        );
+        });
 
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
         if self.agent_runtime.is_none() {
@@ -2831,11 +2855,13 @@ impl ApplicationHandler<AppEvent> for Processor {
             session_id,
             &self.config,
             None, // working_directory -- initial session uses current dir
-            cell_w,
-            cell_h,
-            size.width,
-            size.height,
-            1, // 1 tab bar line
+            &SessionLayout {
+                cell_w,
+                cell_h,
+                window_width: size.width,
+                window_height: size.height,
+                tab_bar_lines: 1,
+            },
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2968,21 +2994,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .agent
                     .as_ref()
                     .and_then(|a| a.api_endpoint.as_deref());
-                self.agent_runtime = try_spawn_agent(
-                    agent_config,
-                    rx,
-                    self.proxy.clone(),
-                    0,
-                    None,
-                    cwd,
-                    None,
+                self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+                    config: agent_config,
+                    activity_rx: rx,
+                    proxy: self.proxy.clone(),
+                    restart_count: 0,
+                    last_crash: None,
+                    project_root: cwd,
+                    initial_message: None,
                     system_prompt,
-                    self.agent_generation,
+                    generation: self.agent_generation,
                     provider,
                     model,
                     api_key,
                     api_endpoint,
-                );
+                });
                 // Start usage polling if orchestrator is configured
                 if self
                     .config
@@ -4705,11 +4731,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     session_id,
                                     &self.config,
                                     Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h,
-                                    size.width,
-                                    size.height,
-                                    1,
+                                    &SessionLayout {
+                                        cell_w,
+                                        cell_h,
+                                        window_width: size.width,
+                                        window_height: size.height,
+                                        tab_bar_lines: 1,
+                                    },
                                 ) {
                                     Ok(s) => s,
                                     Err(e) => {
@@ -4813,11 +4841,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     session_id,
                                     &self.config,
                                     Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h,
-                                    size.width,
-                                    size.height,
-                                    1,
+                                    &SessionLayout {
+                                        cell_w,
+                                        cell_h,
+                                        window_width: size.width,
+                                        window_height: size.height,
+                                        tab_bar_lines: 1,
+                                    },
                                 ) {
                                     Ok(s) => s,
                                     Err(e) => {
@@ -4866,11 +4896,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     session_id,
                                     &self.config,
                                     Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h,
-                                    size.width,
-                                    size.height,
-                                    1,
+                                    &SessionLayout {
+                                        cell_w,
+                                        cell_h,
+                                        window_width: size.width,
+                                        window_height: size.height,
+                                        tab_bar_lines: 1,
+                                    },
                                 ) {
                                     Ok(s) => s,
                                     Err(e) => {
@@ -6075,11 +6107,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     session_id,
                                     &self.config,
                                     Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h_inner,
-                                    size.width,
-                                    size.height,
-                                    1,
+                                    &SessionLayout {
+                                        cell_w,
+                                        cell_h: cell_h_inner,
+                                        window_width: size.width,
+                                        window_height: size.height,
+                                        tab_bar_lines: 1,
+                                    },
                                 ) {
                                     Ok(s) => s,
                                     Err(e) => {
@@ -7545,21 +7579,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .agent
                                 .as_ref()
                                 .and_then(|a| a.api_endpoint.as_deref());
-                            self.agent_runtime = try_spawn_agent(
-                                new_agent_config.clone(),
-                                new_rx,
-                                self.proxy.clone(),
-                                0,
-                                None,
-                                cwd,
-                                None,
+                            self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+                                config: new_agent_config.clone(),
+                                activity_rx: new_rx,
+                                proxy: self.proxy.clone(),
+                                restart_count: 0,
+                                last_crash: None,
+                                project_root: cwd,
+                                initial_message: None,
                                 system_prompt,
-                                self.agent_generation,
+                                generation: self.agent_generation,
                                 provider,
                                 model,
                                 api_key,
                                 api_endpoint,
-                            );
+                            });
                             // AGTC-04: Show hint if mode != Off but spawn failed.
                             if self.agent_runtime.is_none() {
                                 self.config_error = Some(glass_core::config::ConfigError {
@@ -8076,21 +8110,21 @@ impl ApplicationHandler<AppEvent> for Processor {
                         .agent
                         .as_ref()
                         .and_then(|a| a.api_endpoint.as_deref());
-                    self.agent_runtime = try_spawn_agent(
+                    self.agent_runtime = try_spawn_agent(AgentSpawnParams {
                         config,
-                        new_rx,
-                        self.proxy.clone(),
+                        activity_rx: new_rx,
+                        proxy: self.proxy.clone(),
                         restart_count,
-                        Some(std::time::Instant::now()),
-                        cwd,
-                        restart_msg,
+                        last_crash: Some(std::time::Instant::now()),
+                        project_root: cwd,
+                        initial_message: restart_msg,
                         system_prompt,
-                        self.agent_generation,
+                        generation: self.agent_generation,
                         provider,
                         model,
                         api_key,
                         api_endpoint,
-                    );
+                    });
                 } else {
                     tracing::error!(
                         "AgentRuntime: restart limit reached or backoff not elapsed -- agent disabled"
@@ -9765,11 +9799,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 session_id,
                                 config_ref,
                                 cwd_path.as_deref(),
-                                cell_w,
-                                cell_h,
-                                size.width,
-                                size.height,
-                                1,
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
                             ) {
                                 Err(e) => {
                                     tracing::error!("PTY spawn failed for MCP tab_create: {e}");
