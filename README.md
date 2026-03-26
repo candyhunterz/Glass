@@ -24,6 +24,7 @@ It looks like a terminal because it is one. Glass is a full GPU-accelerated term
 - [Provider Configuration](#provider-configuration)
 - [Terminal Features](#terminal-features)
 - [MCP Tools](#mcp-tools)
+- [AI Integration](#ai-integration)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -222,6 +223,7 @@ After each run, Glass analyzes performance and auto-tunes itself:
 - **Config tuning** — adjusts silence timeout, stuck threshold, checkpoint interval based on run metrics
 - **Behavioral rules** — detects patterns (uncommitted drift, high revert rate) and enforces corrections
 - **LLM analysis** — optional qualitative review of what went well and what didn't
+- **Script generation** — when existing rules can't explain high waste/stuck rates, generates Rhai scripts for the scripting layer
 
 ---
 
@@ -336,7 +338,7 @@ Glass is a full terminal emulator — you can use it as your daily driver. Every
 
 ## MCP Tools
 
-Glass exposes 33 MCP tools via `glass mcp serve`. The orchestrator's reviewer agent uses these to verify work independently of what the implementer reports.
+Glass exposes 33 MCP tools via `glass mcp serve`. These are auto-registered with your AI CLI on first launch — see [AI Integration](#ai-integration) for details. The orchestrator's reviewer agent uses these to verify work independently of what the implementer reports.
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
@@ -353,6 +355,35 @@ Glass exposes 33 MCP tools via `glass mcp serve`. The orchestrator's reviewer ag
 | Coordination | `glass_agent_register/lock/unlock/send/...` | Multi-agent file locking and messaging |
 | Scripting | `glass_list_script_tools`, `glass_script_tool` | Execute Rhai automation scripts |
 | Health | `glass_ping` | Verify connectivity |
+
+## AI Integration
+
+Glass is a universal enhancer for AI coding tools. Any AI CLI launched inside Glass — Claude Code, Codex, Aider, Cursor, Gemini — automatically gets capabilities it wouldn't have in a regular terminal:
+
+**Persistent ground truth.** Every command, its output, exit code, duration, and working directory is recorded in a queryable SQLite database with full-text search. AI agents can look up what actually happened — across sessions, across context resets, across different AI tools. The model doesn't remember; it looks things up. That's more reliable than memory.
+
+**Structured understanding.** Glass doesn't just store raw text. 19 format-specific parsers (SOI) extract test counts, compiler errors, container states, and more into structured records. When an AI asks "what failed?", it gets parsed data, not 500 lines of scrollback.
+
+**Safety net.** Every command gets a pre-execution filesystem snapshot. AI agents make destructive mistakes — Glass catches them. Undo is one MCP call away, regardless of which AI tool made the change.
+
+**Zero setup.** Glass auto-registers its MCP server with installed AI tools on first launch. No manual configuration needed — open Glass, start your AI tool, and it already has access to history, context, undo, and 30 other tools.
+
+### How it works
+
+Glass exposes its capabilities via MCP (Model Context Protocol). AI tools connect to `glass mcp serve` and gain access to 33 tools spanning history, context, undo, diffs, pipe inspection, and more. See [MCP Tools](#mcp-tools) for the full list.
+
+### Supported tools
+
+Auto-registration works out of the box for:
+
+| Tool | Config written |
+|------|---------------|
+| Claude Code | `~/.claude/settings.local.json` |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Any MCP-aware tool | `.mcp.json` in project root |
+
+To register manually: add `glass mcp serve` as a stdio MCP server in your tool's configuration.
 
 ---
 
