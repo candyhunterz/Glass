@@ -1691,6 +1691,7 @@ fn start_artifact_watcher(
                             let _ = proxy_clone.send_event(AppEvent::OrchestratorSilence {
                                 window_id,
                                 session_id,
+                                trigger_source: glass_core::event::TriggerSource::Slow,
                             });
                         }
                     }
@@ -2033,6 +2034,10 @@ impl Processor {
             agent_responses: self.orchestrator.feedback_agent_responses.clone(),
             silence_interruptions: 0,
             fast_trigger_during_output: self.orchestrator.feedback_fast_trigger_during_output,
+            trigger_prompt_count: self.orchestrator.feedback_trigger_prompt_count,
+            trigger_shell_count: self.orchestrator.feedback_trigger_shell_count,
+            trigger_fast_count: self.orchestrator.feedback_trigger_fast_count,
+            trigger_slow_count: self.orchestrator.feedback_trigger_slow_count,
             avg_idle_between_iterations_secs: avg_idle,
             fingerprint_sequence: fingerprint_seq,
             config_silence_timeout: self
@@ -8636,6 +8641,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::OrchestratorSilence {
                 window_id,
                 session_id,
+                trigger_source,
             } => {
                 if !self.orchestrator.active {
                     return;
@@ -8643,6 +8649,22 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 if self.agent_runtime.is_none() {
                     return;
+                }
+
+                // Accumulate trigger source counts for the feedback loop.
+                match trigger_source {
+                    glass_core::event::TriggerSource::Prompt => {
+                        self.orchestrator.feedback_trigger_prompt_count += 1
+                    }
+                    glass_core::event::TriggerSource::ShellPrompt => {
+                        self.orchestrator.feedback_trigger_shell_count += 1
+                    }
+                    glass_core::event::TriggerSource::Fast => {
+                        self.orchestrator.feedback_trigger_fast_count += 1
+                    }
+                    glass_core::event::TriggerSource::Slow => {
+                        self.orchestrator.feedback_trigger_slow_count += 1
+                    }
                 }
 
                 // Backpressure: skip if waiting for agent response.

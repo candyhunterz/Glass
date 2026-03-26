@@ -485,6 +485,14 @@ pub struct OrchestratorState {
     pub feedback_reverted_files: Vec<String>,
     /// Feedback loop: count of fast triggers during output.
     pub feedback_fast_trigger_during_output: u32,
+    /// Feedback loop: count of triggers fired by prompt regex.
+    pub feedback_trigger_prompt_count: u32,
+    /// Feedback loop: count of triggers fired by shell prompt (OSC 133;A).
+    pub feedback_trigger_shell_count: u32,
+    /// Feedback loop: count of triggers fired by velocity drop (fast).
+    pub feedback_trigger_fast_count: u32,
+    /// Feedback loop: count of triggers fired by slow fallback.
+    pub feedback_trigger_slow_count: u32,
     /// Feedback loop: timestamps for each iteration (for pacing analysis).
     pub feedback_iteration_timestamps: Vec<std::time::Instant>,
     /// Feedback loop: count of stuck events during this run.
@@ -563,6 +571,10 @@ impl OrchestratorState {
             feedback_commit_count: 0,
             feedback_reverted_files: Vec::new(),
             feedback_fast_trigger_during_output: 0,
+            feedback_trigger_prompt_count: 0,
+            feedback_trigger_shell_count: 0,
+            feedback_trigger_fast_count: 0,
+            feedback_trigger_slow_count: 0,
             feedback_iteration_timestamps: Vec::new(),
             feedback_stuck_count: 0,
             feedback_checkpoint_count: 0,

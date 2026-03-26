@@ -344,6 +344,14 @@ pub struct RunData {
     pub agent_responses: Vec<String>,
     pub silence_interruptions: u32,
     pub fast_trigger_during_output: u32,
+    /// Count of iterations triggered by prompt regex.
+    pub trigger_prompt_count: u32,
+    /// Count of iterations triggered by shell prompt (OSC 133;A).
+    pub trigger_shell_count: u32,
+    /// Count of iterations triggered by velocity drop (fast).
+    pub trigger_fast_count: u32,
+    /// Count of iterations triggered by slow fallback.
+    pub trigger_slow_count: u32,
     pub avg_idle_between_iterations_secs: f64,
     pub fingerprint_sequence: Vec<u64>,
     pub config_silence_timeout: u64,
@@ -556,6 +564,10 @@ mod tests {
         assert!(data.agent_responses.is_empty());
         assert_eq!(data.silence_interruptions, 0);
         assert_eq!(data.fast_trigger_during_output, 0);
+        assert_eq!(data.trigger_prompt_count, 0);
+        assert_eq!(data.trigger_shell_count, 0);
+        assert_eq!(data.trigger_fast_count, 0);
+        assert_eq!(data.trigger_slow_count, 0);
         assert!((data.avg_idle_between_iterations_secs - 0.0).abs() < f64::EPSILON);
         assert!(data.fingerprint_sequence.is_empty());
         assert_eq!(data.config_silence_timeout, 0);
