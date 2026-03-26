@@ -82,8 +82,8 @@ fn show_fatal_error(msg: &str) -> ! {
 /// Compute spinner character for the given elapsed seconds.
 fn orchestrator_spinner(elapsed_secs: u64) -> char {
     const SPINNER: [char; 10] = [
-        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}',
-        '\u{2834}', '\u{2826}', '\u{2827}', '\u{2807}', '\u{280F}',
+        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
+        '\u{2827}', '\u{2807}', '\u{280F}',
     ];
     SPINNER[elapsed_secs as usize % SPINNER.len()]
 }
@@ -1706,7 +1706,9 @@ impl Processor {
     #[allow(dead_code)]
     fn orchestrator_status_text(&self) -> String {
         if self.orchestrator.response_pending {
-            let elapsed = self.orchestrator.response_pending_since
+            let elapsed = self
+                .orchestrator
+                .response_pending_since
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
             let spinner = orchestrator_spinner(elapsed);
@@ -2243,7 +2245,11 @@ impl Processor {
 
         // Emit activity stream entry for context gathered
         {
-            let file_list: Vec<&str> = context.files.iter().map(|(name, _)| name.as_str()).collect();
+            let file_list: Vec<&str> = context
+                .files
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
             let total_bytes: usize = context.files.iter().map(|(_, content)| content.len()).sum();
             let files_str = file_list.join(" + ");
             self.orchestrator_event_buffer.push(
@@ -2259,10 +2265,8 @@ impl Processor {
         self.respawn_orchestrator_agent(&current_cwd, initial_message);
 
         // Emit activity stream entry for agent spawn (initial activation only)
-        self.orchestrator_event_buffer.push(
-            orchestrator_events::OrchestratorEvent::AgentSpawned,
-            0,
-        );
+        self.orchestrator_event_buffer
+            .push(orchestrator_events::OrchestratorEvent::AgentSpawned, 0);
         self.orchestrator.awaiting_first_response = true;
 
         // 15. Initialize metric guard (use resolved verify mode)
@@ -3289,7 +3293,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Agent mode and proposal count for status bar display.
                     let orch_status_cached = {
                         let pending = self.orchestrator.response_pending;
-                        let elapsed = self.orchestrator.response_pending_since
+                        let elapsed = self
+                            .orchestrator
+                            .response_pending_since
                             .map(|t| t.elapsed().as_secs())
                             .unwrap_or(0);
                         let iteration = self.orchestrator.iteration;
@@ -3633,7 +3639,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     // Agent mode and proposal count for multi-pane status bar.
                     let orch_status_cached_mp = {
                         let pending = self.orchestrator.response_pending;
-                        let elapsed = self.orchestrator.response_pending_since
+                        let elapsed = self
+                            .orchestrator
+                            .response_pending_since
                             .map(|t| t.elapsed().as_secs())
                             .unwrap_or(0);
                         let iteration = self.orchestrator.iteration;
@@ -8080,11 +8088,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Emit activity entry for first response after spawn
                 if self.orchestrator.awaiting_first_response {
                     self.orchestrator.awaiting_first_response = false;
-                    let elapsed = self.orchestrator.response_pending_since
+                    let elapsed = self
+                        .orchestrator
+                        .response_pending_since
                         .map(|t| t.elapsed().as_secs())
                         .unwrap_or(0);
                     self.orchestrator_event_buffer.push(
-                        orchestrator_events::OrchestratorEvent::AgentResponded { elapsed_secs: elapsed },
+                        orchestrator_events::OrchestratorEvent::AgentResponded {
+                            elapsed_secs: elapsed,
+                        },
                         self.orchestrator.iteration,
                     );
                 }
