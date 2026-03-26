@@ -935,7 +935,6 @@ pub fn generate_postmortem(
     completion_reason: &str,
     context_files: &[String],
 ) -> String {
-
     // Read iterations.tsv for analysis
     let iterations_content = read_iterations_log(project_root);
     let mut stuck_count = 0;

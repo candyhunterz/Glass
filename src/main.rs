@@ -1875,10 +1875,7 @@ impl Processor {
                     ));
                 if let Some(parent) = summary_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        tracing::warn!(
-                            "Failed to create run report dir {}: {e}",
-                            parent.display()
-                        );
+                        tracing::warn!("Failed to create run report dir {}: {e}", parent.display());
                     }
                 }
                 if let Err(e) = std::fs::write(&summary_path, &combined) {
