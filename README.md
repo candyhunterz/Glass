@@ -140,6 +140,13 @@ Or download from [github.com/candyhunterz/Glass/releases](https://github.com/can
 
 > **macOS Gatekeeper:** If macOS blocks Glass, run: `xattr -cr /Applications/Glass.app`
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap candyhunterz/glass
+brew install glass
+```
+
 ### Build from source
 
 ```bash
