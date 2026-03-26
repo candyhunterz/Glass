@@ -3,6 +3,8 @@
 //! Follows the same rendering pattern as SettingsOverlayRenderer:
 //! fullscreen backdrop + text labels + single GPU pass with LoadOp::Load.
 
+use std::borrow::Cow;
+
 use alacritty_terminal::vte::ansi::Rgb;
 use glass_core::onboarding::ProviderStatus;
 
@@ -46,7 +48,7 @@ impl WelcomeStep {
 /// Text label for the welcome overlay.
 #[derive(Debug, Clone)]
 pub struct WelcomeOverlayTextLabel {
-    pub text: String,
+    pub text: Cow<'static, str>,
     pub x: f32,
     pub y: f32,
     pub color: Rgb,
@@ -151,13 +153,13 @@ impl WelcomeOverlayRenderer {
             WelcomeStep::Providers => {
                 // Title
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Welcome to Glass".to_string(),
+                    text: Cow::Borrowed("Welcome to Glass"),
                     x: cx - self.cell_width * 8.0,
                     y: panel_y + self.cell_height * 2.0,
                     color: white,
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "AI-assisted terminal emulator".to_string(),
+                    text: Cow::Borrowed("AI-assisted terminal emulator"),
                     x: cx - self.cell_width * 14.0,
                     y: panel_y + self.cell_height * 3.5,
                     color: gray,
@@ -165,7 +167,7 @@ impl WelcomeOverlayRenderer {
 
                 // Provider header
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "LLM Providers Detected".to_string(),
+                    text: Cow::Borrowed("LLM Providers Detected"),
                     x: panel_x + self.cell_width * 4.0,
                     y: panel_y + self.cell_height * 6.0,
                     color: gray,
@@ -182,19 +184,19 @@ impl WelcomeOverlayRenderer {
                     let name_color = if provider.available { white } else { gray };
 
                     labels.push(WelcomeOverlayTextLabel {
-                        text: icon.to_string(),
+                        text: Cow::Borrowed(icon),
                         x: panel_x + self.cell_width * 5.0,
                         y: y_pos,
                         color: icon_color,
                     });
                     labels.push(WelcomeOverlayTextLabel {
-                        text: provider.name.to_string(),
+                        text: Cow::Borrowed(provider.name),
                         x: panel_x + self.cell_width * 7.0,
                         y: y_pos,
                         color: name_color,
                     });
                     labels.push(WelcomeOverlayTextLabel {
-                        text: provider.detail.clone(),
+                        text: Cow::Owned(provider.detail.clone()),
                         x: panel_x + panel_w - self.cell_width * 12.0,
                         y: y_pos,
                         color: gray,
@@ -204,25 +206,25 @@ impl WelcomeOverlayRenderer {
 
             WelcomeStep::Orchestrator => {
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Start Building".to_string(),
+                    text: Cow::Borrowed("Start Building"),
                     x: cx - self.cell_width * 7.0,
                     y: panel_y + self.cell_height * 2.0,
                     color: white,
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "The shortcut you came here for".to_string(),
+                    text: Cow::Borrowed("The shortcut you came here for"),
                     x: cx - self.cell_width * 15.0,
                     y: panel_y + self.cell_height * 3.5,
                     color: gray,
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Ctrl+Shift+O".to_string(),
+                    text: Cow::Borrowed("Ctrl+Shift+O"),
                     x: cx - self.cell_width * 6.0,
                     y: panel_y + self.cell_height * 6.5,
                     color: cyan,
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Starts the Orchestrator \u{2014} autonomous".to_string(),
+                    text: Cow::Borrowed("Starts the Orchestrator \u{2014} autonomous"),
                     x: cx - self.cell_width * 18.0,
                     y: panel_y + self.cell_height * 8.5,
                     color: Rgb {
@@ -232,7 +234,7 @@ impl WelcomeOverlayRenderer {
                     },
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "TDD-driven building from a PRD.".to_string(),
+                    text: Cow::Borrowed("TDD-driven building from a PRD."),
                     x: cx - self.cell_width * 15.0,
                     y: panel_y + self.cell_height * 10.0,
                     color: Rgb {
@@ -242,13 +244,13 @@ impl WelcomeOverlayRenderer {
                     },
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Write a PRD.md, press the shortcut, walk away.".to_string(),
+                    text: Cow::Borrowed("Write a PRD.md, press the shortcut, walk away."),
                     x: cx - self.cell_width * 23.0,
                     y: panel_y + self.cell_height * 11.5,
                     color: gray,
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Configure provider in Ctrl+Shift+, \u{2192} Agent Mode".to_string(),
+                    text: Cow::Borrowed("Configure provider in Ctrl+Shift+, \u{2192} Agent Mode"),
                     x: cx - self.cell_width * 23.0,
                     y: panel_y + self.cell_height * 14.0,
                     color: purple,
@@ -257,20 +259,20 @@ impl WelcomeOverlayRenderer {
 
             WelcomeStep::QuickRef => {
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "You're Ready".to_string(),
+                    text: Cow::Borrowed("You're Ready"),
                     x: cx - self.cell_width * 6.0,
                     y: panel_y + self.cell_height * 2.0,
                     color: white,
                 });
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Glass will teach you the rest as you go".to_string(),
+                    text: Cow::Borrowed("Glass will teach you the rest as you go"),
                     x: cx - self.cell_width * 20.0,
                     y: panel_y + self.cell_height * 3.5,
                     color: gray,
                 });
 
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "SHORTCUTS YOU'LL DISCOVER".to_string(),
+                    text: Cow::Borrowed("SHORTCUTS YOU'LL DISCOVER"),
                     x: panel_x + self.cell_width * 4.0,
                     y: panel_y + self.cell_height * 6.0,
                     color: gray,
@@ -286,13 +288,13 @@ impl WelcomeOverlayRenderer {
                     let col = if i < 2 { 0.0 } else { panel_w * 0.5 };
                     let row = (i % 2) as f32;
                     labels.push(WelcomeOverlayTextLabel {
-                        text: key.to_string(),
+                        text: Cow::Borrowed(key),
                         x: panel_x + self.cell_width * 5.0 + col,
                         y: panel_y + self.cell_height * (7.5 + row * 1.5),
                         color: cyan,
                     });
                     labels.push(WelcomeOverlayTextLabel {
-                        text: label.to_string(),
+                        text: Cow::Borrowed(label),
                         x: panel_x + self.cell_width * 19.0 + col,
                         y: panel_y + self.cell_height * (7.5 + row * 1.5),
                         color: gray,
@@ -300,14 +302,14 @@ impl WelcomeOverlayRenderer {
                 }
 
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Ctrl+Shift+, for all settings & shortcuts".to_string(),
+                    text: Cow::Borrowed("Ctrl+Shift+, for all settings & shortcuts"),
                     x: cx - self.cell_width * 20.0,
                     y: panel_y + self.cell_height * 12.0,
                     color: purple,
                 });
 
                 labels.push(WelcomeOverlayTextLabel {
-                    text: "Press Enter or Esc to start".to_string(),
+                    text: Cow::Borrowed("Press Enter or Esc to start"),
                     x: cx - self.cell_width * 13.0,
                     y: panel_y + self.cell_height * 15.0,
                     color: cyan,
@@ -328,7 +330,7 @@ impl WelcomeOverlayRenderer {
             .collect::<Vec<_>>()
             .join("  ");
         labels.push(WelcomeOverlayTextLabel {
-            text: format!("Step {} of 3   {}", step_idx + 1, dots),
+            text: Cow::Owned(format!("Step {} of 3   {}", step_idx + 1, dots)),
             x: cx - self.cell_width * 8.0,
             y: panel_y + panel_h - self.cell_height * 2.0,
             color: gray,
@@ -341,7 +343,7 @@ impl WelcomeOverlayRenderer {
             WelcomeStep::QuickRef => "\u{2190} back  Enter/Esc to start",
         };
         labels.push(WelcomeOverlayTextLabel {
-            text: nav_hint.to_string(),
+            text: Cow::Borrowed(nav_hint),
             x: cx - self.cell_width * 10.0,
             y: panel_y + panel_h - self.cell_height * 1.0,
             color: gray,
