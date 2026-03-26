@@ -8798,7 +8798,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|v| v == self.orchestrator.iteration)
                             .unwrap_or(false);
 
-                        if verify_mode == "floor" && !already_verified {
+                        // Don't verify while the implementer is actively executing a command
+                        let block_executing = if let Some(ctx) = self.windows.values().next() {
+                            ctx.session_mux
+                                .focused_session()
+                                .and_then(|s| {
+                                    s.block_manager
+                                        .current_block_index()
+                                        .and_then(|idx| s.block_manager.blocks().get(idx))
+                                        .map(|b| {
+                                            b.state
+                                                == glass_terminal::block_manager::BlockState::Executing
+                                        })
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        };
+
+                        if block_executing {
+                            tracing::debug!(
+                                "Orchestrator: skipping verification — block still executing"
+                            );
+                            // Don't set response_pending, let next silence trigger try again
+                        } else if verify_mode == "floor" && !already_verified {
                             if let Some(ref baseline) = self.orchestrator.metric_baseline {
                                 if !baseline.commands.is_empty() {
                                     let commands = baseline.commands.clone();
@@ -9371,13 +9394,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         if regressed {
-                            // Revert via git
-                            if let Some(ref commit) = revert_commit {
-                                let _ = git_cmd()
-                                    .args(["reset", "--hard", commit])
-                                    .current_dir(&revert_cwd)
-                                    .output();
-                                tracing::info!("Metric guard: reverted to {commit}");
+                            // Check if implementer is still executing before reverting
+                            let block_executing =
+                                if let Some(ctx) = self.windows.values().next() {
+                                    ctx.session_mux
+                                        .focused_session()
+                                        .and_then(|s| {
+                                            s.block_manager
+                                                .current_block_index()
+                                                .and_then(|idx| {
+                                                    s.block_manager.blocks().get(idx)
+                                                })
+                                                .map(|b| {
+                                                    b.state
+                                                        == glass_terminal::block_manager::BlockState::Executing
+                                                })
+                                        })
+                                        .unwrap_or(false)
+                                } else {
+                                    false
+                                };
+
+                            if block_executing {
+                                tracing::warn!("Metric guard: skipping revert — implementer still executing");
+                                // Skip revert, next verification cycle will catch if regression persists
+                            } else {
+                                // Revert via git
+                                if let Some(ref commit) = revert_commit {
+                                    let _ = git_cmd()
+                                        .args(["reset", "--hard", commit])
+                                        .current_dir(&revert_cwd)
+                                        .output();
+                                    tracing::info!("Metric guard: reverted to {commit}");
+                                }
                             }
                             baseline.revert_count += 1;
                             baseline.last_results = verify_results.clone();
