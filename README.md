@@ -131,10 +131,10 @@ Status: active
 
 | Platform | Download | Format |
 |----------|----------|--------|
-| Windows | [Glass-1.0.0-x86_64.msi](https://github.com/candyhunterz/Glass/releases/latest) | MSI installer |
-| macOS (Apple Silicon) | [Glass-1.0.0-aarch64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
-| macOS (Intel) | [Glass-1.0.0-x86_64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
-| Linux (Debian/Ubuntu) | [glass_1.0.0_amd64.deb](https://github.com/candyhunterz/Glass/releases/latest) | deb package |
+| Windows | [Glass-1.1.0-x86_64.msi](https://github.com/candyhunterz/Glass/releases/latest) | MSI installer |
+| macOS (Apple Silicon) | [Glass-1.1.0-aarch64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
+| macOS (Intel) | [Glass-1.1.0-x86_64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
+| Linux (Debian/Ubuntu) | [glass_1.1.0_amd64.deb](https://github.com/candyhunterz/Glass/releases/latest) | deb package |
 
 Or download from [github.com/candyhunterz/Glass/releases](https://github.com/candyhunterz/Glass/releases).
 
