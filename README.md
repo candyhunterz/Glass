@@ -28,6 +28,7 @@ It looks like a terminal because it is one. Glass is a full GPU-accelerated term
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
+- [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -463,6 +464,63 @@ See [config.example.toml](config.example.toml) for all options with defaults.
 | Split vertical | Ctrl+Shift+E | Cmd+Shift+E |
 | Copy | Ctrl+Shift+C | Cmd+Shift+C |
 | Paste | Ctrl+Shift+V | Cmd+Shift+V |
+
+---
+
+## FAQ
+
+**What AI models does Glass support?**
+
+The orchestrator (reviewer) supports Claude Code CLI, Anthropic API, OpenAI API, Ollama (local models), and any OpenAI-compatible endpoint. The implementer (code writer) can be Claude Code, Codex, Aider, Gemini, or any CLI you specify with a custom command. See [Provider Configuration](#provider-configuration).
+
+**Can I use different models for the reviewer and implementer?**
+
+Yes. The reviewer and implementer are fully independent. You can pair an Opus reviewer with a local Llama implementer, or a GPT-4o reviewer with Claude Code. Configure them separately in `config.toml`:
+
+```toml
+[agent]
+provider = "anthropic-api"
+model = "claude-sonnet-4-6"
+
+[agent.orchestrator]
+implementer = "claude-code"
+```
+
+**Why use Glass instead of a simple loop script?**
+
+A loop script reruns your agent until it stops. Glass does that plus: auto-reverts when tests break, checkpoints and respawns when context fills up, detects when the agent is stuck and forces a new approach, pauses at API usage limits and resumes automatically, and learns from each run to improve the next one. The difference shows up around iteration 15 when a loop script's agent is confused by its own context and Glass has already checkpointed, respawned with a fresh summary, and kept going.
+
+**Is it safe to leave running unattended?**
+
+That's the intended use case. The metric guard auto-reverts any change that breaks tests. The test floor only goes up. Stuck detection forces new approaches after 3 identical responses. Usage auto-pause stops at 80% API usage and resumes at 20%. Bounded iterations cap the run length. The worst case is wasted API tokens on a stuck loop, not broken code — the guard catches regressions before they're committed.
+
+**How do I install it?**
+
+macOS: `brew tap candyhunterz/glass && brew install glass`. Windows: download the [MSI installer](https://github.com/candyhunterz/Glass/releases/latest). Linux: download the [.deb package](https://github.com/candyhunterz/Glass/releases/latest). Or `cargo install --git https://github.com/candyhunterz/Glass.git glass` on any platform.
+
+**Do I need to configure MCP tools manually?**
+
+No. Glass auto-registers its MCP server with Claude Code, Cursor, and Windsurf on first launch. It also writes a `.mcp.json` in your project root when the orchestrator activates, which any MCP-aware tool can discover. See [AI Integration](#ai-integration).
+
+**Can I use Glass as my daily terminal?**
+
+Yes. Glass is a full GPU-accelerated terminal emulator. Every terminal feature — tabs, split panes, shell integration, GPU rendering — works independently of the AI features. The orchestrator and AI tools are optional; the terminal stands on its own.
+
+**What shells are supported?**
+
+Bash, Zsh, Fish, and PowerShell. Shell integration (command blocks, undo, pipe visualization) is auto-injected for all four. Glass uses your system's default shell.
+
+**Does the orchestrator work with any programming language?**
+
+Yes. It's language-agnostic. The test command is auto-detected (`cargo test`, `npm test`, `pytest`, `go test`, `make test`) or can be set manually. If your project has a way to verify correctness via a shell command, the orchestrator can drive it.
+
+**How does it handle long tasks that exceed context limits?**
+
+Checkpoint cycling. Every N iterations (default 20), Glass writes a checkpoint summary of what's been done and what's next, kills both agents, and respawns them with fresh context plus the checkpoint. This is why Glass can run 80+ iterations over hours — something no single-session agent can do.
+
+**Is it open source?**
+
+Yes. MIT licensed. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
 
 ---
 
