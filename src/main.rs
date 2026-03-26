@@ -4955,7 +4955,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                             // Ctrl+Shift+G: Toggle activity stream overlay.
                             Key::Character(c) if c.as_str().eq_ignore_ascii_case("g") => {
                                 self.activity_overlay_visible = !self.activity_overlay_visible;
-                                if !self.activity_overlay_visible {
+                                if self.activity_overlay_visible {
+                                    // Default to Orchestrator tab when orchestrator is active
+                                    if self.orchestrator.active {
+                                        self.activity_view_filter =
+                                            glass_renderer::ActivityViewFilter::Orchestrator;
+                                    }
+                                } else {
                                     self.activity_view_filter = Default::default();
                                     self.activity_scroll_offset = 0;
                                     self.activity_verbose = false;
