@@ -110,6 +110,19 @@ jobs:
       - name: Build DMG installer
         run: bash packaging/macos/build-dmg.sh "${GITHUB_REF_NAME#v}" "${{ matrix.target }}"
 
+      - name: Create Homebrew tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/glass staging/
+          cp -r shell-integration staging/
+          tar czf glass-${VERSION}-${{ matrix.target }}.tar.gz -C staging .
+
+      - name: Upload tarball to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: glass-*-${{ matrix.target }}.tar.gz
+
       - name: Upload DMG to release
         uses: softprops/action-gh-release@v2
         with:
@@ -163,6 +176,19 @@ jobs:
 
       - name: Build deb package
         run: cargo deb --no-build
+
+      - name: Create Homebrew tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p staging
+          cp target/release/glass staging/
+          cp -r shell-integration staging/
+          tar czf glass-${VERSION}-x86_64-unknown-linux-gnu.tar.gz -C staging .
+
+      - name: Upload tarball to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: glass-*-x86_64-unknown-linux-gnu.tar.gz
 
       - name: Upload deb to release
         uses: softprops/action-gh-release@v2
