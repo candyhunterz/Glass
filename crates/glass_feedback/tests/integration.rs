@@ -150,7 +150,7 @@ fn check_rules_with_active_rules() {
     // At minimum, default rules should fire
     // Don't assert specific count since it depends on which rules are active
 
-    let hints = prompt_hints(&state);
+    let hints = prompt_hints(&mut state);
     // Hints may be empty if no prompt_hint rules exist (which is expected)
     assert!(hints.is_empty() || hints.len() <= 10);
 }

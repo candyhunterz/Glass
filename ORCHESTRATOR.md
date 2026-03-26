@@ -354,12 +354,11 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `rules.toml` | Active behavioral rules (provisional/confirmed) | `on_run_end()` |
 | `run-metrics.toml` | Historical run metrics (one entry per run, includes per-rule firings) | `on_run_end()` |
 | `rule-attribution.toml` | Per-rule attribution scores (passenger scores, firing correlations) | `on_run_end()` |
-| `tuning-history.toml` | Config snapshots at each run start | `on_run_start()` |
+| `tuning-history.toml` | Config snapshots at each run start, pending ConfigTuning changes, per-field cooldowns | `on_run_start()` / `on_run_end()` |
 | `archived-rules.toml` | Rules that were rejected or went stale | `on_run_end()` |
 | `iterations.tsv` | Per-iteration log (TSV: iteration, commit, feature, metric, status, description) | `append_iteration_log()` during run |
 | `checkpoint.md` | Last checkpoint for agent context handoff | Checkpoint synthesis |
-| `postmortem-YYYYMMDD-HHMMSS.md` | Run summary report | `generate_postmortem()` on Done/deactivate |
-| `feedback-YYYYMMDD-HHMMSS.md` | Per-run feedback loop summary (tiers fired, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
+| `run-report-YYYYMMDD-HHMMSS.md` | Combined run report: postmortem (summary, metric guard, commits), trigger source breakdown, feedback analysis (tiers, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
 | `nudge.md` | User course correction (read and deleted per iteration) | User-created |
 | `agent-instructions.md` | Persistent agent steering file with optional frontmatter (supersedes handoff.md) | User-created |
 | `done` | Completion artifact signal (configurable path) | Agent creates, orchestrator deletes |
@@ -424,9 +423,13 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 5. **Apply new findings** — create new Provisional rules from detector findings
 6. **Staleness** — increment stale_runs for rules that didn't fire; archive after threshold
 7. **Drift** — detect worsening trends over last 3 runs
-8. **Config tuning** — extract Tier 1 findings → write to config.toml (max 1 per run)
+8. **Pending ConfigTuning evaluation** — load `tuning-history.toml` and check for a pending config change from the previous run:
+   - Regressed → revert config value to old, set 5-run cooldown on that field, suppress new ConfigTuning this run
+   - Improved/Neutral → confirm change, clear pending
+   - Decrement all cooldowns, remove expired
+8b. **Config tuning** — extract Tier 1 findings (max 1 per run, skip fields in cooldown) → write to config.toml and record as pending in `tuning-history.toml` for next-run evaluation
 9. **Build LLM prompt** — if `feedback_llm = true`, build analysis prompt from run data + existing findings (returned in `FeedbackResult.llm_prompt`)
-10. **Build script prompt** — if `script_generation = true` and findings are empty but waste/stuck rates are high, build Tier 4 prompt (returned in `FeedbackResult.script_prompt`)
+10. **Build script prompt** — if `script_generation = true` and lower tiers have been tried (rules exist) but waste/stuck rates exceed 33%, build Tier 4 prompt (returned in `FeedbackResult.script_prompt`)
 11. **Persist** — save rules.toml, run-metrics.toml (with rule_firings), archived-rules.toml, rule-attribution.toml
 12. **Sync global** — copy global-scoped rules to `~/.glass/global-rules.toml`; remove rejected/stale ones
 13. **Script lifecycle** — `ScriptBridge::on_feedback_run_end(regressed)` promotes/rejects/ages scripts based on regression result (see Script Lifecycle below)
@@ -442,7 +445,7 @@ When `feedback_llm = true` in config:
    - Parses the response via `llm::parse_llm_response()`
    - Deduplicates against existing `prompt_hint` rules via `llm::dedup_findings()`
    - Writes new Provisional PromptHint rules to `rules.toml`
-5. These Tier 3 rules get injected into the Glass Agent's context on future runs via `prompt_hints()`
+5. These Tier 3 rules are injected into the orchestrator agent's system prompt (up to 5 most recent) via `prompt_hints()` at every spawn/restart. Injection increments `trigger_count` so hints participate in the staleness lifecycle.
 6. If the next run improves, they get promoted. If it regresses, they get rejected.
 
 **Fire-and-forget:** If the LLM call fails or times out, Tier 1+2 findings are already persisted. Tier 3 is additive.
@@ -451,7 +454,7 @@ When `feedback_llm = true` in config:
 
 ### Script Generation (Tier 4 — async, after on_run_end)
 
-When `script_generation = true` in config (default) and Tier 1-3 findings are empty but waste/stuck rates exceed 33%:
+When `script_generation = true` in config (default) and lower tiers have been tried (rules exist in any state) but waste/stuck rates exceed 33%:
 
 1. `on_run_end` returns `script_prompt = Some(...)` containing run metrics, all 20 hook points, the full GlassApi reference, and instructions to write a Rhai script
 2. `run_feedback_on_end` captures `project_root` at spawn time, then spawns an ephemeral agent (60s timeout) with `EphemeralPurpose::ScriptGeneration`

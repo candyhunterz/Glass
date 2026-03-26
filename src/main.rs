@@ -470,6 +470,8 @@ struct Processor {
     _job_object_handle: Option<JobObjectHandle>,
     /// Thread handle for the artifact completion watcher (if active).
     artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
+    /// Postmortem report content, captured for combining with feedback summary.
+    orchestrator_postmortem: Option<String>,
     /// Feedback loop state for the current orchestrator run.
     feedback_state: Option<glass_feedback::FeedbackState>,
     /// Guard to prevent config reload from overwriting feedback-written values.
@@ -1015,11 +1017,12 @@ fn implementer_launch_command(config: &glass_core::config::GlassConfig) -> Strin
 fn build_system_prompt(
     config: &glass_core::agent_runtime::AgentRuntimeConfig,
     project_root: &str,
+    hints: &[String],
 ) -> String {
     let orchestrator_config = config.orchestrator.as_ref();
     let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
 
-    if orchestrator_enabled {
+    let mut prompt = if orchestrator_enabled {
         let artifact_path = orchestrator_config
             .map(|o| o.completion_artifact.as_str())
             .unwrap_or(".glass/done");
@@ -1162,7 +1165,16 @@ Session Continuity:
 - The next agent session will receive your handoff as context
 "#
         .to_string()
+    };
+
+    if !hints.is_empty() {
+        prompt.push_str("\n[FEEDBACK_HINTS]\nThese are learned insights from previous orchestrator runs. Follow them:\n");
+        for hint in hints {
+            prompt.push_str(&format!("- {}\n", hint));
+        }
     }
+
+    prompt
 }
 
 /// Parameters for spawning the Glass Agent backend.
@@ -1681,6 +1693,7 @@ fn start_artifact_watcher(
                             let _ = proxy_clone.send_event(AppEvent::OrchestratorSilence {
                                 window_id,
                                 session_id,
+                                trigger_source: glass_core::event::TriggerSource::Slow,
                             });
                         }
                     }
@@ -1836,24 +1849,39 @@ impl Processor {
                     attribution_scores: &attribution_scores,
                 };
                 let summary = glass_feedback::build_run_summary(&summary_input);
+
+                // Build trigger source breakdown
+                let trigger_section = format!(
+                    "## Trigger Sources\n\n| Source | Count |\n|--------|-------|\n| Prompt regex | {} |\n| Shell prompt | {} |\n| Fast (velocity) | {} |\n| Slow (fallback) | {} |\n| **Total** | **{}** |\n",
+                    self.orchestrator.feedback_trigger_prompt_count,
+                    self.orchestrator.feedback_trigger_shell_count,
+                    self.orchestrator.feedback_trigger_fast_count,
+                    self.orchestrator.feedback_trigger_slow_count,
+                    self.orchestrator.feedback_trigger_prompt_count
+                        + self.orchestrator.feedback_trigger_shell_count
+                        + self.orchestrator.feedback_trigger_fast_count
+                        + self.orchestrator.feedback_trigger_slow_count,
+                );
+
+                // Combine postmortem + trigger sources + feedback into single report
+                let postmortem_content = self.orchestrator_postmortem.take().unwrap_or_default();
+                let combined = format!("{postmortem_content}\n{trigger_section}\n{summary}");
+
                 let summary_path = std::path::Path::new(&self.orchestrator.project_root)
                     .join(".glass")
                     .join(format!(
-                        "feedback-{}.md",
+                        "run-report-{}.md",
                         chrono::Local::now().format("%Y%m%d-%H%M%S")
                     ));
                 if let Some(parent) = summary_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        tracing::warn!(
-                            "Failed to create feedback summary dir {}: {e}",
-                            parent.display()
-                        );
+                        tracing::warn!("Failed to create run report dir {}: {e}", parent.display());
                     }
                 }
-                if let Err(e) = std::fs::write(&summary_path, &summary) {
-                    tracing::warn!("Failed to write feedback summary: {e}");
+                if let Err(e) = std::fs::write(&summary_path, &combined) {
+                    tracing::warn!("Failed to write run report: {e}");
                 } else {
-                    tracing::info!("Feedback summary written to {}", summary_path.display());
+                    tracing::info!("Run report written to {}", summary_path.display());
                 }
             }
 
@@ -2023,6 +2051,10 @@ impl Processor {
             agent_responses: self.orchestrator.feedback_agent_responses.clone(),
             silence_interruptions: 0,
             fast_trigger_during_output: self.orchestrator.feedback_fast_trigger_during_output,
+            trigger_prompt_count: self.orchestrator.feedback_trigger_prompt_count,
+            trigger_shell_count: self.orchestrator.feedback_trigger_shell_count,
+            trigger_fast_count: self.orchestrator.feedback_trigger_fast_count,
+            trigger_slow_count: self.orchestrator.feedback_trigger_slow_count,
             avg_idle_between_iterations_secs: avg_idle,
             fingerprint_sequence: fingerprint_seq,
             config_silence_timeout: self
@@ -2435,7 +2467,12 @@ impl Processor {
         // Spawn new agent with handoff as the initial stdin message.
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
         // Retry up to 2 times with a brief delay if spawn fails (process cleanup race).
-        let system_prompt = build_system_prompt(&agent_config, cwd);
+        let hints = if let Some(ref mut fs) = self.feedback_state {
+            glass_feedback::prompt_hints(fs)
+        } else {
+            vec![]
+        };
+        let system_prompt = build_system_prompt(&agent_config, cwd, &hints);
         let provider = self
             .config
             .agent
@@ -2750,14 +2787,14 @@ impl Processor {
                 }
             }
 
-            orchestrator::generate_postmortem(
+            self.orchestrator_postmortem = Some(orchestrator::generate_postmortem(
                 &self.orchestrator.project_root,
                 self.orchestrator.iteration,
                 self.orchestrator_activated_at.map(|t| t.elapsed()),
                 self.orchestrator.metric_baseline.as_ref(),
                 &format!("Bounded limit ({})", self.orchestrator.iteration),
                 &[],
-            );
+            ));
 
             {
                 let mut event = glass_scripting::HookEventData::new();
@@ -2992,7 +3029,12 @@ impl ApplicationHandler<AppEvent> for Processor {
 
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                 let cwd = self.get_focused_cwd();
-                let system_prompt = build_system_prompt(&agent_config, &cwd);
+                let hints = if let Some(ref mut fs) = self.feedback_state {
+                    glass_feedback::prompt_hints(fs)
+                } else {
+                    vec![]
+                };
+                let system_prompt = build_system_prompt(&agent_config, &cwd, &hints);
                 let provider = self
                     .config
                     .agent
@@ -7583,7 +7625,13 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                             let cwd = self.get_focused_cwd();
-                            let system_prompt = build_system_prompt(&new_agent_config, &cwd);
+                            let hints = if let Some(ref mut fs) = self.feedback_state {
+                                glass_feedback::prompt_hints(fs)
+                            } else {
+                                vec![]
+                            };
+                            let system_prompt =
+                                build_system_prompt(&new_agent_config, &cwd, &hints);
                             let provider = self
                                 .config
                                 .agent
@@ -8113,7 +8161,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
-                    let system_prompt = build_system_prompt(&config, &cwd);
+                    let hints = if let Some(ref mut fs) = self.feedback_state {
+                        glass_feedback::prompt_hints(fs)
+                    } else {
+                        vec![]
+                    };
+                    let system_prompt = build_system_prompt(&config, &cwd, &hints);
                     self.agent_generation += 1;
                     let provider = self
                         .config
@@ -8514,7 +8567,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         // Generate post-mortem report
-                        orchestrator::generate_postmortem(
+                        self.orchestrator_postmortem = Some(orchestrator::generate_postmortem(
                             &self.orchestrator.project_root,
                             self.orchestrator.iteration,
                             self.orchestrator_activated_at.map(|t| t.elapsed()),
@@ -8528,7 +8581,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             ),
                             &[],
-                        );
+                        ));
 
                         {
                             let mut event = glass_scripting::HookEventData::new();
@@ -8605,6 +8658,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::OrchestratorSilence {
                 window_id,
                 session_id,
+                trigger_source,
             } => {
                 if !self.orchestrator.active {
                     return;
@@ -8612,6 +8666,22 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 if self.agent_runtime.is_none() {
                     return;
+                }
+
+                // Accumulate trigger source counts for the feedback loop.
+                match trigger_source {
+                    glass_core::event::TriggerSource::Prompt => {
+                        self.orchestrator.feedback_trigger_prompt_count += 1
+                    }
+                    glass_core::event::TriggerSource::ShellPrompt => {
+                        self.orchestrator.feedback_trigger_shell_count += 1
+                    }
+                    glass_core::event::TriggerSource::Fast => {
+                        self.orchestrator.feedback_trigger_fast_count += 1
+                    }
+                    glass_core::event::TriggerSource::Slow => {
+                        self.orchestrator.feedback_trigger_slow_count += 1
+                    }
                 }
 
                 // Backpressure: skip if waiting for agent response.
@@ -11056,6 +11126,7 @@ fn main() {
                 #[cfg(target_os = "windows")]
                 _job_object_handle: job_object_handle,
                 artifact_watcher_thread: None,
+                orchestrator_postmortem: None,
                 feedback_state: None,
                 feedback_write_pending: false,
                 config_write_suppress_until: None,
