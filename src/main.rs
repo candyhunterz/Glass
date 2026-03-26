@@ -2241,8 +2241,29 @@ impl Processor {
         // 13. Build initial message from gathered context
         let initial_message = context.build_initial_message();
 
+        // Emit activity stream entry for context gathered
+        {
+            let file_list: Vec<&str> = context.files.iter().map(|(name, _)| name.as_str()).collect();
+            let total_bytes: usize = context.files.iter().map(|(_, content)| content.len()).sum();
+            let files_str = file_list.join(" + ");
+            self.orchestrator_event_buffer.push(
+                orchestrator_events::OrchestratorEvent::ContextGathered {
+                    files: files_str,
+                    size_bytes: total_bytes,
+                },
+                0,
+            );
+        }
+
         // 14. Respawn agent
         self.respawn_orchestrator_agent(&current_cwd, initial_message);
+
+        // Emit activity stream entry for agent spawn (initial activation only)
+        self.orchestrator_event_buffer.push(
+            orchestrator_events::OrchestratorEvent::AgentSpawned,
+            0,
+        );
+        self.orchestrator.awaiting_first_response = true;
 
         // 15. Initialize metric guard (use resolved verify mode)
         let verify_mode = self.orchestrator.resolved_verify_mode.as_str();
@@ -8055,6 +8076,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 self.orchestrator.response_pending = false;
+
+                // Emit activity entry for first response after spawn
+                if self.orchestrator.awaiting_first_response {
+                    self.orchestrator.awaiting_first_response = false;
+                    let elapsed = self.orchestrator.response_pending_since
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0);
+                    self.orchestrator_event_buffer.push(
+                        orchestrator_events::OrchestratorEvent::AgentResponded { elapsed_secs: elapsed },
+                        self.orchestrator.iteration,
+                    );
+                }
+
                 self.stop_orchestrator_redraw_tick();
 
                 // Push to orchestrator transcript

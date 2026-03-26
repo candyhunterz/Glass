@@ -41,16 +41,10 @@ pub enum OrchestratorEvent {
         regressed: bool,
     },
     /// Orchestrator gathered context files (PRD, instructions, etc.).
-    // Emitted by orchestrator startup — suppressed until Task 5 wires emission.
-    #[allow(dead_code)]
     ContextGathered { files: String, size_bytes: usize },
     /// Agent process was spawned (initial activation only, not checkpoints).
-    // Emitted by orchestrator startup — suppressed until Task 5 wires emission.
-    #[allow(dead_code)]
     AgentSpawned,
     /// Agent sent its first response after spawn.
-    // Emitted by orchestrator startup — suppressed until Task 5 wires emission.
-    #[allow(dead_code)]
     AgentResponded { elapsed_secs: u64 },
 }
 
