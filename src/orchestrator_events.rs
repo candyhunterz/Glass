@@ -95,7 +95,7 @@ impl OrchestratorEventBuffer {
     }
 
     /// Toggle thinking block expansion for a given event ID.
-    #[allow(dead_code)] // Used by future Enter key handler in activity overlay
+    #[cfg(test)]
     pub fn toggle_thinking(&mut self, id: u64) {
         if self.expanded_thinking.contains(&id) {
             self.expanded_thinking.remove(&id);

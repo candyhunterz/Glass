@@ -13,13 +13,11 @@ pub struct UsageData {
     /// 5-hour utilization (0.0 to 1.0).
     pub five_hour_utilization: f64,
     /// 5-hour reset time (ISO 8601).
-    #[allow(dead_code)] // constructed in poll_usage, read in tests only
-    pub five_hour_resets_at: String,
+    pub _five_hour_resets_at: String,
     /// 7-day utilization (0.0 to 1.0).
     pub seven_day_utilization: f64,
     /// 7-day reset time (ISO 8601).
-    #[allow(dead_code)] // constructed in poll_usage, read in tests only
-    pub seven_day_resets_at: String,
+    pub _seven_day_resets_at: String,
     /// When this data was fetched.
     pub fetched_at: Instant,
 }
@@ -82,7 +80,7 @@ fn poll_usage(token: &str) -> Result<UsageData, String> {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0),
         ),
-        five_hour_resets_at: five_hour
+        _five_hour_resets_at: five_hour
             .get("resets_at")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -93,7 +91,7 @@ fn poll_usage(token: &str) -> Result<UsageData, String> {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0),
         ),
-        seven_day_resets_at: seven_day
+        _seven_day_resets_at: seven_day
             .get("resets_at")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -225,7 +223,7 @@ pub fn format_status_bar(state: &UsageState) -> String {
 
 /// Get the color tier for a utilization value.
 /// Returns 0 (green, 0-70%), 1 (yellow, 70-85%), or 2 (red, 85%+).
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn usage_color_tier(utilization: f64) -> u8 {
     if utilization >= 0.85 {
         2 // red
@@ -245,9 +243,9 @@ mod tests {
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.42,
-                five_hour_resets_at: "2026-03-14T08:00:00Z".to_string(),
+                _five_hour_resets_at: "2026-03-14T08:00:00Z".to_string(),
                 seven_day_utilization: 0.15,
-                seven_day_resets_at: "2026-03-20T00:00:00Z".to_string(),
+                _seven_day_resets_at: "2026-03-20T00:00:00Z".to_string(),
                 fetched_at: Instant::now(),
             }),
             paused: false,
@@ -268,9 +266,9 @@ mod tests {
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.50,
-                five_hour_resets_at: String::new(),
+                _five_hour_resets_at: String::new(),
                 seven_day_utilization: 0.10,
-                seven_day_resets_at: String::new(),
+                _seven_day_resets_at: String::new(),
                 fetched_at: Instant::now(),
             }),
             paused: false,
@@ -285,9 +283,9 @@ mod tests {
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.50,
-                five_hour_resets_at: String::new(),
+                _five_hour_resets_at: String::new(),
                 seven_day_utilization: 0.10,
-                seven_day_resets_at: String::new(),
+                _seven_day_resets_at: String::new(),
                 fetched_at: Instant::now() - Duration::from_secs(301),
             }),
             paused: false,
