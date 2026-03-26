@@ -9,7 +9,8 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use crate::{
-    AgentBackend, AgentEvent, AgentHandle, BackendError, BackendSpawnConfig, ShutdownToken,
+    AgentBackend, AgentEvent, AgentHandle, BackendError, BackendSpawnConfig, ConversationConfig,
+    ShutdownToken,
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -199,31 +200,22 @@ impl AgentBackend for OpenAiBackend {
 
         let stop = Arc::new(AtomicBool::new(false));
 
-        // Clone values for the conversation thread.
-        let api_key = self.api_key.clone();
-        let model = self.model.clone();
-        let endpoint = self.endpoint.clone();
-        let system_prompt = config.system_prompt.clone();
-        let initial_message = config.initial_message.clone();
-        let allowed_tools = config.allowed_tools.clone();
+        let conv_config = ConversationConfig {
+            api_key: self.api_key.clone(),
+            model: self.model.clone(),
+            endpoint: self.endpoint.clone(),
+            system_prompt: config.system_prompt.clone(),
+            initial_message: config.initial_message.clone(),
+            allowed_tools: config.allowed_tools.clone(),
+            generation,
+        };
 
         let stop_clone = Arc::clone(&stop);
 
         std::thread::Builder::new()
             .name("glass-openai-conversation".into())
             .spawn(move || {
-                conversation_loop(
-                    api_key,
-                    model,
-                    endpoint,
-                    system_prompt,
-                    initial_message,
-                    allowed_tools,
-                    generation,
-                    message_rx,
-                    event_tx,
-                    stop_clone,
-                );
+                conversation_loop(conv_config, message_rx, event_tx, stop_clone);
             })
             .map_err(|e| BackendError::SpawnFailed(format!("failed to spawn thread: {e}")))?;
 
@@ -256,15 +248,8 @@ impl AgentBackend for OpenAiBackend {
 ///
 /// Manages the full message history, sends HTTP requests to the API,
 /// streams SSE responses, executes tool calls via IPC, and emits events.
-#[allow(clippy::too_many_arguments)]
 fn conversation_loop(
-    api_key: String,
-    model: String,
-    endpoint: String,
-    system_prompt: String,
-    initial_message: Option<String>,
-    allowed_tools: Vec<String>,
-    generation: u64,
+    config: ConversationConfig,
     message_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<AgentEvent>,
     stop: Arc<AtomicBool>,
@@ -272,28 +257,19 @@ fn conversation_loop(
     let ipc = crate::ipc_tools::SyncIpcClient::new();
 
     // Emit session init event.
-    let session_id = format!("openai-{}", generation);
+    let session_id = format!("openai-{}", config.generation);
     let _ = event_tx.send(AgentEvent::Init {
         session_id: session_id.clone(),
     });
 
     // Build initial conversation history.
     let mut messages: Vec<serde_json::Value> =
-        vec![serde_json::json!({"role": "system", "content": system_prompt})];
+        vec![serde_json::json!({"role": "system", "content": config.system_prompt})];
 
     // Send initial message if provided.
-    if let Some(msg) = initial_message {
+    if let Some(msg) = &config.initial_message {
         messages.push(serde_json::json!({"role": "user", "content": msg}));
-        if !do_turn(
-            &api_key,
-            &model,
-            &endpoint,
-            &mut messages,
-            &allowed_tools,
-            &ipc,
-            &event_tx,
-            &stop,
-        ) {
+        if !do_turn(&config, &mut messages, &ipc, &event_tx, &stop) {
             let _ = event_tx.send(AgentEvent::Crashed);
             return;
         }
@@ -308,16 +284,7 @@ fn conversation_loop(
         let user_content = extract_user_content(&content);
         messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
-        if !do_turn(
-            &api_key,
-            &model,
-            &endpoint,
-            &mut messages,
-            &allowed_tools,
-            &ipc,
-            &event_tx,
-            &stop,
-        ) {
+        if !do_turn(&config, &mut messages, &ipc, &event_tx, &stop) {
             break;
         }
     }
@@ -339,13 +306,9 @@ struct AccumulatedToolCall {
 ///
 /// Sends the request, streams the SSE response, and handles tool call loops.
 /// Returns `false` if the thread should exit (e.g. HTTP error, shutdown).
-#[allow(clippy::too_many_arguments)]
 fn do_turn(
-    api_key: &str,
-    model: &str,
-    endpoint: &str,
+    config: &ConversationConfig,
     messages: &mut Vec<serde_json::Value>,
-    allowed_tools: &[String],
     ipc: &crate::ipc_tools::SyncIpcClient,
     event_tx: &mpsc::Sender<AgentEvent>,
     stop: &Arc<AtomicBool>,
@@ -359,15 +322,15 @@ fn do_turn(
 
         // Build request body.
         let mut body = serde_json::json!({
-            "model": model,
+            "model": config.model,
             "messages": messages,
             "stream": true,
             "stream_options": { "include_usage": true },
         });
 
         // Add tool definitions if allowed_tools is non-empty.
-        if !allowed_tools.is_empty() {
-            let tools: Vec<serde_json::Value> = allowed_tools
+        if !config.allowed_tools.is_empty() {
+            let tools: Vec<serde_json::Value> = config.allowed_tools
                 .iter()
                 .map(|name| {
                     serde_json::json!({
@@ -384,10 +347,10 @@ fn do_turn(
         }
 
         // Make HTTP request.
-        let url = format!("{}/v1/chat/completions", endpoint);
+        let url = format!("{}/v1/chat/completions", config.endpoint);
         let body_str = serde_json::to_string(&body).unwrap_or_default();
         let response = match ureq::post(&url)
-            .header("Authorization", &format!("Bearer {}", api_key))
+            .header("Authorization", &format!("Bearer {}", config.api_key))
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
         {
