@@ -7,6 +7,7 @@ use std::hash::{Hash, Hasher};
 
 /// Create a `git` command with `CREATE_NO_WINDOW` on Windows to prevent console flashing.
 fn git_cmd() -> std::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = std::process::Command::new("git");
     #[cfg(target_os = "windows")]
     {
