@@ -3927,6 +3927,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             false,
                                         )
                                     }
+                                    orchestrator_events::OrchestratorEvent::ContextGathered {
+                                        files,
+                                        size_bytes,
+                                    } => {
+                                        let kb = *size_bytes as f64 / 1024.0;
+                                        (
+                                            glass_renderer::OrchestratorEventKind::ContextGathered,
+                                            format!("Context gathered: {files} ({kb:.1} KB)"),
+                                            false,
+                                        )
+                                    }
+                                    orchestrator_events::OrchestratorEvent::AgentSpawned => (
+                                        glass_renderer::OrchestratorEventKind::AgentSpawned,
+                                        "Agent spawned, waiting for first response".to_string(),
+                                        false,
+                                    ),
+                                    orchestrator_events::OrchestratorEvent::AgentResponded {
+                                        elapsed_secs,
+                                    } => (
+                                        glass_renderer::OrchestratorEventKind::AgentResponded,
+                                        format!("Agent responded after {elapsed_secs}s"),
+                                        false,
+                                    ),
                                 };
 
                                 let expanded = if expandable {
