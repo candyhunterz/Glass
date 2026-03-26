@@ -6,6 +6,7 @@ mod agent_instructions;
 mod checkpoint_synth;
 mod ephemeral_agent;
 mod history;
+mod mcp_register;
 mod orchestrator;
 mod orchestrator_context;
 mod orchestrator_events;
