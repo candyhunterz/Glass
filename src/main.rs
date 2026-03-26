@@ -7608,7 +7608,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                             } else {
                                 vec![]
                             };
-                            let system_prompt = build_system_prompt(&new_agent_config, &cwd, &hints);
+                            let system_prompt =
+                                build_system_prompt(&new_agent_config, &cwd, &hints);
                             let provider = self
                                 .config
                                 .agent

@@ -372,12 +372,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
                     pending.new_value.clone(),
                     pending.old_value.clone(),
                 ));
-                tuning_history
-                    .cooldowns
-                    .push(types::ConfigCooldown {
-                        field: pending.field,
-                        remaining: 5,
-                    });
+                tuning_history.cooldowns.push(types::ConfigCooldown {
+                    field: pending.field,
+                    remaining: 5,
+                });
                 suppress_config_tuning = true;
                 tracing::info!("ConfigTuning: reverted pending change (regression detected)");
             }
@@ -449,8 +447,8 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     // it becomes available on FeedbackState. For now, default to enabled.
     let script_generation = true;
     let has_tried_lower_tiers = had_rules_before_run;
-    let high_waste_or_stuck = data.stuck_count > data.iterations / 3
-        || data.waste_count > data.iterations / 3;
+    let high_waste_or_stuck =
+        data.stuck_count > data.iterations / 3 || data.waste_count > data.iterations / 3;
     let script_prompt = if script_generation && high_waste_or_stuck && has_tried_lower_tiers {
         Some(build_script_prompt(&data))
     } else {
@@ -1398,7 +1396,10 @@ mod tests {
         data.iterations = 9;
         data.waste_count = 4; // > 9/3 = 3
         let result = on_run_end(state, data);
-        assert!(result.script_prompt.is_some(), "Tier 4 should fire with active rules + high waste");
+        assert!(
+            result.script_prompt.is_some(),
+            "Tier 4 should fire with active rules + high waste"
+        );
     }
 
     #[test]
@@ -1410,6 +1411,9 @@ mod tests {
         data.iterations = 9;
         data.waste_count = 4;
         let result = on_run_end(state, data);
-        assert!(result.script_prompt.is_none(), "Tier 4 should not fire without any rules");
+        assert!(
+            result.script_prompt.is_none(),
+            "Tier 4 should not fire without any rules"
+        );
     }
 }
