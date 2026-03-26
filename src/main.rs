@@ -10999,6 +10999,9 @@ fn main() {
             // No subcommand: launch the terminal GUI (default behavior)
             tracing::info!("Glass starting");
 
+            // Auto-register MCP server with installed AI tools (fire-and-forget).
+            mcp_register::auto_register();
+
             GlassConfig::ensure_default_config();
             let config = GlassConfig::load();
             tracing::info!(

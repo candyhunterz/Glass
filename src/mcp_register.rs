@@ -1,12 +1,11 @@
 //! MCP auto-registration — detects installed AI tools and registers
 //! Glass's MCP server in their configuration files.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 /// Result of attempting to register with one AI tool.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RegistrationResult {
     pub tool: &'static str,
     pub path: PathBuf,
@@ -100,6 +99,53 @@ fn register_tool_config(config_path: &Path, glass_binary: &str) -> RegistrationA
         Ok(()) => RegistrationAction::Registered,
         Err(e) => RegistrationAction::Error(format!("write error: {e}")),
     }
+}
+
+/// Auto-register Glass MCP server with all detected AI tools.
+///
+/// Resolves the Glass binary path, iterates known tools, and writes
+/// config entries where the tool is installed and Glass is not yet
+/// registered. Returns results for logging/diagnostics.
+pub fn auto_register() -> Vec<RegistrationResult> {
+    let binary = match glass_binary_path() {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => {
+            tracing::warn!("MCP auto-register: could not resolve glass binary path");
+            return vec![];
+        }
+    };
+
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            tracing::warn!("MCP auto-register: could not determine home directory");
+            return vec![];
+        }
+    };
+
+    let mut results = Vec::new();
+
+    for tool in KNOWN_TOOLS {
+        let mut config_path = home.clone();
+        for segment in tool.config_segments {
+            config_path = config_path.join(segment);
+        }
+
+        let action = register_tool_config(&config_path, &binary);
+        tracing::info!(
+            tool = tool.name,
+            path = %config_path.display(),
+            action = ?action,
+            "MCP auto-register"
+        );
+        results.push(RegistrationResult {
+            tool: tool.name,
+            path: config_path,
+            action,
+        });
+    }
+
+    results
 }
 
 #[cfg(test)]
