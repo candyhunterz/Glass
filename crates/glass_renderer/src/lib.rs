@@ -1,4 +1,9 @@
-//! glass_renderer — wgpu GPU surface and rendering
+//! glass_renderer — wgpu GPU rendering pipeline for the Glass terminal.
+//!
+//! Provides the full rendering stack: surface management, grid text layout,
+//! scrollbar/tab-bar/status-bar chrome, overlay UIs (search, settings, activity
+//! stream, proposals, welcome), and block-level visual annotations. All
+//! rendering uses wgpu with glyphon for shaped text.
 
 pub mod activity_overlay;
 pub mod block_renderer;

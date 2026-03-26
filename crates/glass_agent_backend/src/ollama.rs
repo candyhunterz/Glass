@@ -264,7 +264,8 @@ fn do_turn(
 
         // Add tool definitions if allowed_tools is non-empty.
         if !config.allowed_tools.is_empty() {
-            let tools: Vec<serde_json::Value> = config.allowed_tools
+            let tools: Vec<serde_json::Value> = config
+                .allowed_tools
                 .iter()
                 .map(|name| {
                     serde_json::json!({

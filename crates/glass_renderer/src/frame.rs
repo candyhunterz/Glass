@@ -40,8 +40,11 @@ const SECTION_PADDING_CELLS: f32 = 2.0;
 /// Display data for the search overlay, extracted from SearchOverlay state.
 /// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
 pub struct SearchOverlayRenderData {
+    /// Current search query string.
     pub query: String,
-    pub results: Vec<(String, Option<i32>, String, String)>, // (command, exit_code, timestamp, preview)
+    /// Matched results: `(command, exit_code, timestamp, preview)`.
+    pub results: Vec<(String, Option<i32>, String, String)>,
+    /// Index of the currently highlighted result row.
     pub selected: usize,
 }
 

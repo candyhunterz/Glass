@@ -33,20 +33,35 @@ use io::{
 
 /// State handle returned by `on_run_start`, passed to `on_run_end`.
 pub struct FeedbackState {
+    /// Canonical project root path used to scope feedback data.
     pub project_root: String,
+    /// Path to the project-local rules file.
     pub rules_path: PathBuf,
+    /// Path to the global (cross-project) rules file.
     pub global_rules_path: PathBuf,
+    /// Path to the metrics history file.
     pub metrics_path: PathBuf,
+    /// Path to the per-run history log.
     pub history_path: PathBuf,
+    /// Path to the archived rules directory.
     pub archived_path: PathBuf,
+    /// Snapshot of the agent config at run start (used for diff detection).
     pub snapshot: ConfigSnapshot,
+    /// Rule engine loaded with current project + global rules.
     pub engine: rules::RuleEngine,
+    /// Whether LLM-based qualitative analysis is enabled.
     pub feedback_llm: bool,
+    /// Maximum number of prompt hints to inject per session.
     pub max_prompt_hints: usize,
+    /// Rule ID currently targeted for ablation testing, if any.
     pub ablation_target: Option<String>,
+    /// Run ID of the most recent ablation sweep.
     pub last_sweep_run: String,
+    /// Per-rule attribution scores from the last analysis.
     pub attribution_scores: Vec<types::AttributionScore>,
+    /// Path to the attribution scores file.
     pub attribution_path: std::path::PathBuf,
+    /// Whether ablation testing is enabled.
     pub ablation_enabled: bool,
 }
 
