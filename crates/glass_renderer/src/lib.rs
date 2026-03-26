@@ -27,7 +27,10 @@ pub use activity_overlay::{
 pub use block_renderer::{BlockLabel, BlockRenderer};
 pub use config_error_overlay::{ConfigErrorOverlay, ConfigErrorTextLabel};
 pub use conflict_overlay::{ConflictOverlay, ConflictTextLabel};
-pub use frame::{DividerRect, FrameRenderer, PaneViewport};
+pub use frame::{
+    ConflictInfo, DividerRect, FrameRenderContext, FrameRenderer, MultiPaneRenderContext,
+    PaneViewport,
+};
 pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;
 pub use onboarding_toast_renderer::{

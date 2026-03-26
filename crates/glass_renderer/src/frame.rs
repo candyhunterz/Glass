@@ -45,6 +45,72 @@ pub struct SearchOverlayRenderData {
     pub selected: usize,
 }
 
+/// Info needed to render the conflict warning overlay.
+pub struct ConflictInfo {
+    pub agent_count: usize,
+    pub lock_count: usize,
+}
+
+/// Parameters for rendering a single overlay text element.
+struct OverlayTextParams<'a> {
+    text: &'a str,
+    left: f32,
+    top: f32,
+    color: GlyphonColor,
+    metrics: Metrics,
+    font_family: &'a str,
+    buf_width: f32,
+    cell_height: f32,
+}
+
+/// All rendering state passed to draw_frame, excluding GPU handles.
+pub struct FrameRenderContext<'a> {
+    pub snapshot: &'a GridSnapshot,
+    pub blocks: &'a [&'a Block],
+    pub status: Option<&'a StatusState>,
+    pub search_overlay: Option<&'a SearchOverlayRenderData>,
+    pub tab_bar_info: Option<&'a [crate::tab_bar::TabDisplayInfo]>,
+    pub hovered_tab: Option<usize>,
+    pub drop_index: Option<usize>,
+    pub update_text: Option<&'a str>,
+    pub coordination_text: Option<&'a str>,
+    pub agent_cost_text: Option<&'a str>,
+    pub agent_paused: bool,
+    pub scrollbar_hovered: bool,
+    pub scrollbar_dragging: bool,
+    pub agent_mode_text: Option<&'a str>,
+    pub proposal_count_text: Option<&'a str>,
+    pub proposal_toast: Option<&'a ProposalToastRenderData>,
+    pub proposal_overlay: Option<&'a ProposalOverlayRenderData>,
+    pub agent_activity_line: Option<&'a str>,
+    pub orchestrating: bool,
+    pub onboarding_toast: Option<&'a OnboardingToastRenderData>,
+    pub welcome_overlay: Option<&'a WelcomeOverlayRenderData>,
+}
+
+/// All rendering state passed to draw_multi_pane_frame, excluding GPU handles.
+pub struct MultiPaneRenderContext<'a> {
+    pub panes: &'a [(PaneViewport, &'a GridSnapshot, &'a [&'a Block], bool)],
+    pub dividers: &'a [DividerRect],
+    pub status: Option<&'a StatusState>,
+    pub tab_bar_info: Option<&'a [crate::tab_bar::TabDisplayInfo]>,
+    pub hovered_tab: Option<usize>,
+    pub drop_index: Option<usize>,
+    pub update_text: Option<&'a str>,
+    pub coordination_text: Option<&'a str>,
+    pub agent_cost_text: Option<&'a str>,
+    pub agent_paused: bool,
+    pub scrollbar_state: &'a [(bool, bool)],
+    pub agent_mode_text: Option<&'a str>,
+    pub proposal_count_text: Option<&'a str>,
+    pub proposal_toast: Option<&'a ProposalToastRenderData>,
+    pub proposal_overlay: Option<&'a ProposalOverlayRenderData>,
+    pub agent_activity_line: Option<&'a str>,
+    pub orchestrating: bool,
+    pub onboarding_toast: Option<&'a OnboardingToastRenderData>,
+    pub welcome_overlay: Option<&'a WelcomeOverlayRenderData>,
+}
+
 /// Positioning metadata for a single overlay text buffer.
 ///
 /// Tracks the screen position and default color for each overlay buffer
@@ -83,7 +149,6 @@ fn make_overlay_buffer(
     buffer
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Create a shaped overlay buffer and append it along with positioning metadata.
 ///
 /// This is the single place that performs the create-size-text-shape-push
@@ -94,26 +159,23 @@ fn push_overlay_text(
     font_system: &mut glyphon::FontSystem,
     overlay_buffers: &mut Vec<Buffer>,
     overlay_metas: &mut Vec<OverlayMeta>,
-    text: &str,
-    left: f32,
-    top: f32,
-    color: GlyphonColor,
-    metrics: Metrics,
-    font_family: &str,
-    buf_width: f32,
-    cell_height: f32,
+    params: &OverlayTextParams<'_>,
 ) {
     let buffer = make_overlay_buffer(
         font_system,
-        text,
-        color,
-        metrics,
-        font_family,
-        buf_width,
-        cell_height,
+        params.text,
+        params.color,
+        params.metrics,
+        params.font_family,
+        params.buf_width,
+        params.cell_height,
     );
     overlay_buffers.push(buffer);
-    overlay_metas.push(OverlayMeta { left, top, color });
+    overlay_metas.push(OverlayMeta {
+        left: params.left,
+        top: params.top,
+        color: params.color,
+    });
 }
 
 /// Orchestrates the complete GPU rendering pipeline for terminal content.
@@ -295,7 +357,6 @@ impl FrameRenderer {
     ///
     /// When `blocks` is empty and `status` is None, this behaves identically to Phase 2.
     #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_frame(
         &mut self,
         device: &wgpu::Device,
@@ -303,28 +364,30 @@ impl FrameRenderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        snapshot: &GridSnapshot,
-        blocks: &[&Block],
-        status: Option<&StatusState>,
-        search_overlay: Option<&SearchOverlayRenderData>,
-        tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
-        hovered_tab: Option<usize>,
-        drop_index: Option<usize>,
-        update_text: Option<&str>,
-        coordination_text: Option<&str>,
-        agent_cost_text: Option<&str>,
-        agent_paused: bool,
-        scrollbar_hovered: bool,
-        scrollbar_dragging: bool,
-        agent_mode_text: Option<&str>,
-        proposal_count_text: Option<&str>,
-        proposal_toast: Option<&ProposalToastRenderData>,
-        proposal_overlay: Option<&ProposalOverlayRenderData>,
-        agent_activity_line: Option<&str>,
-        orchestrating: bool,
-        onboarding_toast: Option<&OnboardingToastRenderData>,
-        welcome_overlay: Option<&WelcomeOverlayRenderData>,
+        ctx: &FrameRenderContext<'_>,
     ) {
+        let snapshot = ctx.snapshot;
+        let blocks = ctx.blocks;
+        let status = ctx.status;
+        let search_overlay = ctx.search_overlay;
+        let tab_bar_info = ctx.tab_bar_info;
+        let hovered_tab = ctx.hovered_tab;
+        let drop_index = ctx.drop_index;
+        let update_text = ctx.update_text;
+        let coordination_text = ctx.coordination_text;
+        let agent_cost_text = ctx.agent_cost_text;
+        let agent_paused = ctx.agent_paused;
+        let scrollbar_hovered = ctx.scrollbar_hovered;
+        let scrollbar_dragging = ctx.scrollbar_dragging;
+        let agent_mode_text = ctx.agent_mode_text;
+        let proposal_count_text = ctx.proposal_count_text;
+        let proposal_toast = ctx.proposal_toast;
+        let proposal_overlay = ctx.proposal_overlay;
+        let agent_activity_line = ctx.agent_activity_line;
+        let orchestrating = ctx.orchestrating;
+        let onboarding_toast = ctx.onboarding_toast;
+        let welcome_overlay = ctx.welcome_overlay;
+
         let w = width as f32;
         let h = height as f32;
         let two_line_status = agent_activity_line.is_some();
@@ -567,14 +630,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &status_label.left_text,
-                    cell_width * HALF_CELL_GAP,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &status_label.left_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -591,14 +656,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    right_text,
-                    w - right_text_width - cell_width * HALF_CELL_GAP,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: right_text,
+                        left: w - right_text_width - cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -627,14 +694,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    coord_text,
-                    coord_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: coord_text,
+                        left: coord_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -678,14 +747,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    agent_text,
-                    agent_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: agent_text,
+                        left: agent_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -741,14 +812,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    mode_text,
-                    mode_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: mode_text,
+                        left: mode_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -812,14 +885,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    proposal_text,
-                    proposal_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: proposal_text,
+                        left: proposal_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -861,14 +936,16 @@ impl FrameRenderer {
                         &mut self.glyph_cache.font_system,
                         &mut self.overlay_buffers,
                         &mut overlay_metas,
-                        center_text,
-                        center_x,
-                        status_label.y,
-                        color,
-                        metrics,
-                        font_family,
-                        w,
-                        cell_height,
+                        &OverlayTextParams {
+                            text: center_text,
+                            left: center_x,
+                            top: status_label.y,
+                            color,
+                            metrics,
+                            font_family,
+                            buf_width: w,
+                            cell_height,
+                        },
                     );
                 }
             }
@@ -881,14 +958,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    activity_text,
-                    cell_width * HALF_CELL_GAP,
-                    activity_y,
-                    activity_color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: activity_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: activity_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
 
                 // Expand hint at far right of agent line
@@ -899,14 +978,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    hint,
-                    w - hint_width - cell_width * HALF_CELL_GAP,
-                    activity_y,
-                    hint_color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: hint,
+                        left: w - hint_width - cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: hint_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -920,14 +1001,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -947,14 +1030,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -970,14 +1055,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -993,14 +1080,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1016,14 +1105,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1050,14 +1141,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.pipeline_buffers,
                     &mut pipeline_metas,
-                    &label.text,
-                    label.x,
-                    label.y + grid_y_offset,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y + grid_y_offset,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1073,14 +1166,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.pipeline_buffers,
                     &mut pipeline_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1249,7 +1344,6 @@ impl FrameRenderer {
     ///
     /// `panes`: Vec of (viewport, snapshot, blocks, is_focused) for each pane.
     #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_multi_pane_frame(
         &mut self,
         device: &wgpu::Device,
@@ -1257,26 +1351,28 @@ impl FrameRenderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        panes: &[(PaneViewport, &GridSnapshot, &[&Block], bool)],
-        dividers: &[DividerRect],
-        status: Option<&StatusState>,
-        tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
-        hovered_tab: Option<usize>,
-        drop_index: Option<usize>,
-        update_text: Option<&str>,
-        coordination_text: Option<&str>,
-        agent_cost_text: Option<&str>,
-        agent_paused: bool,
-        scrollbar_state: &[(bool, bool)],
-        agent_mode_text: Option<&str>,
-        proposal_count_text: Option<&str>,
-        proposal_toast: Option<&ProposalToastRenderData>,
-        proposal_overlay: Option<&ProposalOverlayRenderData>,
-        agent_activity_line: Option<&str>,
-        orchestrating: bool,
-        onboarding_toast: Option<&OnboardingToastRenderData>,
-        welcome_overlay: Option<&WelcomeOverlayRenderData>,
+        ctx: &MultiPaneRenderContext<'_>,
     ) {
+        let panes = ctx.panes;
+        let dividers = ctx.dividers;
+        let status = ctx.status;
+        let tab_bar_info = ctx.tab_bar_info;
+        let hovered_tab = ctx.hovered_tab;
+        let drop_index = ctx.drop_index;
+        let update_text = ctx.update_text;
+        let coordination_text = ctx.coordination_text;
+        let agent_cost_text = ctx.agent_cost_text;
+        let agent_paused = ctx.agent_paused;
+        let scrollbar_state = ctx.scrollbar_state;
+        let agent_mode_text = ctx.agent_mode_text;
+        let proposal_count_text = ctx.proposal_count_text;
+        let proposal_toast = ctx.proposal_toast;
+        let proposal_overlay = ctx.proposal_overlay;
+        let agent_activity_line = ctx.agent_activity_line;
+        let orchestrating = ctx.orchestrating;
+        let onboarding_toast = ctx.onboarding_toast;
+        let welcome_overlay = ctx.welcome_overlay;
+
         let w = width as f32;
         let h = height as f32;
         let two_line_status = agent_activity_line.is_some();
@@ -1515,14 +1611,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &status_label.left_text,
-                    cell_width * HALF_CELL_GAP,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &status_label.left_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -1539,14 +1637,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    right_text,
-                    w - right_text_width - cell_width * HALF_CELL_GAP,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: right_text,
+                        left: w - right_text_width - cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -1574,14 +1674,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    coord_text,
-                    coord_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: coord_text,
+                        left: coord_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -1625,14 +1727,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    agent_text,
-                    agent_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: agent_text,
+                        left: agent_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -1688,14 +1792,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    mode_text,
-                    mode_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: mode_text,
+                        left: mode_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -1759,14 +1865,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    proposal_text,
-                    proposal_x,
-                    status_label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: proposal_text,
+                        left: proposal_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
 
@@ -1808,14 +1916,16 @@ impl FrameRenderer {
                         &mut self.glyph_cache.font_system,
                         &mut self.overlay_buffers,
                         &mut overlay_metas,
-                        center_text,
-                        center_x,
-                        status_label.y,
-                        color,
-                        metrics,
-                        font_family,
-                        w,
-                        cell_height,
+                        &OverlayTextParams {
+                            text: center_text,
+                            left: center_x,
+                            top: status_label.y,
+                            color,
+                            metrics,
+                            font_family,
+                            buf_width: w,
+                            cell_height,
+                        },
                     );
                 }
             }
@@ -1828,14 +1938,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    activity_text,
-                    cell_width * HALF_CELL_GAP,
-                    activity_y,
-                    activity_color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: activity_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: activity_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
 
                 // Expand hint
@@ -1846,14 +1958,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    hint,
-                    w - hint_width - cell_width * HALF_CELL_GAP,
-                    activity_y,
-                    hint_color,
-                    metrics,
-                    font_family,
-                    w,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: hint,
+                        left: w - hint_width - cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: hint_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1867,14 +1981,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1890,14 +2006,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1913,14 +2031,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -1936,14 +2056,16 @@ impl FrameRenderer {
                     &mut self.glyph_cache.font_system,
                     &mut self.overlay_buffers,
                     &mut overlay_metas,
-                    &label.text,
-                    label.x,
-                    label.y,
-                    color,
-                    metrics,
-                    font_family,
-                    w - label.x,
-                    cell_height,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
             }
         }
@@ -2146,7 +2268,6 @@ impl FrameRenderer {
     ///
     /// Uses LoadOp::Load to preserve the existing frame content underneath.
     /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_conflict_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2154,9 +2275,10 @@ impl FrameRenderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        agent_count: usize,
-        lock_count: usize,
+        conflict: &ConflictInfo,
     ) {
+        let agent_count = conflict.agent_count;
+        let lock_count = conflict.lock_count;
         let (cell_width, cell_height) = self.grid_renderer.cell_size();
         let overlay = crate::conflict_overlay::ConflictOverlay::new(cell_width, cell_height);
         let warning_rects = overlay.build_warning_rects(width as f32, height as f32, 1);
@@ -2256,7 +2378,6 @@ impl FrameRenderer {
     ///
     /// Uses LoadOp::Load to preserve the existing frame content underneath.
     /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_activity_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2370,7 +2491,6 @@ impl FrameRenderer {
     }
 
     /// Draw the settings overlay (fullscreen, on top of everything).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_settings_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2809,14 +2929,16 @@ mod tests {
             &mut font_system,
             &mut buffers,
             &mut metas,
-            "test text",
-            10.5,
-            20.0,
-            color,
-            metrics,
-            "monospace",
-            200.0,
-            18.0,
+            &OverlayTextParams {
+                text: "test text",
+                left: 10.5,
+                top: 20.0,
+                color,
+                metrics,
+                font_family: "monospace",
+                buf_width: 200.0,
+                cell_height: 18.0,
+            },
         );
 
         assert_eq!(buffers.len(), 1);
