@@ -25,6 +25,13 @@ use crate::status_bar::StatusBarRenderer;
 use crate::tab_bar::TabBarRenderer;
 use crate::welcome_overlay::{WelcomeOverlayRenderData, WelcomeOverlayRenderer};
 
+/// Soft purple used for agent activity stream text in the status bar.
+const ACTIVITY_STREAM_PURPLE: GlyphonColor = GlyphonColor::rgba(180, 140, 255, 255);
+/// Dim gray used for keyboard shortcut hint text.
+const HINT_TEXT_GRAY: GlyphonColor = GlyphonColor::rgba(85, 85, 85, 255);
+/// Pure white used for general text rendering.
+const TEXT_WHITE: GlyphonColor = GlyphonColor::rgba(255, 255, 255, 255);
+
 /// Display data for the search overlay, extracted from SearchOverlay state.
 /// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
 pub struct SearchOverlayRenderData {
@@ -885,7 +892,7 @@ impl FrameRenderer {
             // Agent activity line (top row of two-line status bar)
             if let Some(activity_text) = agent_activity_line {
                 let activity_y = status_label.y - cell_height;
-                let activity_color = GlyphonColor::rgba(180, 140, 255, 255); // soft purple
+                let activity_color = ACTIVITY_STREAM_PURPLE;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,
@@ -912,7 +919,7 @@ impl FrameRenderer {
                 // Expand hint at far right of agent line
                 let hint = "Ctrl+Shift+G";
                 let hint_width = hint.len() as f32 * cell_width;
-                let hint_color = GlyphonColor::rgba(85, 85, 85, 255);
+                let hint_color = HINT_TEXT_GRAY;
                 let mut hint_buf = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 hint_buf.set_size(
                     &mut self.glyph_cache.font_system,
@@ -2033,7 +2040,7 @@ impl FrameRenderer {
             // Agent activity line (top row of two-line status bar)
             if let Some(activity_text) = agent_activity_line {
                 let activity_y = status_label.y - cell_height;
-                let activity_color = GlyphonColor::rgba(180, 140, 255, 255);
+                let activity_color = ACTIVITY_STREAM_PURPLE;
                 let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 buffer.set_size(
                     &mut self.glyph_cache.font_system,
@@ -2060,7 +2067,7 @@ impl FrameRenderer {
                 // Expand hint
                 let hint = "Ctrl+Shift+G";
                 let hint_width = hint.len() as f32 * cell_width;
-                let hint_color = GlyphonColor::rgba(85, 85, 85, 255);
+                let hint_color = HINT_TEXT_GRAY;
                 let mut hint_buf = Buffer::new(&mut self.glyph_cache.font_system, metrics);
                 hint_buf.set_size(
                     &mut self.glyph_cache.font_system,
@@ -2990,7 +2997,7 @@ impl FrameRenderer {
             text,
             &Attrs::new()
                 .family(Family::Name(font_family))
-                .color(GlyphonColor::rgba(255, 255, 255, 255)),
+                .color(TEXT_WHITE),
             Shaping::Advanced,
             None,
         );
@@ -3010,7 +3017,7 @@ impl FrameRenderer {
                 right: width as i32,
                 bottom: height as i32,
             },
-            default_color: GlyphonColor::rgba(255, 255, 255, 255),
+            default_color: TEXT_WHITE,
             custom_glyphs: &[],
         }];
 
