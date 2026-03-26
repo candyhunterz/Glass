@@ -251,6 +251,9 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
 
     // --- Step 5: promote / reject provisionals ---
     let mut project_rules_file = load_rules_file(&state.rules_path);
+    // Capture whether any rules existed BEFORE this run's findings are applied.
+    // Used by Step 9c to determine if lower tiers have been tried in prior runs.
+    let had_rules_before_run = !project_rules_file.rules.is_empty();
 
     let mut rules_promoted: Vec<String> = Vec::new();
     let mut rules_rejected: Vec<String> = Vec::new();
@@ -441,15 +444,14 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     };
 
     // --- Step 9c: Tier 4 script generation prompt ---
-    // Generate a script prompt when existing tiers produced no findings
-    // but the run still had high waste or stuck rates.
+    // Escalation: fire when lower tiers have been tried but problems persist.
     // TODO: Read script_generation from FeedbackConfig/GlassConfig when
     // it becomes available on FeedbackState. For now, default to enabled.
     let script_generation = true;
-    let script_prompt = if script_generation
-        && findings.is_empty()
-        && (data.stuck_count > data.iterations / 3 || data.waste_count > data.iterations / 3)
-    {
+    let has_tried_lower_tiers = had_rules_before_run;
+    let high_waste_or_stuck = data.stuck_count > data.iterations / 3
+        || data.waste_count > data.iterations / 3;
+    let script_prompt = if script_generation && high_waste_or_stuck && has_tried_lower_tiers {
         Some(build_script_prompt(&data))
     } else {
         None
@@ -1379,5 +1381,35 @@ mod tests {
         let history = io::load_tuning_history(&history_path);
         // Cooldown was 3, decremented to 2
         assert_eq!(history.cooldowns[0].remaining, 2);
+    }
+
+    #[test]
+    fn script_generation_fires_with_rules_and_high_waste() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let state = make_state_in_dir(&dir);
+        // Write a rule to disk so had_rules_before_run is true at Step 5.
+        let rules_file = RulesFile {
+            meta: RulesMeta::default(),
+            rules: vec![make_rule("r1", "force_commit", RuleStatus::Confirmed)],
+        };
+        save_rules_file(&state.rules_path, &rules_file).unwrap();
+        let mut data = make_run_data(project_root);
+        data.iterations = 9;
+        data.waste_count = 4; // > 9/3 = 3
+        let result = on_run_end(state, data);
+        assert!(result.script_prompt.is_some(), "Tier 4 should fire with active rules + high waste");
+    }
+
+    #[test]
+    fn script_generation_does_not_fire_without_rules() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let state = make_state_in_dir(&dir); // no rules
+        let mut data = make_run_data(project_root);
+        data.iterations = 9;
+        data.waste_count = 4;
+        let result = on_run_end(state, data);
+        assert!(result.script_prompt.is_none(), "Tier 4 should not fire without any rules");
     }
 }
