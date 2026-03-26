@@ -21,10 +21,9 @@ pub(crate) enum OllamaChunk {
     TextDelta(String),
     /// One or more complete tool calls (Ollama sends them in a single line).
     ToolCalls(Vec<OllamaToolCall>),
-    /// The stream is complete. Carries optional `eval_count` (tokens generated).
+    /// The stream is complete. Carries optional token count (tokens generated).
     Done {
-        #[allow(dead_code)] // read in tests only
-        eval_count: Option<u64>,
+        _eval_count: Option<u64>,
     },
 }
 
@@ -52,7 +51,7 @@ pub(crate) fn parse_ollama_line(line: &str) -> Option<OllamaChunk> {
     // Check for `done: true` first — the terminal line.
     if v.get("done").and_then(|d| d.as_bool()) == Some(true) {
         let eval_count = v.get("eval_count").and_then(|e| e.as_u64());
-        return Some(OllamaChunk::Done { eval_count });
+        return Some(OllamaChunk::Done { _eval_count: eval_count });
     }
 
     let message = v.get("message")?;
@@ -536,7 +535,7 @@ mod tests {
     fn parse_done() {
         let line = r#"{"model":"llama3","message":{"role":"assistant","content":""},"done":true,"eval_count":50}"#;
         match parse_ollama_line(line) {
-            Some(OllamaChunk::Done { eval_count }) => assert_eq!(eval_count, Some(50)),
+            Some(OllamaChunk::Done { _eval_count }) => assert_eq!(_eval_count, Some(50)),
             other => panic!("expected Done, got {other:?}"),
         }
     }
@@ -545,7 +544,7 @@ mod tests {
     fn parse_done_without_eval_count() {
         let line = r#"{"done":true}"#;
         match parse_ollama_line(line) {
-            Some(OllamaChunk::Done { eval_count }) => assert_eq!(eval_count, None),
+            Some(OllamaChunk::Done { _eval_count }) => assert_eq!(_eval_count, None),
             other => panic!("expected Done, got {other:?}"),
         }
     }
