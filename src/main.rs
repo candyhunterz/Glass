@@ -444,6 +444,12 @@ struct Processor {
     settings_editing: bool,
     /// Buffer for inline text editing.
     settings_edit_buffer: String,
+    /// Config section for the field being edited (e.g. Some("agent"), None for top-level).
+    settings_edit_section: Option<&'static str>,
+    /// Config key for the field being edited (e.g. "font_size").
+    settings_edit_key: &'static str,
+    /// Whether the edited value needs TOML quotes (string vs numeric).
+    settings_edit_needs_quotes: bool,
     /// Scroll offset for the Shortcuts tab.
     settings_shortcuts_scroll: usize,
     /// Transient status message displayed in the status bar center text.
@@ -5379,6 +5385,48 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.mark_dirty_and_redraw();
                                 return;
                             }
+                            // When editing inline, capture text input
+                            Key::Named(NamedKey::Enter) if self.settings_editing => {
+                                // Commit the edit buffer
+                                let value = if self.settings_edit_needs_quotes {
+                                    format!("\"{}\"", self.settings_edit_buffer)
+                                } else {
+                                    self.settings_edit_buffer.clone()
+                                };
+                                if let Some(config_path) =
+                                    glass_core::config::GlassConfig::config_path()
+                                {
+                                    if let Err(e) = glass_core::config::update_config_field(
+                                        &config_path,
+                                        self.settings_edit_section,
+                                        self.settings_edit_key,
+                                        &value,
+                                    ) {
+                                        tracing::warn!(
+                                            "Settings: failed to write config: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                                self.settings_editing = false;
+                                self.settings_edit_buffer.clear();
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Backspace) if self.settings_editing => {
+                                self.settings_edit_buffer.pop();
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Character(c) if self.settings_editing => {
+                                self.settings_edit_buffer.push_str(c.as_str());
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            // Block navigation while editing
+                            _ if self.settings_editing => {
+                                return;
+                            }
                             Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
                                 self.settings_overlay_tab = self.settings_overlay_tab.prev();
                                 self.settings_field_index = 0;
@@ -5399,6 +5447,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         if self.settings_field_index > 0 {
                                             self.settings_field_index -= 1;
                                         } else if self.settings_section_index > 0 {
+                                            // Move to previous section
                                             self.settings_section_index -= 1;
                                             self.settings_field_index = 0;
                                         }
@@ -5415,8 +5464,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                             Key::Named(NamedKey::ArrowDown) => {
                                 match self.settings_overlay_tab {
                                     glass_renderer::SettingsTab::Settings => {
-                                        self.settings_field_index += 1;
-                                        // Clamping happens in renderer (fields_for_section length)
+                                        // Try to move to next field; if at end of section, move to next section
+                                        let field_count =
+                                            glass_renderer::settings_overlay::field_count_for_section(
+                                                self.settings_section_index,
+                                            );
+                                        if self.settings_field_index + 1 < field_count {
+                                            self.settings_field_index += 1;
+                                        } else if self.settings_section_index
+                                            < glass_renderer::settings_overlay::SETTINGS_SECTIONS
+                                                .len()
+                                                - 1
+                                        {
+                                            // Move to next section
+                                            self.settings_section_index += 1;
+                                            self.settings_field_index = 0;
+                                        }
                                     }
                                     glass_renderer::SettingsTab::Shortcuts => {
                                         self.settings_shortcuts_scroll += 1;
@@ -5444,7 +5507,57 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 ctx.mark_dirty_and_redraw();
                                 return;
                             }
-                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                            Key::Named(NamedKey::Enter) => {
+                                if !matches!(
+                                    self.settings_overlay_tab,
+                                    glass_renderer::SettingsTab::Settings
+                                ) {
+                                    return;
+                                }
+
+                                if let Some((section, key, value)) =
+                                    handle_settings_activate(
+                                        &self.config,
+                                        self.settings_section_index,
+                                        self.settings_field_index,
+                                    )
+                                {
+                                    // Toggle field
+                                    if let Some(config_path) =
+                                        glass_core::config::GlassConfig::config_path()
+                                    {
+                                        if let Err(e) = glass_core::config::update_config_field(
+                                            &config_path,
+                                            section,
+                                            key,
+                                            &value,
+                                        ) {
+                                            tracing::warn!(
+                                                "Settings: failed to write config: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                } else if let Some((section, key, current_value, needs_quotes)) =
+                                    settings_editable_field(
+                                        &self.config,
+                                        self.settings_section_index,
+                                        self.settings_field_index,
+                                    )
+                                {
+                                    // Enter inline edit mode
+                                    self.settings_editing = true;
+                                    self.settings_edit_buffer = current_value;
+                                    self.settings_edit_section = section;
+                                    self.settings_edit_key = key;
+                                    self.settings_edit_needs_quotes = needs_quotes;
+                                }
+
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            Key::Named(NamedKey::Space) => {
+                                // Space only toggles (not edit mode)
                                 if matches!(
                                     self.settings_overlay_tab,
                                     glass_renderer::SettingsTab::Settings
@@ -5457,12 +5570,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         if let Some(config_path) =
                                             glass_core::config::GlassConfig::config_path()
                                         {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
+                                            if let Err(e) =
+                                                glass_core::config::update_config_field(
+                                                    &config_path,
+                                                    section,
+                                                    key,
+                                                    &value,
+                                                )
+                                            {
                                                 tracing::warn!(
                                                     "Settings: failed to write config: {}",
                                                     e
@@ -10783,6 +10898,9 @@ fn main() {
                 settings_field_index: 0,
                 settings_editing: false,
                 settings_edit_buffer: String::new(),
+                settings_edit_section: None,
+                settings_edit_key: "",
+                settings_edit_needs_quotes: false,
                 settings_shortcuts_scroll: 0,
                 status_message: None,
                 agent_review_open: false,
@@ -11015,8 +11133,8 @@ fn handle_settings_activate(
             let current = config.pipes.as_ref().map(|p| p.auto_expand).unwrap_or(true);
             Some((Some("pipes"), "auto_expand", (!current).to_string()))
         }
-        // Orchestrator: enabled
-        (6, 0) => {
+        // Orchestrator: enabled (field 4: after Provider, Model, Implementer, Persona)
+        (6, 4) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11029,8 +11147,8 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
-        // Orchestrator: feedback_llm toggle (field index 6)
-        (6, 6) => {
+        // Orchestrator: feedback_llm toggle (field 10)
+        (6, 10) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11043,8 +11161,8 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
-        // Orchestrator: ablation_enabled toggle (field index 8)
-        (6, 8) => {
+        // Orchestrator: ablation_enabled toggle (field 12)
+        (6, 12) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11144,8 +11262,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator max_iterations: step 10 (field index 1)
-        (6, 1) => {
+        // Orchestrator max_iterations: step 10 (field 5)
+        (6, 5) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11159,8 +11277,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator silence_timeout_secs: step 10 (field index 2)
-        (6, 2) => {
+        // Orchestrator silence_timeout_secs: step 10 (field 6)
+        (6, 6) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11174,8 +11292,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator max_prompt_hints: step 1 (field index 7)
-        (6, 7) => {
+        // Orchestrator max_prompt_hints: step 1 (field 11)
+        (6, 11) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11189,8 +11307,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator: ablation_sweep_interval: step 5 (field index 9)
-        (6, 9) => {
+        // Orchestrator: ablation_sweep_interval: step 5 (field 13)
+        (6, 13) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11204,8 +11322,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator: checkpoint_interval: step 5 (field index 10)
-        (6, 10) => {
+        // Orchestrator: checkpoint_interval: step 5 (field 14)
+        (6, 14) => {
             let current = config
                 .agent
                 .as_ref()
@@ -11218,6 +11336,88 @@ fn handle_settings_increment(
                 "checkpoint_interval",
                 new_val.to_string(),
             ))
+        }
+        _ => None,
+    }
+}
+
+/// Get info for an inline-editable (non-toggle) field.
+/// Returns (toml_section, toml_key, current_value, needs_quotes) if the field supports text entry.
+/// Toggle fields and display-only fields return None.
+fn settings_editable_field(
+    config: &glass_core::config::GlassConfig,
+    section_index: usize,
+    field_index: usize,
+) -> Option<(Option<&'static str>, &'static str, String, bool)> {
+    match (section_index, field_index) {
+        // Font Family (text, needs quotes)
+        (0, 0) => Some((None, "font_family", config.font_family.clone(), true)),
+        // Font Size (numeric)
+        (0, 1) => Some((None, "font_size", format!("{:.1}", config.font_size), false)),
+        // Agent Budget (numeric)
+        (1, 2) => {
+            let v = config.agent.as_ref().map(|a| a.max_budget_usd).unwrap_or(1.0);
+            Some((Some("agent"), "max_budget_usd", format!("{:.2}", v), false))
+        }
+        // Agent Cooldown (numeric)
+        (1, 3) => {
+            let v = config.agent.as_ref().map(|a| a.cooldown_secs).unwrap_or(30);
+            Some((Some("agent"), "cooldown_secs", v.to_string(), false))
+        }
+        // SOI Min Lines (numeric)
+        (2, 2) => {
+            let v = config.soi.as_ref().map(|s| s.min_lines).unwrap_or(0);
+            Some((Some("soi"), "min_lines", v.to_string(), false))
+        }
+        // Snapshot Max Storage MB (numeric)
+        (3, 1) => {
+            let v = config.snapshot.as_ref().map(|s| s.max_size_mb).unwrap_or(500);
+            Some((Some("snapshot"), "max_size_mb", v.to_string(), false))
+        }
+        // Snapshot Retention Days (numeric)
+        (3, 2) => {
+            let v = config.snapshot.as_ref().map(|s| s.retention_days).unwrap_or(30);
+            Some((Some("snapshot"), "retention_days", v.to_string(), false))
+        }
+        // Pipes Max Capture MB (numeric)
+        (4, 2) => {
+            let v = config.pipes.as_ref().map(|p| p.max_capture_mb).unwrap_or(10);
+            Some((Some("pipes"), "max_capture_mb", v.to_string(), false))
+        }
+        // History Max Output KB (numeric)
+        (5, 0) => {
+            let v = config.history.as_ref().map(|h| h.max_output_capture_kb).unwrap_or(50);
+            Some((Some("history"), "max_output_capture_kb", v.to_string(), false))
+        }
+        // Orchestrator Max Iterations (numeric)
+        (6, 5) => {
+            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
+                .and_then(|o| o.max_iterations).unwrap_or(0);
+            Some((Some("agent.orchestrator"), "max_iterations", v.to_string(), false))
+        }
+        // Orchestrator Silence Timeout (numeric)
+        (6, 6) => {
+            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.silence_timeout_secs).unwrap_or(60);
+            Some((Some("agent.orchestrator"), "silence_timeout_secs", v.to_string(), false))
+        }
+        // Orchestrator Max Prompt Hints (numeric)
+        (6, 11) => {
+            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_prompt_hints).unwrap_or(10);
+            Some((Some("agent.orchestrator"), "max_prompt_hints", v.to_string(), false))
+        }
+        // Orchestrator Ablation Sweep Interval (numeric)
+        (6, 13) => {
+            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.ablation_sweep_interval).unwrap_or(20);
+            Some((Some("agent.orchestrator"), "ablation_sweep_interval", v.to_string(), false))
+        }
+        // Orchestrator Checkpoint Interval (numeric)
+        (6, 14) => {
+            let v = config.agent.as_ref().and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.checkpoint_interval).unwrap_or(15);
+            Some((Some("agent.orchestrator"), "checkpoint_interval", v.to_string(), false))
         }
         _ => None,
     }

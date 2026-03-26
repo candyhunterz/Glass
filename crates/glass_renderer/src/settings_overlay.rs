@@ -174,6 +174,20 @@ pub const SETTINGS_SECTIONS: &[&str] = &[
     "Orchestrator",
 ];
 
+/// Number of fields in each settings section (for keyboard navigation).
+pub fn field_count_for_section(section_index: usize) -> usize {
+    match section_index {
+        0 => 2,  // Font: family, size
+        1 => 4,  // Agent Mode: enabled, mode, budget, cooldown
+        2 => 3,  // SOI: enabled, shell_summary, min_lines
+        3 => 3,  // Snapshots: enabled, max_mb, retention_days
+        4 => 3,  // Pipes: enabled, auto_expand, max_capture_mb
+        5 => 1,  // History: max_output_kb
+        6 => 15, // Orchestrator: provider..checkpoint_interval
+        _ => 0,
+    }
+}
+
 /// A single shortcut entry for display.
 struct ShortcutEntry {
     action: &'static str,
@@ -766,12 +780,33 @@ impl SettingsOverlayRenderer {
                 }
             };
 
-            let indicator = if is_selected { "> " } else { "  " };
+            // Show edit buffer with cursor when editing the selected field
+            let display_value = if is_selected && editing && !*is_toggle && !*is_display_only {
+                format!("{}_", edit_buffer)
+            } else {
+                value.clone()
+            };
+            let indicator = if is_selected && editing && !*is_toggle && !*is_display_only {
+                "# "
+            } else if is_selected {
+                "> "
+            } else {
+                "  "
+            };
+            let display_color = if is_selected && editing && !*is_toggle && !*is_display_only {
+                Rgb {
+                    r: 56,
+                    g: 189,
+                    b: 248,
+                } // cyan for edit mode
+            } else {
+                value_color
+            };
             labels.push(SettingsOverlayTextLabel {
-                text: format!("{}{}", indicator, value),
+                text: format!("{}{}", indicator, display_value),
                 x: panel_x + 22.0 * self.cell_width,
                 y: field_y,
-                color: value_color,
+                color: display_color,
             });
 
             field_y += self.cell_height * 1.3;
@@ -813,22 +848,13 @@ impl SettingsOverlayRenderer {
         &self,
         section_index: usize,
         config: &SettingsConfigSnapshot,
-        editing: bool,
-        edit_buffer: &str,
+        _editing: bool,
+        _edit_buffer: &str,
     ) -> Vec<(&'static str, String, bool, bool)> {
         match section_index {
             0 => vec![
                 // Font
-                (
-                    "Font Family",
-                    if editing {
-                        edit_buffer.to_string()
-                    } else {
-                        config.font_family.clone()
-                    },
-                    false,
-                    false,
-                ),
+                ("Font Family", config.font_family.clone(), false, false),
                 (
                     "Font Size",
                     format!("{:.1}", config.font_size),
