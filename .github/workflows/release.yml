@@ -104,19 +104,8 @@ jobs:
             exit 1
           fi
 
-      - name: Install x86_64 OpenSSL (for cross-compilation)
-        if: matrix.target == 'x86_64-apple-darwin'
-        run: |
-          brew fetch --force --bottle-tag=sonoma openssl@3
-          brew install "$(brew --cache --bottle-tag=sonoma openssl@3)" 2>/dev/null || true
-
       - name: Build release binary
-        run: |
-          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
-            export OPENSSL_DIR="$(brew --prefix openssl@3)"
-            export PKG_CONFIG_PATH="${OPENSSL_DIR}/lib/pkgconfig"
-          fi
-          cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build DMG installer
         run: bash packaging/macos/build-dmg.sh "${GITHUB_REF_NAME#v}" "${{ matrix.target }}"
