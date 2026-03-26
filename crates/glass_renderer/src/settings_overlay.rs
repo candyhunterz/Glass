@@ -7,6 +7,14 @@ use alacritty_terminal::vte::ansi::Rgb;
 
 use crate::rect_renderer::RectInstance;
 
+/// Navigation and editing state for the settings overlay.
+pub struct SettingsNavState<'a> {
+    pub section_index: usize,
+    pub field_index: usize,
+    pub editing: bool,
+    pub edit_buffer: &'a str,
+}
+
 /// Active tab in the settings overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
@@ -641,17 +649,17 @@ impl SettingsOverlayRenderer {
     }
 
     /// Build text labels for the Settings tab (sidebar + fields for selected section).
-    #[allow(clippy::too_many_arguments)]
     pub fn build_settings_text(
         &self,
         viewport_width: f32,
         viewport_height: f32,
         config: &SettingsConfigSnapshot,
-        section_index: usize,
-        field_index: usize,
-        editing: bool,
-        edit_buffer: &str,
+        nav: &SettingsNavState<'_>,
     ) -> Vec<SettingsOverlayTextLabel> {
+        let section_index = nav.section_index;
+        let field_index = nav.field_index;
+        let editing = nav.editing;
+        let edit_buffer = nav.edit_buffer;
         let mut labels = Vec::new();
         let padding = self.cell_width;
         let content_y = self.cell_height * 4.5;
@@ -1131,7 +1139,17 @@ mod tests {
     fn test_settings_text_has_sections_and_fields() {
         let renderer = SettingsOverlayRenderer::new(10.0, 20.0);
         let config = SettingsConfigSnapshot::default();
-        let labels = renderer.build_settings_text(800.0, 600.0, &config, 0, 0, false, "");
+        let labels = renderer.build_settings_text(
+            800.0,
+            600.0,
+            &config,
+            &SettingsNavState {
+                section_index: 0,
+                field_index: 0,
+                editing: false,
+                edit_buffer: "",
+            },
+        );
         let text: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
         // Sidebar sections present (prefixed with "> " or "  ")
         assert!(text
@@ -1149,7 +1167,17 @@ mod tests {
         let renderer = SettingsOverlayRenderer::new(10.0, 20.0);
         let config = SettingsConfigSnapshot::default();
         // section_index=1 is Agent Mode
-        let labels = renderer.build_settings_text(800.0, 600.0, &config, 1, 0, false, "");
+        let labels = renderer.build_settings_text(
+            800.0,
+            600.0,
+            &config,
+            &SettingsNavState {
+                section_index: 1,
+                field_index: 0,
+                editing: false,
+                edit_buffer: "",
+            },
+        );
         let text: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
         assert!(text.iter().any(|t| t.contains("Enabled")));
         assert!(text.iter().any(|t| t.contains("Mode")));

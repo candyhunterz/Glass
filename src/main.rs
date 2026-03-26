@@ -5865,9 +5865,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         scrollbar_x,
                                         vp_y,
                                         vp_h,
-                                        display_offset,
-                                        history_size,
-                                        screen_lines,
+                                        &glass_renderer::scrollbar::ScrollState {
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        },
                                     )
                                     .is_some()
                                 {
@@ -5897,9 +5899,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         scrollbar_x,
                                         grid_y_offset,
                                         pane_height,
-                                        display_offset,
-                                        history_size,
-                                        screen_lines,
+                                        &glass_renderer::scrollbar::ScrollState {
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        },
                                     )
                                     .is_some()
                                 {
@@ -6152,9 +6156,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     scrollbar_x,
                                     vp_y,
                                     vp_h,
-                                    display_offset,
-                                    history_size,
-                                    screen_lines,
+                                    &glass_renderer::scrollbar::ScrollState {
+                                        display_offset,
+                                        history_size,
+                                        screen_lines,
+                                    },
                                 ) {
                                     found = Some((
                                         *sid,
@@ -6189,9 +6195,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         scrollbar_x,
                                         grid_y_offset,
                                         pane_height,
-                                        display_offset,
-                                        history_size,
-                                        screen_lines,
+                                        &glass_renderer::scrollbar::ScrollState {
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        },
                                     )
                                     .map(|hit| {
                                         (

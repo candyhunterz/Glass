@@ -40,10 +40,12 @@ pub use proposal_toast_renderer::{
     ProposalToastRenderData, ProposalToastRenderer, ProposalToastTextLabel,
 };
 pub use rect_renderer::{RectInstance, RectRenderer};
-pub use scrollbar::{ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
+pub use scrollbar::{ScrollState, ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
 pub use search_overlay_renderer::{SearchOverlayRenderer, SearchOverlayTextLabel};
-pub use settings_overlay::{SettingsOverlayRenderData, SettingsOverlayTextLabel, SettingsTab};
-pub use status_bar::{StatusBarRenderer, StatusLabel};
+pub use settings_overlay::{
+    SettingsNavState, SettingsOverlayRenderData, SettingsOverlayTextLabel, SettingsTab,
+};
+pub use status_bar::{StatusBarAgentInfo, StatusBarRenderer, StatusLabel};
 pub use surface::GlassRenderer;
 pub use tab_bar::{TabBarRenderer, TabDisplayInfo, TabLabel};
 pub use welcome_overlay::{

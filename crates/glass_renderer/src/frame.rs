@@ -401,9 +401,11 @@ impl FrameRenderer {
                 w,
                 grid_y_offset,
                 h - grid_y_offset - status_bar_h_sb,
-                snapshot.display_offset,
-                snapshot.history_size,
-                snapshot.screen_lines,
+                &crate::scrollbar::ScrollState {
+                    display_offset: snapshot.display_offset,
+                    history_size: snapshot.history_size,
+                    screen_lines: snapshot.screen_lines,
+                },
                 scrollbar_hovered,
                 scrollbar_dragging,
             );
@@ -542,11 +544,13 @@ impl FrameRenderer {
                 status_state.cwd(),
                 status_state.git_info(),
                 update_text,
-                coordination_text,
-                agent_cost_text,
-                agent_paused,
-                agent_mode_text,
-                proposal_count_text,
+                &crate::status_bar::StatusBarAgentInfo {
+                    coordination_text,
+                    agent_cost_text,
+                    agent_paused,
+                    agent_mode_text,
+                    proposal_count_text,
+                },
                 w,
                 h,
             );
@@ -1351,9 +1355,11 @@ impl FrameRenderer {
                     (viewport.x + viewport.width) as f32,
                     viewport.y as f32,
                     viewport.height as f32,
-                    snapshot.display_offset,
-                    snapshot.history_size,
-                    snapshot.screen_lines,
+                    &crate::scrollbar::ScrollState {
+                        display_offset: snapshot.display_offset,
+                        history_size: snapshot.history_size,
+                        screen_lines: snapshot.screen_lines,
+                    },
                     sb_hovered,
                     sb_dragging,
                 );
@@ -1486,11 +1492,13 @@ impl FrameRenderer {
                 status_state.cwd(),
                 status_state.git_info(),
                 update_text,
-                coordination_text,
-                agent_cost_text,
-                agent_paused,
-                agent_mode_text,
-                proposal_count_text,
+                &crate::status_bar::StatusBarAgentInfo {
+                    coordination_text,
+                    agent_cost_text,
+                    agent_paused,
+                    agent_mode_text,
+                    proposal_count_text,
+                },
                 w,
                 h,
             );
@@ -2389,10 +2397,12 @@ impl FrameRenderer {
                     width as f32,
                     height as f32,
                     &data.config,
-                    data.section_index,
-                    data.field_index,
-                    data.editing,
-                    &data.edit_buffer,
+                    &crate::settings_overlay::SettingsNavState {
+                        section_index: data.section_index,
+                        field_index: data.field_index,
+                        editing: data.editing,
+                        edit_buffer: &data.edit_buffer,
+                    },
                 ));
             }
             crate::settings_overlay::SettingsTab::Shortcuts => {
