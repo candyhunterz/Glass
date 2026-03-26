@@ -2391,6 +2391,20 @@ impl Processor {
         self.orchestrator.instruction_buffer.clear();
         self.orchestrator.bounded_stop_pending = false;
 
+        // Restart usage poller if it died (stale data for >2 minutes means thread crashed)
+        if let Some(ref state) = self.usage_state {
+            let stale = state
+                .lock()
+                .ok()
+                .and_then(|st| st.last_poll_at)
+                .map(|t| t.elapsed().as_secs() > 120)
+                .unwrap_or(true);
+            if stale {
+                tracing::warn!("Usage tracker: polling thread appears dead, restarting");
+                self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+            }
+        }
+
         // Build agent config — mark orchestrator enabled and inject resolved mode
         // since this function is only called when the orchestrator is active at runtime
         let resolved_mode = self.orchestrator.resolved_mode.clone();

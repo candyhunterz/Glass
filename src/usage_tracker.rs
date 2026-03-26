@@ -31,6 +31,8 @@ pub struct UsageState {
     pub paused: bool,
     /// Consecutive API failures (disable display after 3).
     pub consecutive_failures: u32,
+    /// When the polling thread last completed a cycle.
+    pub last_poll_at: Option<std::time::Instant>,
 }
 
 /// Read the OAuth access token from `~/.claude/.credentials.json`.
@@ -116,6 +118,12 @@ pub fn start_polling(
             let poll_interval = Duration::from_secs(60);
 
             loop {
+                // Mark that the polling thread is alive
+                {
+                    let mut st = state_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    st.last_poll_at = Some(std::time::Instant::now());
+                }
+
                 // Read token fresh each cycle (may be refreshed by Claude Code)
                 let token = match read_oauth_token() {
                     Some(t) => t,
@@ -181,6 +189,9 @@ pub fn start_polling(
 
                 std::thread::sleep(poll_interval);
             }
+        })
+        .map_err(|e| {
+            tracing::error!("Usage tracker: failed to spawn polling thread: {e}");
         })
         .ok();
 
@@ -250,6 +261,7 @@ mod tests {
             }),
             paused: false,
             consecutive_failures: 0,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "5h: 42% | 7d: 15%");
     }
@@ -273,6 +285,7 @@ mod tests {
             }),
             paused: false,
             consecutive_failures: 3,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "5h: 50% | 7d: 10%");
     }
@@ -290,6 +303,7 @@ mod tests {
             }),
             paused: false,
             consecutive_failures: 0,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "5h: ~50% | 7d: ~10%");
     }
@@ -301,6 +315,7 @@ mod tests {
             data: None,
             paused: false,
             consecutive_failures: 3,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "");
     }
