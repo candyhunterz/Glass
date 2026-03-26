@@ -561,8 +561,8 @@ pub fn check_rules(state: &mut FeedbackState, run_state: &RunState) -> Vec<RuleA
 
 /// Return the text of all `prompt_hint` rules that are `Confirmed` or
 /// `Provisional`.  Delegates to the [`rules::RuleEngine`] stored in `state`.
-pub fn prompt_hints(state: &FeedbackState) -> Vec<String> {
-    state.engine.prompt_hints()
+pub fn prompt_hints(state: &mut FeedbackState) -> Vec<String> {
+    state.engine.prompt_hints_mut()
 }
 
 /// Apply LLM-generated findings to the project's rules file.
@@ -1234,7 +1234,7 @@ mod tests {
             rules: vec![hint_rule],
         };
 
-        let hints = prompt_hints(&state);
+        let hints = prompt_hints(&mut state);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0], "Keep PRs small");
     }

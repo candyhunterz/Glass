@@ -1015,11 +1015,12 @@ fn implementer_launch_command(config: &glass_core::config::GlassConfig) -> Strin
 fn build_system_prompt(
     config: &glass_core::agent_runtime::AgentRuntimeConfig,
     project_root: &str,
+    hints: &[String],
 ) -> String {
     let orchestrator_config = config.orchestrator.as_ref();
     let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
 
-    if orchestrator_enabled {
+    let mut prompt = if orchestrator_enabled {
         let artifact_path = orchestrator_config
             .map(|o| o.completion_artifact.as_str())
             .unwrap_or(".glass/done");
@@ -1162,7 +1163,16 @@ Session Continuity:
 - The next agent session will receive your handoff as context
 "#
         .to_string()
+    };
+
+    if !hints.is_empty() {
+        prompt.push_str("\n[FEEDBACK_HINTS]\nThese are learned insights from previous orchestrator runs. Follow them:\n");
+        for hint in hints {
+            prompt.push_str(&format!("- {}\n", hint));
+        }
     }
+
+    prompt
 }
 
 /// Parameters for spawning the Glass Agent backend.
@@ -2435,7 +2445,12 @@ impl Processor {
         // Spawn new agent with handoff as the initial stdin message.
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
         // Retry up to 2 times with a brief delay if spawn fails (process cleanup race).
-        let system_prompt = build_system_prompt(&agent_config, cwd);
+        let hints = if let Some(ref mut fs) = self.feedback_state {
+            glass_feedback::prompt_hints(fs)
+        } else {
+            vec![]
+        };
+        let system_prompt = build_system_prompt(&agent_config, cwd, &hints);
         let provider = self
             .config
             .agent
@@ -2992,7 +3007,12 @@ impl ApplicationHandler<AppEvent> for Processor {
 
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                 let cwd = self.get_focused_cwd();
-                let system_prompt = build_system_prompt(&agent_config, &cwd);
+                let hints = if let Some(ref mut fs) = self.feedback_state {
+                    glass_feedback::prompt_hints(fs)
+                } else {
+                    vec![]
+                };
+                let system_prompt = build_system_prompt(&agent_config, &cwd, &hints);
                 let provider = self
                     .config
                     .agent
@@ -7583,7 +7603,12 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                             let cwd = self.get_focused_cwd();
-                            let system_prompt = build_system_prompt(&new_agent_config, &cwd);
+                            let hints = if let Some(ref mut fs) = self.feedback_state {
+                                glass_feedback::prompt_hints(fs)
+                            } else {
+                                vec![]
+                            };
+                            let system_prompt = build_system_prompt(&new_agent_config, &cwd, &hints);
                             let provider = self
                                 .config
                                 .agent
@@ -8113,7 +8138,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
-                    let system_prompt = build_system_prompt(&config, &cwd);
+                    let hints = if let Some(ref mut fs) = self.feedback_state {
+                        glass_feedback::prompt_hints(fs)
+                    } else {
+                        vec![]
+                    };
+                    let system_prompt = build_system_prompt(&config, &cwd, &hints);
                     self.agent_generation += 1;
                     let provider = self
                         .config
