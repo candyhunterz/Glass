@@ -220,6 +220,8 @@ pub enum AppEvent {
         result: Result<EphemeralAgentResult, EphemeralAgentError>,
         purpose: EphemeralPurpose,
     },
+    /// Request a window redraw (used by orchestrator status spinner tick).
+    RedrawRequest,
 }
 
 #[cfg(test)]

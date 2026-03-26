@@ -488,6 +488,8 @@ struct Processor {
     script_gen_parse_failures: u32,
     /// Centered toast message, auto-dismisses after 5 seconds.
     centered_toast: Option<(String, std::time::Instant)>,
+    /// AtomicBool flag for the orchestrator redraw tick thread. Set to false to stop.
+    orchestrator_redraw_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Drop for AgentRuntime {
@@ -1721,6 +1723,13 @@ impl Processor {
         }
     }
 
+    /// Stop the orchestrator redraw tick thread (if running).
+    fn stop_orchestrator_redraw_tick(&mut self) {
+        if let Some(pending) = self.orchestrator_redraw_pending.take() {
+            pending.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Get the CWD of the focused session, falling back to the process CWD.
     fn get_focused_cwd(&self) -> String {
         self.windows
@@ -2144,6 +2153,7 @@ impl Processor {
         // 10. No context files found — abort activation
         if context.has_no_files() {
             self.orchestrator.active = false;
+            self.stop_orchestrator_redraw_tick();
             self.centered_toast = Some((
                 format!(
                     "Orchestrator: no context files found in {} (add PRD.md or .glass/agent-instructions.md)",
@@ -2438,6 +2448,7 @@ impl Processor {
             self.run_feedback_on_end();
             self.orchestrator.active = false;
             self.orchestrator.response_pending = false;
+            self.stop_orchestrator_redraw_tick();
             for ctx in self.windows.values_mut() {
                 ctx.mark_dirty_and_redraw();
             }
@@ -2448,6 +2459,26 @@ impl Processor {
         // Suppress silence trigger until the agent responds.
         self.orchestrator.response_pending = true;
         self.orchestrator.response_pending_since = Some(std::time::Instant::now());
+
+        // Spawn a 1-second redraw tick so the status bar spinner animates.
+        {
+            // Stop any existing tick thread first
+            self.stop_orchestrator_redraw_tick();
+            let proxy = self.proxy.clone();
+            let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            self.orchestrator_redraw_pending = Some(pending.clone());
+            std::thread::spawn(move || {
+                while pending.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    if pending.load(std::sync::atomic::Ordering::Relaxed)
+                        && proxy.send_event(AppEvent::RedrawRequest).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+
         tracing::info!(
             "Orchestrator: respawned agent gen={} for {}",
             self.agent_generation,
@@ -2687,6 +2718,7 @@ impl Processor {
             self.run_feedback_on_end();
             self.agent_runtime = None;
             self.orchestrator.active = false;
+            self.stop_orchestrator_redraw_tick();
             self.orchestrator.bounded_stop_pending = false;
             if let Some(handle) = self.artifact_watcher_thread.take() {
                 handle.thread().unpark();
@@ -7333,6 +7365,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         // Clear response_pending to prevent hang if a verify thread is in-flight
                         self.orchestrator.response_pending = false;
+                        self.stop_orchestrator_redraw_tick();
                         // Drop old runtime (triggers Drop -> kill child + deregister).
                         self.agent_runtime = None;
 
@@ -7461,6 +7494,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             self.run_feedback_on_end();
                             self.orchestrator.active = false;
+                            self.stop_orchestrator_redraw_tick();
                             tracing::info!(
                                 "Orchestrator: deactivated via config reload (settings overlay)"
                             );
@@ -7956,6 +7990,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.run_feedback_on_end();
                         self.orchestrator.active = false;
                         self.orchestrator.response_pending = false;
+                        self.stop_orchestrator_redraw_tick();
                         tracing::error!(
                             "Orchestrator: deactivated — agent crashed and could not be restarted"
                         );
@@ -8020,6 +8055,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 self.orchestrator.response_pending = false;
+                self.stop_orchestrator_redraw_tick();
 
                 // Push to orchestrator transcript
                 self.orchestrator_event_buffer.push(
@@ -8300,6 +8336,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         self.run_feedback_on_end();
                         self.orchestrator.active = false;
+                        self.stop_orchestrator_redraw_tick();
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
                             // Don't join — notify Drop on Windows blocks on I/O completion.
@@ -8351,6 +8388,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.mark_dirty_and_redraw();
                 }
             }
+            AppEvent::RedrawRequest => {
+                for ctx in self.windows.values_mut() {
+                    ctx.mark_dirty_and_redraw();
+                }
+            }
             AppEvent::OrchestratorSilence {
                 window_id,
                 session_id,
@@ -8377,6 +8419,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             "Orchestrator: response_pending timeout (>120s) — clearing to unblock"
                         );
                         self.orchestrator.response_pending = false;
+                        self.stop_orchestrator_redraw_tick();
                         self.orchestrator.response_pending_since = None;
                     } else {
                         tracing::debug!("Orchestrator: skipping context send (response pending)");
@@ -9040,6 +9083,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             } => {
                 if !self.orchestrator.active {
                     self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
                     return;
                 }
 
@@ -9310,6 +9354,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // response_pending was already set to true inside the block.
                 if !self.orchestrator.response_pending {
                     self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
                 }
 
                 // Request redraw for status bar update
@@ -9364,6 +9409,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Kill agent so resume gets fresh context
                 self.agent_runtime = None;
                 self.orchestrator.active = false;
+                self.stop_orchestrator_redraw_tick();
                 self.orchestrator.usage_paused = true;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
@@ -9387,6 +9433,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 self.run_feedback_on_end();
                 self.agent_runtime = None;
                 self.orchestrator.active = false;
+                self.stop_orchestrator_redraw_tick();
                 self.orchestrator.usage_paused = true;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
@@ -10707,6 +10754,7 @@ fn main() {
                 script_bridge,
                 script_gen_parse_failures: 0,
                 centered_toast: None,
+                orchestrator_redraw_pending: None,
             };
 
             if let Err(e) = event_loop.run_app(&mut processor) {
