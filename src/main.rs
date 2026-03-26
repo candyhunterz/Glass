@@ -8687,27 +8687,20 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         // Set response_pending before spawning background thread
                         self.orchestrator.response_pending = true;
-                        self.orchestrator.response_pending_since =
-                            Some(std::time::Instant::now());
+                        self.orchestrator.response_pending_since = Some(std::time::Instant::now());
 
                         // Start redraw tick for spinner animation before thread spawn
                         {
                             self.stop_orchestrator_redraw_tick();
                             let tick_proxy = self.proxy.clone();
-                            let pending = std::sync::Arc::new(
-                                std::sync::atomic::AtomicBool::new(true),
-                            );
+                            let pending =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
                             self.orchestrator_redraw_pending = Some(pending.clone());
                             std::thread::spawn(move || {
-                                while pending
-                                    .load(std::sync::atomic::Ordering::Relaxed)
-                                {
+                                while pending.load(std::sync::atomic::Ordering::Relaxed) {
                                     std::thread::sleep(std::time::Duration::from_secs(1));
-                                    if pending
-                                        .load(std::sync::atomic::Ordering::Relaxed)
-                                        && tick_proxy
-                                            .send_event(AppEvent::RedrawRequest)
-                                            .is_err()
+                                    if pending.load(std::sync::atomic::Ordering::Relaxed)
+                                        && tick_proxy.send_event(AppEvent::RedrawRequest).is_err()
                                     {
                                         break;
                                     }
@@ -8767,19 +8760,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let _ = std::fs::remove_file(&nudge_path);
                                 }
 
-                                let _ =
-                                    bg_proxy.send_event(AppEvent::OrchestratorContextReady {
-                                        window_id: bg_window_id,
-                                        session_id: bg_session_id,
-                                        terminal_lines: bg_lines,
-                                        exit_code: bg_exit_code,
-                                        soi_summary: bg_soi_summary,
-                                        soi_errors: bg_soi_errors,
-                                        git_diff_stat,
-                                        current_head,
-                                        nudge,
-                                        cwd: bg_cwd,
-                                    });
+                                let _ = bg_proxy.send_event(AppEvent::OrchestratorContextReady {
+                                    window_id: bg_window_id,
+                                    session_id: bg_session_id,
+                                    terminal_lines: bg_lines,
+                                    exit_code: bg_exit_code,
+                                    soi_summary: bg_soi_summary,
+                                    soi_errors: bg_soi_errors,
+                                    git_diff_stat,
+                                    current_head,
+                                    nudge,
+                                    cwd: bg_cwd,
+                                });
                             })
                             .ok();
                     }
@@ -8885,8 +8877,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 .current_block_index()
                                 .and_then(|idx| s.block_manager.blocks().get(idx))
                                 .map(|b| {
-                                    b.state
-                                        == glass_terminal::block_manager::BlockState::Executing
+                                    b.state == glass_terminal::block_manager::BlockState::Executing
                                 })
                         })
                         .unwrap_or(false)
@@ -8895,9 +8886,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 };
 
                 if block_executing {
-                    tracing::debug!(
-                        "Orchestrator: skipping verification — block still executing"
-                    );
+                    tracing::debug!("Orchestrator: skipping verification — block still executing");
                     // Don't set response_pending, let next silence trigger try again
                     self.orchestrator.response_pending = false;
                     self.stop_orchestrator_redraw_tick();
@@ -8932,7 +8921,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 #[cfg(target_os = "windows")]
                                                 {
                                                     use std::os::windows::process::CommandExt;
-                                                    c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                                                    c.creation_flags(0x08000000);
+                                                    // CREATE_NO_WINDOW
                                                 }
                                                 c
                                             } else {
@@ -8940,37 +8930,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 c.args(["-c", &cmd.cmd]);
                                                 c
                                             };
-                                            let output = proc.current_dir(&verify_cwd)
-                                                    .output();
+                                            let output = proc.current_dir(&verify_cwd).output();
                                             match output {
                                                 Ok(o) => {
-                                                    let stdout =
-                                                        String::from_utf8_lossy(&o.stdout)
-                                                            .to_string();
-                                                    let stderr =
-                                                        String::from_utf8_lossy(&o.stderr)
-                                                            .to_string();
-                                                    let combined =
-                                                        format!("{stdout}\n{stderr}");
+                                                    let stdout = String::from_utf8_lossy(&o.stdout)
+                                                        .to_string();
+                                                    let stderr = String::from_utf8_lossy(&o.stderr)
+                                                        .to_string();
+                                                    let combined = format!("{stdout}\n{stderr}");
                                                     let (passed, failed) =
-                                                        parse_test_counts_from_output(
-                                                            &combined,
-                                                        );
-                                                    let exit_code =
-                                                        o.status.code().unwrap_or(-1);
+                                                        parse_test_counts_from_output(&combined);
+                                                    let exit_code = o.status.code().unwrap_or(-1);
                                                     // If exit code is non-zero but parser
                                                     // found no test counts, it's a build
                                                     // failure — report 0/0 so the metric
                                                     // guard display isn't "? / ?".
-                                                    let (passed, failed) =
-                                                        if exit_code != 0
-                                                            && passed.is_none()
-                                                            && failed.is_none()
-                                                        {
-                                                            (Some(0), Some(0))
-                                                        } else {
-                                                            (passed, failed)
-                                                        };
+                                                    let (passed, failed) = if exit_code != 0
+                                                        && passed.is_none()
+                                                        && failed.is_none()
+                                                    {
+                                                        (Some(0), Some(0))
+                                                    } else {
+                                                        (passed, failed)
+                                                    };
                                                     VerifyEventResult {
                                                         command_name: cmd.name.clone(),
                                                         exit_code,
@@ -9002,9 +8984,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     Some(self.orchestrator.iteration);
                                 return;
                             } else {
-                                tracing::warn!(
-                                    "Orchestrator: failed to spawn verify thread"
-                                );
+                                tracing::warn!("Orchestrator: failed to spawn verify thread");
                             }
                         }
                     }
@@ -9077,15 +9057,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     } else {
                         // Type block message directly into PTY
                         if let Some(ctx_ref) = self.windows.get(&window_id) {
-                            if let Some(session_ref) =
-                                ctx_ref.session_mux.session(session_id)
-                            {
+                            if let Some(session_ref) = ctx_ref.session_mux.session(session_id) {
                                 let msg = format!("STOP current task. {}\r", block_msg);
                                 pty_send(
                                     &session_ref.pty_sender,
-                                    PtyMsg::Input(std::borrow::Cow::Owned(
-                                        msg.into_bytes(),
-                                    )),
+                                    PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
                                 );
                                 self.orchestrator.mark_pty_write();
                             }
@@ -9110,10 +9086,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             self.orchestrator
                                 .metric_baseline
                                 .as_ref()
-                                .map(|m| {
-                                    m.revert_count as f64
-                                        / self.orchestrator.iteration as f64
-                                })
+                                .map(|m| m.revert_count as f64 / self.orchestrator.iteration as f64)
                                 .unwrap_or(0.0)
                         } else {
                             0.0
@@ -9130,17 +9103,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                         } else {
                             0.0
                         },
-                        recent_reverted_files: self
-                            .orchestrator
-                            .feedback_reverted_files
-                            .clone(),
+                        recent_reverted_files: self.orchestrator.feedback_reverted_files.clone(),
                         verify_alternations: self
                             .orchestrator
                             .feedback_verify_sequence
                             .windows(2)
                             .filter(|w| w[0] != w[1])
-                            .count()
-                            as u32,
+                            .count() as u32,
                     };
                     let actions = glass_feedback::check_rules(feedback_state, &run_state);
                     for action in &actions {
@@ -9183,12 +9152,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         None
                                                     }
                                                 });
-                                            self.orchestrator
-                                                .iterations_since_last_commit = 0;
+                                            self.orchestrator.iterations_since_last_commit = 0;
                                             self.orchestrator.feedback_commit_count += 1;
-                                            tracing::info!(
-                                                "Enforcement: force-committed changes"
-                                            );
+                                            tracing::info!("Enforcement: force-committed changes");
                                         }
                                     }
                                 }
@@ -9197,17 +9163,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 // Check if file appears in git diff
                                 let in_diff = git_diff
                                     .as_deref()
-                                    .map(|d| {
-                                        parse_diff_stat_files(d).iter().any(|f| f == file)
-                                    })
+                                    .map(|d| parse_diff_stat_files(d).iter().any(|f| f == file))
                                     .unwrap_or(false);
                                 if in_diff {
-                                    let _ = git_cmd()
-                                        .args(["add", file])
-                                        .current_dir(&cwd)
-                                        .output();
-                                    let msg =
-                                        format!("checkpoint: isolate-commit {}", file);
+                                    let _ =
+                                        git_cmd().args(["add", file]).current_dir(&cwd).output();
+                                    let msg = format!("checkpoint: isolate-commit {}", file);
                                     let result = git_cmd()
                                         .args(["commit", "-m", &msg])
                                         .current_dir(&cwd)
@@ -9228,8 +9189,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         None
                                                     }
                                                 });
-                                            self.orchestrator
-                                                .iterations_since_last_commit = 0;
+                                            self.orchestrator.iterations_since_last_commit = 0;
                                             tracing::info!(
                                                 "Enforcement: isolate-committed {}",
                                                 file
@@ -9249,9 +9209,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     let out_of_scope: Vec<String> = diff_files
                                         .iter()
                                         .filter(|f| {
-                                            !deliverables.iter().any(|d| {
-                                                f.contains(d) || d.contains(f.as_str())
-                                            })
+                                            !deliverables
+                                                .iter()
+                                                .any(|d| f.contains(d) || d.contains(f.as_str()))
                                         })
                                         .cloned()
                                         .collect();
@@ -9276,10 +9236,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             glass_feedback::RuleAction::BlockUntilResolved { message } => {
                                 self.orchestrator.dependency_block = Some(message.clone());
                                 self.orchestrator.dependency_block_iterations = 0;
-                                tracing::info!(
-                                    "Enforcement: dependency block set — {}",
-                                    message
-                                );
+                                tracing::info!("Enforcement: dependency block set — {}", message);
                             }
                             glass_feedback::RuleAction::SplitInstructions => {
                                 // Handled in OrchestratorResponse handler
@@ -9469,9 +9426,8 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         if regressed {
                             // Check if implementer is still executing before reverting
-                            let block_executing =
-                                if let Some(ctx) = self.windows.values().next() {
-                                    ctx.session_mux
+                            let block_executing = if let Some(ctx) = self.windows.values().next() {
+                                ctx.session_mux
                                         .focused_session()
                                         .and_then(|s| {
                                             s.block_manager
@@ -9485,12 +9441,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                 })
                                         })
                                         .unwrap_or(false)
-                                } else {
-                                    false
-                                };
+                            } else {
+                                false
+                            };
 
                             if block_executing {
-                                tracing::warn!("Metric guard: skipping revert — implementer still executing");
+                                tracing::warn!(
+                                    "Metric guard: skipping revert — implementer still executing"
+                                );
                                 // Skip revert, next verification cycle will catch if regression persists
                             } else {
                                 // Revert via git
@@ -10001,36 +9959,39 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     "tab_send" => {
                         if let Some(ctx) = self.windows.values_mut().next() {
-                            let response = match resolve_tab_index(&ctx.session_mux, &request.params) {
-                                Ok(tab_idx) => {
-                                    let command = request
-                                        .params
-                                        .get("command")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
-                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
-                                        let input = format!("{}\r", command).into_bytes();
-                                        pty_send(
-                                            &session.pty_sender,
-                                            PtyMsg::Input(Cow::Owned(input)),
-                                        );
-                                        glass_core::ipc::McpResponse::ok(
-                                            request.id,
-                                            serde_json::json!({
-                                                "sent": true,
-                                                "session_id": focused_sid.val(),
-                                            }),
-                                        )
-                                    } else {
-                                        glass_core::ipc::McpResponse::err(
-                                            request.id,
-                                            format!("Session {} not found", focused_sid.val()),
-                                        )
+                            let response =
+                                match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                    Ok(tab_idx) => {
+                                        let command = request
+                                            .params
+                                            .get("command")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let focused_sid =
+                                            ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                        if let Some(session) = ctx.session_mux.session(focused_sid)
+                                        {
+                                            let input = format!("{}\r", command).into_bytes();
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(Cow::Owned(input)),
+                                            );
+                                            glass_core::ipc::McpResponse::ok(
+                                                request.id,
+                                                serde_json::json!({
+                                                    "sent": true,
+                                                    "session_id": focused_sid.val(),
+                                                }),
+                                            )
+                                        } else {
+                                            glass_core::ipc::McpResponse::err(
+                                                request.id,
+                                                format!("Session {} not found", focused_sid.val()),
+                                            )
+                                        }
                                     }
-                                }
-                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
-                            };
+                                    Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                                };
                             ctx.mark_dirty_and_redraw();
                             response
                         } else {
@@ -10205,41 +10166,46 @@ impl ApplicationHandler<AppEvent> for Processor {
                     }
                     "cancel_command" => {
                         if let Some(ctx) = self.windows.values_mut().next() {
-                            let response = match resolve_tab_index(&ctx.session_mux, &request.params) {
-                                Ok(tab_idx) => {
-                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
-                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
-                                        let was_running = session
-                                            .block_manager
-                                            .current_block_index()
-                                            .and_then(|idx| session.block_manager.blocks().get(idx))
-                                            .map(|b| {
-                                                b.state == glass_terminal::BlockState::Executing
-                                            })
-                                            .unwrap_or(false);
-                                        // Send ETX byte (Ctrl+C) to PTY
-                                        let input = vec![0x03u8];
-                                        pty_send(
-                                            &session.pty_sender,
-                                            PtyMsg::Input(Cow::Owned(input)),
-                                        );
-                                        glass_core::ipc::McpResponse::ok(
-                                            request.id,
-                                            serde_json::json!({
-                                                "signal_sent": true,
-                                                "was_running": was_running,
-                                                "session_id": focused_sid.val(),
-                                            }),
-                                        )
-                                    } else {
-                                        glass_core::ipc::McpResponse::err(
-                                            request.id,
-                                            format!("Session {} not found", focused_sid.val()),
-                                        )
+                            let response =
+                                match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                    Ok(tab_idx) => {
+                                        let focused_sid =
+                                            ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                        if let Some(session) = ctx.session_mux.session(focused_sid)
+                                        {
+                                            let was_running = session
+                                                .block_manager
+                                                .current_block_index()
+                                                .and_then(|idx| {
+                                                    session.block_manager.blocks().get(idx)
+                                                })
+                                                .map(|b| {
+                                                    b.state == glass_terminal::BlockState::Executing
+                                                })
+                                                .unwrap_or(false);
+                                            // Send ETX byte (Ctrl+C) to PTY
+                                            let input = vec![0x03u8];
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(Cow::Owned(input)),
+                                            );
+                                            glass_core::ipc::McpResponse::ok(
+                                                request.id,
+                                                serde_json::json!({
+                                                    "signal_sent": true,
+                                                    "was_running": was_running,
+                                                    "session_id": focused_sid.val(),
+                                                }),
+                                            )
+                                        } else {
+                                            glass_core::ipc::McpResponse::err(
+                                                request.id,
+                                                format!("Session {} not found", focused_sid.val()),
+                                            )
+                                        }
                                     }
-                                }
-                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
-                            };
+                                    Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                                };
                             ctx.mark_dirty_and_redraw();
                             response
                         } else {

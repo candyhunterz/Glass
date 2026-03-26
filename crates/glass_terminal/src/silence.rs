@@ -261,7 +261,10 @@ mod tests {
         trigger.set_min_output_bytes(256);
         trigger.on_output_bytes(b"short");
         thread::sleep(Duration::from_millis(1100));
-        assert!(!trigger.should_fire(), "fast trigger should not fire below min_output_bytes");
+        assert!(
+            !trigger.should_fire(),
+            "fast trigger should not fire below min_output_bytes"
+        );
     }
 
     #[test]
@@ -271,7 +274,10 @@ mod tests {
         let big_output = vec![b'x'; 300];
         trigger.on_output_bytes(&big_output);
         thread::sleep(Duration::from_millis(1100));
-        assert!(trigger.should_fire(), "fast trigger should fire above min_output_bytes");
+        assert!(
+            trigger.should_fire(),
+            "fast trigger should fire above min_output_bytes"
+        );
     }
 
     #[test]
@@ -282,6 +288,9 @@ mod tests {
             trigger.on_output_bytes(b"1234567890");
         }
         thread::sleep(Duration::from_millis(1100));
-        assert!(trigger.should_fire(), "accumulated output should arm fast trigger");
+        assert!(
+            trigger.should_fire(),
+            "accumulated output should arm fast trigger"
+        );
     }
 }
