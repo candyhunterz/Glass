@@ -467,8 +467,7 @@ struct Processor {
     /// (via `JobObjectHandle`'s `Drop` impl), which triggers kill-on-close
     /// for all processes in the job.
     #[cfg(target_os = "windows")]
-    #[allow(dead_code)]
-    job_object_handle: Option<JobObjectHandle>,
+    _job_object_handle: Option<JobObjectHandle>,
     /// Thread handle for the artifact completion watcher (if active).
     artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
     /// Feedback loop state for the current orchestrator run.
@@ -10884,7 +10883,7 @@ fn main() {
                 proposal_review_selected: 0,
                 proposal_diff_cache: None,
                 #[cfg(target_os = "windows")]
-                job_object_handle,
+                _job_object_handle: job_object_handle,
                 artifact_watcher_thread: None,
                 feedback_state: None,
                 feedback_write_pending: false,
