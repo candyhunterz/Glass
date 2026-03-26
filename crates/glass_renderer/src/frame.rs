@@ -426,24 +426,24 @@ impl FrameRenderer {
 
         // 1d2. Proposal overlay rects (full-screen backdrop + panel) -- drawn before pipeline
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_rects = overlay_renderer.build_overlay_rects(w, h, overlay_data);
             rect_instances.extend(overlay_rects);
         }
 
         // 1d3. Proposal toast rect (above status bar, right-aligned)
         if let Some(_toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_rects = toast_renderer.build_toast_rects(w, h);
             rect_instances.extend(toast_rects);
         }
 
         // 1d4. Onboarding toast rect (above status bar, right-aligned)
         if let Some(_onb_toast) = onboarding_toast {
-            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
-            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
             let onb_rects = onb_renderer.build_toast_rects(w, h);
             rect_instances.extend(onb_rects);
         }
@@ -957,8 +957,8 @@ impl FrameRenderer {
 
         // Proposal overlay text buffers
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_labels = overlay_renderer.build_overlay_text(w, h, overlay_data);
             for label in &overlay_labels {
                 let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
@@ -980,8 +980,8 @@ impl FrameRenderer {
 
         // Proposal toast text buffers
         if let Some(toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
             for label in &toast_labels {
                 let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
@@ -1003,8 +1003,8 @@ impl FrameRenderer {
 
         // Onboarding toast text buffers
         if let Some(onb_data) = onboarding_toast {
-            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
-            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
             let onb_labels = onb_renderer.build_toast_text(onb_data, w, h);
             for label in &onb_labels {
                 let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
@@ -1395,24 +1395,24 @@ impl FrameRenderer {
 
         // Proposal overlay rects (window-global, rendered once after all panes)
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_rects = overlay_renderer.build_overlay_rects(w, h, overlay_data);
             rect_instances.extend(overlay_rects);
         }
 
         // Proposal toast rect (window-global, above status bar)
         if let Some(_toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_rects = toast_renderer.build_toast_rects(w, h);
             rect_instances.extend(toast_rects);
         }
 
         // Onboarding toast rect (window-global, above status bar)
         if let Some(_onb_toast) = onboarding_toast {
-            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
-            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
             let onb_rects = onb_renderer.build_toast_rects(w, h);
             rect_instances.extend(onb_rects);
         }
@@ -1873,8 +1873,8 @@ impl FrameRenderer {
 
         // Proposal overlay text buffers (window-global, after tab bar)
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_labels = overlay_renderer.build_overlay_text(w, h, overlay_data);
             for label in &overlay_labels {
                 let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
@@ -1896,8 +1896,8 @@ impl FrameRenderer {
 
         // Proposal toast text buffers (window-global, after tab bar)
         if let Some(toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
             for label in &toast_labels {
                 let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
@@ -1919,8 +1919,8 @@ impl FrameRenderer {
 
         // Onboarding toast text buffers (window-global, after tab bar)
         if let Some(onb_data) = onboarding_toast {
-            let (cell_w_ot, cell_h_ot) = self.grid_renderer.cell_size();
-            let onb_renderer = OnboardingToastRenderer::new(cell_w_ot, cell_h_ot);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
             let onb_labels = onb_renderer.build_toast_text(onb_data, w, h);
             for label in &onb_labels {
                 let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
