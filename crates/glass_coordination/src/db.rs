@@ -222,14 +222,16 @@ impl CoordinationDb {
         )?;
         crate::event_log::insert_event(
             &tx,
-            &canonical_project,
-            "agent",
-            Some(&id),
-            Some(name),
-            "registered",
-            &format!("{} registered project: {}", name, project),
-            None,
-            false,
+            &crate::event_log::InsertEventData {
+                project: &canonical_project,
+                category: "agent",
+                agent_id: Some(&id),
+                agent_name: Some(name),
+                event_type: "registered",
+                summary: &format!("{} registered project: {}", name, project),
+                detail: None,
+                pinned: false,
+            },
         )?;
         tx.commit()?;
 
@@ -259,14 +261,16 @@ impl CoordinationDb {
         if let Some((name, project)) = &info {
             crate::event_log::insert_event(
                 &tx,
-                project,
-                "agent",
-                Some(agent_id),
-                Some(name),
-                "deregistered",
-                &format!("{} deregistered", name),
-                None,
-                false,
+                &crate::event_log::InsertEventData {
+                    project,
+                    category: "agent",
+                    agent_id: Some(agent_id),
+                    agent_name: Some(name),
+                    event_type: "deregistered",
+                    summary: &format!("{} deregistered", name),
+                    detail: None,
+                    pinned: false,
+                },
             )?;
         }
 
@@ -324,28 +328,32 @@ impl CoordinationDb {
             if old_status != status {
                 crate::event_log::insert_event(
                     &tx,
-                    project,
-                    "agent",
-                    Some(agent_id),
-                    Some(name),
-                    "status_changed",
-                    &format!("{} status {} -> {}", name, old_status, status),
-                    None,
-                    false,
+                    &crate::event_log::InsertEventData {
+                        project,
+                        category: "agent",
+                        agent_id: Some(agent_id),
+                        agent_name: Some(name),
+                        event_type: "status_changed",
+                        summary: &format!("{} status {} -> {}", name, old_status, status),
+                        detail: None,
+                        pinned: false,
+                    },
                 )?;
             }
             if old_task.as_deref() != task {
                 if let Some(new_task) = task {
                     crate::event_log::insert_event(
                         &tx,
-                        project,
-                        "agent",
-                        Some(agent_id),
-                        Some(name),
-                        "task_changed",
-                        &format!("{} task: {}", name, new_task),
-                        None,
-                        false,
+                        &crate::event_log::InsertEventData {
+                            project,
+                            category: "agent",
+                            agent_id: Some(agent_id),
+                            agent_name: Some(name),
+                            event_type: "task_changed",
+                            summary: &format!("{} task: {}", name, new_task),
+                            detail: None,
+                            pinned: false,
+                        },
                     )?;
                 }
             }
@@ -479,17 +487,19 @@ impl CoordinationDb {
             for conflict in &conflicts {
                 crate::event_log::insert_event(
                     &tx,
-                    &project,
-                    "lock",
-                    Some(agent_id),
-                    Some(&agent_name),
-                    "conflict",
-                    &format!(
-                        "{} conflict {} (held by {})",
-                        agent_name, conflict.path, conflict.held_by_agent_name
-                    ),
-                    None,
-                    true, // pinned
+                    &crate::event_log::InsertEventData {
+                        project: &project,
+                        category: "lock",
+                        agent_id: Some(agent_id),
+                        agent_name: Some(&agent_name),
+                        event_type: "conflict",
+                        summary: &format!(
+                            "{} conflict {} (held by {})",
+                            agent_name, conflict.path, conflict.held_by_agent_name
+                        ),
+                        detail: None,
+                        pinned: true, // pinned
+                    },
                 )?;
             }
 
@@ -536,27 +546,31 @@ impl CoordinationDb {
         if canonical_paths.len() == 1 {
             crate::event_log::insert_event(
                 &tx,
-                &project,
-                "lock",
-                Some(agent_id),
-                Some(&agent_name),
-                "acquired",
-                &format!("{} locked {}", agent_name, &canonical_paths[0]),
-                None,
-                false,
+                &crate::event_log::InsertEventData {
+                    project: &project,
+                    category: "lock",
+                    agent_id: Some(agent_id),
+                    agent_name: Some(&agent_name),
+                    event_type: "acquired",
+                    summary: &format!("{} locked {}", agent_name, &canonical_paths[0]),
+                    detail: None,
+                    pinned: false,
+                },
             )?;
         } else {
             let files_list = canonical_paths.join(", ");
             crate::event_log::insert_event(
                 &tx,
-                &project,
-                "lock",
-                Some(agent_id),
-                Some(&agent_name),
-                "acquired",
-                &format!("{} locked {} files", agent_name, canonical_paths.len()),
-                Some(&files_list),
-                false,
+                &crate::event_log::InsertEventData {
+                    project: &project,
+                    category: "lock",
+                    agent_id: Some(agent_id),
+                    agent_name: Some(&agent_name),
+                    event_type: "acquired",
+                    summary: &format!("{} locked {} files", agent_name, canonical_paths.len()),
+                    detail: Some(&files_list),
+                    pinned: false,
+                },
             )?;
         }
 
@@ -594,14 +608,16 @@ impl CoordinationDb {
             if let Some((name, project)) = info {
                 crate::event_log::insert_event(
                     &tx,
-                    &project,
-                    "lock",
-                    Some(agent_id),
-                    Some(&name),
-                    "released",
-                    &format!("{} unlocked {}", name, canonical),
-                    None,
-                    false,
+                    &crate::event_log::InsertEventData {
+                        project: &project,
+                        category: "lock",
+                        agent_id: Some(agent_id),
+                        agent_name: Some(&name),
+                        event_type: "released",
+                        summary: &format!("{} unlocked {}", name, canonical),
+                        detail: None,
+                        pinned: false,
+                    },
                 )?;
             }
         }
@@ -632,14 +648,16 @@ impl CoordinationDb {
             if let Some((name, project)) = info {
                 crate::event_log::insert_event(
                     &tx,
-                    &project,
-                    "lock",
-                    Some(agent_id),
-                    Some(&name),
-                    "released",
-                    &format!("{} unlocked {} files", name, rows),
-                    None,
-                    false,
+                    &crate::event_log::InsertEventData {
+                        project: &project,
+                        category: "lock",
+                        agent_id: Some(agent_id),
+                        agent_name: Some(&name),
+                        event_type: "released",
+                        summary: &format!("{} unlocked {} files", name, rows),
+                        detail: None,
+                        pinned: false,
+                    },
                 )?;
             }
         }
@@ -755,18 +773,20 @@ impl CoordinationDb {
             .unwrap_or_else(|_| "unknown".to_string());
         crate::event_log::insert_event(
             &tx,
-            &canonical_project,
-            "message",
-            Some(from_agent_id),
-            Some(&sender_name),
-            "broadcast",
-            &format!(
-                "{} broadcast: {}",
-                sender_name,
-                &content[..content.len().min(80)]
-            ),
-            Some(content),
-            false,
+            &crate::event_log::InsertEventData {
+                project: &canonical_project,
+                category: "message",
+                agent_id: Some(from_agent_id),
+                agent_name: Some(&sender_name),
+                event_type: "broadcast",
+                summary: &format!(
+                    "{} broadcast: {}",
+                    sender_name,
+                    &content[..content.len().min(80)]
+                ),
+                detail: Some(content),
+                pinned: false,
+            },
         )?;
 
         tx.commit()?;
@@ -827,14 +847,16 @@ impl CoordinationDb {
             };
             crate::event_log::insert_event(
                 &tx,
-                &project,
-                "message",
-                Some(from_agent_id),
-                Some(&name),
-                evt_type,
-                &format!("{} {} -> {}", name, msg_type, to_agent_id),
-                Some(content),
-                false,
+                &crate::event_log::InsertEventData {
+                    project: &project,
+                    category: "message",
+                    agent_id: Some(from_agent_id),
+                    agent_name: Some(&name),
+                    event_type: evt_type,
+                    summary: &format!("{} {} -> {}", name, msg_type, to_agent_id),
+                    detail: Some(content),
+                    pinned: false,
+                },
             )?;
         }
 

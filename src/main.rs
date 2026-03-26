@@ -10587,14 +10587,16 @@ fn emit_observe_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
     if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
         let _ = glass_coordination::event_log::insert_event(
             db.conn(),
-            &project,
-            "observe",
-            None,
-            Some("agent-mode"),
-            event_type,
-            summary,
-            None,
-            false,
+            &glass_coordination::event_log::InsertEventData {
+                project: &project,
+                category: "observe",
+                agent_id: None,
+                agent_name: Some("agent-mode"),
+                event_type,
+                summary,
+                detail: None,
+                pinned: false,
+            },
         );
     }
 }
@@ -10609,14 +10611,16 @@ fn emit_command_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
     if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
         let _ = glass_coordination::event_log::insert_event(
             db.conn(),
-            &project,
-            "command",
-            None,
-            None,
-            event_type,
-            summary,
-            None,
-            false,
+            &glass_coordination::event_log::InsertEventData {
+                project: &project,
+                category: "command",
+                agent_id: None,
+                agent_name: None,
+                event_type,
+                summary,
+                detail: None,
+                pinned: false,
+            },
         );
     }
 }
