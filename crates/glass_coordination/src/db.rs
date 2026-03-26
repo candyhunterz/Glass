@@ -40,7 +40,10 @@ impl CoordinationDb {
         {
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-                tracing::warn!("Failed to set DB file permissions on {}: {e}", path.display());
+                tracing::warn!(
+                    "Failed to set DB file permissions on {}: {e}",
+                    path.display()
+                );
             }
         }
         let pragma_result = conn.execute_batch(

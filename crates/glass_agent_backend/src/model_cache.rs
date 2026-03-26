@@ -106,9 +106,7 @@ fn cache_file_path(provider: &str) -> Option<std::path::PathBuf> {
 fn read_fresh_cache(path: &std::path::Path) -> Option<Vec<CachedModel>> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
-    let age = std::time::SystemTime::now()
-        .duration_since(modified)
-        .ok()?;
+    let age = std::time::SystemTime::now().duration_since(modified).ok()?;
 
     if age.as_secs() >= 24 * 3600 {
         return None; // Cache is stale.
@@ -131,7 +129,11 @@ fn write_cache(path: &std::path::Path, models: &[CachedModel]) {
     match serde_json::to_string(models) {
         Ok(json) => {
             if let Err(e) = std::fs::write(path, json) {
-                tracing::warn!("model_cache: failed to write cache file {}: {}", path.display(), e);
+                tracing::warn!(
+                    "model_cache: failed to write cache file {}: {}",
+                    path.display(),
+                    e
+                );
             }
         }
         Err(e) => {
@@ -178,24 +180,22 @@ pub fn fetch_models(provider: &str, endpoint: &str, api_key: &str) -> Vec<Cached
         .call();
 
     match response {
-        Ok(mut resp) => {
-            match resp.body_mut().read_to_string() {
-                Ok(body) => {
-                    let models = parse_model_list(provider, &body);
-                    write_cache(&cache_path, &models);
-                    tracing::info!(
-                        "model_cache: fetched {} models for provider '{}'",
-                        models.len(),
-                        provider
-                    );
-                    models
-                }
-                Err(e) => {
-                    tracing::warn!("model_cache: failed to read response body: {}", e);
-                    read_stale_cache(&cache_path)
-                }
+        Ok(mut resp) => match resp.body_mut().read_to_string() {
+            Ok(body) => {
+                let models = parse_model_list(provider, &body);
+                write_cache(&cache_path, &models);
+                tracing::info!(
+                    "model_cache: fetched {} models for provider '{}'",
+                    models.len(),
+                    provider
+                );
+                models
             }
-        }
+            Err(e) => {
+                tracing::warn!("model_cache: failed to read response body: {}", e);
+                read_stale_cache(&cache_path)
+            }
+        },
         Err(e) => {
             tracing::warn!("model_cache: HTTP request to {} failed: {}", url, e);
             read_stale_cache(&cache_path)
@@ -215,10 +215,7 @@ mod tests {
         assert_eq!(friendly_model_name("gpt-4o-mini"), "GPT-4o mini");
         assert_eq!(friendly_model_name("o3"), "o3");
         assert_eq!(friendly_model_name("o3-mini"), "o3 mini");
-        assert_eq!(
-            friendly_model_name("claude-3-opus-20240229"),
-            "Claude Opus"
-        );
+        assert_eq!(friendly_model_name("claude-3-opus-20240229"), "Claude Opus");
         assert_eq!(
             friendly_model_name("claude-3-5-sonnet-20241022"),
             "Claude Sonnet"
@@ -258,7 +255,10 @@ mod tests {
         // Only chat-capable models should be returned.
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"gpt-4o"), "gpt-4o should be included");
-        assert!(ids.contains(&"gpt-4o-mini"), "gpt-4o-mini should be included");
+        assert!(
+            ids.contains(&"gpt-4o-mini"),
+            "gpt-4o-mini should be included"
+        );
         assert!(ids.contains(&"o3"), "o3 should be included");
 
         // Non-chat models must be excluded.

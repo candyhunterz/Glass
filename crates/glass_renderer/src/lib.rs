@@ -7,6 +7,7 @@ pub mod conflict_overlay;
 pub mod frame;
 pub mod glyph_cache;
 pub mod grid_renderer;
+pub mod onboarding_toast_renderer;
 pub mod proposal_overlay_renderer;
 pub mod proposal_toast_renderer;
 pub mod rect_renderer;
@@ -16,6 +17,7 @@ pub mod settings_overlay;
 pub mod status_bar;
 pub mod surface;
 pub mod tab_bar;
+mod welcome_overlay;
 
 pub use activity_overlay::{
     ActivityOverlayRenderData, ActivityOverlayRenderer, ActivityOverlayTextLabel,
@@ -28,6 +30,9 @@ pub use conflict_overlay::{ConflictOverlay, ConflictTextLabel};
 pub use frame::{DividerRect, FrameRenderer, PaneViewport};
 pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;
+pub use onboarding_toast_renderer::{
+    OnboardingToastRenderData, OnboardingToastRenderer, OnboardingToastTextLabel,
+};
 pub use proposal_overlay_renderer::{
     ProposalOverlayRenderData, ProposalOverlayRenderer, ProposalOverlayTextLabel,
 };
@@ -41,6 +46,9 @@ pub use settings_overlay::{SettingsOverlayRenderData, SettingsOverlayTextLabel, 
 pub use status_bar::{StatusBarRenderer, StatusLabel};
 pub use surface::GlassRenderer;
 pub use tab_bar::{TabBarRenderer, TabDisplayInfo, TabLabel};
+pub use welcome_overlay::{
+    WelcomeOverlayRenderData, WelcomeOverlayRenderer, WelcomeOverlayTextLabel, WelcomeStep,
+};
 
 /// Re-export FontSystem for parallel init in main.
 pub use glyphon::FontSystem;

@@ -64,7 +64,10 @@ pub(crate) fn parse_ollama_line(line: &str) -> Option<OllamaChunk> {
             .filter_map(|tc| {
                 let func = tc.get("function")?;
                 let name = func.get("name")?.as_str()?.to_owned();
-                let arguments = func.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                let arguments = func
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
                 Some(OllamaToolCall { name, arguments })
             })
             .collect();
@@ -521,7 +524,8 @@ mod tests {
 
     #[test]
     fn parse_text_delta() {
-        let line = r#"{"model":"llama3","message":{"role":"assistant","content":"Hi"},"done":false}"#;
+        let line =
+            r#"{"model":"llama3","message":{"role":"assistant","content":"Hi"},"done":false}"#;
         match parse_ollama_line(line) {
             Some(OllamaChunk::TextDelta(text)) => assert_eq!(text, "Hi"),
             other => panic!("expected TextDelta, got {other:?}"),

@@ -768,24 +768,43 @@ fn is_valid_config_field(section: Option<&str>, key: &str) -> bool {
         None => matches!(key, "font_size" | "font_family" | "shell"),
         Some("agent") => matches!(
             key,
-            "mode" | "allowed_tools" | "max_budget_usd" | "cooldown_secs"
-                | "provider" | "model" | "api_key" | "api_endpoint"
+            "mode"
+                | "allowed_tools"
+                | "max_budget_usd"
+                | "cooldown_secs"
+                | "provider"
+                | "model"
+                | "api_key"
+                | "api_endpoint"
         ),
         Some("agent.orchestrator") => matches!(
             key,
-            "enabled" | "silence_timeout_secs" | "fast_trigger_secs"
-                | "prd_path" | "checkpoint_path" | "checkpoint_interval"
-                | "max_iterations" | "max_retries_before_stuck"
-                | "orchestrator_mode" | "verify_mode" | "verify_command"
-                | "verify_files" | "completion_artifact"
-                | "feedback_llm" | "max_prompt_hints"
-                | "ablation_enabled" | "ablation_sweep_interval"
-                | "agent_prompt_pattern" | "agent_instructions"
-                | "implementer" | "implementer_command" | "implementer_name"
+            "enabled"
+                | "silence_timeout_secs"
+                | "fast_trigger_secs"
+                | "prd_path"
+                | "checkpoint_path"
+                | "checkpoint_interval"
+                | "max_iterations"
+                | "max_retries_before_stuck"
+                | "orchestrator_mode"
+                | "verify_mode"
+                | "verify_command"
+                | "verify_files"
+                | "completion_artifact"
+                | "feedback_llm"
+                | "max_prompt_hints"
+                | "ablation_enabled"
+                | "ablation_sweep_interval"
+                | "agent_prompt_pattern"
+                | "agent_instructions"
+                | "implementer"
+                | "implementer_command"
+                | "implementer_name"
                 | "persona"
         ),
         Some("agent.orchestrator.quiet_rules") | Some("agent.quiet_rules") => true, // dynamic keys
-        Some("agent.permissions") => true, // dynamic keys
+        Some("agent.permissions") => true,                                          // dynamic keys
         Some("soi") => matches!(key, "enabled" | "shell_summary" | "format" | "min_lines"),
         Some("pipes") => matches!(key, "enabled" | "max_capture_mb" | "auto_expand"),
         Some("history") => matches!(key, "max_output_capture_kb"),
@@ -795,9 +814,13 @@ fn is_valid_config_field(section: Option<&str>, key: &str) -> bool {
         ),
         Some("scripting") => matches!(
             key,
-            "enabled" | "max_operations" | "max_timeout_ms"
-                | "max_scripts_per_hook" | "max_total_scripts"
-                | "max_mcp_tools" | "script_generation"
+            "enabled"
+                | "max_operations"
+                | "max_timeout_ms"
+                | "max_scripts_per_hook"
+                | "max_total_scripts"
+                | "max_mcp_tools"
+                | "script_generation"
         ),
         Some("terminal") => matches!(key, "scrollback"),
         Some("theme") => true, // dynamic color keys

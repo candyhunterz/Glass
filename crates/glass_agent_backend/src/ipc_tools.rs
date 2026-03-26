@@ -119,8 +119,7 @@ fn connect() -> Result<Stream, String> {
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".glass")
         .join("glass.sock");
-    std::os::unix::net::UnixStream::connect(&path)
-        .map_err(|e| format!("{}: {}", path.display(), e))
+    std::os::unix::net::UnixStream::connect(&path).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
 /// Connect to the Glass GUI's IPC listener.

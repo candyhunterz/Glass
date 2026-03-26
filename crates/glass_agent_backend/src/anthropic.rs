@@ -546,11 +546,14 @@ fn do_turn(
             if continuations_remaining > 0 {
                 continuations_remaining -= 1;
                 tracing::info!("AnthropicBackend: response truncated at max_tokens, requesting continuation ({} remaining)", continuations_remaining);
-                messages.push(serde_json::json!({"role": "assistant", "content": accumulated_text}));
+                messages
+                    .push(serde_json::json!({"role": "assistant", "content": accumulated_text}));
                 messages.push(serde_json::json!({"role": "user", "content": "Your previous response was truncated due to length. Please continue exactly where you left off."}));
                 continue;
             }
-            tracing::warn!("AnthropicBackend: max continuations exhausted, emitting partial response");
+            tracing::warn!(
+                "AnthropicBackend: max continuations exhausted, emitting partial response"
+            );
         }
 
         // No tool calls — this is the final response.

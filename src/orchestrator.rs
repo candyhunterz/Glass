@@ -602,8 +602,7 @@ impl OrchestratorState {
 
     /// Check if automatic checkpoint should trigger.
     pub fn should_auto_checkpoint(&self) -> bool {
-        self.checkpoint_interval > 0
-            && self.iterations_since_checkpoint >= self.checkpoint_interval
+        self.checkpoint_interval > 0 && self.iterations_since_checkpoint >= self.checkpoint_interval
     }
 
     /// Record a response and check if we're stuck (N identical consecutive responses).
@@ -688,10 +687,10 @@ impl OrchestratorState {
                     self.current_deliverable = i + 1;
                 }
             }
-            if next_lower.contains(&name_lower) || name_lower.contains(&next_lower) {
-                if i > self.current_deliverable {
-                    self.current_deliverable = i;
-                }
+            if (next_lower.contains(&name_lower) || name_lower.contains(&next_lower))
+                && i > self.current_deliverable
+            {
+                self.current_deliverable = i;
             }
         }
     }
@@ -776,8 +775,8 @@ pub fn append_run_separator(project_root: &str, prd_name: &str) {
 
     let _ = writeln!(
         file,
-        "---\t---\t---\t---\t---\t=== New Run: {} ({}) ==="
-        , prd_name, now
+        "---\t---\t---\t---\t---\t=== New Run: {} ({}) ===",
+        prd_name, now
     );
 }
 
