@@ -369,10 +369,8 @@ pub enum CheckpointPhase {
     /// Waiting for ephemeral agent to synthesize checkpoint.md.
     Synthesizing {
         started_at: std::time::Instant,
-        #[allow(dead_code)] // read in tests only
-        completed: String,
-        #[allow(dead_code)] // read in tests only
-        next: String,
+        _completed: String,
+        _next: String,
     },
 }
 
@@ -667,8 +665,8 @@ impl OrchestratorState {
         self.advance_deliverable(completed, next);
         self.checkpoint_phase = CheckpointPhase::Synthesizing {
             started_at: std::time::Instant::now(),
-            completed: completed.to_string(),
-            next: next.to_string(),
+            _completed: completed.to_string(),
+            _next: next.to_string(),
         };
     }
 
@@ -1272,7 +1270,7 @@ pub fn build_orchestrator_context(
 }
 
 /// Resolve the checkpoint file path for a given project root.
-#[allow(dead_code)] // called from tests only
+#[cfg(test)]
 pub fn checkpoint_path(project_root: &str, config: Option<&str>) -> std::path::PathBuf {
     let rel = config.unwrap_or(".glass/checkpoint.md");
     std::path::Path::new(project_root).join(rel)
@@ -1417,10 +1415,10 @@ mod tests {
         state.begin_synthesis("feature-a", "feature-b", "fallback content".to_string());
         match &state.checkpoint_phase {
             CheckpointPhase::Synthesizing {
-                completed, next, ..
+                _completed, _next, ..
             } => {
-                assert_eq!(completed, "feature-a");
-                assert_eq!(next, "feature-b");
+                assert_eq!(_completed, "feature-a");
+                assert_eq!(_next, "feature-b");
             }
             _ => panic!("Expected Synthesizing"),
         }
