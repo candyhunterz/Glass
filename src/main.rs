@@ -1708,29 +1708,6 @@ fn parse_iteration_log(project_root: &str) -> Vec<glass_renderer::IterationLogEn
 }
 
 impl Processor {
-    /// Build orchestrator status text for the status bar.
-    #[allow(dead_code)]
-    fn orchestrator_status_text(&self) -> String {
-        if self.orchestrator.response_pending {
-            let elapsed = self
-                .orchestrator
-                .response_pending_since
-                .map(|t| t.elapsed().as_secs())
-                .unwrap_or(0);
-            let spinner = orchestrator_spinner(elapsed);
-            if self.orchestrator.iteration == 0 {
-                format!("[orchestrating | agent working {spinner} {elapsed}s]")
-            } else {
-                format!(
-                    "[orchestrating | iter #{} | agent working {spinner} {elapsed}s]",
-                    self.orchestrator.iteration
-                )
-            }
-        } else {
-            format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-        }
-    }
-
     /// Stop the orchestrator redraw tick thread (if running).
     fn stop_orchestrator_redraw_tick(&mut self) {
         if let Some(pending) = self.orchestrator_redraw_pending.take() {
