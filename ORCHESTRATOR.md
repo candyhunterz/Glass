@@ -354,12 +354,11 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `rules.toml` | Active behavioral rules (provisional/confirmed) | `on_run_end()` |
 | `run-metrics.toml` | Historical run metrics (one entry per run, includes per-rule firings) | `on_run_end()` |
 | `rule-attribution.toml` | Per-rule attribution scores (passenger scores, firing correlations) | `on_run_end()` |
-| `tuning-history.toml` | Config snapshots at each run start | `on_run_start()` |
+| `tuning-history.toml` | Config snapshots at each run start, pending ConfigTuning changes, per-field cooldowns | `on_run_start()` / `on_run_end()` |
 | `archived-rules.toml` | Rules that were rejected or went stale | `on_run_end()` |
 | `iterations.tsv` | Per-iteration log (TSV: iteration, commit, feature, metric, status, description) | `append_iteration_log()` during run |
 | `checkpoint.md` | Last checkpoint for agent context handoff | Checkpoint synthesis |
-| `postmortem-YYYYMMDD-HHMMSS.md` | Run summary report | `generate_postmortem()` on Done/deactivate |
-| `feedback-YYYYMMDD-HHMMSS.md` | Per-run feedback loop summary (tiers fired, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
+| `run-report-YYYYMMDD-HHMMSS.md` | Combined run report: postmortem (summary, metric guard, commits), trigger source breakdown, feedback analysis (tiers, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
 | `nudge.md` | User course correction (read and deleted per iteration) | User-created |
 | `agent-instructions.md` | Persistent agent steering file with optional frontmatter (supersedes handoff.md) | User-created |
 | `done` | Completion artifact signal (configurable path) | Agent creates, orchestrator deletes |
