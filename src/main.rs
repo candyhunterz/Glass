@@ -76,6 +76,39 @@ fn show_fatal_error(msg: &str) -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// Orchestrator spinner helper
+// ---------------------------------------------------------------------------
+
+/// Compute spinner character for the given elapsed seconds.
+fn orchestrator_spinner(elapsed_secs: u64) -> char {
+    const SPINNER: [char; 10] = [
+        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}',
+        '\u{2834}', '\u{2826}', '\u{2827}', '\u{2807}', '\u{280F}',
+    ];
+    SPINNER[elapsed_secs as usize % SPINNER.len()]
+}
+
+#[cfg(test)]
+mod orchestrator_spinner_tests {
+    use super::*;
+
+    #[test]
+    fn spinner_cycles_through_all_characters() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..10 {
+            seen.insert(orchestrator_spinner(i));
+        }
+        assert_eq!(seen.len(), 10, "all 10 spinner chars should be distinct");
+    }
+
+    #[test]
+    fn spinner_wraps_at_10() {
+        assert_eq!(orchestrator_spinner(0), orchestrator_spinner(10));
+        assert_eq!(orchestrator_spinner(3), orchestrator_spinner(13));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI definition (clap derive)
 // ---------------------------------------------------------------------------
 
@@ -1667,6 +1700,27 @@ fn parse_iteration_log(project_root: &str) -> Vec<glass_renderer::IterationLogEn
 }
 
 impl Processor {
+    /// Build orchestrator status text for the status bar.
+    #[allow(dead_code)]
+    fn orchestrator_status_text(&self) -> String {
+        if self.orchestrator.response_pending {
+            let elapsed = self.orchestrator.response_pending_since
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+            let spinner = orchestrator_spinner(elapsed);
+            if self.orchestrator.iteration == 0 {
+                format!("[orchestrating | agent working {spinner} {elapsed}s]")
+            } else {
+                format!(
+                    "[orchestrating | iter #{} | agent working {spinner} {elapsed}s]",
+                    self.orchestrator.iteration
+                )
+            }
+        } else {
+            format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
+        }
+    }
+
     /// Get the CWD of the focused session, falling back to the process CWD.
     fn get_focused_cwd(&self) -> String {
         self.windows
@@ -3180,6 +3234,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                     });
 
                     // Agent mode and proposal count for status bar display.
+                    let orch_status_cached = {
+                        let pending = self.orchestrator.response_pending;
+                        let elapsed = self.orchestrator.response_pending_since
+                            .map(|t| t.elapsed().as_secs())
+                            .unwrap_or(0);
+                        let iteration = self.orchestrator.iteration;
+                        if pending {
+                            let spinner = orchestrator_spinner(elapsed);
+                            if iteration == 0 {
+                                format!("[orchestrating | agent working {spinner} {elapsed}s]")
+                            } else {
+                                format!("[orchestrating | iter #{iteration} | agent working {spinner} {elapsed}s]")
+                            }
+                        } else {
+                            format!("[orchestrating | iter #{iteration}]")
+                        }
+                    };
                     let agent_mode_text = self.agent_runtime.as_ref().map(|_r| {
                         let usage_prefix = self
                             .usage_state
@@ -3188,18 +3259,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            let orch_status = if self.orchestrator.iteration == 0
-                                && !self.orchestrator_event_buffer.events.is_empty()
-                            {
-                                "[orchestrating | agent working (first turn)]".to_string()
-                            } else if self.orchestrator.response_pending {
-                                format!(
-                                    "[orchestrating | iter #{} | waiting for agent]",
-                                    self.orchestrator.iteration
-                                )
-                            } else {
-                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-                            };
+                            let orch_status = orch_status_cached.clone();
                             if usage_prefix.is_empty() {
                                 orch_status
                             } else {
@@ -3518,6 +3578,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                     });
 
                     // Agent mode and proposal count for multi-pane status bar.
+                    let orch_status_cached_mp = {
+                        let pending = self.orchestrator.response_pending;
+                        let elapsed = self.orchestrator.response_pending_since
+                            .map(|t| t.elapsed().as_secs())
+                            .unwrap_or(0);
+                        let iteration = self.orchestrator.iteration;
+                        if pending {
+                            let spinner = orchestrator_spinner(elapsed);
+                            if iteration == 0 {
+                                format!("[orchestrating | agent working {spinner} {elapsed}s]")
+                            } else {
+                                format!("[orchestrating | iter #{iteration} | agent working {spinner} {elapsed}s]")
+                            }
+                        } else {
+                            format!("[orchestrating | iter #{iteration}]")
+                        }
+                    };
                     let agent_mode_text_mp = self.agent_runtime.as_ref().map(|_r| {
                         let usage_prefix = self
                             .usage_state
@@ -3526,18 +3603,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            let orch_status = if self.orchestrator.iteration == 0
-                                && !self.orchestrator_event_buffer.events.is_empty()
-                            {
-                                "[orchestrating | agent working (first turn)]".to_string()
-                            } else if self.orchestrator.response_pending {
-                                format!(
-                                    "[orchestrating | iter #{} | waiting for agent]",
-                                    self.orchestrator.iteration
-                                )
-                            } else {
-                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-                            };
+                            let orch_status = orch_status_cached_mp.clone();
                             if usage_prefix.is_empty() {
                                 orch_status
                             } else {
