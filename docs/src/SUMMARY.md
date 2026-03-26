@@ -16,6 +16,7 @@
 
 # Features
 
+- [AI Integration](./features/ai-integration.md)
 - [Command Blocks](./features/blocks.md)
 - [Structured Output Intelligence](./features/soi.md)
 - [Agent Mode](./features/agent-mode.md)
