@@ -6,7 +6,7 @@
 
 # Getting Started
 
-- [Installation](./installation/windows.md)
+- [Installation]()
   - [Windows](./installation/windows.md)
   - [macOS](./installation/macos.md)
   - [Linux](./installation/linux.md)
