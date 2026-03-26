@@ -220,10 +220,39 @@ pub struct ConfigSnapshot {
     pub provisional_rules: Vec<String>,
 }
 
+/// A config change that has been applied but not yet evaluated.
+/// Stored in tuning-history.toml. Cleared after next run evaluates it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PendingConfigChange {
+    /// Config field that was changed (e.g. "silence_timeout_secs").
+    pub field: String,
+    /// Value before the change.
+    pub old_value: String,
+    /// Value that was applied.
+    pub new_value: String,
+    /// Finding ID that triggered the change.
+    pub finding_id: String,
+    /// Run ID when the change was made.
+    pub run_id: String,
+}
+
+/// Per-field cooldown after a ConfigTuning change is rejected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigCooldown {
+    /// Config field under cooldown.
+    pub field: String,
+    /// Runs remaining before this field can be tuned again.
+    pub remaining: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuningHistoryFile {
     #[serde(default)]
     pub snapshots: Vec<ConfigSnapshot>,
+    #[serde(default)]
+    pub pending: Option<PendingConfigChange>,
+    #[serde(default)]
+    pub cooldowns: Vec<ConfigCooldown>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -1081,6 +1081,7 @@ mod tests {
                 config_values: HashMap::new(),
                 provisional_rules: vec!["prov-001".to_string()],
             }],
+            ..Default::default()
         };
         let history_path = glass_dir.join("tuning-history.toml");
         save_tuning_history(&history_path, &history).unwrap();
