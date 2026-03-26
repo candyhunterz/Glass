@@ -246,6 +246,33 @@ pub fn auto_register() -> Vec<RegistrationResult> {
     results
 }
 
+/// Print MCP registration diagnostics to stdout (for `glass check`).
+pub fn print_diagnostics(results: &[RegistrationResult]) {
+    println!("\nMCP Auto-Registration:");
+    for result in results {
+        let status = match &result.action {
+            RegistrationAction::Registered => "registered",
+            RegistrationAction::AlreadyExists => "already registered",
+            RegistrationAction::NotInstalled => "not installed",
+            RegistrationAction::Error(e) => {
+                println!(
+                    "  {:<14} {:<45} [error: {}]",
+                    result.tool,
+                    result.path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        println!(
+            "  {:<14} {:<45} [{}]",
+            result.tool,
+            result.path.display(),
+            status
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

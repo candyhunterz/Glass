@@ -2121,6 +2121,23 @@ impl Processor {
             .map(|o| o.checkpoint_interval)
             .unwrap_or(orchestrator::AUTO_CHECKPOINT_INTERVAL);
 
+        // Auto-register project-level .mcp.json for AI tool discovery.
+        if let Ok(binary) = std::env::current_exe() {
+            let cwd = self
+                .windows
+                .get(&window_id)
+                .and_then(|ctx| ctx.session_mux.focused_session())
+                .map(|s| s.status.cwd().to_string())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                });
+            let project_root = std::path::Path::new(&cwd);
+            mcp_register::register_project_mcp(project_root, &binary.to_string_lossy());
+        }
+
         // 1b. Kill existing agent EARLY — before context gathering.
         // On Windows, the old `claude` process holds ~/.glass/agent-system-prompt.txt
         // locked. If we kill it and immediately spawn a new one (as respawn_orchestrator_agent
@@ -10937,6 +10954,10 @@ fn run_check() -> anyhow::Result<()> {
             );
         }
     }
+
+    // MCP auto-registration
+    let mcp_results = mcp_register::auto_register();
+    mcp_register::print_diagnostics(&mcp_results);
 
     println!("\nAll checks complete.");
     Ok(())
