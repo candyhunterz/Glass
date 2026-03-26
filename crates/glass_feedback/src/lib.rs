@@ -17,7 +17,6 @@ pub mod regression;
 pub mod rules;
 pub mod types;
 
-#[allow(unused_imports)]
 pub use types::*;
 
 use std::collections::HashMap;
