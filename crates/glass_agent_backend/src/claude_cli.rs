@@ -184,7 +184,7 @@ impl AgentBackend for ClaudeCliBackend {
                         .spawn(|| loop {
                             std::thread::sleep(std::time::Duration::from_secs(2));
                             // getppid() returns 1 when reparented to launchd after parent death
-                            if unsafe { libc::getppid() } == 1 {
+                            if libc::getppid() == 1 {
                                 std::process::exit(1);
                             }
                         })
