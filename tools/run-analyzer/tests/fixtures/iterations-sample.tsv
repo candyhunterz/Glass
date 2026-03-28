@@ -1,3 +1,11 @@
 iteration	commit	feature	metric	status	description
-10	b0ba45c	Core wizard with all 5 steps: Reflection, Path Generation (Gemini streaming), Decision Matrix, Action Plan, Summary & Export (PDF). All components, Gemini service, wizard state management built.		checkpoint	Context refresh: completed Core wizard with all 5 steps: Reflection, Path Generation (Gemini streaming), Decision Matrix, Action Plan, Summary & Export (PDF). All components, Gemini service, wizard state management built., next Advanced features: session persistence with conflict resolution, animated step transitions (Framer Motion), undo/redo system, then tests
-25	de955c3	done		complete	Built Clarify career planning tool — a React+Vite 5-step wizard with guided self-reflection, Gemini-powered streaming career path generation, weighted decision matrix, 30/60/90 action plan, and PDF export. Advanced features: session persistence with multi-tab conflict resolution, Framer Motion animated transitions, undo/redo with upstream staleness tracking. 46 tests passing across 7 test files. Build, test, and lint all clean.
+1				baseline	Test baseline captured
+3		Core wizard infrastructure		instruction	Building wizard state management and Step 1
+5	a1b2c3d	Step 1 complete		keep	Step 1 Reflection component passes verification
+7		Decision Matrix		stuck	Agent retried 4 times without progress
+8		Decision Matrix		instruction	Simplified approach for decision matrix
+10	b0ba45c	Core wizard with all 5 steps		checkpoint	Context refresh: completed Core wizard with all 5 steps
+12		Session persistence		instruction	Implementing session persistence
+15	c3d4e5f	Undo/redo system		revert	Undo/redo broke existing tests - reverted
+18				wait	Waiting for implementer
+25	de955c3	done		complete	Built Clarify career planning tool

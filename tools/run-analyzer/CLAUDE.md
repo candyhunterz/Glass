@@ -30,3 +30,8 @@ npm run dev      # Dev server for manual testing
 - Write tests alongside features using fixtures from real orchestrator runs
 - Every commit should have passing build + tests
 - Parsers are the foundation — build and test them before any UI
+
+
+## Glass Terminal Integration
+
+Glass terminal history and context are available via MCP tools. Use `glass_history` to search past commands and output across sessions. Use `glass_context` for a summary of recent activity.
