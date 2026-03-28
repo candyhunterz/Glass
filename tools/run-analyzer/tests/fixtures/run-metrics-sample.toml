@@ -1,0 +1,28 @@
+[[runs]]
+run_id = "run-1774683967"
+project_root = "C:/Users/nkngu/apps/git-stats"
+iterations = 21
+duration_secs = 1983
+revert_rate = 0.0
+stuck_rate = 0.047619047619047616
+waste_rate = 0.0
+checkpoint_rate = 0.047619047619047616
+completion = "complete: Complete git-stats React dashboard built. 34 source files, 148 passing tests across 10 test files, clean TypeScript build. All PRD deliverables: services (GitHub API, cache, LLM), Zustand stores (repo/filter/settings), Web Worker analysis pipeline, 8 D3 charts, 5 tabs, 5 layout components, parsers for 7 languages, comprehensive unit + integration tests."
+prd_items_completed = 0
+prd_items_total = 0
+kickoff_duration_secs = 0
+
+[[runs.rule_firings]]
+rule_id = "uncommitted-drift"
+action = "force_commit"
+firing_count = 250
+
+[[runs.rule_firings]]
+rule_id = "revert-rate"
+action = "smaller_instructions"
+firing_count = 260
+
+[[runs.rule_firings]]
+rule_id = "waste-rate"
+action = "verify_progress"
+firing_count = 0

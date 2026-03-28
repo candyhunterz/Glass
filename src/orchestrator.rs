@@ -539,6 +539,9 @@ pub struct OrchestratorState {
     pub resolved_mode: String,
     /// Resolved verification mode. Set at activation time.
     pub resolved_verify_mode: String,
+    /// Original config verify_mode value (user intent). Used by late auto-detection to
+    /// distinguish "user disabled verification" from "auto-detection found no markers."
+    pub config_verify_mode: String,
     /// Iterations between automatic context refresh checkpoints.
     pub checkpoint_interval: u32,
     /// True from agent spawn until first response arrives. Used to emit AgentResponded event once.
@@ -603,6 +606,7 @@ impl OrchestratorState {
             project_root: String::new(),
             resolved_mode: String::new(),
             resolved_verify_mode: String::new(),
+            config_verify_mode: String::new(),
             checkpoint_interval: AUTO_CHECKPOINT_INTERVAL,
             awaiting_first_response: false,
             last_trigger_silence_duration: None,
@@ -1370,9 +1374,9 @@ pub fn append_iteration_detail(
     }
 
     if let Some(ref instruction) = detail.instruction {
-        // Truncate very long instructions to keep the file manageable
+        // Truncate very long instructions to keep the file manageable.
         let truncated = if instruction.len() > 500 {
-            format!("{}... (truncated, {} chars total)", &instruction[..500], instruction.len())
+            format!("{}... (truncated, {} chars total)", truncate_str(instruction, 500), instruction.len())
         } else {
             instruction.clone()
         };
@@ -1474,6 +1478,19 @@ pub fn git_files_changed_since(project_root: &str, since_commit: &str) -> Vec<St
 }
 
 /// Get the current HEAD short SHA.
+/// Truncate a string at the nearest char boundary at or before `max_bytes`.
+/// Avoids panics from slicing in the middle of multi-byte UTF-8 sequences.
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 pub fn git_head_short(project_root: &str) -> Option<String> {
     git_cmd()
         .args(["rev-parse", "--short", "HEAD"])

@@ -947,6 +947,14 @@ impl ActivityOverlayRenderer {
                             },
                             "instr",
                         ),
+                        "wait" => (
+                            Rgb {
+                                r: 100,
+                                g: 100,
+                                b: 110,
+                            },
+                            "wait",
+                        ),
                         _ => (
                             Rgb {
                                 r: 170,

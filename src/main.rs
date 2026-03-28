@@ -2295,6 +2295,10 @@ impl Processor {
             .map(|o| o.verify_mode.as_str())
             .unwrap_or("floor");
 
+        // Store the user's original config intent for late auto-detection.
+        // This distinguishes "user disabled verification" from "auto-detection found no markers."
+        self.orchestrator.config_verify_mode = config_verify.to_string();
+
         if config_mode == "auto" {
             let prd_content_for_detect = config_prd_path.as_ref().and_then(|p| {
                 std::fs::read_to_string(std::path::Path::new(&current_cwd).join(p)).ok()
@@ -8422,6 +8426,23 @@ impl ApplicationHandler<AppEvent> for Processor {
                 match parsed {
                     orchestrator::AgentResponse::Wait => {
                         tracing::debug!("Orchestrator: agent says WAIT");
+                        // Log WAIT to both TSV and details for full iteration visibility
+                        orchestrator::append_iteration_log(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            "wait",
+                            "wait",
+                            "Agent: GLASS_WAIT (implementer still working)",
+                        );
+                        orchestrator::append_iteration_detail(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("wait".to_string()),
+                                note: Some("Agent responded GLASS_WAIT — implementer still working".to_string()),
+                                ..Default::default()
+                            },
+                        );
                     }
                     orchestrator::AgentResponse::TypeText(text) => {
                         let text_stuck = self.orchestrator.record_response(&text);
@@ -8446,7 +8467,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 &format!(
                                     "Stuck after {} identical responses: {}",
                                     self.orchestrator.max_retries,
-                                    &text[..text.len().min(80)]
+                                    orchestrator::truncate_str(&text, 80)
                                 ),
                             );
                             orchestrator::append_iteration_detail(
@@ -8454,7 +8475,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 self.orchestrator.iteration,
                                 &orchestrator::IterationDetail {
                                     action: Some("stuck".to_string()),
-                                    instruction: Some(text[..text.len().min(300)].to_string()),
+                                    instruction: Some(orchestrator::truncate_str(&text, 300).to_string()),
                                     note: Some(format!(
                                         "Stuck after {} identical responses — sent course-correction",
                                         self.orchestrator.max_retries
@@ -8502,7 +8523,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             self.orchestrator.iteration,
                             "instruction",
                             "instruction",
-                            &text[..text.len().min(80)],
+                            orchestrator::truncate_str(&text, 80),
                         );
 
                         // Log iteration detail for the instruction
@@ -9089,9 +9110,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // iteration 1, try re-detecting project markers. This handles projects
                 // that start empty (no package.json/Cargo.toml at activation time) but
                 // acquire build markers during the run (e.g., scaffolding a new project).
+                // Check config_verify_mode (user intent) not resolved_verify_mode (auto-detect result).
+                // When auto-detect sets resolved to "off" because no markers were found,
+                // we still want to re-detect if the user's config says "floor".
                 if self.orchestrator.metric_baseline.is_none()
                     && self.orchestrator.iteration > 1
-                    && self.orchestrator.resolved_verify_mode != "off"
+                    && self.orchestrator.config_verify_mode != "off"
                 {
                     let commands = orchestrator::auto_detect_verify_commands(
                         &self.orchestrator.project_root,
