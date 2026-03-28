@@ -939,6 +939,14 @@ impl ActivityOverlayRenderer {
                             },
                             "DONE",
                         ),
+                        "instruction" => (
+                            Rgb {
+                                r: 140,
+                                g: 160,
+                                b: 180,
+                            },
+                            "instr",
+                        ),
                         _ => (
                             Rgb {
                                 r: 170,

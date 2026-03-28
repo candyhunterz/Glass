@@ -1302,6 +1302,11 @@ fn try_spawn_agent(params: AgentSpawnParams<'_>) -> Option<AgentRuntime> {
                     let mut buffered_response: Option<String> = None;
                     let mut tool_id_to_name: std::collections::HashMap<String, String> =
                         std::collections::HashMap::new();
+                    // Track whether a tool was called in the current turn sequence.
+                    // When the agent uses MCP tools, it produces multiple TurnComplete
+                    // events per context send. We only want to emit OrchestratorResponse
+                    // on the FINAL turn (no tool calls), not on intermediate tool turns.
+                    let mut saw_tool_this_turn = false;
 
                     for event in event_rx_owned.iter() {
                         match event {
@@ -1338,6 +1343,7 @@ fn try_spawn_agent(params: AgentSpawnParams<'_>) -> Option<AgentRuntime> {
                                 );
                             }
                             glass_agent_backend::AgentEvent::ToolCall { name, id, input } => {
+                                saw_tool_this_turn = true;
                                 let summary = orchestrator_events::truncate_display(&input, 200);
                                 tool_id_to_name.insert(id, name.clone());
                                 let _ = proxy_drain.send_event(
@@ -1365,7 +1371,13 @@ fn try_spawn_agent(params: AgentSpawnParams<'_>) -> Option<AgentRuntime> {
                                 let _ = proxy_drain.send_event(
                                     glass_core::event::AppEvent::AgentQueryResult { cost_usd },
                                 );
-                                if let Some(response) = buffered_response.take() {
+                                if saw_tool_this_turn {
+                                    // Intermediate turn — agent called tools and will continue.
+                                    // Keep buffered_response for the final turn.
+                                    saw_tool_this_turn = false;
+                                    tracing::debug!("AgentRuntime: intermediate TurnComplete (tool turn), holding response");
+                                } else if let Some(response) = buffered_response.take() {
+                                    // Final turn — no tools called, emit the response.
                                     let _ = proxy_drain.send_event(
                                         glass_core::event::AppEvent::OrchestratorResponse {
                                             response,
@@ -1696,6 +1708,7 @@ fn start_artifact_watcher(
                                 window_id,
                                 session_id,
                                 trigger_source: glass_core::event::TriggerSource::Slow,
+                                silence_duration_ms: 0, // artifact watcher — not silence-based
                             });
                         }
                     }
@@ -1885,6 +1898,8 @@ impl Processor {
                 } else {
                     tracing::info!("Run report written to {}", summary_path.display());
                 }
+                // Prune iteration details to prevent unbounded growth
+                orchestrator::prune_iteration_details(&self.orchestrator.project_root, 2000);
             }
 
             // Apply script lifecycle transitions based on regression result.
@@ -2198,6 +2213,10 @@ impl Processor {
 
         // 7b. Write run separator to iterations.tsv
         orchestrator::append_run_separator(
+            &current_cwd,
+            config_prd_path.as_deref().unwrap_or("(no PRD)"),
+        );
+        orchestrator::append_iteration_detail_run_separator(
             &current_cwd,
             config_prd_path.as_deref().unwrap_or("(no PRD)"),
         );
@@ -2703,7 +2722,7 @@ impl Processor {
     /// Types the appropriate clear command into the PTY based on the configured
     /// implementer. This ensures both the Glass Agent (reviewer) AND the
     /// implementer start with fresh context after a checkpoint.
-    fn clear_implementer_context(&self) {
+    fn clear_implementer_context(&mut self) {
         let implementer = self
             .config
             .agent
@@ -2728,7 +2747,7 @@ impl Processor {
             }
         };
 
-        if let Some(ctx) = self.windows.values().next() {
+        if let Some(ctx) = self.windows.values_mut().next() {
             if let Some(session) = ctx.session_mux.focused_session() {
                 tracing::info!(
                     "Orchestrator: clearing implementer context ({}): {}",
@@ -2750,6 +2769,10 @@ impl Processor {
                     })
                     .ok();
             }
+            // Force a redraw after /clear to prevent terminal freeze.
+            // The /clear command resets terminal content; without an explicit
+            // redraw, the screen can stay frozen if the surface was lost.
+            ctx.mark_dirty_and_redraw();
         }
     }
 
@@ -3196,10 +3219,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // floods with mailbox present mode this prevents wasted GPU work.
                 let now = std::time::Instant::now();
                 if now.duration_since(ctx.last_redraw) < std::time::Duration::from_millis(1) {
-                    // Too soon — the next natural redraw will pick it up.
+                    // Too soon — keep render_dirty set so about_to_wait() retries.
                     return;
                 }
                 ctx.last_redraw = now;
+                // Clear dirty AFTER all early-return checks pass. This ensures
+                // render_dirty stays true if we bail out before actually rendering
+                // (surface lost, throttle, etc.), preventing terminal freeze.
                 ctx.render_dirty = false;
 
                 // Determine if we have multiple panes in the active tab
@@ -3211,6 +3237,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Get surface texture
                 let Some(frame) = ctx.renderer.get_current_texture() else {
+                    // Surface lost/outdated — re-set dirty so we retry on next loop iteration.
+                    // Without this, render_dirty stays false (cleared above), about_to_wait()
+                    // switches to Wait mode, and the terminal freezes until a keypress.
+                    ctx.render_dirty = true;
                     return;
                 };
                 let view = frame.texture.create_view(&Default::default());
@@ -8386,6 +8416,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return;
                 }
 
+                // Snapshot HEAD before this iteration for files-changed diff later
+                let pre_iteration_head = orchestrator::git_head_short(&self.orchestrator.project_root);
+
                 match parsed {
                     orchestrator::AgentResponse::Wait => {
                         tracing::debug!("Orchestrator: agent says WAIT");
@@ -8416,6 +8449,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     &text[..text.len().min(80)]
                                 ),
                             );
+                            orchestrator::append_iteration_detail(
+                                &self.orchestrator.project_root,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    action: Some("stuck".to_string()),
+                                    instruction: Some(text[..text.len().min(300)].to_string()),
+                                    note: Some(format!(
+                                        "Stuck after {} identical responses — sent course-correction",
+                                        self.orchestrator.max_retries
+                                    )),
+                                    files_changed: pre_iteration_head.as_deref().map(|h| {
+                                        orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
+                                    }).unwrap_or_default(),
+                                    ..Default::default()
+                                },
+                            );
 
                             // Tell Claude Code to revert
                             if let Some(ctx) = self.windows.values().next() {
@@ -8445,6 +8494,51 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                             self.orchestrator.reset_stuck();
                             return;
+                        }
+
+                        // Log instruction to iterations.tsv (for overlay display)
+                        orchestrator::append_iteration_log(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            "instruction",
+                            "instruction",
+                            &text[..text.len().min(80)],
+                        );
+
+                        // Log iteration detail for the instruction
+                        {
+                            let trigger_info = self.orchestrator.last_trigger_source.take();
+                            let silence_dur = self.orchestrator.last_trigger_silence_duration.take();
+                            let block_exec = self.orchestrator.last_trigger_block_executing.take();
+
+                            let mut trigger_desc = trigger_info.unwrap_or_default();
+                            if let Some(dur) = silence_dur {
+                                trigger_desc.push_str(&format!(", silence={}ms", dur.as_millis()));
+                            }
+                            if let Some(true) = block_exec {
+                                trigger_desc.push_str(" [BLOCK STILL EXECUTING]");
+                            }
+
+                            let note = if block_exec == Some(true) {
+                                Some("WARNING: Trigger fired while a command block was still executing — possible rendering stall or premature trigger".to_string())
+                            } else {
+                                None
+                            };
+
+                            orchestrator::append_iteration_detail(
+                                &self.orchestrator.project_root,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    trigger_source: Some(trigger_desc),
+                                    action: Some("instruction".to_string()),
+                                    instruction: Some(text.clone()),
+                                    files_changed: pre_iteration_head.as_deref().map(|h| {
+                                        orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
+                                    }).unwrap_or_default(),
+                                    note,
+                                    ..Default::default()
+                                },
+                            );
                         }
 
                         // Cap at 50 most recent responses for instruction overload analysis
@@ -8561,6 +8655,18 @@ impl ApplicationHandler<AppEvent> for Processor {
                             "checkpoint",
                             &format!("Context refresh: completed {completed}, next {next}"),
                         );
+                        orchestrator::append_iteration_detail(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("checkpoint".to_string()),
+                                note: Some(format!("Completed: {completed} | Next: {next}")),
+                                files_changed: pre_iteration_head.as_deref().map(|h| {
+                                    orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
+                                }).unwrap_or_default(),
+                                ..Default::default()
+                            },
+                        );
 
                         // Start the refresh cycle with checkpoint synthesis
                         self.trigger_checkpoint_synthesis(&completed, &next);
@@ -8582,6 +8688,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 "Project complete".to_string()
                             } else {
                                 summary.clone()
+                            },
+                        );
+                        orchestrator::append_iteration_detail(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("done".to_string()),
+                                note: Some(if summary.is_empty() {
+                                    "Project complete".to_string()
+                                } else {
+                                    summary.clone()
+                                }),
+                                files_changed: pre_iteration_head.as_deref().map(|h| {
+                                    orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
+                                }).unwrap_or_default(),
+                                ..Default::default()
                             },
                         );
 
@@ -8678,6 +8800,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 window_id,
                 session_id,
                 trigger_source,
+                silence_duration_ms,
             } => {
                 if !self.orchestrator.active {
                     return;
@@ -8685,6 +8808,26 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 if self.agent_runtime.is_none() {
                     return;
+                }
+
+                // Capture trigger diagnostics for iteration detail logging
+                self.orchestrator.last_trigger_silence_duration =
+                    Some(std::time::Duration::from_millis(silence_duration_ms));
+                self.orchestrator.last_trigger_source = Some(format!("{:?}", trigger_source));
+
+                // Check if a block is currently executing (rendering stall detection)
+                if let Some(ctx) = self.windows.get(&window_id) {
+                    if let Some(session) = ctx.session_mux.session(session_id) {
+                        let block_executing = session
+                            .block_manager
+                            .current_block_index()
+                            .and_then(|idx| session.block_manager.blocks().get(idx))
+                            .map(|b| {
+                                b.state == glass_terminal::block_manager::BlockState::Executing
+                            })
+                            .unwrap_or(false);
+                        self.orchestrator.last_trigger_block_executing = Some(block_executing);
+                    }
                 }
 
                 // Accumulate trigger source counts for the feedback loop.
@@ -8942,14 +9085,31 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.orchestrator.last_good_commit = current_head.clone();
                 }
 
+                // Late auto-detection: if no metric baseline exists and we're past
+                // iteration 1, try re-detecting project markers. This handles projects
+                // that start empty (no package.json/Cargo.toml at activation time) but
+                // acquire build markers during the run (e.g., scaffolding a new project).
+                if self.orchestrator.metric_baseline.is_none()
+                    && self.orchestrator.iteration > 1
+                    && self.orchestrator.resolved_verify_mode != "off"
+                {
+                    let commands = orchestrator::auto_detect_verify_commands(
+                        &self.orchestrator.project_root,
+                    );
+                    if !commands.is_empty() {
+                        tracing::info!(
+                            "Orchestrator: late auto-detection found {} verify commands, upgrading to build mode",
+                            commands.len()
+                        );
+                        self.orchestrator.resolved_mode = "build".to_string();
+                        self.orchestrator.resolved_verify_mode = "floor".to_string();
+                        // Baseline will be established by the normal metric guard flow below
+                    }
+                }
+
                 // Metric guard: run verification on background thread
-                let verify_mode = self
-                    .config
-                    .agent
-                    .as_ref()
-                    .and_then(|a| a.orchestrator.as_ref())
-                    .map(|o| o.verify_mode.clone())
-                    .unwrap_or_else(|| "floor".to_string());
+                // Use resolved mode from activation, not config re-read.
+                let verify_mode = self.orchestrator.resolved_verify_mode.clone();
 
                 let already_verified = self
                     .orchestrator
@@ -9100,6 +9260,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                             "verify",
                             if regressed { "revert" } else { "keep" },
                             &summary,
+                        );
+                        orchestrator::append_iteration_detail(
+                            &cwd,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("verify".to_string()),
+                                verify_result: Some(if regressed {
+                                    format!("REVERT (file regression): {summary}")
+                                } else {
+                                    format!("KEEP: {summary}")
+                                }),
+                                ..Default::default()
+                            },
                         );
                         if regressed {
                             if let Some(ref commit) = self.orchestrator.last_good_commit {
@@ -9578,6 +9751,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     revert_commit.as_deref().unwrap_or("unknown")
                                 ),
                             );
+                            orchestrator::append_iteration_detail(
+                                &revert_cwd,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    action: Some("verify".to_string()),
+                                    verify_result: Some(format!(
+                                        "REVERT to {}: {revert_desc}",
+                                        revert_commit.as_deref().unwrap_or("unknown")
+                                    )),
+                                    error: Some("Metric regression detected — changes rolled back".to_string()),
+                                    ..Default::default()
+                                },
+                            );
 
                             // Build METRIC_GUARD message for agent context
                             guard_msg = Some(format!(
@@ -9641,6 +9827,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 "verify",
                                 "keep",
                                 &keep_desc,
+                            );
+                            orchestrator::append_iteration_detail(
+                                &revert_cwd,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    action: Some("verify".to_string()),
+                                    verify_result: Some(format!("KEEP: {keep_desc}")),
+                                    ..Default::default()
+                                },
                             );
 
                             baseline.last_results = verify_results;

@@ -137,6 +137,11 @@ impl SmartTrigger {
         None
     }
 
+    /// Returns how long since the last PTY output byte was received.
+    pub fn silence_duration(&self) -> Duration {
+        self.last_output_at.elapsed()
+    }
+
     /// Returns the maximum poll timeout, ensuring we wake in time for the next check.
     pub fn poll_timeout(&self) -> Duration {
         let since_output = self.last_output_at.elapsed();

@@ -414,11 +414,13 @@ fn glass_pty_loop(
             // Check SmartTrigger even on idle timeouts — this is the primary
             // path for silence detection when the terminal has no activity.
             if let Some(ref mut trigger) = smart_trigger {
+                let silence_ms = trigger.silence_duration().as_millis() as u64;
                 if let Some(source) = trigger.should_fire() {
                     let _ = sinks.app_proxy.send_event(AppEvent::OrchestratorSilence {
                         window_id: sinks.window_id,
                         session_id: sinks.event_proxy.session_id(),
                         trigger_source: source,
+                        silence_duration_ms: silence_ms,
                     });
                 }
             }
@@ -495,11 +497,13 @@ fn glass_pty_loop(
 
         // Orchestrator silence detection (fires periodically while quiet)
         if let Some(ref mut trigger) = smart_trigger {
+            let silence_ms = trigger.silence_duration().as_millis() as u64;
             if let Some(source) = trigger.should_fire() {
                 let _ = sinks.app_proxy.send_event(AppEvent::OrchestratorSilence {
                     window_id: sinks.window_id,
                     session_id: sinks.event_proxy.session_id(),
                     trigger_source: source,
+                    silence_duration_ms: silence_ms,
                 });
             }
         }

@@ -204,6 +204,8 @@ pub enum AppEvent {
         window_id: winit::window::WindowId,
         session_id: SessionId,
         trigger_source: TriggerSource,
+        /// How long the PTY has been silent when the trigger fired (for stall detection).
+        silence_duration_ms: u64,
     },
     /// Orchestrator: background context gathering completed.
     OrchestratorContextReady {

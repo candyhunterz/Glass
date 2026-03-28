@@ -543,6 +543,12 @@ pub struct OrchestratorState {
     pub checkpoint_interval: u32,
     /// True from agent spawn until first response arrives. Used to emit AgentResponded event once.
     pub awaiting_first_response: bool,
+    /// Diagnostic: silence duration when the last trigger fired (for rendering stall detection).
+    pub last_trigger_silence_duration: Option<std::time::Duration>,
+    /// Diagnostic: whether a block was in Executing state when the last trigger fired.
+    pub last_trigger_block_executing: Option<bool>,
+    /// Diagnostic: trigger source that fired the current iteration.
+    pub last_trigger_source: Option<String>,
 }
 
 impl OrchestratorState {
@@ -599,6 +605,9 @@ impl OrchestratorState {
             resolved_verify_mode: String::new(),
             checkpoint_interval: AUTO_CHECKPOINT_INTERVAL,
             awaiting_first_response: false,
+            last_trigger_silence_duration: None,
+            last_trigger_block_executing: None,
+            last_trigger_source: None,
         }
     }
 
@@ -1313,6 +1322,198 @@ pub fn build_bounded_summary(
     summary.push_str(&format!("  Last checkpoint: {checkpoint_path}\n"));
     summary.push_str("  To resume: enable orchestrator (Ctrl+Shift+O)\n");
     summary
+}
+
+/// Append a detailed iteration entry to `.glass/iteration-details.md`.
+///
+/// This file captures rich per-iteration data for post-run analysis:
+/// agent instructions, trigger sources, files changed, verification results.
+/// Unlike `iterations.tsv` (lean, fed to the agent's context), this file is
+/// for human/AI review after the run completes.
+pub fn append_iteration_detail(
+    project_root: &str,
+    iteration: u32,
+    detail: &IterationDetail,
+) {
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass dir for iteration details: {e}");
+        return;
+    }
+    let path = glass_dir.join("iteration-details.md");
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open iteration-details.md: {e}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+
+    // Timestamp
+    let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+
+    let mut entry = format!("## Iteration {iteration} [{timestamp}]\n\n");
+
+    if let Some(ref trigger) = detail.trigger_source {
+        entry.push_str(&format!("**Trigger:** {trigger}\n"));
+    }
+
+    if let Some(ref action) = detail.action {
+        entry.push_str(&format!("**Action:** {action}\n"));
+    }
+
+    if let Some(ref instruction) = detail.instruction {
+        // Truncate very long instructions to keep the file manageable
+        let truncated = if instruction.len() > 500 {
+            format!("{}... (truncated, {} chars total)", &instruction[..500], instruction.len())
+        } else {
+            instruction.clone()
+        };
+        entry.push_str(&format!("**Agent instruction:** {truncated}\n"));
+    }
+
+    if !detail.files_changed.is_empty() {
+        entry.push_str("**Files changed:**\n");
+        for f in &detail.files_changed {
+            entry.push_str(&format!("- `{f}`\n"));
+        }
+    }
+
+    if let Some(ref verify) = detail.verify_result {
+        entry.push_str(&format!("**Verification:** {verify}\n"));
+    }
+
+    if let Some(ref error) = detail.error {
+        entry.push_str(&format!("**Error:** {error}\n"));
+    }
+
+    if let Some(ref note) = detail.note {
+        entry.push_str(&format!("**Note:** {note}\n"));
+    }
+
+    entry.push('\n');
+
+    if let Err(e) = write!(file, "{entry}") {
+        tracing::warn!("Failed to write iteration detail: {e}");
+    }
+}
+
+/// Rich detail for a single iteration, written to iteration-details.md.
+#[derive(Debug, Default)]
+pub struct IterationDetail {
+    /// What triggered this iteration (e.g., "silence (shell_prompt, 12s)")
+    pub trigger_source: Option<String>,
+    /// High-level action type (e.g., "instruction", "stuck", "checkpoint", "verify")
+    pub action: Option<String>,
+    /// The instruction the agent sent to Claude Code
+    pub instruction: Option<String>,
+    /// Files changed since last iteration (from git diff --name-only)
+    pub files_changed: Vec<String>,
+    /// Verification result summary
+    pub verify_result: Option<String>,
+    /// Error message if something went wrong
+    pub error: Option<String>,
+    /// Additional notes (e.g., "self-corrected", "reverted to abc1234")
+    pub note: Option<String>,
+}
+
+/// Start a new run section in iteration-details.md.
+pub fn append_iteration_detail_run_separator(project_root: &str, prd_name: &str) {
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass dir for iteration details: {e}");
+        return;
+    }
+    let path = glass_dir.join("iteration-details.md");
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open iteration-details.md: {e}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = writeln!(file, "\n---\n\n# Run: {prd_name} ({now})\n");
+}
+
+/// Get the list of files changed since a given commit SHA.
+pub fn git_files_changed_since(project_root: &str, since_commit: &str) -> Vec<String> {
+    git_cmd()
+        .args(["diff", "--name-only", since_commit, "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Get the current HEAD short SHA.
+pub fn git_head_short(project_root: &str) -> Option<String> {
+    git_cmd()
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// Prune iteration-details.md to prevent unbounded growth.
+/// Keeps the last `max_lines` lines of the file.
+pub fn prune_iteration_details(project_root: &str, max_lines: usize) {
+    let path = std::path::Path::new(project_root)
+        .join(".glass")
+        .join("iteration-details.md");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= max_lines + 200 {
+        return; // Buffer to avoid rewriting on every append
+    }
+    let tail = &lines[lines.len() - max_lines..];
+    let mut result = String::from("(earlier entries pruned)\n\n");
+    for line in tail {
+        result.push_str(line);
+        result.push('\n');
+    }
+    if let Err(e) = std::fs::write(&path, result) {
+        tracing::warn!("Failed to prune iteration-details.md: {e}");
+    }
 }
 
 #[cfg(test)]
