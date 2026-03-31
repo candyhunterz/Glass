@@ -383,11 +383,22 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `scripts/hooks/*.toml+.rhai` | Global hook scripts (shared across projects) |
 | `scripts/tools/*.toml+.rhai` | Global MCP tool scripts |
 
+## Run Analyzer Dashboard
+
+`glass analyze` opens a web dashboard that visualizes all `.glass/` data files. Run it from any project directory to inspect orchestrator runs:
+
+```bash
+glass analyze                        # Analyze current project
+glass analyze --dir ~/project/.glass # Analyze specific project
+```
+
+The dashboard (React + D3.js) is embedded in the Glass binary — no Node.js required at runtime. It provides 6 tabs: Overview, Timeline, Triggers, Feedback, CrossRun, RawData. Source lives in `tools/run-analyzer/`.
+
 ## Iteration Detail Log
 
 ### Purpose
 
-The `iteration-details.md` file captures rich per-iteration data for post-run analysis. Unlike `iterations.tsv` (lean TSV fed to the agent's context window), this file is designed for human or AI review after a run completes. Read this file to diagnose what went wrong, what the agent decided at each step, and whether the orchestrator triggered prematurely.
+The `iteration-details.md` file captures rich per-iteration data for post-run analysis. Unlike `iterations.tsv` (lean TSV fed to the agent's context window), this file is designed for human or AI review after a run completes — or visualized via `glass analyze`. Read this file to diagnose what went wrong, what the agent decided at each step, and whether the orchestrator triggered prematurely.
 
 ### What's Logged
 

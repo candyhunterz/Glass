@@ -6739,13 +6739,15 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::TerminalDirty { window_id } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     tracing::trace!("Terminal output received — marking dirty");
-                    // Only set the dirty flag — do NOT call request_redraw() here.
-                    // On Windows, TerminalDirty floods the message queue via PostMessage.
-                    // PostMessage has higher priority than WM_PAINT, so request_redraw()
-                    // (which generates WM_PAINT) never gets processed during continuous
-                    // output. Instead, about_to_wait() coalesces all dirty flags into a
-                    // single request_redraw() call when the event queue is drained.
-                    ctx.render_dirty = true;
+                    // Call request_redraw() directly. The PTY thread throttles Wakeup
+                    // events to ~60/sec (16ms interval), so PostMessage can't starve
+                    // WM_PAINT at this rate. The original design avoided request_redraw()
+                    // here because TerminalDirty used to fire at raw PTY read speed
+                    // (thousands/sec), but the throttle makes that concern obsolete.
+                    // Relying solely on about_to_wait() left a gap: if the event loop
+                    // was in ControlFlow::Wait and about_to_wait() had already run,
+                    // render_dirty=true sat unacted upon until the next event arrived.
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::SetTitle {
@@ -10778,17 +10780,12 @@ impl ApplicationHandler<AppEvent> for Processor {
 
     /// Called when the event queue is drained.
     ///
-    /// On Windows, `request_redraw()` generates WM_PAINT which has the LOWEST
-    /// message priority — `PeekMessage` only returns it when no posted messages
-    /// exist. PTY output generates `PostMessage` events (TerminalDirty, Shell,
-    /// etc.) that can starve WM_PAINT during continuous output.
-    ///
-    /// Fix: use `ControlFlow::Poll` when any window is dirty. Poll mode runs
-    /// the event loop without blocking, so `PeekMessage` is called in a tight
-    /// loop. Combined with the 16ms Wakeup throttle in the PTY reader (at most
-    /// ~60 TerminalDirty events/sec), there are many poll iterations between
-    /// PostMessage events where WM_PAINT can be returned. When all windows are
-    /// clean, switch back to `Wait` to avoid burning CPU.
+    /// Serves as a secondary redraw mechanism alongside TerminalDirty's direct
+    /// `mark_dirty_and_redraw()`. If any window is still dirty when the queue
+    /// drains (e.g., a redraw was throttled or surface was lost), this ensures
+    /// a request_redraw() is issued and the event loop stays in Poll mode until
+    /// the render completes. When all windows are clean, switches to Wait to
+    /// avoid burning CPU.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let mut any_dirty = false;
         for ctx in self.windows.values() {
