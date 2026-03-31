@@ -8395,6 +8395,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
                 self.orchestrator.iterations_since_checkpoint += 1;
+                self.orchestrator.fingerprint_recorded_this_iteration = false;
                 self.orchestrator
                     .feedback_iteration_timestamps
                     .push(std::time::Instant::now());
@@ -9089,8 +9090,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                     soi_for_fp,
                     git_diff.as_deref(),
                 );
-                self.orchestrator.fingerprint_stuck =
-                    self.orchestrator.record_fingerprint(fingerprint);
+                // Only record one fingerprint per iteration. Multiple silence
+                // triggers can fire within a single iteration (while the agent is
+                // thinking or the implementer hasn't produced output yet). Recording
+                // a fingerprint for each trigger causes false stuck detection —
+                // e.g., 6 triggers during the agent's first 100s thinking period
+                // all produce identical fingerprints → stuck on iteration 1.
+                if !self.orchestrator.fingerprint_recorded_this_iteration {
+                    self.orchestrator.fingerprint_stuck =
+                        self.orchestrator.record_fingerprint(fingerprint);
+                    self.orchestrator.fingerprint_recorded_this_iteration = true;
+                }
 
                 // Commit detection: track HEAD changes
                 if let Some(ref head_sha) = current_head {

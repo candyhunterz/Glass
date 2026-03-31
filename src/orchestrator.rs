@@ -604,6 +604,10 @@ pub struct OrchestratorState {
     pub recent_fingerprints: Vec<StateFingerprint>,
     /// Whether the last fingerprint check detected stuck (consumed by response handler).
     pub fingerprint_stuck: bool,
+    /// Whether a fingerprint has already been recorded for the current iteration.
+    /// Prevents multiple silence triggers within one iteration from inflating the
+    /// fingerprint history and causing false stuck detection.
+    pub fingerprint_recorded_this_iteration: bool,
     /// Metric guard: verification baseline and results tracking.
     pub metric_baseline: Option<MetricBaseline>,
     /// Git commit SHA at the start of the current iteration (for revert).
@@ -708,6 +712,7 @@ impl OrchestratorState {
             response_pending_since: None,
             recent_fingerprints: Vec::new(),
             fingerprint_stuck: false,
+            fingerprint_recorded_this_iteration: false,
             metric_baseline: None,
             last_good_commit: None,
             max_iterations: None,
