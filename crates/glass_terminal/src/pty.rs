@@ -495,6 +495,34 @@ fn glass_pty_loop(
             }
         }
 
+        // Handle synchronized update timeout even during continuous output.
+        //
+        // The existing stop_sync() at line ~410 only fires when the poll returns
+        // with no events (events.is_empty()). During continuous PTY output, readable
+        // data arrives faster than the sync timeout (~400ms), so events.is_empty()
+        // is never true. This leaves sync active indefinitely — needs_wakeup stays
+        // false, no TerminalDirty reaches the main thread, and the screen freezes.
+        //
+        // Fix: check the sync deadline after processing readable events. If expired,
+        // force stop_sync() and send a Wakeup so the main thread renders.
+        if let Some(deadline) = read_state
+            .parser
+            .sync_timeout()
+            .sync_timeout()
+        {
+            if Instant::now() >= deadline {
+                read_state.parser.stop_sync(&mut *terminal.lock());
+                let now = Instant::now();
+                if now.duration_since(last_wakeup) >= wakeup_interval {
+                    sinks.event_proxy.send_event(Event::Wakeup);
+                    last_wakeup = now;
+                    wakeup_pending = false;
+                } else {
+                    wakeup_pending = true;
+                }
+            }
+        }
+
         // Orchestrator silence detection (fires periodically while quiet)
         if let Some(ref mut trigger) = smart_trigger {
             let silence_ms = trigger.silence_duration().as_millis() as u64;

@@ -8831,27 +8831,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return;
                 }
 
-                // Capture trigger diagnostics for iteration detail logging
-                self.orchestrator.last_trigger_silence_duration =
-                    Some(std::time::Duration::from_millis(silence_duration_ms));
-                self.orchestrator.last_trigger_source = Some(format!("{:?}", trigger_source));
-
-                // Check if a block is currently executing (rendering stall detection)
-                if let Some(ctx) = self.windows.get(&window_id) {
-                    if let Some(session) = ctx.session_mux.session(session_id) {
-                        let block_executing = session
-                            .block_manager
-                            .current_block_index()
-                            .and_then(|idx| session.block_manager.blocks().get(idx))
-                            .map(|b| {
-                                b.state == glass_terminal::block_manager::BlockState::Executing
-                            })
-                            .unwrap_or(false);
-                        self.orchestrator.last_trigger_block_executing = Some(block_executing);
-                    }
-                }
-
                 // Accumulate trigger source counts for the feedback loop.
+                // Count ALL silence events (even skipped ones) for accurate trigger
+                // frequency tracking in the run report.
                 match trigger_source {
                     glass_core::event::TriggerSource::Prompt => {
                         self.orchestrator.feedback_trigger_prompt_count += 1
@@ -8886,6 +8868,30 @@ impl ApplicationHandler<AppEvent> for Processor {
                     } else {
                         tracing::debug!("Orchestrator: skipping context send (response pending)");
                         return;
+                    }
+                }
+
+                // Capture trigger diagnostics for iteration detail logging.
+                // MUST be AFTER response_pending guard — skipped silence events must
+                // NOT overwrite trigger info, otherwise the response handler associates
+                // the wrong trigger source with the iteration (or gets blank trigger
+                // when the guard fires between the real silence and its response).
+                self.orchestrator.last_trigger_silence_duration =
+                    Some(std::time::Duration::from_millis(silence_duration_ms));
+                self.orchestrator.last_trigger_source = Some(format!("{:?}", trigger_source));
+
+                // Check if a block is currently executing (rendering stall detection)
+                if let Some(ctx) = self.windows.get(&window_id) {
+                    if let Some(session) = ctx.session_mux.session(session_id) {
+                        let block_executing = session
+                            .block_manager
+                            .current_block_index()
+                            .and_then(|idx| session.block_manager.blocks().get(idx))
+                            .map(|b| {
+                                b.state == glass_terminal::block_manager::BlockState::Executing
+                            })
+                            .unwrap_or(false);
+                        self.orchestrator.last_trigger_block_executing = Some(block_executing);
                     }
                 }
 
@@ -9127,7 +9133,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         self.orchestrator.resolved_mode = "build".to_string();
                         self.orchestrator.resolved_verify_mode = "floor".to_string();
-                        // Baseline will be established by the normal metric guard flow below
+                        // Create the baseline now — the metric guard flow below requires
+                        // metric_baseline.is_some() with non-empty commands to run verification.
+                        let mut baseline = orchestrator::MetricBaseline::new();
+                        baseline.commands = commands;
+                        self.orchestrator.metric_baseline = Some(baseline);
                     }
                 }
 

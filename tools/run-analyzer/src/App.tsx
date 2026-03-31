@@ -1,6 +1,7 @@
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback, useEffect, useState } from 'react';
 import { useDataStore } from './stores/dataStore';
 import { useUiStore } from './stores/uiStore';
+import { detectServerSource } from './dataSources';
 import { FolderLoader } from './components/FolderLoader';
 import { RunSelector } from './components/RunSelector';
 import { OverviewTab } from './components/tabs/OverviewTab';
@@ -94,15 +95,45 @@ function TabContent({ tab }: { tab: string }) {
 
 function App() {
   const isLoaded = useDataStore((s) => s.isLoaded);
+  const dataSourceLabel = useDataStore((s) => s.dataSourceLabel);
+  const loadFromSource = useDataStore((s) => s.loadFromSource);
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
+  const [detecting, setDetecting] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    detectServerSource().then((source) => {
+      if (cancelled) return;
+      if (source) {
+        loadFromSource(source);
+      }
+      setDetecting(false);
+    });
+    return () => { cancelled = true; };
+  }, [loadFromSource]);
+
+  if (detecting && !isLoaded) {
+    return (
+      <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
+        <p className="text-gray-400">Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
       <header className="flex items-center justify-between border-b border-gray-800 px-6 py-3 shrink-0">
-        <h1 className="text-lg font-mono font-semibold tracking-tight">
-          Glass Run Analyzer
-        </h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-mono font-semibold tracking-tight">
+            Glass Run Analyzer
+          </h1>
+          {dataSourceLabel && (
+            <span className="text-xs text-gray-500 font-mono">
+              Loaded from: {dataSourceLabel}
+            </span>
+          )}
+        </div>
         {isLoaded && (
           <div className="flex items-center gap-3">
             <RunSelector />

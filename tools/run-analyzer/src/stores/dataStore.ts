@@ -7,6 +7,7 @@ import type {
   Rule,
   TuningHistory,
 } from '../types';
+import type { DataSource } from '../dataSources/types';
 import { parseRunReport } from '../parsers/runReport';
 import { parseIterationDetails } from '../parsers/iterationDetails';
 import { parseIterationsTsv } from '../parsers/iterationsTsv';
@@ -27,8 +28,10 @@ interface DataState {
   isLoading: boolean;
   isLoaded: boolean;
   error: string | null;
+  dataSourceLabel: string | null;
 
   loadFiles: (files: Record<string, string>) => void;
+  loadFromSource: (source: DataSource) => Promise<void>;
   selectRun: (filename: string) => void;
   reset: () => void;
 }
@@ -46,6 +49,7 @@ const INITIAL_STATE = {
   isLoading: false,
   isLoaded: false,
   error: null as string | null,
+  dataSourceLabel: null as string | null,
 };
 
 export const useDataStore = create<DataState>()((set) => ({
@@ -96,6 +100,66 @@ export const useDataStore = create<DataState>()((set) => ({
         selectedRunFile,
         isLoading: false,
         isLoaded: true,
+      });
+    } catch (err) {
+      set({
+        isLoading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+
+  loadFromSource: async (source) => {
+    set({ isLoading: true, error: null });
+    try {
+      const names = await source.listFiles();
+      const files: Record<string, string> = {};
+      for (const name of names) {
+        files[name] = await source.readFile(name);
+      }
+
+      const runReports: Record<string, RunReport> = {};
+      let iterationDetails: IterationDetailEntry[] = [];
+      let tsvEntries: TsvEntry[] = [];
+      let runMetrics: RunMetrics | null = null;
+      let rules: Rule[] = [];
+      let archivedRules: Rule[] = [];
+      let tuningHistory: TuningHistory | null = null;
+
+      for (const [name, content] of Object.entries(files)) {
+        if (/^run-report-.*\.md$/.test(name)) {
+          runReports[name] = parseRunReport(content);
+        } else if (name === 'iteration-details.md') {
+          iterationDetails = parseIterationDetails(content);
+        } else if (name === 'iterations.tsv') {
+          tsvEntries = parseIterationsTsv(content);
+        } else if (name === 'run-metrics.toml') {
+          runMetrics = parseRunMetrics(content);
+        } else if (name === 'rules.toml') {
+          rules = parseRules(content);
+        } else if (name === 'archived-rules.toml') {
+          archivedRules = parseArchivedRules(content);
+        } else if (name === 'tuning-history.toml') {
+          tuningHistory = parseTuningHistory(content);
+        }
+      }
+
+      const reportFiles = Object.keys(runReports).sort();
+      const selectedRunFile = reportFiles[reportFiles.length - 1] ?? null;
+
+      set({
+        runReports,
+        iterationDetails,
+        tsvEntries,
+        runMetrics,
+        rules,
+        archivedRules,
+        tuningHistory,
+        rawFiles: files,
+        selectedRunFile,
+        isLoading: false,
+        isLoaded: true,
+        dataSourceLabel: source.label(),
       });
     } catch (err) {
       set({
