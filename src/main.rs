@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod agent_instructions;
+mod analyze;
 mod checkpoint_synth;
 mod ephemeral_agent;
 mod history;
@@ -144,6 +145,18 @@ enum Commands {
     },
     /// Run system diagnostics (GPU, shell, config, integration)
     Check,
+    /// Open the orchestrator run analyzer dashboard
+    Analyze {
+        /// Path to .glass/ directory (default: .glass/ in CWD)
+        #[arg(long)]
+        dir: Option<String>,
+        /// HTTP server port (default: 3927)
+        #[arg(long, default_value_t = 3927)]
+        port: u16,
+        /// Don't auto-open browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -11408,6 +11421,17 @@ fn main() {
         Some(Commands::Check) => {
             if let Err(e) = run_check() {
                 eprintln!("Check failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Analyze {
+            dir,
+            port,
+            no_open,
+        }) => {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            if let Err(e) = rt.block_on(analyze::run(dir, port, no_open)) {
+                eprintln!("Analyze error: {e}");
                 std::process::exit(1);
             }
         }
