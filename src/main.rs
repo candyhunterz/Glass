@@ -9148,10 +9148,27 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         self.orchestrator.resolved_mode = "build".to_string();
                         self.orchestrator.resolved_verify_mode = "floor".to_string();
-                        // Create the baseline now — the metric guard flow below requires
-                        // metric_baseline.is_some() with non-empty commands to run verification.
                         let mut baseline = orchestrator::MetricBaseline::new();
                         baseline.commands = commands;
+                        self.orchestrator.metric_baseline = Some(baseline);
+                    } else if let Some((work_dir, cmds)) =
+                        orchestrator::detect_project_from_diff(
+                            &self.orchestrator.project_root,
+                            git_diff.as_deref(),
+                        )
+                    {
+                        // Cross-project detection: found project markers in a
+                        // subdirectory via git diff paths or directory scanning.
+                        tracing::info!(
+                            "Orchestrator: cross-project detection found {} verify commands in {}",
+                            cmds.len(),
+                            work_dir
+                        );
+                        self.orchestrator.resolved_mode = "build".to_string();
+                        self.orchestrator.resolved_verify_mode = "floor".to_string();
+                        let mut baseline = orchestrator::MetricBaseline::new();
+                        baseline.commands = cmds;
+                        baseline.verify_cwd = Some(work_dir);
                         self.orchestrator.metric_baseline = Some(baseline);
                     }
                 }
@@ -9192,7 +9209,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                     if let Some(ref baseline) = self.orchestrator.metric_baseline {
                         if !baseline.commands.is_empty() {
                             let commands = baseline.commands.clone();
-                            let verify_cwd = cwd.clone();
+                            // Use cross-project verify_cwd if set, else PTY CWD
+                            let verify_cwd = baseline
+                                .verify_cwd
+                                .clone()
+                                .unwrap_or_else(|| cwd.clone());
                             let proxy = self.proxy.clone();
                             let spawn_result = std::thread::Builder::new()
                                 .name("Glass verify".into())

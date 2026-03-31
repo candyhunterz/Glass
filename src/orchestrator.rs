@@ -42,6 +42,10 @@ pub struct MetricBaseline {
     pub last_results: Vec<VerifyResult>,
     pub keep_count: u32,
     pub revert_count: u32,
+    /// Override directory for running verify commands. When the metric guard
+    /// detects project markers in a subdirectory (cross-project build), this
+    /// stores that directory so verify commands run in the right place.
+    pub verify_cwd: Option<String>,
 }
 
 impl MetricBaseline {
@@ -52,6 +56,7 @@ impl MetricBaseline {
             last_results: Vec::new(),
             keep_count: 0,
             revert_count: 0,
+            verify_cwd: None,
         }
     }
 
@@ -156,6 +161,137 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
     }
 
     Vec::new()
+}
+
+/// Detect verify commands from a subdirectory when the orchestrator CWD itself
+/// has no project markers (cross-project build). Uses two strategies:
+///
+/// 1. Parse `git diff --stat` output to find changed file paths, then walk up
+///    each path looking for the nearest directory with project markers.
+/// 2. Fall back to scanning immediate subdirectories for project markers.
+///
+/// Returns `(directory, commands)` if a project is found, or `None`.
+pub fn detect_project_from_diff(
+    project_root: &str,
+    diff_stat: Option<&str>,
+) -> Option<(String, Vec<VerifyCommand>)> {
+    let root = std::path::Path::new(project_root);
+
+    // Strategy 1: infer from git diff paths
+    if let Some(stat) = diff_stat {
+        if let Some(result) = detect_from_diff_paths(root, stat) {
+            return Some(result);
+        }
+    }
+
+    // Strategy 2: scan first two levels of subdirectories
+    scan_subdirs_for_markers(root, 2)
+}
+
+/// Parse git diff --stat output for file paths, then find the nearest parent
+/// directory with project markers for each path. Returns the directory that
+/// appears most often among changed files.
+fn detect_from_diff_paths(
+    root: &std::path::Path,
+    diff_stat: &str,
+) -> Option<(String, Vec<VerifyCommand>)> {
+    let mut dir_counts: std::collections::HashMap<std::path::PathBuf, usize> =
+        std::collections::HashMap::new();
+
+    for line in diff_stat.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.contains("file changed")
+            || trimmed.contains("files changed")
+        {
+            continue;
+        }
+        // Format: " path/to/file | N +++---"
+        let pipe_pos = match trimmed.rfind('|') {
+            Some(p) => p,
+            None => continue,
+        };
+        let path_str = trimmed[..pipe_pos].trim();
+        if path_str.is_empty() {
+            continue;
+        }
+
+        // Walk up from file's parent directory looking for project markers
+        let file_abs = root.join(path_str);
+        let mut dir = file_abs.parent();
+        while let Some(d) = dir {
+            if !d.starts_with(root) || d == root {
+                break;
+            }
+            if has_project_marker(d) {
+                *dir_counts.entry(d.to_path_buf()).or_insert(0) += 1;
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+
+    // Pick the directory with the most changed files
+    let (best_dir, _) = dir_counts.into_iter().max_by_key(|(_, count)| *count)?;
+    let best_str = best_dir.to_string_lossy().to_string();
+    let commands = auto_detect_verify_commands(&best_str);
+    if commands.is_empty() {
+        None
+    } else {
+        Some((best_str, commands))
+    }
+}
+
+/// Check whether a directory contains any project marker file.
+fn has_project_marker(dir: &std::path::Path) -> bool {
+    dir.join("Cargo.toml").exists()
+        || dir.join("package.json").exists()
+        || dir.join("pyproject.toml").exists()
+        || dir.join("setup.py").exists()
+        || dir.join("go.mod").exists()
+        || dir.join("tsconfig.json").exists()
+        || dir.join("Makefile").exists()
+}
+
+/// Scan subdirectories up to `max_depth` levels deep for project markers.
+fn scan_subdirs_for_markers(
+    root: &std::path::Path,
+    max_depth: usize,
+) -> Option<(String, Vec<VerifyCommand>)> {
+    if max_depth == 0 {
+        return None;
+    }
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip hidden dirs and common non-project directories
+        if name_str.starts_with('.')
+            || matches!(
+                name_str.as_ref(),
+                "node_modules" | "target" | "dist" | "build" | "__pycache__" | ".git"
+            )
+        {
+            continue;
+        }
+        let path = entry.path();
+        let path_str = path.to_string_lossy().to_string();
+        let commands = auto_detect_verify_commands(&path_str);
+        if !commands.is_empty() {
+            return Some((path_str, commands));
+        }
+        // Recurse one level deeper
+        if let Some(result) = scan_subdirs_for_markers(&path, max_depth - 1) {
+            return Some(result);
+        }
+    }
+    None
 }
 
 /// Parse the "## Deliverables" section of a PRD file to extract file paths.
@@ -2391,5 +2527,146 @@ mod tests {
         let cols: Vec<&str> = line.split('\t').collect();
         assert!(cols.len() >= 5);
         assert_eq!(cols[4].trim(), "stuck"); // status is in column 4
+    }
+
+    #[test]
+    fn detect_project_from_diff_stat_finds_subdirectory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sub = dir.path().join("tools").join("my-app");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("package.json"),
+            r#"{"scripts":{"test":"jest"}}"#,
+        )
+        .unwrap();
+
+        let stat = " tools/my-app/src/App.tsx | 15 +++++++------\n \
+                     tools/my-app/index.html  |  3 +++\n \
+                     2 files changed, 11 insertions(+), 7 deletions(-)\n";
+
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), Some(stat));
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(found_dir.contains("my-app"), "found_dir={found_dir}");
+        assert_eq!(commands[0].name, "npm test");
+    }
+
+    #[test]
+    fn detect_project_from_diff_stat_picks_most_common() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Two subdirectories with markers
+        let app_a = dir.path().join("app-a");
+        let app_b = dir.path().join("app-b");
+        std::fs::create_dir_all(&app_a).unwrap();
+        std::fs::create_dir_all(&app_b).unwrap();
+        std::fs::write(app_a.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(
+            app_b.join("package.json"),
+            r#"{"scripts":{"test":"jest"}}"#,
+        )
+        .unwrap();
+
+        // More changed files in app-b
+        let stat = " app-a/src/main.rs  | 2 ++\n \
+                     app-b/src/index.js | 5 ++++\n \
+                     app-b/src/utils.js | 3 +++\n \
+                     app-b/README.md    | 1 +\n \
+                     4 files changed\n";
+
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), Some(stat));
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(found_dir.contains("app-b"), "expected app-b, got {found_dir}");
+        assert_eq!(commands[0].name, "npm test");
+    }
+
+    #[test]
+    fn detect_project_fallback_to_subdir_scan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sub = dir.path().join("my-project");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("Cargo.toml"), "[package]").unwrap();
+
+        // No diff stat — falls back to subdirectory scanning
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(
+            found_dir.contains("my-project"),
+            "found_dir={found_dir}"
+        );
+        assert_eq!(commands[0].name, "cargo test");
+    }
+
+    #[test]
+    fn detect_project_no_markers_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Empty directory, no subdirectories
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_project_skips_hidden_and_build_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Put markers in dirs that should be skipped
+        let hidden = dir.path().join(".hidden");
+        let target = dir.path().join("target");
+        let node_modules = dir.path().join("node_modules");
+        for d in [&hidden, &target, &node_modules] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("Cargo.toml"), "[package]").unwrap();
+        }
+
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_project_nested_two_levels() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("tools").join("analyzer");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("go.mod"), "module analyzer").unwrap();
+
+        // No diff stat — falls back to subdir scanning (2 levels deep)
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(
+            found_dir.contains("analyzer"),
+            "found_dir={found_dir}"
+        );
+        assert_eq!(commands[0].name, "go test");
+    }
+
+    #[test]
+    fn has_project_marker_detects_all_types() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!has_project_marker(dir.path()));
+
+        for marker in [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "setup.py",
+            "go.mod",
+            "tsconfig.json",
+            "Makefile",
+        ] {
+            let sub = dir.path().join(format!("proj-{marker}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join(marker), "").unwrap();
+            assert!(
+                has_project_marker(&sub),
+                "should detect {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn metric_baseline_verify_cwd_defaults_to_none() {
+        let baseline = MetricBaseline::new();
+        assert!(baseline.verify_cwd.is_none());
     }
 }
