@@ -128,7 +128,9 @@ glass_scripting = { path = "crates/glass_scripting" }
 glass_agent_backend = { path = "crates/glass_agent_backend" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-chrome = { version = "0.7", optional = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+rusqlite = { workspace = true }
 uuid = { workspace = true }
 regex = "1"
 ureq = { workspace = true }

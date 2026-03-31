@@ -5,6 +5,7 @@
 mod agent_instructions;
 mod analyze;
 mod checkpoint_synth;
+mod doctor;
 mod ephemeral_agent;
 mod history;
 mod mcp_register;
@@ -143,7 +144,20 @@ enum Commands {
         #[command(subcommand)]
         action: ProfileAction,
     },
-    /// Run system diagnostics (GPU, shell, config, integration)
+    /// Comprehensive system diagnostics
+    Doctor {
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+        /// Attempt automatic fixes
+        #[arg(long)]
+        fix: bool,
+        /// Run only checks in a specific category
+        #[arg(long, value_enum)]
+        category: Option<doctor::Category>,
+    },
+    /// Run system diagnostics (alias for doctor)
+    #[command(hide = true)]
     Check,
     /// Open the orchestrator run analyzer dashboard
     Analyze {
@@ -8437,7 +8451,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // Snapshot HEAD before this iteration for files-changed diff later
-                let pre_iteration_head = orchestrator::git_head_short(&self.orchestrator.project_root);
+                let pre_iteration_head =
+                    orchestrator::git_head_short(&self.orchestrator.project_root);
 
                 match parsed {
                     orchestrator::AgentResponse::Wait => {
@@ -8455,7 +8470,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             self.orchestrator.iteration,
                             &orchestrator::IterationDetail {
                                 action: Some("wait".to_string()),
-                                note: Some("Agent responded GLASS_WAIT — implementer still working".to_string()),
+                                note: Some(
+                                    "Agent responded GLASS_WAIT — implementer still working"
+                                        .to_string(),
+                                ),
                                 ..Default::default()
                             },
                         );
@@ -8545,7 +8563,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // Log iteration detail for the instruction
                         {
                             let trigger_info = self.orchestrator.last_trigger_source.take();
-                            let silence_dur = self.orchestrator.last_trigger_silence_duration.take();
+                            let silence_dur =
+                                self.orchestrator.last_trigger_silence_duration.take();
                             let block_exec = self.orchestrator.last_trigger_block_executing.take();
 
                             let mut trigger_desc = trigger_info.unwrap_or_default();
@@ -8569,9 +8588,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     trigger_source: Some(trigger_desc),
                                     action: Some("instruction".to_string()),
                                     instruction: Some(text.clone()),
-                                    files_changed: pre_iteration_head.as_deref().map(|h| {
-                                        orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
-                                    }).unwrap_or_default(),
+                                    files_changed: pre_iteration_head
+                                        .as_deref()
+                                        .map(|h| {
+                                            orchestrator::git_files_changed_since(
+                                                &self.orchestrator.project_root,
+                                                h,
+                                            )
+                                        })
+                                        .unwrap_or_default(),
                                     note,
                                     ..Default::default()
                                 },
@@ -8698,9 +8723,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                             &orchestrator::IterationDetail {
                                 action: Some("checkpoint".to_string()),
                                 note: Some(format!("Completed: {completed} | Next: {next}")),
-                                files_changed: pre_iteration_head.as_deref().map(|h| {
-                                    orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
-                                }).unwrap_or_default(),
+                                files_changed: pre_iteration_head
+                                    .as_deref()
+                                    .map(|h| {
+                                        orchestrator::git_files_changed_since(
+                                            &self.orchestrator.project_root,
+                                            h,
+                                        )
+                                    })
+                                    .unwrap_or_default(),
                                 ..Default::default()
                             },
                         );
@@ -8737,9 +8768,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     summary.clone()
                                 }),
-                                files_changed: pre_iteration_head.as_deref().map(|h| {
-                                    orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
-                                }).unwrap_or_default(),
+                                files_changed: pre_iteration_head
+                                    .as_deref()
+                                    .map(|h| {
+                                        orchestrator::git_files_changed_since(
+                                            &self.orchestrator.project_root,
+                                            h,
+                                        )
+                                    })
+                                    .unwrap_or_default(),
                                 ..Default::default()
                             },
                         );
@@ -9148,9 +9185,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     && self.orchestrator.iteration > 1
                     && self.orchestrator.config_verify_mode != "off"
                 {
-                    let commands = orchestrator::auto_detect_verify_commands(
-                        &self.orchestrator.project_root,
-                    );
+                    let commands =
+                        orchestrator::auto_detect_verify_commands(&self.orchestrator.project_root);
                     if !commands.is_empty() {
                         tracing::info!(
                             "Orchestrator: late auto-detection found {} verify commands, upgrading to build mode",
@@ -9161,12 +9197,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         let mut baseline = orchestrator::MetricBaseline::new();
                         baseline.commands = commands;
                         self.orchestrator.metric_baseline = Some(baseline);
-                    } else if let Some((work_dir, cmds)) =
-                        orchestrator::detect_project_from_diff(
-                            &self.orchestrator.project_root,
-                            git_diff.as_deref(),
-                        )
-                    {
+                    } else if let Some((work_dir, cmds)) = orchestrator::detect_project_from_diff(
+                        &self.orchestrator.project_root,
+                        git_diff.as_deref(),
+                    ) {
                         // Cross-project detection: found project markers in a
                         // subdirectory via git diff paths or directory scanning.
                         tracing::info!(
@@ -9220,10 +9254,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                         if !baseline.commands.is_empty() {
                             let commands = baseline.commands.clone();
                             // Use cross-project verify_cwd if set, else PTY CWD
-                            let verify_cwd = baseline
-                                .verify_cwd
-                                .clone()
-                                .unwrap_or_else(|| cwd.clone());
+                            let verify_cwd =
+                                baseline.verify_cwd.clone().unwrap_or_else(|| cwd.clone());
                             let proxy = self.proxy.clone();
                             let spawn_result = std::thread::Builder::new()
                                 .name("Glass verify".into())
@@ -9840,7 +9872,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         "REVERT to {}: {revert_desc}",
                                         revert_commit.as_deref().unwrap_or("unknown")
                                     )),
-                                    error: Some("Metric regression detected — changes rolled back".to_string()),
+                                    error: Some(
+                                        "Metric regression detected — changes rolled back"
+                                            .to_string(),
+                                    ),
                                     ..Default::default()
                                 },
                             );
@@ -11159,81 +11194,6 @@ fn emit_command_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
     }
 }
 
-/// Run system diagnostics: GPU adapter, detected shell, shell integration, config path.
-fn run_check() -> anyhow::Result<()> {
-    println!("Glass System Check");
-    println!("==================\n");
-
-    // Version
-    println!("Version: {}", env!("CARGO_PKG_VERSION"));
-
-    // Config
-    match glass_core::config::GlassConfig::config_path() {
-        Some(p) if p.exists() => println!("Config:  {} (found)", p.display()),
-        Some(p) => println!("Config:  {} (not found -- using defaults)", p.display()),
-        None => println!("Config:  <unable to determine home directory>"),
-    }
-
-    // Data directory
-    if let Some(home) = dirs::home_dir() {
-        let data_dir = home.join(".glass");
-        if data_dir.exists() {
-            println!("Data:    {}", data_dir.display());
-        } else {
-            println!("Data:    {} (not created yet)", data_dir.display());
-        }
-    }
-
-    // Shell detection
-    let shell = std::env::var("SHELL")
-        .or_else(|_| std::env::var("COMSPEC"))
-        .unwrap_or_else(|_| "<not detected>".to_string());
-    println!("Shell:   {}", shell);
-
-    // Shell integration
-    let shell_lower = shell.to_lowercase();
-    let known = ["bash", "zsh", "fish", "pwsh", "powershell"];
-    let supported = known.iter().any(|s| shell_lower.contains(s));
-    if supported {
-        println!("Shell integration: supported");
-        println!("Shell scripts:     embedded in binary");
-    } else {
-        println!("Shell integration: NOT supported (need bash, zsh, fish, or PowerShell)");
-    }
-
-    // GPU check
-    println!("\nGPU Diagnostics:");
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        #[cfg(target_os = "windows")]
-        backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
-        #[cfg(not(target_os = "windows"))]
-        backends: wgpu::Backends::all(),
-        ..Default::default()
-    });
-
-    let adapters: Vec<wgpu::Adapter> =
-        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-    if adapters.is_empty() {
-        println!("  No GPU adapters found!");
-        println!("  Glass requires a GPU with DX12 (Windows), Metal (macOS), or Vulkan (Linux).");
-    } else {
-        for adapter in &adapters {
-            let info = adapter.get_info();
-            println!(
-                "  {} -- {:?} ({:?})",
-                info.name, info.backend, info.device_type
-            );
-        }
-    }
-
-    // MCP auto-registration
-    let mcp_results = mcp_register::auto_register();
-    mcp_register::print_diagnostics(&mcp_results);
-
-    println!("\nAll checks complete.");
-    Ok(())
-}
-
 fn main() {
     install_crash_handler();
 
@@ -11446,17 +11406,33 @@ fn main() {
                 .init();
             history::run_history(action);
         }
-        Some(Commands::Check) => {
-            if let Err(e) = run_check() {
-                eprintln!("Check failed: {e}");
+        Some(Commands::Doctor {
+            json,
+            fix,
+            category,
+        }) => {
+            let options = doctor::DoctorOptions {
+                json,
+                fix,
+                category,
+            };
+            if let Err(e) = doctor::run_doctor(options) {
+                eprintln!("Doctor failed: {e}");
                 std::process::exit(1);
             }
         }
-        Some(Commands::Analyze {
-            dir,
-            port,
-            no_open,
-        }) => {
+        Some(Commands::Check) => {
+            let options = doctor::DoctorOptions {
+                json: false,
+                fix: false,
+                category: None,
+            };
+            if let Err(e) = doctor::run_doctor(options) {
+                eprintln!("Doctor failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Analyze { dir, port, no_open }) => {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             if let Err(e) = rt.block_on(analyze::run(dir, port, no_open)) {
                 eprintln!("Analyze error: {e}");

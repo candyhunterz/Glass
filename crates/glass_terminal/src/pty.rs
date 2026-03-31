@@ -505,11 +505,7 @@ fn glass_pty_loop(
         //
         // Fix: check the sync deadline after processing readable events. If expired,
         // force stop_sync() and send a Wakeup so the main thread renders.
-        if let Some(deadline) = read_state
-            .parser
-            .sync_timeout()
-            .sync_timeout()
-        {
+        if let Some(deadline) = read_state.parser.sync_timeout().sync_timeout() {
             if Instant::now() >= deadline {
                 read_state.parser.stop_sync(&mut *terminal.lock());
                 let now = Instant::now();

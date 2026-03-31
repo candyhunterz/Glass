@@ -1475,11 +1475,7 @@ pub fn build_bounded_summary(
 /// agent instructions, trigger sources, files changed, verification results.
 /// Unlike `iterations.tsv` (lean, fed to the agent's context), this file is
 /// for human/AI review after the run completes.
-pub fn append_iteration_detail(
-    project_root: &str,
-    iteration: u32,
-    detail: &IterationDetail,
-) {
+pub fn append_iteration_detail(project_root: &str, iteration: u32, detail: &IterationDetail) {
     let glass_dir = std::path::Path::new(project_root).join(".glass");
     if let Err(e) = std::fs::create_dir_all(&glass_dir) {
         tracing::warn!("Failed to create .glass dir for iteration details: {e}");
@@ -1517,7 +1513,11 @@ pub fn append_iteration_detail(
     if let Some(ref instruction) = detail.instruction {
         // Truncate very long instructions to keep the file manageable.
         let truncated = if instruction.len() > 500 {
-            format!("{}... (truncated, {} chars total)", truncate_str(instruction, 500), instruction.len())
+            format!(
+                "{}... (truncated, {} chars total)",
+                truncate_str(instruction, 500),
+                instruction.len()
+            )
         } else {
             instruction.clone()
         };
@@ -2539,11 +2539,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let sub = dir.path().join("tools").join("my-app");
         std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(
-            sub.join("package.json"),
-            r#"{"scripts":{"test":"jest"}}"#,
-        )
-        .unwrap();
+        std::fs::write(sub.join("package.json"), r#"{"scripts":{"test":"jest"}}"#).unwrap();
 
         let stat = " tools/my-app/src/App.tsx | 15 +++++++------\n \
                      tools/my-app/index.html  |  3 +++\n \
@@ -2565,11 +2561,7 @@ mod tests {
         std::fs::create_dir_all(&app_a).unwrap();
         std::fs::create_dir_all(&app_b).unwrap();
         std::fs::write(app_a.join("Cargo.toml"), "[package]").unwrap();
-        std::fs::write(
-            app_b.join("package.json"),
-            r#"{"scripts":{"test":"jest"}}"#,
-        )
-        .unwrap();
+        std::fs::write(app_b.join("package.json"), r#"{"scripts":{"test":"jest"}}"#).unwrap();
 
         // More changed files in app-b
         let stat = " app-a/src/main.rs  | 2 ++\n \
@@ -2581,7 +2573,10 @@ mod tests {
         let result = detect_project_from_diff(dir.path().to_str().unwrap(), Some(stat));
         assert!(result.is_some());
         let (found_dir, commands) = result.unwrap();
-        assert!(found_dir.contains("app-b"), "expected app-b, got {found_dir}");
+        assert!(
+            found_dir.contains("app-b"),
+            "expected app-b, got {found_dir}"
+        );
         assert_eq!(commands[0].name, "npm test");
     }
 
@@ -2596,10 +2591,7 @@ mod tests {
         let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let (found_dir, commands) = result.unwrap();
-        assert!(
-            found_dir.contains("my-project"),
-            "found_dir={found_dir}"
-        );
+        assert!(found_dir.contains("my-project"), "found_dir={found_dir}");
         assert_eq!(commands[0].name, "cargo test");
     }
 
@@ -2638,10 +2630,7 @@ mod tests {
         let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let (found_dir, commands) = result.unwrap();
-        assert!(
-            found_dir.contains("analyzer"),
-            "found_dir={found_dir}"
-        );
+        assert!(found_dir.contains("analyzer"), "found_dir={found_dir}");
         assert_eq!(commands[0].name, "go test");
     }
 
@@ -2662,10 +2651,7 @@ mod tests {
             let sub = dir.path().join(format!("proj-{marker}"));
             std::fs::create_dir_all(&sub).unwrap();
             std::fs::write(sub.join(marker), "").unwrap();
-            assert!(
-                has_project_marker(&sub),
-                "should detect {marker}"
-            );
+            assert!(has_project_marker(&sub), "should detect {marker}");
         }
     }
 

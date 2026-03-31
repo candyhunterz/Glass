@@ -246,7 +246,8 @@ pub fn auto_register() -> Vec<RegistrationResult> {
     results
 }
 
-/// Print MCP registration diagnostics to stdout (for `glass check`).
+/// Print MCP registration diagnostics to stdout.
+#[allow(dead_code)]
 pub fn print_diagnostics(results: &[RegistrationResult]) {
     println!("\nMCP Auto-Registration:");
     for result in results {
