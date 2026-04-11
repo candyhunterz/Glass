@@ -11207,6 +11207,10 @@ fn main() {
         SetConsoleOutputCP(65001);
     }
 
+    // Save original CWD before changing it — CLI subcommands need the
+    // directory the user invoked the command from, not the home directory.
+    let original_cwd = std::env::current_dir().ok();
+
     // Default to the user's home directory when launched without a terminal
     // (e.g. double-clicking glass.exe) so the shell starts in ~/ instead of
     // wherever the binary happens to live.
@@ -11400,6 +11404,9 @@ fn main() {
             }
         }
         Some(Commands::History { action }) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             // Initialize structured logging for CLI mode (stdout)
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -11411,6 +11418,11 @@ fn main() {
             fix,
             category,
         }) => {
+            // Restore original CWD so doctor checks run in the user's directory,
+            // not ~/ (which main() changed to for the GUI).
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             let options = doctor::DoctorOptions {
                 json,
                 fix,
@@ -11422,6 +11434,9 @@ fn main() {
             }
         }
         Some(Commands::Check) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             let options = doctor::DoctorOptions {
                 json: false,
                 fix: false,
@@ -11433,6 +11448,9 @@ fn main() {
             }
         }
         Some(Commands::Analyze { dir, port, no_open }) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             if let Err(e) = rt.block_on(analyze::run(dir, port, no_open)) {
                 eprintln!("Analyze error: {e}");
@@ -11440,6 +11458,9 @@ fn main() {
             }
         }
         Some(Commands::Undo { command_id }) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             // Initialize structured logging for CLI mode (stdout)
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
