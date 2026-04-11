@@ -128,7 +128,12 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
         }
     }
 
-    if root.join("pyproject.toml").exists() || root.join("setup.py").exists() {
+    if root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("pytest.ini").exists()
+        || root.join("setup.cfg").exists()
+        || root.join("tox.ini").exists()
+    {
         return vec![VerifyCommand {
             name: "pytest".to_string(),
             cmd: "pytest".to_string(),
@@ -164,11 +169,13 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
 }
 
 /// Detect verify commands from a subdirectory when the orchestrator CWD itself
-/// has no project markers (cross-project build). Uses two strategies:
+/// has no project markers (cross-project build). Uses three strategies:
 ///
-/// 1. Parse `git diff --stat` output to find changed file paths, then walk up
+/// 1. Check the git repository root (if `project_root` is a subdirectory of a
+///    git repo, the markers like `Cargo.toml` are typically at the repo root).
+/// 2. Parse `git diff --stat` output to find changed file paths, then walk up
 ///    each path looking for the nearest directory with project markers.
-/// 2. Fall back to scanning immediate subdirectories for project markers.
+/// 3. Fall back to scanning immediate subdirectories for project markers.
 ///
 /// Returns `(directory, commands)` if a project is found, or `None`.
 pub fn detect_project_from_diff(
@@ -177,15 +184,46 @@ pub fn detect_project_from_diff(
 ) -> Option<(String, Vec<VerifyCommand>)> {
     let root = std::path::Path::new(project_root);
 
-    // Strategy 1: infer from git diff paths
+    // Strategy 1: check git repo root (handles orchestrating from a subdirectory)
+    if let Some(repo_root) = git_repo_root(project_root) {
+        let repo_path = std::path::Path::new(&repo_root);
+        if repo_path != root {
+            let commands = auto_detect_verify_commands(&repo_root);
+            if !commands.is_empty() {
+                return Some((repo_root.clone(), commands));
+            }
+            // Also try diff paths relative to repo root
+            if let Some(stat) = diff_stat {
+                if let Some(result) = detect_from_diff_paths(repo_path, stat) {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    // Strategy 2: infer from git diff paths relative to project_root
     if let Some(stat) = diff_stat {
         if let Some(result) = detect_from_diff_paths(root, stat) {
             return Some(result);
         }
     }
 
-    // Strategy 2: scan first two levels of subdirectories
+    // Strategy 3: scan first two levels of subdirectories
     scan_subdirs_for_markers(root, 2)
+}
+
+/// Get the git repository root for a directory.
+fn git_repo_root(dir: &str) -> Option<String> {
+    let mut cmd = git_cmd();
+    cmd.args(["rev-parse", "--show-toplevel"]).current_dir(dir);
+    let output = cmd.output().ok()?;
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    }
 }
 
 /// Parse git diff --stat output for file paths, then find the nearest parent
@@ -2026,6 +2064,33 @@ mod tests {
     }
 
     #[test]
+    fn auto_detect_python_pytest_ini() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("pytest.ini"), "[pytest]").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "pytest");
+    }
+
+    #[test]
+    fn auto_detect_python_setup_cfg() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("setup.cfg"), "[metadata]").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "pytest");
+    }
+
+    #[test]
+    fn auto_detect_python_tox_ini() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("tox.ini"), "[tox]").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "pytest");
+    }
+
+    #[test]
     fn auto_detect_no_project_returns_empty() {
         let dir = tempfile::TempDir::new().unwrap();
         let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
@@ -2659,5 +2724,58 @@ mod tests {
     fn metric_baseline_verify_cwd_defaults_to_none() {
         let baseline = MetricBaseline::new();
         assert!(baseline.verify_cwd.is_none());
+    }
+
+    #[test]
+    fn git_repo_root_returns_toplevel() {
+        // This test runs inside the Glass repo, so git_repo_root should work.
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("Skipping: git not on PATH");
+            return;
+        }
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let result = git_repo_root(manifest_dir);
+        assert!(result.is_some(), "should find git repo root");
+        let root = result.unwrap();
+        // The repo root should contain Cargo.toml
+        assert!(
+            std::path::Path::new(&root).join("Cargo.toml").exists(),
+            "repo root {root} should contain Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn detect_project_from_subdirectory_finds_repo_root() {
+        // When project_root is a subdirectory of a git repo with Cargo.toml,
+        // detect_project_from_diff should find the repo root's markers.
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("Skipping: git not on PATH");
+            return;
+        }
+        // Use a real subdirectory of this repo (tools/ exists and has no Cargo.toml)
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let tools_dir = std::path::Path::new(manifest_dir).join("tools");
+        if !tools_dir.exists() {
+            eprintln!("Skipping: tools/ dir not found");
+            return;
+        }
+        let result = detect_project_from_diff(tools_dir.to_str().unwrap(), None);
+        assert!(result.is_some(), "should detect repo root from subdirectory");
+        let (found_dir, commands) = result.unwrap();
+        assert_eq!(commands[0].name, "cargo test");
+        assert!(
+            std::path::Path::new(&found_dir)
+                .join("Cargo.toml")
+                .exists(),
+            "found_dir should have Cargo.toml"
+        );
     }
 }
