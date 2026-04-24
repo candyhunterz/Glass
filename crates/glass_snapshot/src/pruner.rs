@@ -18,23 +18,15 @@ pub struct Pruner<'a> {
     store: &'a SnapshotStore,
     retention_days: u32,
     max_count: u32,
-    #[allow(dead_code)]
-    max_size_mb: u32,
 }
 
 impl<'a> Pruner<'a> {
     /// Create a new Pruner with the given retention policy parameters.
-    pub fn new(
-        store: &'a SnapshotStore,
-        retention_days: u32,
-        max_count: u32,
-        max_size_mb: u32,
-    ) -> Self {
+    pub fn new(store: &'a SnapshotStore, retention_days: u32, max_count: u32) -> Self {
         Self {
             store,
             retention_days,
             max_count,
-            max_size_mb,
         }
     }
 
@@ -187,7 +179,7 @@ mod tests {
 
         // retention_days=0 means epoch = now, so all are "old"
         // But safety margin protects 10 newest
-        let pruner = Pruner::new(&store, 0, 1000, 500);
+        let pruner = Pruner::new(&store, 0, 1000);
         let result = pruner.prune().unwrap();
 
         // 5 oldest should be deleted, 10 newest kept (safety margin)
@@ -205,7 +197,7 @@ mod tests {
         assert_eq!(store.db().count_snapshots().unwrap(), 5);
 
         // max_count=2, retention_days high enough to not trigger age pruning
-        let pruner = Pruner::new(&store, 365, 2, 500);
+        let pruner = Pruner::new(&store, 365, 2);
         let result = pruner.prune().unwrap();
 
         // 3 should be deleted by count enforcement
@@ -236,7 +228,7 @@ mod tests {
         // Verify orphan blob exists
         assert!(store.blobs().blob_exists(orphan_hash));
 
-        let pruner = Pruner::new(&store, 365, 1000, 500);
+        let pruner = Pruner::new(&store, 365, 1000);
         let result = pruner.prune().unwrap();
 
         // Orphan should be deleted, referenced blob should remain
@@ -264,7 +256,7 @@ mod tests {
         assert_eq!(store.db().count_snapshots().unwrap(), 10);
 
         // retention_days=0 means all are "old", but safety margin should protect all 10
-        let pruner = Pruner::new(&store, 0, 1000, 500);
+        let pruner = Pruner::new(&store, 0, 1000);
         let result = pruner.prune().unwrap();
 
         // None should be deleted (count <= 10, safety margin)

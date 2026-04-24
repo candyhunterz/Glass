@@ -22,13 +22,14 @@ xattr -cr /Applications/Glass.app
 
 This only needs to be done once per version.
 
-## Homebrew
-
-Once the tap is published:
+## Homebrew (recommended)
 
 ```bash
-brew install candyhunterz/glass/glass
+brew tap candyhunterz/glass
+brew install glass
 ```
+
+This is the easiest way to install Glass on macOS. No Gatekeeper workaround needed. Updates via `brew upgrade glass`.
 
 ## System requirements
 

@@ -6,5 +6,7 @@ pub mod coordination_poller;
 pub mod error;
 pub mod event;
 pub mod ipc;
+pub mod onboarding;
+pub mod provider_detect;
 pub mod state;
 pub mod updater;

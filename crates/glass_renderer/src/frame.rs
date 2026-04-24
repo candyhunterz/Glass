@@ -15,6 +15,7 @@ use glass_terminal::{Block, GridSnapshot, StatusState};
 use crate::block_renderer::BlockRenderer;
 use crate::glyph_cache::GlyphCache;
 use crate::grid_renderer::GridRenderer;
+use crate::onboarding_toast_renderer::{OnboardingToastRenderData, OnboardingToastRenderer};
 use crate::proposal_overlay_renderer::{ProposalOverlayRenderData, ProposalOverlayRenderer};
 use crate::proposal_toast_renderer::{ProposalToastRenderData, ProposalToastRenderer};
 use crate::rect_renderer::RectRenderer;
@@ -22,13 +23,162 @@ use crate::scrollbar::ScrollbarRenderer;
 use crate::search_overlay_renderer::SearchOverlayRenderer;
 use crate::status_bar::StatusBarRenderer;
 use crate::tab_bar::TabBarRenderer;
+use crate::welcome_overlay::{WelcomeOverlayRenderData, WelcomeOverlayRenderer};
+
+/// Soft purple used for agent activity stream text in the status bar.
+const ACTIVITY_STREAM_PURPLE: GlyphonColor = GlyphonColor::rgba(180, 140, 255, 255);
+/// Dim gray used for keyboard shortcut hint text.
+const HINT_TEXT_GRAY: GlyphonColor = GlyphonColor::rgba(85, 85, 85, 255);
+/// Pure white used for general text rendering.
+const TEXT_WHITE: GlyphonColor = GlyphonColor::rgba(255, 255, 255, 255);
+
+/// Half-cell horizontal padding used for status bar edge margins.
+const HALF_CELL_GAP: f32 = 0.5;
+/// Two-cell horizontal gap between status bar sections.
+const SECTION_PADDING_CELLS: f32 = 2.0;
 
 /// Display data for the search overlay, extracted from SearchOverlay state.
 /// Passed as Option to draw_frame to avoid borrow conflicts with WindowContext.
 pub struct SearchOverlayRenderData {
+    /// Current search query string.
     pub query: String,
-    pub results: Vec<(String, Option<i32>, String, String)>, // (command, exit_code, timestamp, preview)
+    /// Matched results: `(command, exit_code, timestamp, preview)`.
+    pub results: Vec<(String, Option<i32>, String, String)>,
+    /// Index of the currently highlighted result row.
     pub selected: usize,
+}
+
+/// Info needed to render the conflict warning overlay.
+pub struct ConflictInfo {
+    pub agent_count: usize,
+    pub lock_count: usize,
+}
+
+/// Parameters for rendering a single overlay text element.
+struct OverlayTextParams<'a> {
+    text: &'a str,
+    left: f32,
+    top: f32,
+    color: GlyphonColor,
+    metrics: Metrics,
+    font_family: &'a str,
+    buf_width: f32,
+    cell_height: f32,
+}
+
+/// All rendering state passed to draw_frame, excluding GPU handles.
+pub struct FrameRenderContext<'a> {
+    pub snapshot: &'a GridSnapshot,
+    pub blocks: &'a [&'a Block],
+    pub status: Option<&'a StatusState>,
+    pub search_overlay: Option<&'a SearchOverlayRenderData>,
+    pub tab_bar_info: Option<&'a [crate::tab_bar::TabDisplayInfo]>,
+    pub hovered_tab: Option<usize>,
+    pub drop_index: Option<usize>,
+    pub update_text: Option<&'a str>,
+    pub coordination_text: Option<&'a str>,
+    pub agent_cost_text: Option<&'a str>,
+    pub agent_paused: bool,
+    pub scrollbar_hovered: bool,
+    pub scrollbar_dragging: bool,
+    pub agent_mode_text: Option<&'a str>,
+    pub proposal_count_text: Option<&'a str>,
+    pub proposal_toast: Option<&'a ProposalToastRenderData>,
+    pub proposal_overlay: Option<&'a ProposalOverlayRenderData>,
+    pub agent_activity_line: Option<&'a str>,
+    pub orchestrating: bool,
+    pub onboarding_toast: Option<&'a OnboardingToastRenderData>,
+    pub welcome_overlay: Option<&'a WelcomeOverlayRenderData>,
+}
+
+/// All rendering state passed to draw_multi_pane_frame, excluding GPU handles.
+pub struct MultiPaneRenderContext<'a> {
+    pub panes: &'a [(PaneViewport, &'a GridSnapshot, &'a [&'a Block], bool)],
+    pub dividers: &'a [DividerRect],
+    pub status: Option<&'a StatusState>,
+    pub tab_bar_info: Option<&'a [crate::tab_bar::TabDisplayInfo]>,
+    pub hovered_tab: Option<usize>,
+    pub drop_index: Option<usize>,
+    pub update_text: Option<&'a str>,
+    pub coordination_text: Option<&'a str>,
+    pub agent_cost_text: Option<&'a str>,
+    pub agent_paused: bool,
+    pub scrollbar_state: &'a [(bool, bool)],
+    pub agent_mode_text: Option<&'a str>,
+    pub proposal_count_text: Option<&'a str>,
+    pub proposal_toast: Option<&'a ProposalToastRenderData>,
+    pub proposal_overlay: Option<&'a ProposalOverlayRenderData>,
+    pub agent_activity_line: Option<&'a str>,
+    pub orchestrating: bool,
+    pub onboarding_toast: Option<&'a OnboardingToastRenderData>,
+    pub welcome_overlay: Option<&'a WelcomeOverlayRenderData>,
+}
+
+/// Positioning metadata for a single overlay text buffer.
+///
+/// Tracks the screen position and default color for each overlay buffer
+/// so that `TextArea`s can be constructed in a second pass without
+/// re-borrowing the font system.
+struct OverlayMeta {
+    left: f32,
+    top: f32,
+    color: GlyphonColor,
+}
+
+/// Create a shaped text buffer ready for overlay rendering.
+///
+/// Performs the four-step sequence (create, size, set text, shape) that
+/// every overlay text element requires. The caller is responsible for
+/// pushing the returned buffer and a corresponding `OverlayMeta`.
+fn make_overlay_buffer(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    color: GlyphonColor,
+    metrics: Metrics,
+    font_family: &str,
+    buf_width: f32,
+    cell_height: f32,
+) -> Buffer {
+    let mut buffer = Buffer::new(font_system, metrics);
+    buffer.set_size(font_system, Some(buf_width), Some(cell_height));
+    buffer.set_text(
+        font_system,
+        text,
+        &Attrs::new().family(Family::Name(font_family)).color(color),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+    buffer
+}
+
+/// Create a shaped overlay buffer and append it along with positioning metadata.
+///
+/// This is the single place that performs the create-size-text-shape-push
+/// sequence for status bar and settings overlay text elements. Takes
+/// individual field references to avoid conflicting with other borrows of
+/// `FrameRenderer`.
+fn push_overlay_text(
+    font_system: &mut glyphon::FontSystem,
+    overlay_buffers: &mut Vec<Buffer>,
+    overlay_metas: &mut Vec<OverlayMeta>,
+    params: &OverlayTextParams<'_>,
+) {
+    let buffer = make_overlay_buffer(
+        font_system,
+        params.text,
+        params.color,
+        params.metrics,
+        params.font_family,
+        params.buf_width,
+        params.cell_height,
+    );
+    overlay_buffers.push(buffer);
+    overlay_metas.push(OverlayMeta {
+        left: params.left,
+        top: params.top,
+        color: params.color,
+    });
 }
 
 /// Orchestrates the complete GPU rendering pipeline for terminal content.
@@ -210,7 +360,6 @@ impl FrameRenderer {
     ///
     /// When `blocks` is empty and `status` is None, this behaves identically to Phase 2.
     #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_frame(
         &mut self,
         device: &wgpu::Device,
@@ -218,26 +367,30 @@ impl FrameRenderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        snapshot: &GridSnapshot,
-        blocks: &[&Block],
-        status: Option<&StatusState>,
-        search_overlay: Option<&SearchOverlayRenderData>,
-        tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
-        hovered_tab: Option<usize>,
-        drop_index: Option<usize>,
-        update_text: Option<&str>,
-        coordination_text: Option<&str>,
-        agent_cost_text: Option<&str>,
-        agent_paused: bool,
-        scrollbar_hovered: bool,
-        scrollbar_dragging: bool,
-        agent_mode_text: Option<&str>,
-        proposal_count_text: Option<&str>,
-        proposal_toast: Option<&ProposalToastRenderData>,
-        proposal_overlay: Option<&ProposalOverlayRenderData>,
-        agent_activity_line: Option<&str>,
-        orchestrating: bool,
+        ctx: &FrameRenderContext<'_>,
     ) {
+        let snapshot = ctx.snapshot;
+        let blocks = ctx.blocks;
+        let status = ctx.status;
+        let search_overlay = ctx.search_overlay;
+        let tab_bar_info = ctx.tab_bar_info;
+        let hovered_tab = ctx.hovered_tab;
+        let drop_index = ctx.drop_index;
+        let update_text = ctx.update_text;
+        let coordination_text = ctx.coordination_text;
+        let agent_cost_text = ctx.agent_cost_text;
+        let agent_paused = ctx.agent_paused;
+        let scrollbar_hovered = ctx.scrollbar_hovered;
+        let scrollbar_dragging = ctx.scrollbar_dragging;
+        let agent_mode_text = ctx.agent_mode_text;
+        let proposal_count_text = ctx.proposal_count_text;
+        let proposal_toast = ctx.proposal_toast;
+        let proposal_overlay = ctx.proposal_overlay;
+        let agent_activity_line = ctx.agent_activity_line;
+        let orchestrating = ctx.orchestrating;
+        let onboarding_toast = ctx.onboarding_toast;
+        let welcome_overlay = ctx.welcome_overlay;
+
         let w = width as f32;
         let h = height as f32;
         let two_line_status = agent_activity_line.is_some();
@@ -314,9 +467,11 @@ impl FrameRenderer {
                 w,
                 grid_y_offset,
                 h - grid_y_offset - status_bar_h_sb,
-                snapshot.display_offset,
-                snapshot.history_size,
-                snapshot.screen_lines,
+                &crate::scrollbar::ScrollState {
+                    display_offset: snapshot.display_offset,
+                    history_size: snapshot.history_size,
+                    screen_lines: snapshot.screen_lines,
+                },
                 scrollbar_hovered,
                 scrollbar_dragging,
             );
@@ -339,18 +494,26 @@ impl FrameRenderer {
 
         // 1d2. Proposal overlay rects (full-screen backdrop + panel) -- drawn before pipeline
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_rects = overlay_renderer.build_overlay_rects(w, h, overlay_data);
             rect_instances.extend(overlay_rects);
         }
 
         // 1d3. Proposal toast rect (above status bar, right-aligned)
         if let Some(_toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_rects = toast_renderer.build_toast_rects(w, h);
             rect_instances.extend(toast_rects);
+        }
+
+        // 1d4. Onboarding toast rect (above status bar, right-aligned)
+        if let Some(_onb_toast) = onboarding_toast {
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
+            let onb_rects = onb_renderer.build_toast_rects(w, h);
+            rect_instances.extend(onb_rects);
         }
 
         // Record where background rects end (overlay rects rendered after text come next)
@@ -437,11 +600,6 @@ impl FrameRenderer {
         let font_family = &self.grid_renderer.font_family;
 
         // Track overlay layout metadata: (left, top, default_color) per buffer
-        struct OverlayMeta {
-            left: f32,
-            top: f32,
-            color: GlyphonColor,
-        }
         let mut overlay_metas: Vec<OverlayMeta> = Vec::new();
 
         // Phase A: Build all overlay buffers (status bar, tabs, search, proposals)
@@ -452,86 +610,66 @@ impl FrameRenderer {
                 status_state.cwd(),
                 status_state.git_info(),
                 update_text,
-                coordination_text,
-                agent_cost_text,
-                agent_paused,
-                agent_mode_text,
-                proposal_count_text,
+                &crate::status_bar::StatusBarAgentInfo {
+                    coordination_text,
+                    agent_cost_text,
+                    agent_paused,
+                    agent_mode_text,
+                    proposal_count_text,
+                },
                 w,
                 h,
             );
 
             // Left text (CWD)
             {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.left_color.r,
+                    status_label.left_color.g,
+                    status_label.left_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    &status_label.left_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.left_color.r,
-                            status_label.left_color.g,
-                            status_label.left_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &status_label.left_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.left_color.r,
-                        status_label.left_color.g,
-                        status_label.left_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Right text (git info)
             if let Some(ref right_text) = status_label.right_text {
                 let right_text_width = right_text.len() as f32 * cell_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.right_color.r,
+                    status_label.right_color.g,
+                    status_label.right_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    right_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.right_color.r,
-                            status_label.right_color.g,
-                            status_label.right_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: right_text,
+                        left: w - right_text_width - cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: w - right_text_width - cell_width * 0.5,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.right_color.r,
-                        status_label.right_color.g,
-                        status_label.right_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Coordination text (agent/lock counts) -- positioned left of git info
@@ -544,43 +682,32 @@ impl FrameRenderer {
                     .unwrap_or(0);
                 let coord_text_width = coord_text.len() as f32 * cell_width;
                 let gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_x = w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.coordination_color.r,
+                    status_label.coordination_color.g,
+                    status_label.coordination_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    coord_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.coordination_color.r,
-                            status_label.coordination_color.g,
-                            status_label.coordination_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: coord_text,
+                        left: coord_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: coord_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.coordination_color.r,
-                        status_label.coordination_color.g,
-                        status_label.coordination_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Agent cost text -- positioned left of coordination_text
@@ -596,14 +723,14 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let agent_text_width = agent_text.len() as f32 * cell_width;
                 let agent_x = w
@@ -613,38 +740,27 @@ impl FrameRenderer {
                     - coord_gap
                     - cell_width  // gap between agent and coordination
                     - agent_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.agent_cost_color.r,
+                    status_label.agent_cost_color.g,
+                    status_label.agent_cost_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    agent_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.agent_cost_color.r,
-                            status_label.agent_cost_color.g,
-                            status_label.agent_cost_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: agent_text,
+                        left: agent_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: agent_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.agent_cost_color.r,
-                        status_label.agent_cost_color.g,
-                        status_label.agent_cost_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Agent mode text -- positioned left of agent_cost_text
@@ -665,12 +781,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -689,38 +805,27 @@ impl FrameRenderer {
                     - cost_gap
                     - cell_width // gap between mode and cost
                     - mode_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.agent_mode_color.r,
+                    status_label.agent_mode_color.g,
+                    status_label.agent_mode_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    mode_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.agent_mode_color.r,
-                            status_label.agent_mode_color.g,
-                            status_label.agent_mode_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: mode_text,
+                        left: mode_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: mode_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.agent_mode_color.r,
-                        status_label.agent_mode_color.g,
-                        status_label.agent_mode_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Proposal count text -- positioned left of agent_mode_text
@@ -746,12 +851,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -773,52 +878,40 @@ impl FrameRenderer {
                     - mode_gap
                     - cell_width // gap between proposal and mode
                     - proposal_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.proposal_count_color.r,
+                    status_label.proposal_count_color.g,
+                    status_label.proposal_count_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    proposal_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.proposal_count_color.r,
-                            status_label.proposal_count_color.g,
-                            status_label.proposal_count_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: proposal_text,
+                        left: proposal_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: proposal_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.proposal_count_color.r,
-                        status_label.proposal_count_color.g,
-                        status_label.proposal_count_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Center text (update notification / onboarding tip)
             // Only show if there is enough horizontal space between left CWD and right-side items.
             if let Some(ref center_text) = status_label.center_text {
-                let left_text_width =
-                    status_label.left_text.len() as f32 * cell_width + cell_width;
+                let left_text_width = status_label.left_text.len() as f32 * cell_width + cell_width;
                 let right_side_width = {
                     let mut rw = 0.0f32;
                     if let Some(ref rt) = status_label.right_text {
-                        rw += rt.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += rt.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref ct) = status_label.coordination_text {
-                        rw += ct.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += ct.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref at) = status_label.agent_cost_text {
                         rw += at.len() as f32 * cell_width + cell_width;
@@ -835,98 +928,70 @@ impl FrameRenderer {
                 let center_x = (w - center_text_width) / 2.0;
                 let right_items_start = w - right_side_width;
                 // Check actual pixel positions: center text must not overlap left OR right items
-                if center_x > left_text_width
-                    && center_x + center_text_width < right_items_start
-                {
-                    let mut buffer =
-                        Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                    buffer.set_size(
-                        &mut self.glyph_cache.font_system,
-                        Some(w),
-                        Some(cell_height),
+                if center_x > left_text_width && center_x + center_text_width < right_items_start {
+                    let color = GlyphonColor::rgba(
+                        status_label.center_color.r,
+                        status_label.center_color.g,
+                        status_label.center_color.b,
+                        255,
                     );
-                    buffer.set_text(
+                    push_overlay_text(
                         &mut self.glyph_cache.font_system,
-                        center_text,
-                        &Attrs::new()
-                            .family(Family::Name(font_family))
-                            .color(GlyphonColor::rgba(
-                                status_label.center_color.r,
-                                status_label.center_color.g,
-                                status_label.center_color.b,
-                                255,
-                            )),
-                        Shaping::Advanced,
-                        None,
+                        &mut self.overlay_buffers,
+                        &mut overlay_metas,
+                        &OverlayTextParams {
+                            text: center_text,
+                            left: center_x,
+                            top: status_label.y,
+                            color,
+                            metrics,
+                            font_family,
+                            buf_width: w,
+                            cell_height,
+                        },
                     );
-                    buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                    self.overlay_buffers.push(buffer);
-                    overlay_metas.push(OverlayMeta {
-                        left: center_x,
-                        top: status_label.y,
-                        color: GlyphonColor::rgba(
-                            status_label.center_color.r,
-                            status_label.center_color.g,
-                            status_label.center_color.b,
-                            255,
-                        ),
-                    });
                 }
             }
 
             // Agent activity line (top row of two-line status bar)
             if let Some(activity_text) = agent_activity_line {
                 let activity_y = status_label.y - cell_height;
-                let activity_color = GlyphonColor::rgba(180, 140, 255, 255); // soft purple
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let activity_color = ACTIVITY_STREAM_PURPLE;
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: activity_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: activity_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    activity_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(activity_color),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
-                    top: activity_y,
-                    color: activity_color,
-                });
 
                 // Expand hint at far right of agent line
                 let hint = "Ctrl+Shift+G";
                 let hint_width = hint.len() as f32 * cell_width;
-                let hint_color = GlyphonColor::rgba(85, 85, 85, 255);
-                let mut hint_buf = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                hint_buf.set_size(
+                let hint_color = HINT_TEXT_GRAY;
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: hint,
+                        left: w - hint_width - cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: hint_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                hint_buf.set_text(
-                    &mut self.glyph_cache.font_system,
-                    hint,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(hint_color),
-                    Shaping::Advanced,
-                    None,
-                );
-                hint_buf.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(hint_buf);
-                overlay_metas.push(OverlayMeta {
-                    left: w - hint_width - cell_width * 0.5,
-                    top: activity_y,
-                    color: hint_color,
-                });
             }
         }
 
@@ -934,33 +999,22 @@ impl FrameRenderer {
         if let Some(tabs) = tab_bar_info {
             let tab_labels = self.tab_bar.build_tab_text(tabs, w, hovered_tab);
             for label in &tab_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
@@ -974,105 +1028,97 @@ impl FrameRenderer {
                 h,
             );
             for label in &overlay_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
         // Proposal overlay text buffers
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_labels = overlay_renderer.build_overlay_text(w, h, overlay_data);
             for label in &overlay_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
         // Proposal toast text buffers
         if let Some(toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
             for label in &toast_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
+            }
+        }
+
+        // Onboarding toast text buffers
+        if let Some(onb_data) = onboarding_toast {
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
+            let onb_labels = onb_renderer.build_toast_text(onb_data, w, h);
+            for label in &onb_labels {
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
@@ -1093,33 +1139,22 @@ impl FrameRenderer {
                 w,
             );
             for label in &block_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.pipeline_buffers,
+                    &mut pipeline_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y + grid_y_offset,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.pipeline_buffers.push(buffer);
-                pipeline_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y + grid_y_offset,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
@@ -1129,33 +1164,22 @@ impl FrameRenderer {
                 self.block_renderer
                     .build_pipeline_text(blocks, w, h, status_bar_h);
             for label in &pipeline_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.pipeline_buffers,
+                    &mut pipeline_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.pipeline_buffers.push(buffer);
-                pipeline_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
@@ -1308,6 +1332,11 @@ impl FrameRenderer {
             }
             queue.submit([encoder2.finish()]);
         }
+
+        // Welcome overlay: separate render pass on top of everything (like settings/activity overlays)
+        if let Some(welcome_data) = welcome_overlay {
+            self.draw_welcome_overlay(device, queue, view, width, height, welcome_data);
+        }
     }
 
     /// Draw a complete frame with multiple split panes.
@@ -1318,7 +1347,6 @@ impl FrameRenderer {
     ///
     /// `panes`: Vec of (viewport, snapshot, blocks, is_focused) for each pane.
     #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_multi_pane_frame(
         &mut self,
         device: &wgpu::Device,
@@ -1326,24 +1354,28 @@ impl FrameRenderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        panes: &[(PaneViewport, &GridSnapshot, &[&Block], bool)],
-        dividers: &[DividerRect],
-        status: Option<&StatusState>,
-        tab_bar_info: Option<&[crate::tab_bar::TabDisplayInfo]>,
-        hovered_tab: Option<usize>,
-        drop_index: Option<usize>,
-        update_text: Option<&str>,
-        coordination_text: Option<&str>,
-        agent_cost_text: Option<&str>,
-        agent_paused: bool,
-        scrollbar_state: &[(bool, bool)],
-        agent_mode_text: Option<&str>,
-        proposal_count_text: Option<&str>,
-        proposal_toast: Option<&ProposalToastRenderData>,
-        proposal_overlay: Option<&ProposalOverlayRenderData>,
-        agent_activity_line: Option<&str>,
-        orchestrating: bool,
+        ctx: &MultiPaneRenderContext<'_>,
     ) {
+        let panes = ctx.panes;
+        let dividers = ctx.dividers;
+        let status = ctx.status;
+        let tab_bar_info = ctx.tab_bar_info;
+        let hovered_tab = ctx.hovered_tab;
+        let drop_index = ctx.drop_index;
+        let update_text = ctx.update_text;
+        let coordination_text = ctx.coordination_text;
+        let agent_cost_text = ctx.agent_cost_text;
+        let agent_paused = ctx.agent_paused;
+        let scrollbar_state = ctx.scrollbar_state;
+        let agent_mode_text = ctx.agent_mode_text;
+        let proposal_count_text = ctx.proposal_count_text;
+        let proposal_toast = ctx.proposal_toast;
+        let proposal_overlay = ctx.proposal_overlay;
+        let agent_activity_line = ctx.agent_activity_line;
+        let orchestrating = ctx.orchestrating;
+        let onboarding_toast = ctx.onboarding_toast;
+        let welcome_overlay = ctx.welcome_overlay;
+
         let w = width as f32;
         let h = height as f32;
         let two_line_status = agent_activity_line.is_some();
@@ -1422,9 +1454,11 @@ impl FrameRenderer {
                     (viewport.x + viewport.width) as f32,
                     viewport.y as f32,
                     viewport.height as f32,
-                    snapshot.display_offset,
-                    snapshot.history_size,
-                    snapshot.screen_lines,
+                    &crate::scrollbar::ScrollState {
+                        display_offset: snapshot.display_offset,
+                        history_size: snapshot.history_size,
+                        screen_lines: snapshot.screen_lines,
+                    },
                     sb_hovered,
                     sb_dragging,
                 );
@@ -1466,18 +1500,26 @@ impl FrameRenderer {
 
         // Proposal overlay rects (window-global, rendered once after all panes)
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_rects = overlay_renderer.build_overlay_rects(w, h, overlay_data);
             rect_instances.extend(overlay_rects);
         }
 
         // Proposal toast rect (window-global, above status bar)
         if let Some(_toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_rects = toast_renderer.build_toast_rects(w, h);
             rect_instances.extend(toast_rects);
+        }
+
+        // Onboarding toast rect (window-global, above status bar)
+        if let Some(_onb_toast) = onboarding_toast {
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
+            let onb_rects = onb_renderer.build_toast_rects(w, h);
+            rect_instances.extend(onb_rects);
         }
 
         let total_rect_count = rect_instances.len() as u32;
@@ -1541,11 +1583,6 @@ impl FrameRenderer {
         let metrics = Metrics::new(physical_font_size, cell_height);
         let font_family = &self.grid_renderer.font_family;
 
-        struct OverlayMeta {
-            left: f32,
-            top: f32,
-            color: GlyphonColor,
-        }
         let mut overlay_metas: Vec<OverlayMeta> = Vec::new();
 
         // Status bar text
@@ -1554,86 +1591,66 @@ impl FrameRenderer {
                 status_state.cwd(),
                 status_state.git_info(),
                 update_text,
-                coordination_text,
-                agent_cost_text,
-                agent_paused,
-                agent_mode_text,
-                proposal_count_text,
+                &crate::status_bar::StatusBarAgentInfo {
+                    coordination_text,
+                    agent_cost_text,
+                    agent_paused,
+                    agent_mode_text,
+                    proposal_count_text,
+                },
                 w,
                 h,
             );
 
             // Left text (CWD)
             {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.left_color.r,
+                    status_label.left_color.g,
+                    status_label.left_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    &status_label.left_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.left_color.r,
-                            status_label.left_color.g,
-                            status_label.left_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &status_label.left_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.left_color.r,
-                        status_label.left_color.g,
-                        status_label.left_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Right text (git info)
             if let Some(ref right_text) = status_label.right_text {
                 let right_text_width = right_text.len() as f32 * cell_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.right_color.r,
+                    status_label.right_color.g,
+                    status_label.right_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    right_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.right_color.r,
-                            status_label.right_color.g,
-                            status_label.right_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: right_text,
+                        left: w - right_text_width - cell_width * HALF_CELL_GAP,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: w - right_text_width - cell_width * 0.5,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.right_color.r,
-                        status_label.right_color.g,
-                        status_label.right_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Coordination text (agent/lock counts) -- positioned left of git info
@@ -1645,43 +1662,32 @@ impl FrameRenderer {
                     .unwrap_or(0);
                 let coord_text_width = coord_text.len() as f32 * cell_width;
                 let gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_x = w - (right_text_chars as f32 * cell_width) - gap - coord_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.coordination_color.r,
+                    status_label.coordination_color.g,
+                    status_label.coordination_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    coord_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.coordination_color.r,
-                            status_label.coordination_color.g,
-                            status_label.coordination_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: coord_text,
+                        left: coord_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: coord_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.coordination_color.r,
-                        status_label.coordination_color.g,
-                        status_label.coordination_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Agent cost text -- positioned left of coordination_text (multi-pane)
@@ -1697,14 +1703,14 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let agent_text_width = agent_text.len() as f32 * cell_width;
                 let agent_x = w
@@ -1714,38 +1720,27 @@ impl FrameRenderer {
                     - coord_gap
                     - cell_width
                     - agent_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.agent_cost_color.r,
+                    status_label.agent_cost_color.g,
+                    status_label.agent_cost_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    agent_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.agent_cost_color.r,
-                            status_label.agent_cost_color.g,
-                            status_label.agent_cost_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: agent_text,
+                        left: agent_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: agent_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.agent_cost_color.r,
-                        status_label.agent_cost_color.g,
-                        status_label.agent_cost_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Agent mode text -- positioned left of agent_cost_text (multi-pane)
@@ -1766,12 +1761,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -1790,38 +1785,27 @@ impl FrameRenderer {
                     - cost_gap
                     - cell_width
                     - mode_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.agent_mode_color.r,
+                    status_label.agent_mode_color.g,
+                    status_label.agent_mode_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    mode_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.agent_mode_color.r,
-                            status_label.agent_mode_color.g,
-                            status_label.agent_mode_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: mode_text,
+                        left: mode_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: mode_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.agent_mode_color.r,
-                        status_label.agent_mode_color.g,
-                        status_label.agent_mode_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Proposal count text -- positioned left of agent_mode_text (multi-pane)
@@ -1847,12 +1831,12 @@ impl FrameRenderer {
                     .map(|t| t.len())
                     .unwrap_or(0);
                 let right_gap = if right_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
-                    cell_width * 0.5
+                    cell_width * HALF_CELL_GAP
                 };
                 let coord_gap = if coord_text_chars > 0 {
-                    cell_width * 2.0
+                    cell_width * SECTION_PADDING_CELLS
                 } else {
                     0.0
                 };
@@ -1874,52 +1858,40 @@ impl FrameRenderer {
                     - mode_gap
                     - cell_width
                     - proposal_text_width;
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
-                    &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                let color = GlyphonColor::rgba(
+                    status_label.proposal_count_color.r,
+                    status_label.proposal_count_color.g,
+                    status_label.proposal_count_color.b,
+                    255,
                 );
-                buffer.set_text(
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    proposal_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            status_label.proposal_count_color.r,
-                            status_label.proposal_count_color.g,
-                            status_label.proposal_count_color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: proposal_text,
+                        left: proposal_x,
+                        top: status_label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: proposal_x,
-                    top: status_label.y,
-                    color: GlyphonColor::rgba(
-                        status_label.proposal_count_color.r,
-                        status_label.proposal_count_color.g,
-                        status_label.proposal_count_color.b,
-                        255,
-                    ),
-                });
             }
 
             // Center text (update notification / onboarding tip) -- multi-pane path
             // Only show if there is enough horizontal space between left CWD and right-side items.
             if let Some(ref center_text) = status_label.center_text {
-                let left_text_width =
-                    status_label.left_text.len() as f32 * cell_width + cell_width;
+                let left_text_width = status_label.left_text.len() as f32 * cell_width + cell_width;
                 let right_side_width = {
                     let mut rw = 0.0f32;
                     if let Some(ref rt) = status_label.right_text {
-                        rw += rt.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += rt.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref ct) = status_label.coordination_text {
-                        rw += ct.len() as f32 * cell_width + cell_width * 2.0;
+                        rw += ct.len() as f32 * cell_width + cell_width * SECTION_PADDING_CELLS;
                     }
                     if let Some(ref at) = status_label.agent_cost_text {
                         rw += at.len() as f32 * cell_width + cell_width;
@@ -1936,98 +1908,70 @@ impl FrameRenderer {
                 let center_x = (w - center_text_width) / 2.0;
                 let right_items_start = w - right_side_width;
                 // Check actual pixel positions: center text must not overlap left OR right items
-                if center_x > left_text_width
-                    && center_x + center_text_width < right_items_start
-                {
-                    let mut buffer =
-                        Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                    buffer.set_size(
-                        &mut self.glyph_cache.font_system,
-                        Some(w),
-                        Some(cell_height),
+                if center_x > left_text_width && center_x + center_text_width < right_items_start {
+                    let color = GlyphonColor::rgba(
+                        status_label.center_color.r,
+                        status_label.center_color.g,
+                        status_label.center_color.b,
+                        255,
                     );
-                    buffer.set_text(
+                    push_overlay_text(
                         &mut self.glyph_cache.font_system,
-                        center_text,
-                        &Attrs::new()
-                            .family(Family::Name(font_family))
-                            .color(GlyphonColor::rgba(
-                                status_label.center_color.r,
-                                status_label.center_color.g,
-                                status_label.center_color.b,
-                                255,
-                            )),
-                        Shaping::Advanced,
-                        None,
+                        &mut self.overlay_buffers,
+                        &mut overlay_metas,
+                        &OverlayTextParams {
+                            text: center_text,
+                            left: center_x,
+                            top: status_label.y,
+                            color,
+                            metrics,
+                            font_family,
+                            buf_width: w,
+                            cell_height,
+                        },
                     );
-                    buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                    self.overlay_buffers.push(buffer);
-                    overlay_metas.push(OverlayMeta {
-                        left: center_x,
-                        top: status_label.y,
-                        color: GlyphonColor::rgba(
-                            status_label.center_color.r,
-                            status_label.center_color.g,
-                            status_label.center_color.b,
-                            255,
-                        ),
-                    });
                 }
             }
 
             // Agent activity line (top row of two-line status bar)
             if let Some(activity_text) = agent_activity_line {
                 let activity_y = status_label.y - cell_height;
-                let activity_color = GlyphonColor::rgba(180, 140, 255, 255);
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let activity_color = ACTIVITY_STREAM_PURPLE;
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: activity_text,
+                        left: cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: activity_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    activity_text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(activity_color),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: cell_width * 0.5,
-                    top: activity_y,
-                    color: activity_color,
-                });
 
                 // Expand hint
                 let hint = "Ctrl+Shift+G";
                 let hint_width = hint.len() as f32 * cell_width;
-                let hint_color = GlyphonColor::rgba(85, 85, 85, 255);
-                let mut hint_buf = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                hint_buf.set_size(
+                let hint_color = HINT_TEXT_GRAY;
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: hint,
+                        left: w - hint_width - cell_width * HALF_CELL_GAP,
+                        top: activity_y,
+                        color: hint_color,
+                        metrics,
+                        font_family,
+                        buf_width: w,
+                        cell_height,
+                    },
                 );
-                hint_buf.set_text(
-                    &mut self.glyph_cache.font_system,
-                    hint,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(hint_color),
-                    Shaping::Advanced,
-                    None,
-                );
-                hint_buf.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(hint_buf);
-                overlay_metas.push(OverlayMeta {
-                    left: w - hint_width - cell_width * 0.5,
-                    top: activity_y,
-                    color: hint_color,
-                });
             }
         }
 
@@ -2035,105 +1979,97 @@ impl FrameRenderer {
         if let Some(tabs) = tab_bar_info {
             let tab_labels = self.tab_bar.build_tab_text(tabs, w, hovered_tab);
             for label in &tab_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
         // Proposal overlay text buffers (window-global, after tab bar)
         if let Some(overlay_data) = proposal_overlay {
-            let (cell_w_po, cell_h_po) = self.grid_renderer.cell_size();
-            let overlay_renderer = ProposalOverlayRenderer::new(cell_w_po, cell_h_po);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let overlay_renderer = ProposalOverlayRenderer::new(cw, ch);
             let overlay_labels = overlay_renderer.build_overlay_text(w, h, overlay_data);
             for label in &overlay_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
-                    &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
         // Proposal toast text buffers (window-global, after tab bar)
         if let Some(toast_data) = proposal_toast {
-            let (cell_w_pt, cell_h_pt) = self.grid_renderer.cell_size();
-            let toast_renderer = ProposalToastRenderer::new(cell_w_pt, cell_h_pt);
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let toast_renderer = ProposalToastRenderer::new(cw, ch);
             let toast_labels = toast_renderer.build_toast_text(toast_data, w, h);
             for label in &toast_labels {
-                let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-                buffer.set_size(
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    Some(w - label.x),
-                    Some(cell_height),
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.set_text(
+            }
+        }
+
+        // Onboarding toast text buffers (window-global, after tab bar)
+        if let Some(onb_data) = onboarding_toast {
+            let (cw, ch) = self.grid_renderer.cell_size();
+            let onb_renderer = OnboardingToastRenderer::new(cw, ch);
+            let onb_labels = onb_renderer.build_toast_text(onb_data, w, h);
+            for label in &onb_labels {
+                let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+                push_overlay_text(
                     &mut self.glyph_cache.font_system,
-                    &label.text,
-                    &Attrs::new()
-                        .family(Family::Name(font_family))
-                        .color(GlyphonColor::rgba(
-                            label.color.r,
-                            label.color.g,
-                            label.color.b,
-                            255,
-                        )),
-                    Shaping::Advanced,
-                    None,
+                    &mut self.overlay_buffers,
+                    &mut overlay_metas,
+                    &OverlayTextParams {
+                        text: &label.text,
+                        left: label.x,
+                        top: label.y,
+                        color,
+                        metrics,
+                        font_family,
+                        buf_width: w - label.x,
+                        cell_height,
+                    },
                 );
-                buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-                self.overlay_buffers.push(buffer);
-                overlay_metas.push(OverlayMeta {
-                    left: label.x,
-                    top: label.y,
-                    color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
-                });
             }
         }
 
@@ -2215,6 +2151,11 @@ impl FrameRenderer {
             }
         }
         queue.submit([encoder.finish()]);
+
+        // Welcome overlay: separate render pass on top of everything (like settings/activity overlays)
+        if let Some(welcome_data) = welcome_overlay {
+            self.draw_welcome_overlay(device, queue, view, width, height, welcome_data);
+        }
     }
 
     /// Draw a config error overlay banner on top of existing frame content.
@@ -2245,29 +2186,20 @@ impl FrameRenderer {
         let metrics = Metrics::new(physical_font_size, cell_height);
         let font_family = &self.grid_renderer.font_family;
 
-        let mut error_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-        if let Some(label) = error_labels.first() {
-            error_buffer.set_size(
-                &mut self.glyph_cache.font_system,
-                Some(width as f32),
-                Some(cell_height),
-            );
-            error_buffer.set_text(
+        let error_buffer = if let Some(label) = error_labels.first() {
+            let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+            make_overlay_buffer(
                 &mut self.glyph_cache.font_system,
                 &label.text,
-                &Attrs::new()
-                    .family(Family::Name(font_family))
-                    .color(GlyphonColor::rgba(
-                        label.color.r,
-                        label.color.g,
-                        label.color.b,
-                        255,
-                    )),
-                Shaping::Advanced,
-                None,
-            );
-            error_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-        }
+                color,
+                metrics,
+                font_family,
+                width as f32,
+                cell_height,
+            )
+        } else {
+            Buffer::new(&mut self.glyph_cache.font_system, metrics)
+        };
 
         let error_text_areas: Vec<TextArea<'_>> = error_labels
             .iter()
@@ -2339,7 +2271,6 @@ impl FrameRenderer {
     ///
     /// Uses LoadOp::Load to preserve the existing frame content underneath.
     /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_conflict_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2347,9 +2278,10 @@ impl FrameRenderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
-        agent_count: usize,
-        lock_count: usize,
+        conflict: &ConflictInfo,
     ) {
+        let agent_count = conflict.agent_count;
+        let lock_count = conflict.lock_count;
         let (cell_width, cell_height) = self.grid_renderer.cell_size();
         let overlay = crate::conflict_overlay::ConflictOverlay::new(cell_width, cell_height);
         let warning_rects = overlay.build_warning_rects(width as f32, height as f32, 1);
@@ -2364,29 +2296,20 @@ impl FrameRenderer {
         let metrics = Metrics::new(physical_font_size, cell_height);
         let font_family = &self.grid_renderer.font_family;
 
-        let mut warning_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-        if let Some(label) = warning_labels.first() {
-            warning_buffer.set_size(
-                &mut self.glyph_cache.font_system,
-                Some(width as f32),
-                Some(cell_height),
-            );
-            warning_buffer.set_text(
+        let warning_buffer = if let Some(label) = warning_labels.first() {
+            let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+            make_overlay_buffer(
                 &mut self.glyph_cache.font_system,
                 &label.text,
-                &Attrs::new()
-                    .family(Family::Name(font_family))
-                    .color(GlyphonColor::rgba(
-                        label.color.r,
-                        label.color.g,
-                        label.color.b,
-                        255,
-                    )),
-                Shaping::Advanced,
-                None,
-            );
-            warning_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-        }
+                color,
+                metrics,
+                font_family,
+                width as f32,
+                cell_height,
+            )
+        } else {
+            Buffer::new(&mut self.glyph_cache.font_system, metrics)
+        };
 
         let warning_text_areas: Vec<TextArea<'_>> = warning_labels
             .iter()
@@ -2458,7 +2381,6 @@ impl FrameRenderer {
     ///
     /// Uses LoadOp::Load to preserve the existing frame content underneath.
     /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_activity_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2491,28 +2413,16 @@ impl FrameRenderer {
 
         let mut activity_buffers: Vec<Buffer> = Vec::with_capacity(labels.len());
         for label in &labels {
-            let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-            buffer.set_size(
-                &mut self.glyph_cache.font_system,
-                Some(width as f32 - label.x),
-                Some(cell_height),
-            );
-            buffer.set_text(
+            let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+            activity_buffers.push(make_overlay_buffer(
                 &mut self.glyph_cache.font_system,
                 &label.text,
-                &Attrs::new()
-                    .family(Family::Name(font_family))
-                    .color(GlyphonColor::rgba(
-                        label.color.r,
-                        label.color.g,
-                        label.color.b,
-                        255,
-                    )),
-                Shaping::Advanced,
-                None,
-            );
-            buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-            activity_buffers.push(buffer);
+                color,
+                metrics,
+                font_family,
+                width as f32 - label.x,
+                cell_height,
+            ));
         }
 
         // 4. Build text areas referencing the buffers
@@ -2584,7 +2494,6 @@ impl FrameRenderer {
     }
 
     /// Draw the settings overlay (fullscreen, on top of everything).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_settings_overlay(
         &mut self,
         device: &wgpu::Device,
@@ -2611,10 +2520,12 @@ impl FrameRenderer {
                     width as f32,
                     height as f32,
                     &data.config,
-                    data.section_index,
-                    data.field_index,
-                    data.editing,
-                    &data.edit_buffer,
+                    &crate::settings_overlay::SettingsNavState {
+                        section_index: data.section_index,
+                        field_index: data.field_index,
+                        editing: data.editing,
+                        edit_buffer: &data.edit_buffer,
+                    },
                 ));
             }
             crate::settings_overlay::SettingsTab::Shortcuts => {
@@ -2636,28 +2547,16 @@ impl FrameRenderer {
 
         let mut settings_buffers: Vec<Buffer> = Vec::with_capacity(all_labels.len());
         for label in &all_labels {
-            let mut buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-            buffer.set_size(
-                &mut self.glyph_cache.font_system,
-                Some(width as f32 - label.x),
-                Some(cell_height),
-            );
-            buffer.set_text(
+            let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+            settings_buffers.push(make_overlay_buffer(
                 &mut self.glyph_cache.font_system,
                 &label.text,
-                &Attrs::new()
-                    .family(Family::Name(font_family))
-                    .color(GlyphonColor::rgba(
-                        label.color.r,
-                        label.color.g,
-                        label.color.b,
-                        255,
-                    )),
-                Shaping::Advanced,
-                None,
-            );
-            buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
-            settings_buffers.push(buffer);
+                color,
+                metrics,
+                font_family,
+                width as f32 - label.x,
+                cell_height,
+            ));
         }
 
         let text_areas: Vec<TextArea<'_>> = all_labels
@@ -2725,6 +2624,118 @@ impl FrameRenderer {
         queue.submit([encoder.finish()]);
     }
 
+    /// Draw the welcome overlay (fullscreen, on top of everything).
+    ///
+    /// Uses LoadOp::Load to preserve the existing frame content underneath.
+    /// Must be called AFTER draw_frame/draw_multi_pane_frame (reuses rect_renderer).
+    fn draw_welcome_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        data: &WelcomeOverlayRenderData,
+    ) {
+        let (cell_width, cell_height) = self.grid_renderer.cell_size();
+        let overlay = WelcomeOverlayRenderer::new(cell_width, cell_height);
+
+        // 1. Build rects (backdrop + panel)
+        let rects = overlay.build_rects(width as f32, height as f32);
+        let rect_count = rects.len() as u32;
+        self.rect_renderer
+            .prepare(device, queue, &rects, width, height);
+
+        // 2. Build text labels
+        let labels = overlay.build_text(data, width as f32, height as f32);
+
+        // 3. Build per-label text buffers
+        let physical_font_size = self.grid_renderer.font_size * self.grid_renderer.scale_factor;
+        let metrics = Metrics::new(physical_font_size, cell_height);
+        let font_family = &self.grid_renderer.font_family;
+
+        let mut welcome_buffers: Vec<Buffer> = Vec::with_capacity(labels.len());
+        for label in &labels {
+            let color = GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255);
+            welcome_buffers.push(make_overlay_buffer(
+                &mut self.glyph_cache.font_system,
+                &label.text,
+                color,
+                metrics,
+                font_family,
+                width as f32 - label.x,
+                cell_height,
+            ));
+        }
+
+        // 4. Build text areas referencing the buffers
+        let text_areas: Vec<TextArea<'_>> = labels
+            .iter()
+            .zip(welcome_buffers.iter())
+            .map(|(label, buffer)| TextArea {
+                buffer,
+                left: label.x,
+                top: label.y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+                default_color: GlyphonColor::rgba(label.color.r, label.color.g, label.color.b, 255),
+                custom_glyphs: &[],
+            })
+            .collect();
+
+        // 5. Prepare text renderer
+        self.glyph_cache
+            .viewport
+            .update(queue, Resolution { width, height });
+
+        if let Err(e) = self.glyph_cache.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.glyph_cache.font_system,
+            &mut self.glyph_cache.atlas,
+            &self.glyph_cache.viewport,
+            text_areas,
+            &mut self.glyph_cache.swash_cache,
+        ) {
+            tracing::warn!("Welcome overlay text prepare error: {:?}", e);
+        }
+
+        // 6. Render pass: rects then text
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("welcome_overlay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.rect_renderer.render(&mut pass, rect_count);
+            if let Err(e) = self.glyph_cache.text_renderer.render(
+                &self.glyph_cache.atlas,
+                &self.glyph_cache.viewport,
+                &mut pass,
+            ) {
+                tracing::warn!("Welcome overlay text render error: {:?}", e);
+            }
+        }
+        queue.submit([encoder.finish()]);
+    }
+
     /// Draw a centered toast notification on top of existing frame content.
     ///
     /// Renders a small dark rect centered on the viewport with the given text.
@@ -2763,22 +2774,15 @@ impl FrameRenderer {
         let metrics = Metrics::new(physical_font_size, cell_height);
         let font_family = &self.grid_renderer.font_family;
 
-        let mut toast_buffer = Buffer::new(&mut self.glyph_cache.font_system, metrics);
-        toast_buffer.set_size(
-            &mut self.glyph_cache.font_system,
-            Some(box_w),
-            Some(box_h),
-        );
-        toast_buffer.set_text(
+        let toast_buffer = make_overlay_buffer(
             &mut self.glyph_cache.font_system,
             text,
-            &Attrs::new()
-                .family(Family::Name(font_family))
-                .color(GlyphonColor::rgba(255, 255, 255, 255)),
-            Shaping::Advanced,
-            None,
+            TEXT_WHITE,
+            metrics,
+            font_family,
+            box_w,
+            box_h,
         );
-        toast_buffer.shape_until_scroll(&mut self.glyph_cache.font_system, false);
 
         let text_x = box_x + cell_width * 1.5;
         let text_y = box_y + cell_height * 0.25;
@@ -2794,7 +2798,7 @@ impl FrameRenderer {
                 right: width as i32,
                 bottom: height as i32,
             },
-            default_color: GlyphonColor::rgba(255, 255, 255, 255),
+            default_color: TEXT_WHITE,
             custom_glyphs: &[],
         }];
 
@@ -2864,4 +2868,87 @@ pub struct DividerRect {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_overlay_buffer_creates_shaped_buffer() {
+        let mut font_system = glyphon::FontSystem::new();
+        let metrics = Metrics::new(14.0, 18.0);
+        let color = GlyphonColor::rgba(255, 255, 255, 255);
+
+        let buffer = make_overlay_buffer(
+            &mut font_system,
+            "hello world",
+            color,
+            metrics,
+            "monospace",
+            200.0,
+            18.0,
+        );
+
+        // Buffer should contain at least one line with the text we set.
+        assert!(
+            !buffer.lines.is_empty(),
+            "buffer should have lines after set_text"
+        );
+    }
+
+    #[test]
+    fn make_overlay_buffer_empty_text() {
+        let mut font_system = glyphon::FontSystem::new();
+        let metrics = Metrics::new(14.0, 18.0);
+        let color = GlyphonColor::rgba(0, 0, 0, 255);
+
+        let buffer = make_overlay_buffer(
+            &mut font_system,
+            "",
+            color,
+            metrics,
+            "monospace",
+            100.0,
+            18.0,
+        );
+
+        // Even empty text should produce a valid buffer with at least one line.
+        assert!(
+            !buffer.lines.is_empty(),
+            "empty text should still produce a buffer line"
+        );
+    }
+
+    #[test]
+    fn push_overlay_text_appends_buffer_and_meta() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut buffers: Vec<Buffer> = Vec::new();
+        let mut metas: Vec<OverlayMeta> = Vec::new();
+        let metrics = Metrics::new(14.0, 18.0);
+        let color = GlyphonColor::rgba(180, 140, 255, 255);
+
+        push_overlay_text(
+            &mut font_system,
+            &mut buffers,
+            &mut metas,
+            &OverlayTextParams {
+                text: "test text",
+                left: 10.5,
+                top: 20.0,
+                color,
+                metrics,
+                font_family: "monospace",
+                buf_width: 200.0,
+                cell_height: 18.0,
+            },
+        );
+
+        assert_eq!(buffers.len(), 1);
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].left, 10.5);
+        assert_eq!(metas[0].top, 20.0);
+        assert_eq!(metas[0].color, color);
+        assert!(!buffers[0].lines.is_empty());
+    }
 }

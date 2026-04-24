@@ -38,7 +38,8 @@ crates/glass_scripting/  - Self-improvement scripting: Rhai engine, hook system,
 - **History**: Per-project SQLite DB with FTS5 full-text search
 
 ## Key Files
-- `src/main.rs` (~2200 lines) - Event loop, window management, session creation, keyboard handling
+- `src/main.rs` - Event loop, window management, session creation, keyboard handling
+- `src/analyze.rs` - `glass analyze` HTTP server: serves embedded run-analyzer dashboard + .glass/ data API
 - `crates/glass_terminal/src/block_manager.rs` - Command block lifecycle (PromptActive -> InputActive -> Executing -> Complete)
 - `crates/glass_terminal/src/pty.rs` - PTY spawning, shell integration injection, glass_pty_loop
 - `crates/glass_terminal/src/osc_scanner.rs` - OSC 133 parsing for shell events + pipeline events
@@ -68,6 +69,8 @@ crates/glass_scripting/  - Self-improvement scripting: Rhai engine, hook system,
 - notify for cross-platform filesystem watching
 - rmcp for MCP server
 - clap 4.5 for CLI
+- axum for `glass analyze` HTTP server
+- rust-embed for embedding run-analyzer dashboard assets
 
 ## Build & Test
 ```bash
@@ -77,6 +80,8 @@ cargo fmt --all -- --check     # Check formatting
 cargo clippy --workspace -- -D warnings  # Lint
 cargo bench                    # Criterion benchmarks
 cargo build --features perf    # Build with tracing instrumentation
+glass analyze                  # Open run analyzer dashboard for current project
+glass analyze --dir path/.glass # Analyze a specific project's runs
 ```
 
 ## CI

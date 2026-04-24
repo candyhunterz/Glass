@@ -32,3 +32,4 @@ PRD*.md
 .superpowers/
 docs/superpowers/
 docs/internal/
+.mcp.json

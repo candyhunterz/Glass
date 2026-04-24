@@ -24,9 +24,11 @@ It looks like a terminal because it is one. Glass is a full GPU-accelerated term
 - [Provider Configuration](#provider-configuration)
 - [Terminal Features](#terminal-features)
 - [MCP Tools](#mcp-tools)
+- [AI Integration](#ai-integration)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
+- [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -130,14 +132,21 @@ Status: active
 
 | Platform | Download | Format |
 |----------|----------|--------|
-| Windows | [Glass-1.0.0-x86_64.msi](https://github.com/candyhunterz/Glass/releases/latest) | MSI installer |
-| macOS (Apple Silicon) | [Glass-1.0.0-aarch64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
-| macOS (Intel) | [Glass-1.0.0-x86_64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
-| Linux (Debian/Ubuntu) | [glass_1.0.0_amd64.deb](https://github.com/candyhunterz/Glass/releases/latest) | deb package |
+| Windows | [Glass-1.1.0-x86_64.msi](https://github.com/candyhunterz/Glass/releases/latest) | MSI installer |
+| macOS (Apple Silicon) | [Glass-1.1.0-aarch64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
+| macOS (Intel) | [Glass-1.1.0-x86_64.dmg](https://github.com/candyhunterz/Glass/releases/latest) | DMG disk image |
+| Linux (Debian/Ubuntu) | [glass_1.1.0_amd64.deb](https://github.com/candyhunterz/Glass/releases/latest) | deb package |
 
 Or download from [github.com/candyhunterz/Glass/releases](https://github.com/candyhunterz/Glass/releases).
 
 > **macOS Gatekeeper:** If macOS blocks Glass, run: `xattr -cr /Applications/Glass.app`
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap candyhunterz/glass
+brew install glass
+```
 
 ### Build from source
 
@@ -222,6 +231,7 @@ After each run, Glass analyzes performance and auto-tunes itself:
 - **Config tuning** — adjusts silence timeout, stuck threshold, checkpoint interval based on run metrics
 - **Behavioral rules** — detects patterns (uncommitted drift, high revert rate) and enforces corrections
 - **LLM analysis** — optional qualitative review of what went well and what didn't
+- **Script generation** — when existing rules can't explain high waste/stuck rates, generates Rhai scripts for the scripting layer
 
 ---
 
@@ -336,7 +346,7 @@ Glass is a full terminal emulator — you can use it as your daily driver. Every
 
 ## MCP Tools
 
-Glass exposes 33 MCP tools via `glass mcp serve`. The orchestrator's reviewer agent uses these to verify work independently of what the implementer reports.
+Glass exposes 33 MCP tools via `glass mcp serve`. These are auto-registered with your AI CLI on first launch — see [AI Integration](#ai-integration) for details. The orchestrator's reviewer agent uses these to verify work independently of what the implementer reports.
 
 | Category | Tools | Purpose |
 |----------|-------|---------|
@@ -353,6 +363,35 @@ Glass exposes 33 MCP tools via `glass mcp serve`. The orchestrator's reviewer ag
 | Coordination | `glass_agent_register/lock/unlock/send/...` | Multi-agent file locking and messaging |
 | Scripting | `glass_list_script_tools`, `glass_script_tool` | Execute Rhai automation scripts |
 | Health | `glass_ping` | Verify connectivity |
+
+## AI Integration
+
+Glass is a universal enhancer for AI coding tools. Any AI CLI launched inside Glass — Claude Code, Codex, Aider, Cursor, Gemini — automatically gets capabilities it wouldn't have in a regular terminal:
+
+**Persistent ground truth.** Every command, its output, exit code, duration, and working directory is recorded in a queryable SQLite database with full-text search. AI agents can look up what actually happened — across sessions, across context resets, across different AI tools. The model doesn't remember; it looks things up. That's more reliable than memory.
+
+**Structured understanding.** Glass doesn't just store raw text. 19 format-specific parsers (SOI) extract test counts, compiler errors, container states, and more into structured records. When an AI asks "what failed?", it gets parsed data, not 500 lines of scrollback.
+
+**Safety net.** Every command gets a pre-execution filesystem snapshot. AI agents make destructive mistakes — Glass catches them. Undo is one MCP call away, regardless of which AI tool made the change.
+
+**Zero setup.** Glass auto-registers its MCP server with installed AI tools on first launch. No manual configuration needed — open Glass, start your AI tool, and it already has access to history, context, undo, and 30 other tools.
+
+### How it works
+
+Glass exposes its capabilities via MCP (Model Context Protocol). AI tools connect to `glass mcp serve` and gain access to 33 tools spanning history, context, undo, diffs, pipe inspection, and more. See [MCP Tools](#mcp-tools) for the full list.
+
+### Supported tools
+
+Auto-registration works out of the box for:
+
+| Tool | Config written |
+|------|---------------|
+| Claude Code | `~/.claude/settings.local.json` |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Any MCP-aware tool | `.mcp.json` in project root |
+
+To register manually: add `glass mcp serve` as a stdio MCP server in your tool's configuration.
 
 ---
 
@@ -425,6 +464,63 @@ See [config.example.toml](config.example.toml) for all options with defaults.
 | Split vertical | Ctrl+Shift+E | Cmd+Shift+E |
 | Copy | Ctrl+Shift+C | Cmd+Shift+C |
 | Paste | Ctrl+Shift+V | Cmd+Shift+V |
+
+---
+
+## FAQ
+
+**What AI models does Glass support?**
+
+The orchestrator (reviewer) supports Claude Code CLI, Anthropic API, OpenAI API, Ollama (local models), and any OpenAI-compatible endpoint. The implementer (code writer) can be Claude Code, Codex, Aider, Gemini, or any CLI you specify with a custom command. See [Provider Configuration](#provider-configuration).
+
+**Can I use different models for the reviewer and implementer?**
+
+Yes. The reviewer and implementer are fully independent. You can pair an Opus reviewer with a local Llama implementer, or a GPT-4o reviewer with Claude Code. Configure them separately in `config.toml`:
+
+```toml
+[agent]
+provider = "anthropic-api"
+model = "claude-sonnet-4-6"
+
+[agent.orchestrator]
+implementer = "claude-code"
+```
+
+**Why use Glass instead of a simple loop script?**
+
+A loop script reruns your agent until it stops. Glass does that plus: auto-reverts when tests break, checkpoints and respawns when context fills up, detects when the agent is stuck and forces a new approach, pauses at API usage limits and resumes automatically, and learns from each run to improve the next one. The difference shows up around iteration 15 when a loop script's agent is confused by its own context and Glass has already checkpointed, respawned with a fresh summary, and kept going.
+
+**Is it safe to leave running unattended?**
+
+That's the intended use case. The metric guard auto-reverts any change that breaks tests. The test floor only goes up. Stuck detection forces new approaches after 3 identical responses. Usage auto-pause stops at 80% API usage and resumes when it drops below 20%. Bounded iterations cap the run length. The worst case is wasted API tokens on a stuck loop, not broken code — the guard catches regressions before they're committed.
+
+**How do I install it?**
+
+macOS: `brew tap candyhunterz/glass && brew install glass`. Windows: download the [MSI installer](https://github.com/candyhunterz/Glass/releases/latest). Linux: download the [.deb package](https://github.com/candyhunterz/Glass/releases/latest). Or `cargo install --git https://github.com/candyhunterz/Glass.git glass` on any platform.
+
+**Do I need to configure MCP tools manually?**
+
+No. Glass auto-registers its MCP server with Claude Code, Cursor, and Windsurf on first launch. It also writes a `.mcp.json` in your project root when the orchestrator activates, which any MCP-aware tool can discover. See [AI Integration](#ai-integration).
+
+**Can I use Glass as my daily terminal?**
+
+Yes. Glass is a full GPU-accelerated terminal emulator. Every terminal feature — tabs, split panes, shell integration, GPU rendering — works independently of the AI features. The orchestrator and AI tools are optional; the terminal stands on its own.
+
+**What shells are supported?**
+
+Bash, Zsh, Fish, and PowerShell. Shell integration (command blocks, undo, pipe visualization) is auto-injected for all four. Glass uses your system's default shell.
+
+**Does the orchestrator work with any programming language?**
+
+Yes. It's language-agnostic. The test command is auto-detected (`cargo test`, `npm test`, `pytest`, `go test`, `make test`) or can be set manually. If your project has a way to verify correctness via a shell command, the orchestrator can drive it.
+
+**How does it handle long tasks that exceed context limits?**
+
+Checkpoint cycling. Every N iterations (default 20), Glass writes a checkpoint summary of what's been done and what's next, kills both agents, and respawns them with fresh context plus the checkpoint. This is why Glass can run 80+ iterations over hours — something no single-session agent can do.
+
+**Is it open source?**
+
+Yes. MIT licensed. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
 
 ---
 

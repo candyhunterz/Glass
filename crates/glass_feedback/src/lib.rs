@@ -17,7 +17,6 @@ pub mod regression;
 pub mod rules;
 pub mod types;
 
-#[allow(unused_imports)]
 pub use types::*;
 
 use std::collections::HashMap;
@@ -34,20 +33,35 @@ use io::{
 
 /// State handle returned by `on_run_start`, passed to `on_run_end`.
 pub struct FeedbackState {
+    /// Canonical project root path used to scope feedback data.
     pub project_root: String,
+    /// Path to the project-local rules file.
     pub rules_path: PathBuf,
+    /// Path to the global (cross-project) rules file.
     pub global_rules_path: PathBuf,
+    /// Path to the metrics history file.
     pub metrics_path: PathBuf,
+    /// Path to the per-run history log.
     pub history_path: PathBuf,
+    /// Path to the archived rules directory.
     pub archived_path: PathBuf,
+    /// Snapshot of the agent config at run start (used for diff detection).
     pub snapshot: ConfigSnapshot,
+    /// Rule engine loaded with current project + global rules.
     pub engine: rules::RuleEngine,
+    /// Whether LLM-based qualitative analysis is enabled.
     pub feedback_llm: bool,
+    /// Maximum number of prompt hints to inject per session.
     pub max_prompt_hints: usize,
+    /// Rule ID currently targeted for ablation testing, if any.
     pub ablation_target: Option<String>,
+    /// Run ID of the most recent ablation sweep.
     pub last_sweep_run: String,
+    /// Per-rule attribution scores from the last analysis.
     pub attribution_scores: Vec<types::AttributionScore>,
+    /// Path to the attribution scores file.
     pub attribution_path: std::path::PathBuf,
+    /// Whether ablation testing is enabled.
     pub ablation_enabled: bool,
 }
 
@@ -237,6 +251,9 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
 
     // --- Step 5: promote / reject provisionals ---
     let mut project_rules_file = load_rules_file(&state.rules_path);
+    // Capture whether any rules existed BEFORE this run's findings are applied.
+    // Used by Step 9c to determine if lower tiers have been tried in prior runs.
+    let had_rules_before_run = !project_rules_file.rules.is_empty();
 
     let mut rules_promoted: Vec<String> = Vec::new();
     let mut rules_rejected: Vec<String> = Vec::new();
@@ -341,23 +358,81 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         }
     }
 
-    // --- Step 9: extract ConfigTuning findings (max 1 per run) ---
-    let config_changes: Vec<(String, String, String)> = findings
-        .iter()
-        .filter_map(|f| {
-            if let FindingAction::ConfigTuning {
-                field,
-                current_value,
-                new_value,
-            } = &f.action
-            {
-                Some((field.clone(), current_value.clone(), new_value.clone()))
-            } else {
-                None
+    // --- Step 8b: evaluate pending ConfigTuning change ---
+    let tuning_history_path = state.history_path.clone();
+    let mut tuning_history = io::load_tuning_history(&tuning_history_path);
+    let mut pending_revert: Option<(String, String, String)> = None;
+    let mut suppress_config_tuning = false;
+
+    if let Some(pending) = tuning_history.pending.take() {
+        match &regression {
+            Some(regression::RegressionResult::Regressed { .. }) => {
+                pending_revert = Some((
+                    pending.field.clone(),
+                    pending.new_value.clone(),
+                    pending.old_value.clone(),
+                ));
+                tuning_history.cooldowns.push(types::ConfigCooldown {
+                    field: pending.field,
+                    remaining: 5,
+                });
+                suppress_config_tuning = true;
+                tracing::info!("ConfigTuning: reverted pending change (regression detected)");
             }
-        })
-        .take(1)
+            _ => {
+                tracing::info!("ConfigTuning: confirmed pending change (no regression)");
+            }
+        }
+    }
+
+    // Decrement cooldowns
+    tuning_history.cooldowns.retain_mut(|c| {
+        c.remaining = c.remaining.saturating_sub(1);
+        c.remaining > 0
+    });
+
+    // --- Step 9: extract ConfigTuning findings (max 1 per run) ---
+    let cooled_fields: Vec<String> = tuning_history
+        .cooldowns
+        .iter()
+        .map(|c| c.field.clone())
         .collect();
+    let config_changes: Vec<(String, String, String)> = if suppress_config_tuning {
+        vec![]
+    } else {
+        findings
+            .iter()
+            .filter_map(|f| {
+                if let FindingAction::ConfigTuning {
+                    field,
+                    current_value,
+                    new_value,
+                } = &f.action
+                {
+                    if cooled_fields.contains(field) {
+                        None
+                    } else {
+                        tuning_history.pending = Some(types::PendingConfigChange {
+                            field: field.clone(),
+                            old_value: current_value.clone(),
+                            new_value: new_value.clone(),
+                            finding_id: f.id.clone(),
+                            run_id: state.snapshot.run_id.clone(),
+                        });
+                        Some((field.clone(), current_value.clone(), new_value.clone()))
+                    }
+                } else {
+                    None
+                }
+            })
+            .take(1)
+            .collect()
+    };
+
+    let mut all_config_changes = config_changes;
+    if let Some(revert) = pending_revert {
+        all_config_changes.push(revert);
+    }
 
     // --- Step 9b: build LLM analysis prompt if enabled ---
     let llm_prompt = if state.feedback_llm {
@@ -367,19 +442,21 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
     };
 
     // --- Step 9c: Tier 4 script generation prompt ---
-    // Generate a script prompt when existing tiers produced no findings
-    // but the run still had high waste or stuck rates.
+    // Escalation: fire when lower tiers have been tried but problems persist.
     // TODO: Read script_generation from FeedbackConfig/GlassConfig when
     // it becomes available on FeedbackState. For now, default to enabled.
     let script_generation = true;
-    let script_prompt = if script_generation
-        && findings.is_empty()
-        && (data.stuck_count > data.iterations / 3 || data.waste_count > data.iterations / 3)
-    {
+    let has_tried_lower_tiers = had_rules_before_run;
+    let high_waste_or_stuck =
+        data.stuck_count > data.iterations / 3 || data.waste_count > data.iterations / 3;
+    let script_prompt = if script_generation && high_waste_or_stuck && has_tried_lower_tiers {
         Some(build_script_prompt(&data))
     } else {
         None
     };
+
+    // --- Step 9d: persist tuning history ---
+    let _ = io::save_tuning_history(&tuning_history_path, &tuning_history);
 
     // --- Step 10: persist ---
     let mut current_metrics = current_metrics;
@@ -392,7 +469,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         tracing::warn!("Failed to save rules file {:?}: {e}", state.rules_path);
     }
     if let Err(e) = save_archived_rules(&state.archived_path, &archived_file) {
-        tracing::warn!("Failed to save archived rules {:?}: {e}", state.archived_path);
+        tracing::warn!(
+            "Failed to save archived rules {:?}: {e}",
+            state.archived_path
+        );
     }
 
     // --- Step 10b: sync global-scoped rules to ~/.glass/global-rules.toml ---
@@ -436,7 +516,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         global_file.rules.retain(|r| !rejected_ids.contains(&r.id));
 
         if let Err(e) = save_rules_file(&state.global_rules_path, &global_file) {
-            tracing::warn!("Failed to save global rules {:?}: {e}", state.global_rules_path);
+            tracing::warn!(
+                "Failed to save global rules {:?}: {e}",
+                state.global_rules_path
+            );
         }
     }
 
@@ -445,7 +528,10 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         scores: attribution_scores,
     };
     if let Err(e) = save_attribution_file(&state.attribution_path, &attribution_file) {
-        tracing::warn!("Failed to save attribution file {:?}: {e}", state.attribution_path);
+        tracing::warn!(
+            "Failed to save attribution file {:?}: {e}",
+            state.attribution_path
+        );
     }
 
     FeedbackResult {
@@ -453,7 +539,7 @@ pub fn on_run_end(state: FeedbackState, data: RunData) -> FeedbackResult {
         regression,
         rules_promoted,
         rules_rejected,
-        config_changes,
+        config_changes: all_config_changes,
         llm_prompt,
         script_prompt,
     }
@@ -475,8 +561,8 @@ pub fn check_rules(state: &mut FeedbackState, run_state: &RunState) -> Vec<RuleA
 
 /// Return the text of all `prompt_hint` rules that are `Confirmed` or
 /// `Provisional`.  Delegates to the [`rules::RuleEngine`] stored in `state`.
-pub fn prompt_hints(state: &FeedbackState) -> Vec<String> {
-    state.engine.prompt_hints()
+pub fn prompt_hints(state: &mut FeedbackState) -> Vec<String> {
+    state.engine.prompt_hints_mut()
 }
 
 /// Apply LLM-generated findings to the project's rules file.
@@ -645,10 +731,7 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     let mut out = String::with_capacity(2048);
 
     // Header
-    out.push_str(&format!(
-        "# Feedback Loop Summary — {}\n\n",
-        input.run_id
-    ));
+    out.push_str(&format!("# Feedback Loop Summary — {}\n\n", input.run_id));
 
     // Run overview
     let mins = d.duration_secs / 60;
@@ -695,10 +778,7 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     if r.findings.is_empty() {
         out.push_str("No new findings detected.\n\n");
     } else {
-        out.push_str(&format!(
-            "**{} new finding(s):**\n\n",
-            r.findings.len()
-        ));
+        out.push_str(&format!("**{} new finding(s):**\n\n", r.findings.len()));
         for f in &r.findings {
             out.push_str(&format!(
                 "- `{}` ({:?}, {:?}) — {}\n",
@@ -725,7 +805,10 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     // Regression
     match &r.regression {
         Some(regression::RegressionResult::Regressed { reasons }) => {
-            out.push_str(&format!("**Regression detected:** {}\n\n", reasons.join(", ")));
+            out.push_str(&format!(
+                "**Regression detected:** {}\n\n",
+                reasons.join(", ")
+            ));
         }
         Some(regression::RegressionResult::Improved) => {
             out.push_str("**Improved** vs previous run.\n\n");
@@ -795,7 +878,10 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     if hint_count == 0 {
         out.push_str("No prompt hints active.\n\n");
     } else {
-        out.push_str(&format!("{} prompt hint(s) injected into agent context.\n\n", hint_count));
+        out.push_str(&format!(
+            "{} prompt hint(s) injected into agent context.\n\n",
+            hint_count
+        ));
     }
 
     // Tier 4: Script Generation
@@ -809,7 +895,9 @@ pub fn build_run_summary(input: &RunSummaryInput<'_>) -> String {
     // LLM Analysis
     out.push_str("## LLM Analysis\n\n");
     if r.llm_prompt.is_some() {
-        out.push_str("LLM analysis **triggered** — ephemeral agent spawned for qualitative review.\n\n");
+        out.push_str(
+            "LLM analysis **triggered** — ephemeral agent spawned for qualitative review.\n\n",
+        );
     } else {
         out.push_str("Not triggered (feedback_llm disabled).\n\n");
     }
@@ -905,8 +993,8 @@ mod tests {
     use super::*;
     use crate::io::{save_rules_file, save_tuning_history};
     use crate::types::{
-        AblationResult, ConfigSnapshot, Rule, RuleStatus, RulesFile, RulesMeta, Scope, Severity,
-        TuningHistoryFile,
+        AblationResult, ConfigSnapshot, Rule, RuleStatus, RulesFile, RulesMeta, RunMetrics, Scope,
+        Severity, TuningHistoryFile,
     };
 
     // -----------------------------------------------------------------------
@@ -1056,6 +1144,7 @@ mod tests {
                 config_values: HashMap::new(),
                 provisional_rules: vec!["prov-001".to_string()],
             }],
+            ..Default::default()
         };
         let history_path = glass_dir.join("tuning-history.toml");
         save_tuning_history(&history_path, &history).unwrap();
@@ -1145,8 +1234,186 @@ mod tests {
             rules: vec![hint_rule],
         };
 
-        let hints = prompt_hints(&state);
+        let hints = prompt_hints(&mut state);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0], "Keep PRs small");
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. ConfigTuning provisional lifecycle tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_tuning_records_pending() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let state = make_state_in_dir(&dir);
+        let mut data = make_run_data(project_root);
+        data.config_silence_timeout = 30;
+        data.avg_idle_between_iterations_secs = 100.0;
+        data.iterations = 10;
+        let result = on_run_end(state, data);
+        assert!(!result.config_changes.is_empty());
+        let history =
+            io::load_tuning_history(&dir.path().join(".glass").join("tuning-history.toml"));
+        assert!(history.pending.is_some());
+        assert_eq!(history.pending.unwrap().field, "silence_timeout_secs");
+    }
+
+    #[test]
+    fn config_tuning_reverts_on_regression() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let history_path = dir.path().join(".glass").join("tuning-history.toml");
+        std::fs::create_dir_all(dir.path().join(".glass")).unwrap();
+        let mut history = TuningHistoryFile::default();
+        history.pending = Some(types::PendingConfigChange {
+            field: "silence_timeout_secs".to_string(),
+            old_value: "30".to_string(),
+            new_value: "23".to_string(),
+            finding_id: "silence-waste".to_string(),
+            run_id: "prev-run".to_string(),
+        });
+        io::save_tuning_history(&history_path, &history).unwrap();
+
+        // Seed a baseline metric entry so regression::compare has a baseline.
+        let metrics_path = dir.path().join(".glass").join("run-metrics.toml");
+        let baseline = RunMetrics {
+            run_id: "baseline".to_string(),
+            project_root: project_root.to_string(),
+            iterations: 10,
+            duration_secs: 600,
+            revert_rate: 0.05,
+            stuck_rate: 0.05,
+            waste_rate: 0.05,
+            checkpoint_rate: 0.20,
+            completion: "success".to_string(),
+            prd_items_completed: 5,
+            prd_items_total: 10,
+            kickoff_duration_secs: 60,
+            rule_firings: vec![],
+        };
+        io::save_metrics_file(
+            &metrics_path,
+            &types::RunMetricsFile {
+                runs: vec![baseline],
+            },
+        )
+        .unwrap();
+
+        let state = make_state_in_dir(&dir);
+        let mut data = make_run_data(project_root);
+        data.iterations = 10;
+        data.revert_count = 5; // 50% revert rate -> triggers regression
+        data.keep_count = 5;
+        let result = on_run_end(state, data);
+
+        let revert = result
+            .config_changes
+            .iter()
+            .find(|(f, _, _)| f == "silence_timeout_secs");
+        assert!(revert.is_some());
+        let (_, _, new_val) = revert.unwrap();
+        assert_eq!(new_val, "30"); // reverted to old_value
+
+        let history = io::load_tuning_history(&history_path);
+        assert!(history.pending.is_none());
+        // Cooldown was pushed at 5 then decremented to 4 in the same run
+        assert!(history
+            .cooldowns
+            .iter()
+            .any(|c| c.field == "silence_timeout_secs" && c.remaining == 4));
+    }
+
+    #[test]
+    fn config_tuning_confirms_on_improvement() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let history_path = dir.path().join(".glass").join("tuning-history.toml");
+        std::fs::create_dir_all(dir.path().join(".glass")).unwrap();
+        let mut history = TuningHistoryFile::default();
+        history.pending = Some(types::PendingConfigChange {
+            field: "silence_timeout_secs".to_string(),
+            old_value: "30".to_string(),
+            new_value: "23".to_string(),
+            finding_id: "silence-waste".to_string(),
+            run_id: "prev-run".to_string(),
+        });
+        io::save_tuning_history(&history_path, &history).unwrap();
+
+        let state = make_state_in_dir(&dir);
+        // Use data that won't trigger any ConfigTuning detectors
+        let mut data = make_run_data(project_root);
+        data.stuck_count = 0; // avoid stuck_sensitivity ConfigTuning finding
+        let _result = on_run_end(state, data);
+
+        let history = io::load_tuning_history(&history_path);
+        assert!(history.pending.is_none());
+        assert!(history.cooldowns.is_empty());
+    }
+
+    #[test]
+    fn config_tuning_skips_field_in_cooldown() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let history_path = dir.path().join(".glass").join("tuning-history.toml");
+        std::fs::create_dir_all(dir.path().join(".glass")).unwrap();
+        let mut history = TuningHistoryFile::default();
+        history.cooldowns.push(types::ConfigCooldown {
+            field: "silence_timeout_secs".to_string(),
+            remaining: 3,
+        });
+        io::save_tuning_history(&history_path, &history).unwrap();
+
+        let state = make_state_in_dir(&dir);
+        let mut data = make_run_data(project_root);
+        data.config_silence_timeout = 30;
+        data.avg_idle_between_iterations_secs = 100.0;
+        data.iterations = 10;
+        data.stuck_count = 0; // avoid stuck_sensitivity ConfigTuning finding
+        let result = on_run_end(state, data);
+
+        // silence_timeout_secs is in cooldown so config change should be empty
+        assert!(result.config_changes.is_empty());
+
+        let history = io::load_tuning_history(&history_path);
+        // Cooldown was 3, decremented to 2
+        assert_eq!(history.cooldowns[0].remaining, 2);
+    }
+
+    #[test]
+    fn script_generation_fires_with_rules_and_high_waste() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let state = make_state_in_dir(&dir);
+        // Write a rule to disk so had_rules_before_run is true at Step 5.
+        let rules_file = RulesFile {
+            meta: RulesMeta::default(),
+            rules: vec![make_rule("r1", "force_commit", RuleStatus::Confirmed)],
+        };
+        save_rules_file(&state.rules_path, &rules_file).unwrap();
+        let mut data = make_run_data(project_root);
+        data.iterations = 9;
+        data.waste_count = 4; // > 9/3 = 3
+        let result = on_run_end(state, data);
+        assert!(
+            result.script_prompt.is_some(),
+            "Tier 4 should fire with active rules + high waste"
+        );
+    }
+
+    #[test]
+    fn script_generation_does_not_fire_without_rules() {
+        let dir = TempDir::new().unwrap();
+        let project_root = dir.path().to_str().unwrap();
+        let state = make_state_in_dir(&dir); // no rules
+        let mut data = make_run_data(project_root);
+        data.iterations = 9;
+        data.waste_count = 4;
+        let result = on_run_end(state, data);
+        assert!(
+            result.script_prompt.is_none(),
+            "Tier 4 should not fire without any rules"
+        );
     }
 }

@@ -9,6 +9,15 @@ use glass_terminal::GitInfo;
 
 use crate::rect_renderer::RectInstance;
 
+/// Agent and coordination status bar info grouped to reduce parameter count.
+pub struct StatusBarAgentInfo<'a> {
+    pub coordination_text: Option<&'a str>,
+    pub agent_cost_text: Option<&'a str>,
+    pub agent_paused: bool,
+    pub agent_mode_text: Option<&'a str>,
+    pub proposal_count_text: Option<&'a str>,
+}
+
 /// Text content for the status bar.
 #[derive(Debug, Clone)]
 pub struct StatusLabel {
@@ -188,17 +197,12 @@ impl StatusBarRenderer {
     /// Agent cost text: shown when agent is active (green) or paused (red).
     /// Agent mode text: shows current agent mode (soft cyan).
     /// Proposal count text: shows pending proposals (soft yellow).
-    #[allow(clippy::too_many_arguments)]
     pub fn build_status_text(
         &self,
         cwd: &str,
         git_info: Option<&GitInfo>,
         update_text: Option<&str>,
-        coordination_text: Option<&str>,
-        agent_cost_text: Option<&str>,
-        agent_paused: bool,
-        agent_mode_text: Option<&str>,
-        proposal_count_text: Option<&str>,
+        agent: &StatusBarAgentInfo<'_>,
         viewport_width: f32,
         viewport_height: f32,
     ) -> StatusLabel {
@@ -224,10 +228,10 @@ impl StatusBarRenderer {
         });
 
         let center_text = update_text.map(|t| t.to_string());
-        let coordination_text = coordination_text.map(|t| t.to_string());
-        let agent_cost_text = agent_cost_text.map(|t| t.to_string());
-        let agent_mode_text = agent_mode_text.map(|t| t.to_string());
-        let proposal_count_text = proposal_count_text.map(|t| t.to_string());
+        let coordination_text = agent.coordination_text.map(|t| t.to_string());
+        let agent_cost_text = agent.agent_cost_text.map(|t| t.to_string());
+        let agent_mode_text = agent.agent_mode_text.map(|t| t.to_string());
+        let proposal_count_text = agent.proposal_count_text.map(|t| t.to_string());
 
         // Git branch color: cyan if clean, with yellow dirty count appended
         // For simplicity, use cyan as the base right_color
@@ -252,7 +256,7 @@ impl StatusBarRenderer {
         };
 
         // Green when active, red when paused (AGTR-07)
-        let agent_cost_color = if agent_paused {
+        let agent_cost_color = if agent.agent_paused {
             Rgb {
                 r: 255,
                 g: 80,
@@ -312,19 +316,18 @@ mod tests {
         StatusBarRenderer::new(10.0, 20.0)
     }
 
+    fn no_agent() -> StatusBarAgentInfo<'static> {
+        StatusBarAgentInfo {
+            coordination_text: None,
+            agent_cost_text: None,
+            agent_paused: false,
+            agent_mode_text: None,
+            proposal_count_text: None,
+        }
+    }
+
     fn make_label(renderer: &StatusBarRenderer) -> StatusLabel {
-        renderer.build_status_text(
-            "/home/user/project",
-            None,
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-            800.0,
-            600.0,
-        )
+        renderer.build_status_text("/home/user/project", None, None, &no_agent(), 800.0, 600.0)
     }
 
     #[test]
@@ -339,9 +342,7 @@ mod tests {
         let r = renderer();
         let long_cwd = "/".repeat(80);
         // With cell_width=10.0 and viewport_width=800.0, max_cwd_chars = (800/10)/2 = 40
-        let label = r.build_status_text(
-            &long_cwd, None, None, None, None, false, None, None, 800.0, 600.0,
-        );
+        let label = r.build_status_text(&long_cwd, None, None, &no_agent(), 800.0, 600.0);
         assert!(
             label.left_text.chars().count() <= 40,
             "Truncated CWD should be at most max_cwd_chars (40), got {}",
@@ -377,11 +378,13 @@ mod tests {
             "/home/user",
             None,
             None,
-            None,
-            None,
-            false,
-            Some("[agent: watch]"),
-            Some("2 proposals"),
+            &StatusBarAgentInfo {
+                coordination_text: None,
+                agent_cost_text: None,
+                agent_paused: false,
+                agent_mode_text: Some("[agent: watch]"),
+                proposal_count_text: Some("2 proposals"),
+            },
             800.0,
             600.0,
         );
@@ -421,11 +424,13 @@ mod tests {
             "/home/user",
             None,
             None,
-            None,
-            Some("PAUSED $1.00"),
-            true,
-            None,
-            None,
+            &StatusBarAgentInfo {
+                coordination_text: None,
+                agent_cost_text: Some("PAUSED $1.00"),
+                agent_paused: true,
+                agent_mode_text: None,
+                proposal_count_text: None,
+            },
             800.0,
             600.0,
         );
@@ -472,11 +477,13 @@ mod tests {
             "/home/user",
             None,
             None,
-            None,
-            Some("agent: $0.0012"),
-            false,
-            None,
-            None,
+            &StatusBarAgentInfo {
+                coordination_text: None,
+                agent_cost_text: Some("agent: $0.0012"),
+                agent_paused: false,
+                agent_mode_text: None,
+                proposal_count_text: None,
+            },
             800.0,
             600.0,
         );

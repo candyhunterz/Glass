@@ -139,6 +139,43 @@ fn default_shell_program() -> String {
     }
 }
 
+/// Configuration for spawning a PTY session.
+pub struct PtySpawnConfig<'a> {
+    pub shell_override: Option<&'a str>,
+    pub working_directory: Option<&'a std::path::Path>,
+    pub max_output_capture_kb: u32,
+    pub pipes_enabled: bool,
+    pub orchestrator_silence_secs: u64,
+    pub orchestrator_fast_trigger_secs: u64,
+    pub orchestrator_prompt_pattern: Option<String>,
+    pub min_output_bytes: usize,
+    pub scrollback: Option<usize>,
+}
+
+/// Event delivery sinks passed through the PTY loop and read functions.
+struct PtyEventSinks {
+    event_proxy: EventProxy,
+    app_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
+    window_id: WindowId,
+}
+
+/// Configuration values forwarded to the PTY event loop thread.
+struct PtyLoopConfig {
+    max_output_capture_kb: u32,
+    orchestrator_silence_secs: u64,
+    orchestrator_fast_trigger_secs: u64,
+    orchestrator_prompt_pattern: Option<String>,
+    min_output_bytes: usize,
+}
+
+/// Owned parser/scanner state for the PTY read loop.
+struct PtyReadState {
+    scanner: OscScanner,
+    parser: ansi::Processor<ansi::StdSyncHandler>,
+    buf: [u8; READ_BUFFER_SIZE],
+    output_buffer: OutputBuffer,
+}
+
 /// Spawn a PTY and start the dedicated reader thread
 /// with integrated OscScanner for shell integration.
 ///
@@ -154,22 +191,14 @@ fn default_shell_program() -> String {
 /// If `shell_override` is `Some`, that shell program is used directly (e.g. "powershell",
 /// "bash"). If `None`, the default detection logic runs: on Windows, pwsh 7 if available
 /// else PowerShell 5.1; on Unix, `$SHELL` or `/bin/sh`.
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_pty(
     event_proxy: EventProxy,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     window_id: WindowId,
-    shell_override: Option<&str>,
-    working_directory: Option<&std::path::Path>,
-    max_output_capture_kb: u32,
-    pipes_enabled: bool,
-    orchestrator_silence_secs: u64,
-    orchestrator_fast_trigger_secs: u64,
-    orchestrator_prompt_pattern: Option<String>,
-    scrollback: Option<usize>,
+    config: &PtySpawnConfig<'_>,
 ) -> anyhow::Result<(PtySender, Arc<FairMutex<Term<EventProxy>>>)> {
     // Use configured shell if provided, otherwise detect platform default
-    let shell_program = if let Some(shell) = shell_override {
+    let shell_program = if let Some(shell) = config.shell_override {
         shell.to_owned()
     } else {
         default_shell_program()
@@ -177,7 +206,7 @@ pub fn spawn_pty(
 
     let options = TtyOptions {
         shell: Some(Shell::new(shell_program, vec![])),
-        working_directory: working_directory.map(|p| p.to_path_buf()),
+        working_directory: config.working_directory.map(|p| p.to_path_buf()),
         drain_on_exit: true,
         #[cfg(target_os = "windows")]
         escape_args: false,
@@ -186,7 +215,7 @@ pub fn spawn_pty(
                 ("TERM".to_owned(), "xterm-256color".to_owned()),
                 ("COLORTERM".to_owned(), "truecolor".to_owned()),
             ]);
-            if !pipes_enabled {
+            if !config.pipes_enabled {
                 env.insert("GLASS_PIPES_DISABLED".to_owned(), "1".to_owned());
             }
             env
@@ -209,7 +238,7 @@ pub fn spawn_pty(
         lines: 24,
     };
     let term_config = TermConfig {
-        scrolling_history: scrollback.unwrap_or(10_000),
+        scrolling_history: config.scrollback.unwrap_or(10_000),
         ..TermConfig::default()
     };
     let term = Arc::new(FairMutex::new(Term::new(
@@ -238,24 +267,24 @@ pub fn spawn_pty(
     }
 
     let term_clone = Arc::clone(&term);
+    let sinks = PtyEventSinks {
+        event_proxy,
+        app_proxy: proxy,
+        window_id,
+    };
+    let loop_config = PtyLoopConfig {
+        max_output_capture_kb: config.max_output_capture_kb,
+        orchestrator_silence_secs: config.orchestrator_silence_secs,
+        orchestrator_fast_trigger_secs: config.orchestrator_fast_trigger_secs,
+        orchestrator_prompt_pattern: config.orchestrator_prompt_pattern.clone(),
+        min_output_bytes: config.min_output_bytes,
+    };
 
     // Spawn the dedicated PTY reader thread with OscScanner integration
     std::thread::Builder::new()
         .name("Glass PTY reader".into())
         .spawn(move || {
-            glass_pty_loop(
-                pty,
-                term_clone,
-                event_proxy,
-                proxy,
-                window_id,
-                rx,
-                poll,
-                max_output_capture_kb,
-                orchestrator_silence_secs,
-                orchestrator_fast_trigger_secs,
-                orchestrator_prompt_pattern,
-            );
+            glass_pty_loop(pty, term_clone, sinks, rx, poll, loop_config);
         })
         .map_err(|e| anyhow::anyhow!("Failed to spawn PTY reader thread: {e}"))?;
 
@@ -268,27 +297,23 @@ pub fn spawn_pty(
 /// through the OscScanner before they reach the VTE parser. The overall
 /// structure closely follows alacritty's event_loop.rs for correctness.
 #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-#[allow(clippy::too_many_arguments)]
 fn glass_pty_loop(
     mut pty: tty::Pty,
     terminal: Arc<FairMutex<Term<EventProxy>>>,
-    event_proxy: EventProxy,
-    app_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
-    window_id: WindowId,
+    sinks: PtyEventSinks,
     rx: Receiver<PtyMsg>,
     poll: Arc<polling::Poller>,
-    max_output_capture_kb: u32,
-    orchestrator_silence_secs: u64,
-    orchestrator_fast_trigger_secs: u64,
-    orchestrator_prompt_pattern: Option<String>,
+    config: PtyLoopConfig,
 ) {
-    let mut scanner = OscScanner::new();
-    let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
-    let mut buf = [0u8; READ_BUFFER_SIZE];
+    let mut read_state = PtyReadState {
+        scanner: OscScanner::new(),
+        parser: ansi::Processor::<ansi::StdSyncHandler>::new(),
+        buf: [0u8; READ_BUFFER_SIZE],
+        output_buffer: OutputBuffer::new((config.max_output_capture_kb as usize) * 1024),
+    };
     let mut write_list: VecDeque<Cow<'static, [u8]>> = VecDeque::new();
     let mut events = Events::with_capacity(NonZeroUsize::new(1024).unwrap());
     let mut interest = PollingEvent::readable(0);
-    let mut output_buffer = OutputBuffer::new((max_output_capture_kb as usize) * 1024);
 
     // Throttle Wakeup events to prevent flooding the winit event loop.
     // On Windows, EventLoopProxy::send_event uses PostMessage which has
@@ -299,19 +324,23 @@ fn glass_pty_loop(
     let mut wakeup_pending = false; // true if a wakeup was suppressed by throttle
 
     // Orchestrator silence detection (periodic, not one-shot)
-    let mut smart_trigger = if orchestrator_silence_secs > 0 {
+    let mut smart_trigger = if config.orchestrator_silence_secs > 0 {
         Some(crate::silence::SmartTrigger::new(
-            orchestrator_silence_secs,
-            orchestrator_fast_trigger_secs,
-            orchestrator_prompt_pattern,
+            config.orchestrator_silence_secs,
+            config.orchestrator_fast_trigger_secs,
+            config.orchestrator_prompt_pattern,
         ))
     } else {
         None
     };
+    if let Some(ref mut trigger) = smart_trigger {
+        trigger.set_min_output_bytes(config.min_output_bytes);
+    }
 
     'event_loop: loop {
         // Handle synchronized update timeout.
-        let mut timeout = parser
+        let mut timeout = read_state
+            .parser
             .sync_timeout()
             .sync_timeout()
             .map(|st| st.saturating_duration_since(Instant::now()));
@@ -353,7 +382,7 @@ fn glass_pty_loop(
         if wakeup_pending {
             let now = Instant::now();
             if now.duration_since(last_wakeup) >= wakeup_interval {
-                event_proxy.send_event(Event::Wakeup);
+                sinks.event_proxy.send_event(Event::Wakeup);
                 last_wakeup = now;
                 wakeup_pending = false;
             }
@@ -379,16 +408,19 @@ fn glass_pty_loop(
 
         // Handle synchronized update timeout (no events and no messages).
         if events.is_empty() && !got_messages {
-            parser.stop_sync(&mut *terminal.lock());
-            event_proxy.send_event(Event::Wakeup);
+            read_state.parser.stop_sync(&mut *terminal.lock());
+            sinks.event_proxy.send_event(Event::Wakeup);
 
             // Check SmartTrigger even on idle timeouts — this is the primary
             // path for silence detection when the terminal has no activity.
             if let Some(ref mut trigger) = smart_trigger {
-                if trigger.should_fire() {
-                    let _ = app_proxy.send_event(AppEvent::OrchestratorSilence {
-                        window_id,
-                        session_id: event_proxy.session_id(),
+                let silence_ms = trigger.silence_duration().as_millis() as u64;
+                if let Some(source) = trigger.should_fire() {
+                    let _ = sinks.app_proxy.send_event(AppEvent::OrchestratorSilence {
+                        window_id: sinks.window_id,
+                        session_id: sinks.event_proxy.session_id(),
+                        trigger_source: source,
+                        silence_duration_ms: silence_ms,
                     });
                 }
             }
@@ -401,23 +433,18 @@ fn glass_pty_loop(
                 PTY_CHILD_EVENT_TOKEN => {
                     if let Some(tty::ChildEvent::Exited(code)) = pty.next_child_event() {
                         if let Some(code) = code {
-                            event_proxy.send_event(Event::ChildExit(code));
+                            sinks.event_proxy.send_event(Event::ChildExit(code));
                         }
                         // Drain remaining bytes on exit (always send final wakeup)
                         let _ = pty_read_with_scan(
                             &mut pty,
                             &terminal,
-                            &event_proxy,
-                            &app_proxy,
-                            window_id,
-                            &mut scanner,
-                            &mut parser,
-                            &mut buf,
-                            &mut output_buffer,
+                            &sinks,
+                            &mut read_state,
                             smart_trigger.as_mut(),
                         );
                         terminal.lock().exit();
-                        event_proxy.send_event(Event::Wakeup); // final wakeup on exit
+                        sinks.event_proxy.send_event(Event::Wakeup); // final wakeup on exit
                         break 'event_loop;
                     }
                 }
@@ -430,13 +457,8 @@ fn glass_pty_loop(
                         match pty_read_with_scan(
                             &mut pty,
                             &terminal,
-                            &event_proxy,
-                            &app_proxy,
-                            window_id,
-                            &mut scanner,
-                            &mut parser,
-                            &mut buf,
-                            &mut output_buffer,
+                            &sinks,
+                            &mut read_state,
                             smart_trigger.as_mut(),
                         ) {
                             Ok(needs_wakeup) => {
@@ -445,7 +467,7 @@ fn glass_pty_loop(
                                 if needs_wakeup {
                                     let now = Instant::now();
                                     if now.duration_since(last_wakeup) >= wakeup_interval {
-                                        event_proxy.send_event(Event::Wakeup);
+                                        sinks.event_proxy.send_event(Event::Wakeup);
                                         last_wakeup = now;
                                         wakeup_pending = false;
                                     } else {
@@ -473,12 +495,39 @@ fn glass_pty_loop(
             }
         }
 
+        // Handle synchronized update timeout even during continuous output.
+        //
+        // The existing stop_sync() at line ~410 only fires when the poll returns
+        // with no events (events.is_empty()). During continuous PTY output, readable
+        // data arrives faster than the sync timeout (~400ms), so events.is_empty()
+        // is never true. This leaves sync active indefinitely — needs_wakeup stays
+        // false, no TerminalDirty reaches the main thread, and the screen freezes.
+        //
+        // Fix: check the sync deadline after processing readable events. If expired,
+        // force stop_sync() and send a Wakeup so the main thread renders.
+        if let Some(deadline) = read_state.parser.sync_timeout().sync_timeout() {
+            if Instant::now() >= deadline {
+                read_state.parser.stop_sync(&mut *terminal.lock());
+                let now = Instant::now();
+                if now.duration_since(last_wakeup) >= wakeup_interval {
+                    sinks.event_proxy.send_event(Event::Wakeup);
+                    last_wakeup = now;
+                    wakeup_pending = false;
+                } else {
+                    wakeup_pending = true;
+                }
+            }
+        }
+
         // Orchestrator silence detection (fires periodically while quiet)
         if let Some(ref mut trigger) = smart_trigger {
-            if trigger.should_fire() {
-                let _ = app_proxy.send_event(AppEvent::OrchestratorSilence {
-                    window_id,
-                    session_id: event_proxy.session_id(),
+            let silence_ms = trigger.silence_duration().as_millis() as u64;
+            if let Some(source) = trigger.should_fire() {
+                let _ = sinks.app_proxy.send_event(AppEvent::OrchestratorSilence {
+                    window_id: sinks.window_id,
+                    session_id: sinks.event_proxy.session_id(),
+                    trigger_source: source,
+                    silence_duration_ms: silence_ms,
                 });
             }
         }
@@ -505,17 +554,11 @@ fn glass_pty_loop(
 /// are sent to the main thread via the app proxy.
 #[inline]
 #[cfg_attr(feature = "perf", tracing::instrument(skip_all))]
-#[allow(clippy::too_many_arguments)]
 fn pty_read_with_scan(
     pty: &mut tty::Pty,
     terminal: &Arc<FairMutex<Term<EventProxy>>>,
-    event_proxy: &EventProxy,
-    app_proxy: &winit::event_loop::EventLoopProxy<AppEvent>,
-    window_id: WindowId,
-    scanner: &mut OscScanner,
-    parser: &mut ansi::Processor,
-    buf: &mut [u8],
-    output_buffer: &mut OutputBuffer,
+    sinks: &PtyEventSinks,
+    state: &mut PtyReadState,
     mut smart_trigger: Option<&mut crate::silence::SmartTrigger>,
 ) -> io::Result<bool> {
     let mut unprocessed = 0;
@@ -527,7 +570,7 @@ fn pty_read_with_scan(
 
     loop {
         // Read from the PTY.
-        match pty.reader().read(&mut buf[unprocessed..]) {
+        match pty.reader().read(&mut state.buf[unprocessed..]) {
             Ok(0) if unprocessed == 0 => break,
             Ok(got) => unprocessed += got,
             Err(err) => match err.kind() {
@@ -550,10 +593,10 @@ fn pty_read_with_scan(
             }),
         };
 
-        let data = &buf[..unprocessed];
+        let data = &state.buf[..unprocessed];
 
         // Pre-scan for OSC shell integration sequences before VTE parsing.
-        let osc_events = scanner.scan(data);
+        let osc_events = state.scanner.scan(data);
         for osc_event in &osc_events {
             // Get absolute cursor line for block tracking.
             // cursor.point.line is viewport-relative (0 = top of screen).
@@ -561,9 +604,9 @@ fn pty_read_with_scan(
             let history = terminal_ref.grid().history_size();
             let line = history + terminal_ref.grid().cursor.point.line.0 as usize;
             let shell_event = convert_osc_to_shell(osc_event.clone());
-            let _ = app_proxy.send_event(AppEvent::Shell {
-                window_id,
-                session_id: event_proxy.session_id(),
+            let _ = sinks.app_proxy.send_event(AppEvent::Shell {
+                window_id: sinks.window_id,
+                session_id: sinks.event_proxy.session_id(),
                 event: shell_event,
                 line,
             });
@@ -576,8 +619,8 @@ fn pty_read_with_scan(
 
         // Output capture: accumulate bytes between CommandExecuted and CommandFinished.
         // Check alt-screen sequences in raw bytes (avoids locking terminal for TermMode).
-        output_buffer.check_alt_screen(data);
-        output_buffer.append(data);
+        state.output_buffer.check_alt_screen(data);
+        state.output_buffer.append(data);
 
         if let Some(ref mut trigger) = smart_trigger {
             trigger.on_output_bytes(data);
@@ -587,17 +630,17 @@ fn pty_read_with_scan(
         for osc_event in &osc_events {
             match osc_event {
                 crate::osc_scanner::OscEvent::CommandExecuted => {
-                    output_buffer.start_capture();
+                    state.output_buffer.start_capture();
                     // Re-append current chunk so output in the same PTY read
                     // (fast commands) is captured after start_capture activates.
-                    output_buffer.append(data);
+                    state.output_buffer.append(data);
                 }
                 crate::osc_scanner::OscEvent::CommandFinished { .. } => {
-                    if let Some(raw_bytes) = output_buffer.finish() {
+                    if let Some(raw_bytes) = state.output_buffer.finish() {
                         if !raw_bytes.is_empty() {
-                            let _ = app_proxy.send_event(AppEvent::CommandOutput {
-                                window_id,
-                                session_id: event_proxy.session_id(),
+                            let _ = sinks.app_proxy.send_event(AppEvent::CommandOutput {
+                                window_id: sinks.window_id,
+                                session_id: sinks.event_proxy.session_id(),
                                 raw_output: raw_bytes,
                             });
                         }
@@ -608,7 +651,7 @@ fn pty_read_with_scan(
         }
 
         // Parse the incoming bytes through the VTE parser (updates terminal grid).
-        parser.advance(&mut **terminal_ref, data);
+        state.parser.advance(&mut **terminal_ref, data);
 
         processed += unprocessed;
         unprocessed = 0;
@@ -623,7 +666,7 @@ fn pty_read_with_scan(
     // synchronized). The caller throttles Wakeup sends to avoid flooding the
     // event loop — on Windows, PostMessage has higher priority than WM_PAINT,
     // so rapid Wakeup events starve rendering.
-    if parser.sync_bytes_count() < processed && processed > 0 {
+    if state.parser.sync_bytes_count() < processed && processed > 0 {
         return Ok(true);
     }
 

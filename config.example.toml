@@ -55,7 +55,7 @@
 # badge_success = [40, 160, 40]
 # badge_error = [200, 50, 50]
 # badge_running = [30, 120, 200]
-# search_backdrop = [0.05, 0.05, 0.05, 0.85]
+# search_backdrop = [0.1, 0.1, 0.1, 0.95]
 # search_input_bg = [56, 56, 56]
 
 # --- Agent -------------------------------------------------------------
@@ -89,7 +89,7 @@
 # verify_mode = "floor"     # "floor" or "disabled"
 # verify_command = ""
 # completion_artifact = ".glass/done"
-# max_iterations = 0        # 0 = unlimited
+# max_iterations = 0        # non-default example; omit for unlimited (default)
 # orchestrator_mode = "auto"   # "auto", "build", "audit", or "general"
 # verify_files = []
 # feedback_llm = false
@@ -104,9 +104,9 @@
 # --- Scripting ---------------------------------------------------------
 # [scripting]
 # enabled = true
-# max_operations = 10000
-# max_timeout_ms = 5000
+# max_operations = 100000
+# max_timeout_ms = 2000
 # max_scripts_per_hook = 10
 # max_total_scripts = 100
-# max_mcp_tools = 50
+# max_mcp_tools = 20
 # script_generation = true

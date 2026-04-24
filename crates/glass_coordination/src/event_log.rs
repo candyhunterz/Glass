@@ -20,35 +20,36 @@ pub struct CoordinationEvent {
     pub pinned: bool,
 }
 
+/// Data for inserting a coordination event (everything except the DB connection).
+pub struct InsertEventData<'a> {
+    pub project: &'a str,
+    pub category: &'a str,
+    pub agent_id: Option<&'a str>,
+    pub agent_name: Option<&'a str>,
+    pub event_type: &'a str,
+    pub summary: &'a str,
+    pub detail: Option<&'a str>,
+    pub pinned: bool,
+}
+
 /// Insert a coordination event into the database.
 ///
 /// Called as a side-effect within existing `CoordinationDb` method transactions.
 /// The `conn` parameter is the active transaction connection.
-#[allow(clippy::too_many_arguments)]
-pub fn insert_event(
-    conn: &Connection,
-    project: &str,
-    category: &str,
-    agent_id: Option<&str>,
-    agent_name: Option<&str>,
-    event_type: &str,
-    summary: &str,
-    detail: Option<&str>,
-    pinned: bool,
-) -> rusqlite::Result<()> {
+pub fn insert_event(conn: &Connection, data: &InsertEventData<'_>) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO coordination_events
          (timestamp, project, category, agent_id, agent_name, event_type, summary, detail, pinned)
          VALUES (unixepoch(), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
-            project,
-            category,
-            agent_id,
-            agent_name,
-            event_type,
-            summary,
-            detail,
-            pinned as i32,
+            data.project,
+            data.category,
+            data.agent_id,
+            data.agent_name,
+            data.event_type,
+            data.summary,
+            data.detail,
+            data.pinned as i32,
         ],
     )?;
     Ok(())
@@ -152,14 +153,16 @@ mod tests {
         let conn = setup_db();
         insert_event(
             &conn,
-            "/project",
-            "agent",
-            Some("agent-1"),
-            Some("claude-code"),
-            "registered",
-            "claude-code registered project: Glass",
-            None,
-            false,
+            &InsertEventData {
+                project: "/project",
+                category: "agent",
+                agent_id: Some("agent-1"),
+                agent_name: Some("claude-code"),
+                event_type: "registered",
+                summary: "claude-code registered project: Glass",
+                detail: None,
+                pinned: false,
+            },
         )
         .unwrap();
 
@@ -176,14 +179,16 @@ mod tests {
         let conn = setup_db();
         insert_event(
             &conn,
-            "/project",
-            "lock",
-            Some("agent-1"),
-            Some("cursor"),
-            "conflict",
-            "cursor conflict pty.rs (held by claude-code)",
-            None,
-            true,
+            &InsertEventData {
+                project: "/project",
+                category: "lock",
+                agent_id: Some("agent-1"),
+                agent_name: Some("cursor"),
+                event_type: "conflict",
+                summary: "cursor conflict pty.rs (held by claude-code)",
+                detail: None,
+                pinned: true,
+            },
         )
         .unwrap();
 
@@ -265,7 +270,17 @@ mod tests {
     fn test_dismiss_event() {
         let conn = setup_db();
         insert_event(
-            &conn, "/project", "lock", None, None, "conflict", "conflict", None, true,
+            &conn,
+            &InsertEventData {
+                project: "/project",
+                category: "lock",
+                agent_id: None,
+                agent_name: None,
+                event_type: "conflict",
+                summary: "conflict",
+                detail: None,
+                pinned: true,
+            },
         )
         .unwrap();
 
@@ -284,26 +299,30 @@ mod tests {
         let conn = setup_db();
         insert_event(
             &conn,
-            "/project-a",
-            "agent",
-            None,
-            None,
-            "registered",
-            "a",
-            None,
-            false,
+            &InsertEventData {
+                project: "/project-a",
+                category: "agent",
+                agent_id: None,
+                agent_name: None,
+                event_type: "registered",
+                summary: "a",
+                detail: None,
+                pinned: false,
+            },
         )
         .unwrap();
         insert_event(
             &conn,
-            "/project-b",
-            "agent",
-            None,
-            None,
-            "registered",
-            "b",
-            None,
-            false,
+            &InsertEventData {
+                project: "/project-b",
+                category: "agent",
+                agent_id: None,
+                agent_name: None,
+                event_type: "registered",
+                summary: "b",
+                detail: None,
+                pinned: false,
+            },
         )
         .unwrap();
 

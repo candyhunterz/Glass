@@ -172,7 +172,7 @@ fn run_ephemeral_blocking(
                     .name("glass-orphan-watchdog".into())
                     .spawn(|| loop {
                         std::thread::sleep(std::time::Duration::from_secs(2));
-                        if unsafe { libc::getppid() } == 1 {
+                        if libc::getppid() == 1 {
                             std::process::exit(1);
                         }
                     })

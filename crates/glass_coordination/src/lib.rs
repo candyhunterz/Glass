@@ -10,7 +10,7 @@ pub mod pid;
 pub mod types;
 
 pub use db::CoordinationDb;
-pub use event_log::CoordinationEvent;
+pub use event_log::{CoordinationEvent, InsertEventData};
 pub use pid::is_pid_alive;
 pub use types::{AgentInfo, FileLock, LockConflict, LockResult, Message};
 

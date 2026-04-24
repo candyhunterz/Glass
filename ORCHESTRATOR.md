@@ -213,7 +213,9 @@ Four trigger modes in priority order:
 3. **Fast trigger** — fires `fast_trigger_secs` (default 5) after output stops flowing
 4. **Slow fallback** — fires every `silence_timeout_secs` (default 30) periodically
 
-The SmartTrigger lives in the PTY reader thread and sends `AppEvent::OrchestratorSilence` to the main thread.
+The SmartTrigger lives in the PTY reader thread and sends `AppEvent::OrchestratorSilence` to the main thread. The event carries `silence_duration_ms` (time since last PTY byte) for rendering stall detection. The main thread also captures block executing state at trigger time. Both are logged to `iteration-details.md` — see [Iteration Detail Log](#iteration-detail-log).
+
+Fast trigger requires `min_output_bytes` (default 512) of output before arming, preventing spurious fires on small outputs like prompts.
 
 ## Response Parsing
 
@@ -354,12 +356,12 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `rules.toml` | Active behavioral rules (provisional/confirmed) | `on_run_end()` |
 | `run-metrics.toml` | Historical run metrics (one entry per run, includes per-rule firings) | `on_run_end()` |
 | `rule-attribution.toml` | Per-rule attribution scores (passenger scores, firing correlations) | `on_run_end()` |
-| `tuning-history.toml` | Config snapshots at each run start | `on_run_start()` |
+| `tuning-history.toml` | Config snapshots at each run start, pending ConfigTuning changes, per-field cooldowns | `on_run_start()` / `on_run_end()` |
 | `archived-rules.toml` | Rules that were rejected or went stale | `on_run_end()` |
-| `iterations.tsv` | Per-iteration log (TSV: iteration, commit, feature, metric, status, description) | `append_iteration_log()` during run |
+| `iterations.tsv` | Per-iteration log (TSV: iteration, commit, feature, metric, status, description). Lean format fed to agent context. | `append_iteration_log()` during run |
+| `iteration-details.md` | Rich per-iteration markdown log for post-run analysis: trigger source + silence duration, block executing state, agent instructions, files changed, verification results, errors, rendering stall warnings. Pruned to 2000 lines. | `append_iteration_detail()` during run |
 | `checkpoint.md` | Last checkpoint for agent context handoff | Checkpoint synthesis |
-| `postmortem-YYYYMMDD-HHMMSS.md` | Run summary report | `generate_postmortem()` on Done/deactivate |
-| `feedback-YYYYMMDD-HHMMSS.md` | Per-run feedback loop summary (tiers fired, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
+| `run-report-YYYYMMDD-HHMMSS.md` | Combined run report: postmortem (summary, metric guard, commits), trigger source breakdown, feedback analysis (tiers, rules, config tuning, ablation, attribution) | `run_feedback_on_end()` |
 | `nudge.md` | User course correction (read and deleted per iteration) | User-created |
 | `agent-instructions.md` | Persistent agent steering file with optional frontmatter (supersedes handoff.md) | User-created |
 | `done` | Completion artifact signal (configurable path) | Agent creates, orchestrator deletes |
@@ -380,6 +382,70 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 | `agent-diag.txt` | Spawn diagnostics (PATH, args, success/failure) |
 | `scripts/hooks/*.toml+.rhai` | Global hook scripts (shared across projects) |
 | `scripts/tools/*.toml+.rhai` | Global MCP tool scripts |
+
+## Run Analyzer Dashboard
+
+`glass analyze` opens a web dashboard that visualizes all `.glass/` data files. Run it from any project directory to inspect orchestrator runs:
+
+```bash
+glass analyze                        # Analyze current project
+glass analyze --dir ~/project/.glass # Analyze specific project
+```
+
+The dashboard (React + D3.js) is embedded in the Glass binary — no Node.js required at runtime. It provides 6 tabs: Overview, Timeline, Triggers, Feedback, CrossRun, RawData. Source lives in `tools/run-analyzer/`.
+
+## Iteration Detail Log
+
+### Purpose
+
+The `iteration-details.md` file captures rich per-iteration data for post-run analysis. Unlike `iterations.tsv` (lean TSV fed to the agent's context window), this file is designed for human or AI review after a run completes — or visualized via `glass analyze`. Read this file to diagnose what went wrong, what the agent decided at each step, and whether the orchestrator triggered prematurely.
+
+### What's Logged
+
+Each iteration entry includes:
+
+| Field | Description | When Present |
+|-------|-------------|-------------|
+| **Trigger** | Source (Prompt/ShellPrompt/Fast/Slow), silence duration in ms, block executing state | Every instruction iteration |
+| **Action** | High-level type: `instruction`, `stuck`, `checkpoint`, `done`, `verify` | Every iteration |
+| **Agent instruction** | The text the agent sent to Claude Code (truncated to 500 chars) | TypeText responses |
+| **Files changed** | `git diff --name-only` since previous iteration's HEAD | When HEAD changes |
+| **Verification** | KEEP or REVERT with test pass/fail counts | After metric guard runs |
+| **Error** | Error description | On regressions or failures |
+| **Note** | Additional context (self-correction, rendering stall warnings) | When relevant |
+
+### Rendering Stall Detection
+
+A known issue: the terminal renderer can stall (wgpu/winit misses a redraw), causing the silence detector to think Claude Code is idle when it's actually still working. The iteration detail log captures two signals to detect this:
+
+1. **`silence_duration_ms`** — how long since the last PTY byte when the trigger fired. Carried from the PTY thread via the `OrchestratorSilence` event. A short silence duration (e.g., 200ms) combined with a Fast or Slow trigger suggests the PTY was recently active.
+2. **`[BLOCK STILL EXECUTING]`** — whether the block manager had an active Executing block when the trigger fired. If true, the silence detector fired while a command was still running — likely a rendering stall or premature trigger.
+
+When both conditions are true, the log entry includes: `WARNING: Trigger fired while a command block was still executing — possible rendering stall or premature trigger`
+
+### Example Entry
+
+```markdown
+## Iteration 5 [14:23:07]
+
+**Trigger:** Fast, silence=5200ms [BLOCK STILL EXECUTING]
+**Action:** instruction
+**Agent instruction:** Fix the TypeScript compilation errors in DecisionMatrix.tsx — the generic type parameter...
+**Files changed:**
+- `src/components/DecisionMatrix.tsx`
+- `src/types.ts`
+**Note:** WARNING: Trigger fired while a command block was still executing — possible rendering stall or premature trigger
+```
+
+### Implementation
+
+- `append_iteration_detail()` in `orchestrator.rs` — appends markdown entries
+- `append_iteration_detail_run_separator()` — marks new run start with timestamp
+- `prune_iteration_details()` — keeps last 2000 lines, runs at end of each run
+- `git_files_changed_since()` / `git_head_short()` — helper functions for diff tracking
+- `SmartTrigger::silence_duration()` — exposes time since last PTY byte
+- `OrchestratorSilence` event carries `silence_duration_ms` from PTY thread
+- `OrchestratorState` captures `last_trigger_silence_duration`, `last_trigger_block_executing`, `last_trigger_source` at trigger time, consumed when the agent response arrives
 
 ## Feedback Lifecycle
 
@@ -424,9 +490,13 @@ The feedback loop analyzes each orchestrator run and produces findings that tune
 5. **Apply new findings** — create new Provisional rules from detector findings
 6. **Staleness** — increment stale_runs for rules that didn't fire; archive after threshold
 7. **Drift** — detect worsening trends over last 3 runs
-8. **Config tuning** — extract Tier 1 findings → write to config.toml (max 1 per run)
+8. **Pending ConfigTuning evaluation** — load `tuning-history.toml` and check for a pending config change from the previous run:
+   - Regressed → revert config value to old, set 5-run cooldown on that field, suppress new ConfigTuning this run
+   - Improved/Neutral → confirm change, clear pending
+   - Decrement all cooldowns, remove expired
+8b. **Config tuning** — extract Tier 1 findings (max 1 per run, skip fields in cooldown) → write to config.toml and record as pending in `tuning-history.toml` for next-run evaluation
 9. **Build LLM prompt** — if `feedback_llm = true`, build analysis prompt from run data + existing findings (returned in `FeedbackResult.llm_prompt`)
-10. **Build script prompt** — if `script_generation = true` and findings are empty but waste/stuck rates are high, build Tier 4 prompt (returned in `FeedbackResult.script_prompt`)
+10. **Build script prompt** — if `script_generation = true` and lower tiers have been tried (rules exist) but waste/stuck rates exceed 33%, build Tier 4 prompt (returned in `FeedbackResult.script_prompt`)
 11. **Persist** — save rules.toml, run-metrics.toml (with rule_firings), archived-rules.toml, rule-attribution.toml
 12. **Sync global** — copy global-scoped rules to `~/.glass/global-rules.toml`; remove rejected/stale ones
 13. **Script lifecycle** — `ScriptBridge::on_feedback_run_end(regressed)` promotes/rejects/ages scripts based on regression result (see Script Lifecycle below)
@@ -442,7 +512,7 @@ When `feedback_llm = true` in config:
    - Parses the response via `llm::parse_llm_response()`
    - Deduplicates against existing `prompt_hint` rules via `llm::dedup_findings()`
    - Writes new Provisional PromptHint rules to `rules.toml`
-5. These Tier 3 rules get injected into the Glass Agent's context on future runs via `prompt_hints()`
+5. These Tier 3 rules are injected into the orchestrator agent's system prompt (up to 5 most recent) via `prompt_hints()` at every spawn/restart. Injection increments `trigger_count` so hints participate in the staleness lifecycle.
 6. If the next run improves, they get promoted. If it regresses, they get rejected.
 
 **Fire-and-forget:** If the LLM call fails or times out, Tier 1+2 findings are already persisted. Tier 3 is additive.
@@ -451,7 +521,7 @@ When `feedback_llm = true` in config:
 
 ### Script Generation (Tier 4 — async, after on_run_end)
 
-When `script_generation = true` in config (default) and Tier 1-3 findings are empty but waste/stuck rates exceed 33%:
+When `script_generation = true` in config (default) and lower tiers have been tried (rules exist in any state) but waste/stuck rates exceed 33%:
 
 1. `on_run_end` returns `script_prompt = Some(...)` containing run metrics, all 20 hook points, the full GlassApi reference, and instructions to write a Rhai script
 2. `run_feedback_on_end` captures `project_root` at spawn time, then spawns an ephemeral agent (60s timeout) with `EphemeralPurpose::ScriptGeneration`

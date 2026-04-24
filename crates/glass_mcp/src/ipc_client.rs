@@ -28,8 +28,8 @@ struct ClientRequest {
 /// Mirrors `glass_core::ipc::McpResponse`.
 #[derive(Debug, Deserialize)]
 struct ClientResponse {
-    #[allow(dead_code)]
-    id: u64,
+    #[serde(rename = "id")]
+    _id: u64,
     result: Option<serde_json::Value>,
     error: Option<String>,
 }
@@ -245,7 +245,7 @@ mod tests {
 
         let resp_line = lines.next_line().await.unwrap().unwrap();
         let resp: ClientResponse = serde_json::from_str(&resp_line).unwrap();
-        assert_eq!(resp.id, 42);
+        assert_eq!(resp._id, 42);
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
 

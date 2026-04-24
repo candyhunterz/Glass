@@ -15,6 +15,30 @@ pub mod model_cache;
 pub mod ollama;
 pub mod openai;
 
+// ── Shared conversation config ────────────────────────────────────────────────
+
+/// Configuration shared across all API-based backend conversation loops.
+///
+/// Groups the parameters that are identical in shape across the Ollama,
+/// OpenAI, and Anthropic backends so each `conversation_loop` / `do_turn`
+/// can take a single `&ConversationConfig` instead of 6-8 separate args.
+pub(crate) struct ConversationConfig {
+    /// API key / credential (empty for Ollama which needs no auth).
+    pub api_key: String,
+    /// Model identifier (e.g. `"gpt-4o"`, `"claude-sonnet-4-6"`, `"llama3"`).
+    pub model: String,
+    /// Base URL for the API endpoint (no trailing slash).
+    pub endpoint: String,
+    /// System prompt injected at session start.
+    pub system_prompt: String,
+    /// Optional first user message sent immediately after spawn.
+    pub initial_message: Option<String>,
+    /// MCP / built-in tool names the agent is permitted to call.
+    pub allowed_tools: Vec<String>,
+    /// Monotonically increasing session counter.
+    pub generation: u64,
+}
+
 // ── Events ───────────────────────────────────────────────────────────────────
 
 /// Normalized events emitted by any backend implementation.

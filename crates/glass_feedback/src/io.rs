@@ -346,6 +346,7 @@ mod tests {
         };
         let file = TuningHistoryFile {
             snapshots: vec![snapshot],
+            ..Default::default()
         };
 
         save_tuning_history(&path, &file).unwrap();

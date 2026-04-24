@@ -8,7 +8,8 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use crate::{
-    AgentBackend, AgentEvent, AgentHandle, BackendError, BackendSpawnConfig, ShutdownToken,
+    AgentBackend, AgentEvent, AgentHandle, BackendError, BackendSpawnConfig, ConversationConfig,
+    ShutdownToken,
 };
 
 // ── SSE event types ──────────────────────────────────────────────────────────
@@ -206,31 +207,22 @@ impl AgentBackend for AnthropicBackend {
 
         let stop = Arc::new(AtomicBool::new(false));
 
-        // Clone values for the conversation thread.
-        let api_key = self.api_key.clone();
-        let model = self.model.clone();
-        let endpoint = self.endpoint.clone();
-        let system_prompt = config.system_prompt.clone();
-        let initial_message = config.initial_message.clone();
-        let allowed_tools = config.allowed_tools.clone();
+        let conv_config = ConversationConfig {
+            api_key: self.api_key.clone(),
+            model: self.model.clone(),
+            endpoint: self.endpoint.clone(),
+            system_prompt: config.system_prompt.clone(),
+            initial_message: config.initial_message.clone(),
+            allowed_tools: config.allowed_tools.clone(),
+            generation,
+        };
 
         let stop_clone = Arc::clone(&stop);
 
         std::thread::Builder::new()
             .name("glass-anthropic-conversation".into())
             .spawn(move || {
-                conversation_loop(
-                    api_key,
-                    model,
-                    endpoint,
-                    system_prompt,
-                    initial_message,
-                    allowed_tools,
-                    generation,
-                    message_rx,
-                    event_tx,
-                    stop_clone,
-                );
+                conversation_loop(conv_config, message_rx, event_tx, stop_clone);
             })
             .map_err(|e| BackendError::SpawnFailed(format!("failed to spawn thread: {e}")))?;
 
@@ -263,15 +255,8 @@ impl AgentBackend for AnthropicBackend {
 ///
 /// Manages the full message history, sends HTTP requests to the Anthropic API,
 /// streams SSE responses, executes tool calls via IPC, and emits events.
-#[allow(clippy::too_many_arguments)]
 fn conversation_loop(
-    api_key: String,
-    model: String,
-    endpoint: String,
-    system_prompt: String,
-    initial_message: Option<String>,
-    allowed_tools: Vec<String>,
-    generation: u64,
+    config: ConversationConfig,
     message_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<AgentEvent>,
     stop: Arc<AtomicBool>,
@@ -279,7 +264,7 @@ fn conversation_loop(
     let ipc = crate::ipc_tools::SyncIpcClient::new();
 
     // Emit session init event.
-    let session_id = format!("anthropic-{}", generation);
+    let session_id = format!("anthropic-{}", config.generation);
     let _ = event_tx.send(AgentEvent::Init {
         session_id: session_id.clone(),
     });
@@ -289,19 +274,9 @@ fn conversation_loop(
     let mut messages: Vec<serde_json::Value> = Vec::new();
 
     // Send initial message if provided.
-    if let Some(msg) = initial_message {
+    if let Some(msg) = &config.initial_message {
         messages.push(serde_json::json!({"role": "user", "content": msg}));
-        if !do_turn(
-            &api_key,
-            &model,
-            &endpoint,
-            &system_prompt,
-            &mut messages,
-            &allowed_tools,
-            &ipc,
-            &event_tx,
-            &stop,
-        ) {
+        if !do_turn(&config, &mut messages, &ipc, &event_tx, &stop) {
             let _ = event_tx.send(AgentEvent::Crashed);
             return;
         }
@@ -316,17 +291,7 @@ fn conversation_loop(
         let user_content = extract_user_content(&content);
         messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
-        if !do_turn(
-            &api_key,
-            &model,
-            &endpoint,
-            &system_prompt,
-            &mut messages,
-            &allowed_tools,
-            &ipc,
-            &event_tx,
-            &stop,
-        ) {
+        if !do_turn(&config, &mut messages, &ipc, &event_tx, &stop) {
             break;
         }
     }
@@ -348,14 +313,9 @@ struct AccumulatedToolUse {
 ///
 /// Sends the request, streams the SSE response, and handles tool call loops.
 /// Returns `false` if the thread should exit (e.g. HTTP error, shutdown).
-#[allow(clippy::too_many_arguments)]
 fn do_turn(
-    api_key: &str,
-    model: &str,
-    endpoint: &str,
-    system_prompt: &str,
+    config: &ConversationConfig,
     messages: &mut Vec<serde_json::Value>,
-    allowed_tools: &[String],
     ipc: &crate::ipc_tools::SyncIpcClient,
     event_tx: &mpsc::Sender<AgentEvent>,
     stop: &Arc<AtomicBool>,
@@ -372,16 +332,17 @@ fn do_turn(
 
         // Build request body (Anthropic Messages API format).
         let mut body = serde_json::json!({
-            "model": model,
+            "model": config.model,
             "max_tokens": 16384,
-            "system": system_prompt,
+            "system": config.system_prompt,
             "messages": messages,
             "stream": true,
         });
 
         // Add tool definitions if allowed_tools is non-empty.
-        if !allowed_tools.is_empty() {
-            let tools: Vec<serde_json::Value> = allowed_tools
+        if !config.allowed_tools.is_empty() {
+            let tools: Vec<serde_json::Value> = config
+                .allowed_tools
                 .iter()
                 .map(|name| {
                     serde_json::json!({
@@ -395,10 +356,10 @@ fn do_turn(
         }
 
         // Make HTTP request with Anthropic-specific headers.
-        let url = format!("{}/v1/messages", endpoint);
+        let url = format!("{}/v1/messages", config.endpoint);
         let body_str = serde_json::to_string(&body).unwrap_or_default();
         let response = match ureq::post(&url)
-            .header("x-api-key", api_key)
+            .header("x-api-key", &config.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .send(body_str.as_bytes())
@@ -546,11 +507,14 @@ fn do_turn(
             if continuations_remaining > 0 {
                 continuations_remaining -= 1;
                 tracing::info!("AnthropicBackend: response truncated at max_tokens, requesting continuation ({} remaining)", continuations_remaining);
-                messages.push(serde_json::json!({"role": "assistant", "content": accumulated_text}));
+                messages
+                    .push(serde_json::json!({"role": "assistant", "content": accumulated_text}));
                 messages.push(serde_json::json!({"role": "user", "content": "Your previous response was truncated due to length. Please continue exactly where you left off."}));
                 continue;
             }
-            tracing::warn!("AnthropicBackend: max continuations exhausted, emitting partial response");
+            tracing::warn!(
+                "AnthropicBackend: max continuations exhausted, emitting partial response"
+            );
         }
 
         // No tool calls — this is the final response.

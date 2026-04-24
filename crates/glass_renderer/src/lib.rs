@@ -1,4 +1,9 @@
-//! glass_renderer — wgpu GPU surface and rendering
+//! glass_renderer — wgpu GPU rendering pipeline for the Glass terminal.
+//!
+//! Provides the full rendering stack: surface management, grid text layout,
+//! scrollbar/tab-bar/status-bar chrome, overlay UIs (search, settings, activity
+//! stream, proposals, welcome), and block-level visual annotations. All
+//! rendering uses wgpu with glyphon for shaped text.
 
 pub mod activity_overlay;
 pub mod block_renderer;
@@ -7,6 +12,7 @@ pub mod conflict_overlay;
 pub mod frame;
 pub mod glyph_cache;
 pub mod grid_renderer;
+pub mod onboarding_toast_renderer;
 pub mod proposal_overlay_renderer;
 pub mod proposal_toast_renderer;
 pub mod rect_renderer;
@@ -16,6 +22,7 @@ pub mod settings_overlay;
 pub mod status_bar;
 pub mod surface;
 pub mod tab_bar;
+mod welcome_overlay;
 
 pub use activity_overlay::{
     ActivityOverlayRenderData, ActivityOverlayRenderer, ActivityOverlayTextLabel,
@@ -25,9 +32,15 @@ pub use activity_overlay::{
 pub use block_renderer::{BlockLabel, BlockRenderer};
 pub use config_error_overlay::{ConfigErrorOverlay, ConfigErrorTextLabel};
 pub use conflict_overlay::{ConflictOverlay, ConflictTextLabel};
-pub use frame::{DividerRect, FrameRenderer, PaneViewport};
+pub use frame::{
+    ConflictInfo, DividerRect, FrameRenderContext, FrameRenderer, MultiPaneRenderContext,
+    PaneViewport,
+};
 pub use glyph_cache::GlyphCache;
 pub use grid_renderer::GridRenderer;
+pub use onboarding_toast_renderer::{
+    OnboardingToastRenderData, OnboardingToastRenderer, OnboardingToastTextLabel,
+};
 pub use proposal_overlay_renderer::{
     ProposalOverlayRenderData, ProposalOverlayRenderer, ProposalOverlayTextLabel,
 };
@@ -35,12 +48,17 @@ pub use proposal_toast_renderer::{
     ProposalToastRenderData, ProposalToastRenderer, ProposalToastTextLabel,
 };
 pub use rect_renderer::{RectInstance, RectRenderer};
-pub use scrollbar::{ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
+pub use scrollbar::{ScrollState, ScrollbarHit, ScrollbarRenderer, SCROLLBAR_WIDTH};
 pub use search_overlay_renderer::{SearchOverlayRenderer, SearchOverlayTextLabel};
-pub use settings_overlay::{SettingsOverlayRenderData, SettingsOverlayTextLabel, SettingsTab};
-pub use status_bar::{StatusBarRenderer, StatusLabel};
+pub use settings_overlay::{
+    SettingsNavState, SettingsOverlayRenderData, SettingsOverlayTextLabel, SettingsTab,
+};
+pub use status_bar::{StatusBarAgentInfo, StatusBarRenderer, StatusLabel};
 pub use surface::GlassRenderer;
 pub use tab_bar::{TabBarRenderer, TabDisplayInfo, TabLabel};
+pub use welcome_overlay::{
+    WelcomeOverlayRenderData, WelcomeOverlayRenderer, WelcomeOverlayTextLabel, WelcomeStep,
+};
 
 /// Re-export FontSystem for parallel init in main.
 pub use glyphon::FontSystem;

@@ -7,6 +7,7 @@ use std::hash::{Hash, Hasher};
 
 /// Create a `git` command with `CREATE_NO_WINDOW` on Windows to prevent console flashing.
 fn git_cmd() -> std::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = std::process::Command::new("git");
     #[cfg(target_os = "windows")]
     {
@@ -41,6 +42,10 @@ pub struct MetricBaseline {
     pub last_results: Vec<VerifyResult>,
     pub keep_count: u32,
     pub revert_count: u32,
+    /// Override directory for running verify commands. When the metric guard
+    /// detects project markers in a subdirectory (cross-project build), this
+    /// stores that directory so verify commands run in the right place.
+    pub verify_cwd: Option<String>,
 }
 
 impl MetricBaseline {
@@ -51,6 +56,7 @@ impl MetricBaseline {
             last_results: Vec::new(),
             keep_count: 0,
             revert_count: 0,
+            verify_cwd: None,
         }
     }
 
@@ -122,7 +128,12 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
         }
     }
 
-    if root.join("pyproject.toml").exists() || root.join("setup.py").exists() {
+    if root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("pytest.ini").exists()
+        || root.join("setup.cfg").exists()
+        || root.join("tox.ini").exists()
+    {
         return vec![VerifyCommand {
             name: "pytest".to_string(),
             cmd: "pytest".to_string(),
@@ -155,6 +166,170 @@ pub fn auto_detect_verify_commands(project_root: &str) -> Vec<VerifyCommand> {
     }
 
     Vec::new()
+}
+
+/// Detect verify commands from a subdirectory when the orchestrator CWD itself
+/// has no project markers (cross-project build). Uses three strategies:
+///
+/// 1. Check the git repository root (if `project_root` is a subdirectory of a
+///    git repo, the markers like `Cargo.toml` are typically at the repo root).
+/// 2. Parse `git diff --stat` output to find changed file paths, then walk up
+///    each path looking for the nearest directory with project markers.
+/// 3. Fall back to scanning immediate subdirectories for project markers.
+///
+/// Returns `(directory, commands)` if a project is found, or `None`.
+pub fn detect_project_from_diff(
+    project_root: &str,
+    diff_stat: Option<&str>,
+) -> Option<(String, Vec<VerifyCommand>)> {
+    let root = std::path::Path::new(project_root);
+
+    // Strategy 1: check git repo root (handles orchestrating from a subdirectory)
+    if let Some(repo_root) = git_repo_root(project_root) {
+        let repo_path = std::path::Path::new(&repo_root);
+        if repo_path != root {
+            let commands = auto_detect_verify_commands(&repo_root);
+            if !commands.is_empty() {
+                return Some((repo_root.clone(), commands));
+            }
+            // Also try diff paths relative to repo root
+            if let Some(stat) = diff_stat {
+                if let Some(result) = detect_from_diff_paths(repo_path, stat) {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    // Strategy 2: infer from git diff paths relative to project_root
+    if let Some(stat) = diff_stat {
+        if let Some(result) = detect_from_diff_paths(root, stat) {
+            return Some(result);
+        }
+    }
+
+    // Strategy 3: scan first two levels of subdirectories
+    scan_subdirs_for_markers(root, 2)
+}
+
+/// Get the git repository root for a directory.
+fn git_repo_root(dir: &str) -> Option<String> {
+    let mut cmd = git_cmd();
+    cmd.args(["rev-parse", "--show-toplevel"]).current_dir(dir);
+    let output = cmd.output().ok()?;
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Parse git diff --stat output for file paths, then find the nearest parent
+/// directory with project markers for each path. Returns the directory that
+/// appears most often among changed files.
+fn detect_from_diff_paths(
+    root: &std::path::Path,
+    diff_stat: &str,
+) -> Option<(String, Vec<VerifyCommand>)> {
+    let mut dir_counts: std::collections::HashMap<std::path::PathBuf, usize> =
+        std::collections::HashMap::new();
+
+    for line in diff_stat.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.contains("file changed")
+            || trimmed.contains("files changed")
+        {
+            continue;
+        }
+        // Format: " path/to/file | N +++---"
+        let pipe_pos = match trimmed.rfind('|') {
+            Some(p) => p,
+            None => continue,
+        };
+        let path_str = trimmed[..pipe_pos].trim();
+        if path_str.is_empty() {
+            continue;
+        }
+
+        // Walk up from file's parent directory looking for project markers
+        let file_abs = root.join(path_str);
+        let mut dir = file_abs.parent();
+        while let Some(d) = dir {
+            if !d.starts_with(root) || d == root {
+                break;
+            }
+            if has_project_marker(d) {
+                *dir_counts.entry(d.to_path_buf()).or_insert(0) += 1;
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+
+    // Pick the directory with the most changed files
+    let (best_dir, _) = dir_counts.into_iter().max_by_key(|(_, count)| *count)?;
+    let best_str = best_dir.to_string_lossy().to_string();
+    let commands = auto_detect_verify_commands(&best_str);
+    if commands.is_empty() {
+        None
+    } else {
+        Some((best_str, commands))
+    }
+}
+
+/// Check whether a directory contains any project marker file.
+fn has_project_marker(dir: &std::path::Path) -> bool {
+    dir.join("Cargo.toml").exists()
+        || dir.join("package.json").exists()
+        || dir.join("pyproject.toml").exists()
+        || dir.join("setup.py").exists()
+        || dir.join("go.mod").exists()
+        || dir.join("tsconfig.json").exists()
+        || dir.join("Makefile").exists()
+}
+
+/// Scan subdirectories up to `max_depth` levels deep for project markers.
+fn scan_subdirs_for_markers(
+    root: &std::path::Path,
+    max_depth: usize,
+) -> Option<(String, Vec<VerifyCommand>)> {
+    if max_depth == 0 {
+        return None;
+    }
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().ok().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip hidden dirs and common non-project directories
+        if name_str.starts_with('.')
+            || matches!(
+                name_str.as_ref(),
+                "node_modules" | "target" | "dist" | "build" | "__pycache__" | ".git"
+            )
+        {
+            continue;
+        }
+        let path = entry.path();
+        let path_str = path.to_string_lossy().to_string();
+        let commands = auto_detect_verify_commands(&path_str);
+        if !commands.is_empty() {
+            return Some((path_str, commands));
+        }
+        // Recurse one level deeper
+        if let Some(result) = scan_subdirs_for_markers(&path, max_depth - 1) {
+            return Some(result);
+        }
+    }
+    None
 }
 
 /// Parse the "## Deliverables" section of a PRD file to extract file paths.
@@ -369,10 +544,8 @@ pub enum CheckpointPhase {
     /// Waiting for ephemeral agent to synthesize checkpoint.md.
     Synthesizing {
         started_at: std::time::Instant,
-        #[allow(dead_code)] // read in tests only
-        completed: String,
-        #[allow(dead_code)] // read in tests only
-        next: String,
+        _completed: String,
+        _next: String,
     },
 }
 
@@ -469,6 +642,10 @@ pub struct OrchestratorState {
     pub recent_fingerprints: Vec<StateFingerprint>,
     /// Whether the last fingerprint check detected stuck (consumed by response handler).
     pub fingerprint_stuck: bool,
+    /// Whether a fingerprint has already been recorded for the current iteration.
+    /// Prevents multiple silence triggers within one iteration from inflating the
+    /// fingerprint history and causing false stuck detection.
+    pub fingerprint_recorded_this_iteration: bool,
     /// Metric guard: verification baseline and results tracking.
     pub metric_baseline: Option<MetricBaseline>,
     /// Git commit SHA at the start of the current iteration (for revert).
@@ -487,6 +664,14 @@ pub struct OrchestratorState {
     pub feedback_reverted_files: Vec<String>,
     /// Feedback loop: count of fast triggers during output.
     pub feedback_fast_trigger_during_output: u32,
+    /// Feedback loop: count of triggers fired by prompt regex.
+    pub feedback_trigger_prompt_count: u32,
+    /// Feedback loop: count of triggers fired by shell prompt (OSC 133;A).
+    pub feedback_trigger_shell_count: u32,
+    /// Feedback loop: count of triggers fired by velocity drop (fast).
+    pub feedback_trigger_fast_count: u32,
+    /// Feedback loop: count of triggers fired by slow fallback.
+    pub feedback_trigger_slow_count: u32,
     /// Feedback loop: timestamps for each iteration (for pacing analysis).
     pub feedback_iteration_timestamps: Vec<std::time::Instant>,
     /// Feedback loop: count of stuck events during this run.
@@ -532,8 +717,40 @@ pub struct OrchestratorState {
     pub resolved_mode: String,
     /// Resolved verification mode. Set at activation time.
     pub resolved_verify_mode: String,
+    /// Original config verify_mode value (user intent). Used by late auto-detection to
+    /// distinguish "user disabled verification" from "auto-detection found no markers."
+    pub config_verify_mode: String,
     /// Iterations between automatic context refresh checkpoints.
     pub checkpoint_interval: u32,
+    /// True from agent spawn until first response arrives. Used to emit AgentResponded event once.
+    pub awaiting_first_response: bool,
+    /// Diagnostic: silence duration when the last trigger fired (for rendering stall detection).
+    pub last_trigger_silence_duration: Option<std::time::Duration>,
+    /// Diagnostic: whether a block was in Executing state when the last trigger fired.
+    pub last_trigger_block_executing: Option<bool>,
+    /// Diagnostic: trigger source that fired the current iteration.
+    pub last_trigger_source: Option<String>,
+    /// Number of consecutive silence triggers observed with block_executing = true.
+    /// When the implementer is a CLI (e.g. Claude Code) rather than a shell with
+    /// OSC 133 integration, the block manager never transitions out of Executing,
+    /// making the flag permanently stuck. We treat it as stale once this counter
+    /// exceeds STALE_BLOCK_EXECUTING_THRESHOLD so the metric guard verify path
+    /// can still run in agent sessions.
+    pub consecutive_block_executing_count: u32,
+}
+
+/// Consecutive `block_executing = true` observations after which the flag is
+/// considered unreliable. Empirically, a real shell command producing no output
+/// rarely stays "executing" across this many silence triggers without interim
+/// state transitions; a stuck flag (agent CLI session, broken shell
+/// integration) climbs monotonically.
+pub const STALE_BLOCK_EXECUTING_THRESHOLD: u32 = 3;
+
+/// Whether the `block_executing` flag should gate the metric guard verify path.
+/// Returns `false` (don't gate) once the flag has been continuously true for
+/// `STALE_BLOCK_EXECUTING_THRESHOLD` or more consecutive silence observations.
+pub fn should_gate_on_block_executing(block_executing: bool, consecutive_true_count: u32) -> bool {
+    block_executing && consecutive_true_count < STALE_BLOCK_EXECUTING_THRESHOLD
 }
 
 impl OrchestratorState {
@@ -554,6 +771,7 @@ impl OrchestratorState {
             response_pending_since: None,
             recent_fingerprints: Vec::new(),
             fingerprint_stuck: false,
+            fingerprint_recorded_this_iteration: false,
             metric_baseline: None,
             last_good_commit: None,
             max_iterations: None,
@@ -563,6 +781,10 @@ impl OrchestratorState {
             feedback_commit_count: 0,
             feedback_reverted_files: Vec::new(),
             feedback_fast_trigger_during_output: 0,
+            feedback_trigger_prompt_count: 0,
+            feedback_trigger_shell_count: 0,
+            feedback_trigger_fast_count: 0,
+            feedback_trigger_slow_count: 0,
             feedback_iteration_timestamps: Vec::new(),
             feedback_stuck_count: 0,
             feedback_checkpoint_count: 0,
@@ -584,7 +806,13 @@ impl OrchestratorState {
             project_root: String::new(),
             resolved_mode: String::new(),
             resolved_verify_mode: String::new(),
+            config_verify_mode: String::new(),
             checkpoint_interval: AUTO_CHECKPOINT_INTERVAL,
+            awaiting_first_response: false,
+            last_trigger_silence_duration: None,
+            last_trigger_block_executing: None,
+            last_trigger_source: None,
+            consecutive_block_executing_count: 0,
         }
     }
 
@@ -602,8 +830,29 @@ impl OrchestratorState {
 
     /// Check if automatic checkpoint should trigger.
     pub fn should_auto_checkpoint(&self) -> bool {
-        self.checkpoint_interval > 0
-            && self.iterations_since_checkpoint >= self.checkpoint_interval
+        self.checkpoint_interval > 0 && self.iterations_since_checkpoint >= self.checkpoint_interval
+    }
+
+    /// Record an observation of the current git HEAD and return `true` if the
+    /// observation represents a newly-counted commit made during the run.
+    ///
+    /// Called once per silence-triggered iteration once HEAD has been read from
+    /// git. The first observation in a run establishes the starting HEAD
+    /// without counting a commit; subsequent observations that change the SHA
+    /// increment `feedback_commit_count`. Identical consecutive observations
+    /// increment `iterations_since_last_commit`.
+    pub fn record_head_observation(&mut self, head_sha: &str) -> bool {
+        if self.last_known_head.as_deref() == Some(head_sha) {
+            self.iterations_since_last_commit = self.iterations_since_last_commit.saturating_add(1);
+            return false;
+        }
+        let counted = self.last_known_head.is_some();
+        if counted {
+            self.feedback_commit_count = self.feedback_commit_count.saturating_add(1);
+        }
+        self.iterations_since_last_commit = 0;
+        self.last_known_head = Some(head_sha.to_string());
+        counted
     }
 
     /// Record a response and check if we're stuck (N identical consecutive responses).
@@ -665,8 +914,8 @@ impl OrchestratorState {
         self.advance_deliverable(completed, next);
         self.checkpoint_phase = CheckpointPhase::Synthesizing {
             started_at: std::time::Instant::now(),
-            completed: completed.to_string(),
-            next: next.to_string(),
+            _completed: completed.to_string(),
+            _next: next.to_string(),
         };
     }
 
@@ -688,10 +937,10 @@ impl OrchestratorState {
                     self.current_deliverable = i + 1;
                 }
             }
-            if next_lower.contains(&name_lower) || name_lower.contains(&next_lower) {
-                if i > self.current_deliverable {
-                    self.current_deliverable = i;
-                }
+            if (next_lower.contains(&name_lower) || name_lower.contains(&next_lower))
+                && i > self.current_deliverable
+            {
+                self.current_deliverable = i;
             }
         }
     }
@@ -776,8 +1025,8 @@ pub fn append_run_separator(project_root: &str, prd_name: &str) {
 
     let _ = writeln!(
         file,
-        "---\t---\t---\t---\t---\t=== New Run: {} ({}) ==="
-        , prd_name, now
+        "---\t---\t---\t---\t---\t=== New Run: {} ({}) ===",
+        prd_name, now
     );
 }
 
@@ -913,7 +1162,8 @@ pub fn read_iterations_log_truncated(project_root: &str, max_entries: usize) -> 
 /// Generate a post-mortem report for a completed orchestrator run.
 ///
 /// Reads iterations.tsv, git log, and metric baseline data to produce
-/// a structured markdown report at `.glass/postmortem-{timestamp}.md`.
+/// a structured markdown report string. The caller is responsible for
+/// writing the report to disk (combined with the feedback summary).
 pub fn generate_postmortem(
     project_root: &str,
     iteration: u32,
@@ -921,12 +1171,7 @@ pub fn generate_postmortem(
     metric_baseline: Option<&MetricBaseline>,
     completion_reason: &str,
     context_files: &[String],
-) {
-    let glass_dir = std::path::Path::new(project_root).join(".glass");
-    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
-        tracing::warn!("Failed to create .glass directory for postmortem: {e}");
-    }
-
+) -> String {
     // Read iterations.tsv for analysis
     let iterations_content = read_iterations_log(project_root);
     let mut stuck_count = 0;
@@ -1070,17 +1315,10 @@ pub fn generate_postmortem(
         ),
     );
 
-    // Write report
-    let timestamp = chrono_free_timestamp();
-    let filename = format!("postmortem-{timestamp}.md");
-    let path = glass_dir.join(&filename);
-    if let Err(e) = std::fs::write(&path, &report) {
-        tracing::warn!("Failed to write postmortem report: {e}");
-    } else {
-        tracing::info!("Orchestrator: post-mortem report written to .glass/{filename}");
-    }
+    report
 }
 
+#[cfg(test)]
 fn chrono_free_timestamp() -> String {
     // Use SystemTime for a timestamp without chrono dependency
     let secs = std::time::SystemTime::now()
@@ -1130,6 +1368,7 @@ fn chrono_free_timestamp() -> String {
     format!("{year:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
 }
 
+#[cfg(test)]
 fn is_leap_year(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
@@ -1270,7 +1509,7 @@ pub fn build_orchestrator_context(
 }
 
 /// Resolve the checkpoint file path for a given project root.
-#[allow(dead_code)] // called from tests only
+#[cfg(test)]
 pub fn checkpoint_path(project_root: &str, config: Option<&str>) -> std::path::PathBuf {
     let rel = config.unwrap_or(".glass/checkpoint.md");
     std::path::Path::new(project_root).join(rel)
@@ -1310,6 +1549,211 @@ pub fn build_bounded_summary(
     summary.push_str(&format!("  Last checkpoint: {checkpoint_path}\n"));
     summary.push_str("  To resume: enable orchestrator (Ctrl+Shift+O)\n");
     summary
+}
+
+/// Append a detailed iteration entry to `.glass/iteration-details.md`.
+///
+/// This file captures rich per-iteration data for post-run analysis:
+/// agent instructions, trigger sources, files changed, verification results.
+/// Unlike `iterations.tsv` (lean, fed to the agent's context), this file is
+/// for human/AI review after the run completes.
+pub fn append_iteration_detail(project_root: &str, iteration: u32, detail: &IterationDetail) {
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass dir for iteration details: {e}");
+        return;
+    }
+    let path = glass_dir.join("iteration-details.md");
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open iteration-details.md: {e}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+
+    // Timestamp
+    let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+
+    let mut entry = format!("## Iteration {iteration} [{timestamp}]\n\n");
+
+    if let Some(ref trigger) = detail.trigger_source {
+        entry.push_str(&format!("**Trigger:** {trigger}\n"));
+    }
+
+    if let Some(ref action) = detail.action {
+        entry.push_str(&format!("**Action:** {action}\n"));
+    }
+
+    if let Some(ref instruction) = detail.instruction {
+        // Truncate very long instructions to keep the file manageable.
+        let truncated = if instruction.len() > 500 {
+            format!(
+                "{}... (truncated, {} chars total)",
+                truncate_str(instruction, 500),
+                instruction.len()
+            )
+        } else {
+            instruction.clone()
+        };
+        entry.push_str(&format!("**Agent instruction:** {truncated}\n"));
+    }
+
+    if !detail.files_changed.is_empty() {
+        entry.push_str("**Files changed:**\n");
+        for f in &detail.files_changed {
+            entry.push_str(&format!("- `{f}`\n"));
+        }
+    }
+
+    if let Some(ref verify) = detail.verify_result {
+        entry.push_str(&format!("**Verification:** {verify}\n"));
+    }
+
+    if let Some(ref error) = detail.error {
+        entry.push_str(&format!("**Error:** {error}\n"));
+    }
+
+    if let Some(ref note) = detail.note {
+        entry.push_str(&format!("**Note:** {note}\n"));
+    }
+
+    entry.push('\n');
+
+    if let Err(e) = write!(file, "{entry}") {
+        tracing::warn!("Failed to write iteration detail: {e}");
+    }
+}
+
+/// Rich detail for a single iteration, written to iteration-details.md.
+#[derive(Debug, Default)]
+pub struct IterationDetail {
+    /// What triggered this iteration (e.g., "silence (shell_prompt, 12s)")
+    pub trigger_source: Option<String>,
+    /// High-level action type (e.g., "instruction", "stuck", "checkpoint", "verify")
+    pub action: Option<String>,
+    /// The instruction the agent sent to Claude Code
+    pub instruction: Option<String>,
+    /// Files changed since last iteration (from git diff --name-only)
+    pub files_changed: Vec<String>,
+    /// Verification result summary
+    pub verify_result: Option<String>,
+    /// Error message if something went wrong
+    pub error: Option<String>,
+    /// Additional notes (e.g., "self-corrected", "reverted to abc1234")
+    pub note: Option<String>,
+}
+
+/// Start a new run section in iteration-details.md.
+pub fn append_iteration_detail_run_separator(project_root: &str, prd_name: &str) {
+    let glass_dir = std::path::Path::new(project_root).join(".glass");
+    if let Err(e) = std::fs::create_dir_all(&glass_dir) {
+        tracing::warn!("Failed to create .glass dir for iteration details: {e}");
+        return;
+    }
+    let path = glass_dir.join("iteration-details.md");
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("Failed to open iteration-details.md: {e}");
+            return;
+        }
+    };
+
+    use std::io::Write;
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = writeln!(file, "\n---\n\n# Run: {prd_name} ({now})\n");
+}
+
+/// Get the list of files changed since a given commit SHA.
+pub fn git_files_changed_since(project_root: &str, since_commit: &str) -> Vec<String> {
+    git_cmd()
+        .args(["diff", "--name-only", since_commit, "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Get the current HEAD short SHA.
+/// Truncate a string at the nearest char boundary at or before `max_bytes`.
+/// Avoids panics from slicing in the middle of multi-byte UTF-8 sequences.
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+pub fn git_head_short(project_root: &str) -> Option<String> {
+    git_cmd()
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// Prune iteration-details.md to prevent unbounded growth.
+/// Keeps the last `max_lines` lines of the file.
+pub fn prune_iteration_details(project_root: &str, max_lines: usize) {
+    let path = std::path::Path::new(project_root)
+        .join(".glass")
+        .join("iteration-details.md");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= max_lines + 200 {
+        return; // Buffer to avoid rewriting on every append
+    }
+    let tail = &lines[lines.len() - max_lines..];
+    let mut result = String::from("(earlier entries pruned)\n\n");
+    for line in tail {
+        result.push_str(line);
+        result.push('\n');
+    }
+    if let Err(e) = std::fs::write(&path, result) {
+        tracing::warn!("Failed to prune iteration-details.md: {e}");
+    }
 }
 
 #[cfg(test)]
@@ -1415,10 +1859,10 @@ mod tests {
         state.begin_synthesis("feature-a", "feature-b", "fallback content".to_string());
         match &state.checkpoint_phase {
             CheckpointPhase::Synthesizing {
-                completed, next, ..
+                _completed, _next, ..
             } => {
-                assert_eq!(completed, "feature-a");
-                assert_eq!(next, "feature-b");
+                assert_eq!(_completed, "feature-a");
+                assert_eq!(_next, "feature-b");
             }
             _ => panic!("Expected Synthesizing"),
         }
@@ -1661,6 +2105,33 @@ mod tests {
         let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].cmd, "cargo test --workspace");
+    }
+
+    #[test]
+    fn auto_detect_python_pytest_ini() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("pytest.ini"), "[pytest]").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "pytest");
+    }
+
+    #[test]
+    fn auto_detect_python_setup_cfg() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("setup.cfg"), "[metadata]").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "pytest");
+    }
+
+    #[test]
+    fn auto_detect_python_tox_ini() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("tox.ini"), "[tox]").unwrap();
+        let cmds = auto_detect_verify_commands(dir.path().to_str().unwrap());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd, "pytest");
     }
 
     #[test]
@@ -2170,5 +2641,282 @@ mod tests {
         let cols: Vec<&str> = line.split('\t').collect();
         assert!(cols.len() >= 5);
         assert_eq!(cols[4].trim(), "stuck"); // status is in column 4
+    }
+
+    #[test]
+    fn detect_project_from_diff_stat_finds_subdirectory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sub = dir.path().join("tools").join("my-app");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("package.json"), r#"{"scripts":{"test":"jest"}}"#).unwrap();
+
+        let stat = " tools/my-app/src/App.tsx | 15 +++++++------\n \
+                     tools/my-app/index.html  |  3 +++\n \
+                     2 files changed, 11 insertions(+), 7 deletions(-)\n";
+
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), Some(stat));
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(found_dir.contains("my-app"), "found_dir={found_dir}");
+        assert_eq!(commands[0].name, "npm test");
+    }
+
+    #[test]
+    fn detect_project_from_diff_stat_picks_most_common() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Two subdirectories with markers
+        let app_a = dir.path().join("app-a");
+        let app_b = dir.path().join("app-b");
+        std::fs::create_dir_all(&app_a).unwrap();
+        std::fs::create_dir_all(&app_b).unwrap();
+        std::fs::write(app_a.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(app_b.join("package.json"), r#"{"scripts":{"test":"jest"}}"#).unwrap();
+
+        // More changed files in app-b
+        let stat = " app-a/src/main.rs  | 2 ++\n \
+                     app-b/src/index.js | 5 ++++\n \
+                     app-b/src/utils.js | 3 +++\n \
+                     app-b/README.md    | 1 +\n \
+                     4 files changed\n";
+
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), Some(stat));
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(
+            found_dir.contains("app-b"),
+            "expected app-b, got {found_dir}"
+        );
+        assert_eq!(commands[0].name, "npm test");
+    }
+
+    #[test]
+    fn detect_project_fallback_to_subdir_scan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sub = dir.path().join("my-project");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("Cargo.toml"), "[package]").unwrap();
+
+        // No diff stat — falls back to subdirectory scanning
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(found_dir.contains("my-project"), "found_dir={found_dir}");
+        assert_eq!(commands[0].name, "cargo test");
+    }
+
+    #[test]
+    fn detect_project_no_markers_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Empty directory, no subdirectories
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_project_skips_hidden_and_build_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Put markers in dirs that should be skipped
+        let hidden = dir.path().join(".hidden");
+        let target = dir.path().join("target");
+        let node_modules = dir.path().join("node_modules");
+        for d in [&hidden, &target, &node_modules] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("Cargo.toml"), "[package]").unwrap();
+        }
+
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_project_nested_two_levels() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("tools").join("analyzer");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("go.mod"), "module analyzer").unwrap();
+
+        // No diff stat — falls back to subdir scanning (2 levels deep)
+        let result = detect_project_from_diff(dir.path().to_str().unwrap(), None);
+        assert!(result.is_some());
+        let (found_dir, commands) = result.unwrap();
+        assert!(found_dir.contains("analyzer"), "found_dir={found_dir}");
+        assert_eq!(commands[0].name, "go test");
+    }
+
+    #[test]
+    fn has_project_marker_detects_all_types() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!has_project_marker(dir.path()));
+
+        for marker in [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "setup.py",
+            "go.mod",
+            "tsconfig.json",
+            "Makefile",
+        ] {
+            let sub = dir.path().join(format!("proj-{marker}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join(marker), "").unwrap();
+            assert!(has_project_marker(&sub), "should detect {marker}");
+        }
+    }
+
+    #[test]
+    fn metric_baseline_verify_cwd_defaults_to_none() {
+        let baseline = MetricBaseline::new();
+        assert!(baseline.verify_cwd.is_none());
+    }
+
+    #[test]
+    fn git_repo_root_returns_toplevel() {
+        // This test runs inside the Glass repo, so git_repo_root should work.
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("Skipping: git not on PATH");
+            return;
+        }
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let result = git_repo_root(manifest_dir);
+        assert!(result.is_some(), "should find git repo root");
+        let root = result.unwrap();
+        // The repo root should contain Cargo.toml
+        assert!(
+            std::path::Path::new(&root).join("Cargo.toml").exists(),
+            "repo root {root} should contain Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn detect_project_from_subdirectory_finds_repo_root() {
+        // When project_root is a subdirectory of a git repo with Cargo.toml,
+        // detect_project_from_diff should find the repo root's markers.
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("Skipping: git not on PATH");
+            return;
+        }
+        // Use a real subdirectory of this repo (tools/ exists and has no Cargo.toml)
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let tools_dir = std::path::Path::new(manifest_dir).join("tools");
+        if !tools_dir.exists() {
+            eprintln!("Skipping: tools/ dir not found");
+            return;
+        }
+        let result = detect_project_from_diff(tools_dir.to_str().unwrap(), None);
+        assert!(
+            result.is_some(),
+            "should detect repo root from subdirectory"
+        );
+        let (found_dir, commands) = result.unwrap();
+        assert_eq!(commands[0].name, "cargo test");
+        assert!(
+            std::path::Path::new(&found_dir).join("Cargo.toml").exists(),
+            "found_dir should have Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn block_executing_gate_active_when_fresh() {
+        // First observation of block_executing=true must still gate the verify path —
+        // this is the normal case where a real shell command is running.
+        assert!(should_gate_on_block_executing(true, 0));
+        assert!(should_gate_on_block_executing(true, 1));
+        assert!(should_gate_on_block_executing(
+            true,
+            STALE_BLOCK_EXECUTING_THRESHOLD - 1
+        ));
+    }
+
+    #[test]
+    fn block_executing_gate_disabled_when_stale() {
+        // After THRESHOLD consecutive true observations the flag is treated as
+        // stuck — common in agent CLI sessions where OSC 133 events never fire.
+        assert!(!should_gate_on_block_executing(
+            true,
+            STALE_BLOCK_EXECUTING_THRESHOLD
+        ));
+        assert!(!should_gate_on_block_executing(
+            true,
+            STALE_BLOCK_EXECUTING_THRESHOLD + 10
+        ));
+    }
+
+    #[test]
+    fn block_executing_gate_disabled_when_not_executing() {
+        // When the flag is false there is nothing to gate on, regardless of
+        // historical count.
+        assert!(!should_gate_on_block_executing(false, 0));
+        assert!(!should_gate_on_block_executing(false, 100));
+    }
+
+    #[test]
+    fn record_head_observation_first_does_not_count() {
+        let mut state = OrchestratorState::new(3);
+        let counted = state.record_head_observation("abc123");
+        assert!(
+            !counted,
+            "first observation establishes baseline, not a commit"
+        );
+        assert_eq!(state.feedback_commit_count, 0);
+        assert_eq!(state.last_known_head.as_deref(), Some("abc123"));
+        assert_eq!(state.iterations_since_last_commit, 0);
+    }
+
+    #[test]
+    fn record_head_observation_changed_counts() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("abc123");
+        let counted = state.record_head_observation("def456");
+        assert!(counted, "new SHA after a baseline is a commit");
+        assert_eq!(state.feedback_commit_count, 1);
+        assert_eq!(state.last_known_head.as_deref(), Some("def456"));
+        assert_eq!(state.iterations_since_last_commit, 0);
+    }
+
+    #[test]
+    fn record_head_observation_unchanged_increments_idle_counter() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("abc123");
+        state.record_head_observation("abc123");
+        state.record_head_observation("abc123");
+        assert_eq!(state.feedback_commit_count, 0);
+        assert_eq!(state.iterations_since_last_commit, 2);
+        assert_eq!(state.last_known_head.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn record_head_observation_counts_multiple_commits() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("sha0"); // baseline
+        state.record_head_observation("sha1");
+        state.record_head_observation("sha1"); // idle iteration
+        state.record_head_observation("sha2");
+        state.record_head_observation("sha3");
+        assert_eq!(
+            state.feedback_commit_count, 3,
+            "three distinct SHAs observed after baseline"
+        );
+        assert_eq!(state.iterations_since_last_commit, 0);
+    }
+
+    #[test]
+    fn record_head_observation_resets_idle_counter_on_new_commit() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("sha0");
+        state.record_head_observation("sha0"); // idle
+        state.record_head_observation("sha0"); // idle
+        assert_eq!(state.iterations_since_last_commit, 2);
+        state.record_head_observation("sha1"); // new commit
+        assert_eq!(state.iterations_since_last_commit, 0);
+        assert_eq!(state.feedback_commit_count, 1);
     }
 }
