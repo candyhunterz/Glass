@@ -500,6 +500,11 @@ struct Processor {
     artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
     /// Postmortem report content, captured for combining with feedback summary.
     orchestrator_postmortem: Option<String>,
+    /// Whether `SetThreadExecutionState` currently has a system-required request
+    /// active. Tracked so `about_to_wait` can apply transitions without calling
+    /// the Windows API every tick. Only meaningful on Windows; always `false`
+    /// elsewhere.
+    power_request_active: bool,
     /// Feedback loop state for the current orchestrator run.
     feedback_state: Option<glass_feedback::FeedbackState>,
     /// Guard to prevent config reload from overwriting feedback-written values.
@@ -10966,6 +10971,12 @@ impl ApplicationHandler<AppEvent> for Processor {
     /// the render completes. When all windows are clean, switches to Wait to
     /// avoid burning CPU.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Keep the OS power-request state in sync with orchestrator activity.
+        // Centralized here (rather than in each `active = true/false` site) so
+        // every activation/deactivation path gets the correct power state on
+        // the next event-loop idle without bespoke plumbing.
+        self.sync_power_request();
+
         let mut any_dirty = false;
         for ctx in self.windows.values() {
             if ctx.render_dirty {
@@ -10978,6 +10989,56 @@ impl ApplicationHandler<AppEvent> for Processor {
         } else {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
+    }
+}
+
+impl Processor {
+    /// Reconcile OS power-request state with `self.orchestrator.active`.
+    ///
+    /// On Windows, when the orchestrator becomes active we tell the OS that
+    /// this thread needs the system to stay awake via
+    /// `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`. This
+    /// prevents the PC from sleeping during long-running orchestrator sessions
+    /// (overnight minimize + idle would otherwise suspend Glass, freezing the
+    /// silence tracker).
+    ///
+    /// When the orchestrator deactivates we clear the request with
+    /// `SetThreadExecutionState(ES_CONTINUOUS)` so the system can sleep
+    /// normally again.
+    ///
+    /// No-op on non-Windows platforms (Linux/macOS don't exhibit the same
+    /// aggressive background-app suspension behavior for terminal apps).
+    fn sync_power_request(&mut self) {
+        let desired = self.orchestrator.active;
+        if desired == self.power_request_active {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::System::Power::{
+                SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+            };
+            // SAFETY: SetThreadExecutionState is a thread-local system call
+            // that returns the previous flags. Calling it from the main thread
+            // is standard usage.
+            let flags = if desired {
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            } else {
+                ES_CONTINUOUS
+            };
+            let prev = unsafe { SetThreadExecutionState(flags) };
+            if prev == 0 {
+                tracing::warn!(
+                    "SetThreadExecutionState(0x{flags:x}) returned 0 — power request not applied"
+                );
+                return;
+            }
+            tracing::debug!(
+                "Power request {} (flags=0x{flags:x})",
+                if desired { "enabled" } else { "cleared" }
+            );
+        }
+        self.power_request_active = desired;
     }
 }
 
@@ -11500,6 +11561,7 @@ fn main() {
                 _job_object_handle: job_object_handle,
                 artifact_watcher_thread: None,
                 orchestrator_postmortem: None,
+                power_request_active: false,
                 feedback_state: None,
                 feedback_write_pending: false,
                 config_write_suppress_until: None,
