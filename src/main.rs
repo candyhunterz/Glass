@@ -2471,6 +2471,7 @@ impl Processor {
         self.orchestrator.dependency_block_iterations = 0;
         self.orchestrator.iterations_since_last_commit = 0;
         self.orchestrator.last_known_head = None;
+        self.orchestrator.consecutive_block_executing_count = 0;
     }
 
     /// Kill the current agent and respawn with a fresh system prompt.
@@ -8945,6 +8946,17 @@ impl ApplicationHandler<AppEvent> for Processor {
                             })
                             .unwrap_or(false);
                         self.orchestrator.last_trigger_block_executing = Some(block_executing);
+                        // Track consecutive stuck observations so the verify gate can
+                        // detect unreliable block_executing (agent CLI session with no
+                        // shell integration). Reset on any false observation.
+                        if block_executing {
+                            self.orchestrator.consecutive_block_executing_count = self
+                                .orchestrator
+                                .consecutive_block_executing_count
+                                .saturating_add(1);
+                        } else {
+                            self.orchestrator.consecutive_block_executing_count = 0;
+                        }
                     }
                 }
 
@@ -9141,12 +9153,7 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Commit detection: track HEAD changes
                 if let Some(ref head_sha) = current_head {
-                    if self.orchestrator.last_known_head.as_ref() != Some(head_sha) {
-                        self.orchestrator.iterations_since_last_commit = 0;
-                        self.orchestrator.last_known_head = Some(head_sha.clone());
-                    } else {
-                        self.orchestrator.iterations_since_last_commit += 1;
-                    }
+                    self.orchestrator.record_head_observation(head_sha);
                 }
 
                 // Clean up artifact file if it exists (one-shot signal)
@@ -9227,8 +9234,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .map(|v| v == self.orchestrator.iteration)
                     .unwrap_or(false);
 
-                // Don't verify while the implementer is actively executing a command
-                let block_executing = if let Some(ctx) = self.windows.values().next() {
+                // Don't verify while the implementer is actively executing a command.
+                // When the flag has been stuck at true across multiple silence triggers
+                // (agent CLI sessions without shell integration — see
+                // `should_gate_on_block_executing`) we treat it as stale and let
+                // verification proceed.
+                let block_executing_raw = if let Some(ctx) = self.windows.values().next() {
                     ctx.session_mux
                         .focused_session()
                         .and_then(|s| {
@@ -9243,6 +9254,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 } else {
                     false
                 };
+                let block_executing = orchestrator::should_gate_on_block_executing(
+                    block_executing_raw,
+                    self.orchestrator.consecutive_block_executing_count,
+                );
 
                 if block_executing {
                     tracing::debug!("Orchestrator: skipping verification — block still executing");
@@ -9512,7 +9527,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         .output();
                                     if let Ok(o) = result {
                                         if o.status.success() {
-                                            self.orchestrator.last_good_commit = git_cmd()
+                                            let new_head = git_cmd()
                                                 .args(["rev-parse", "HEAD"])
                                                 .current_dir(&cwd)
                                                 .output()
@@ -9526,8 +9541,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                                                         None
                                                     }
                                                 });
+                                            self.orchestrator.last_good_commit = new_head.clone();
                                             self.orchestrator.iterations_since_last_commit = 0;
                                             self.orchestrator.feedback_commit_count += 1;
+                                            // Sync last_known_head so next iteration's HEAD
+                                            // detection doesn't double-count this commit.
+                                            if new_head.is_some() {
+                                                self.orchestrator.last_known_head = new_head;
+                                            }
                                             tracing::info!("Enforcement: force-committed changes");
                                         }
                                     }
@@ -9799,8 +9820,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         if regressed {
-                            // Check if implementer is still executing before reverting
-                            let block_executing = if let Some(ctx) = self.windows.values().next() {
+                            // Check if implementer is still executing before reverting.
+                            // Apply the same staleness logic as the verify gate — a
+                            // permanently-stuck Executing state (agent CLI session) must
+                            // not block reverts forever.
+                            let block_executing_raw = if let Some(ctx) =
+                                self.windows.values().next()
+                            {
                                 ctx.session_mux
                                         .focused_session()
                                         .and_then(|s| {
@@ -9818,6 +9844,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                             } else {
                                 false
                             };
+                            let block_executing = orchestrator::should_gate_on_block_executing(
+                                block_executing_raw,
+                                self.orchestrator.consecutive_block_executing_count,
+                            );
 
                             if block_executing {
                                 tracing::warn!(

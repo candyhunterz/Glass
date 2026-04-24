@@ -730,6 +730,27 @@ pub struct OrchestratorState {
     pub last_trigger_block_executing: Option<bool>,
     /// Diagnostic: trigger source that fired the current iteration.
     pub last_trigger_source: Option<String>,
+    /// Number of consecutive silence triggers observed with block_executing = true.
+    /// When the implementer is a CLI (e.g. Claude Code) rather than a shell with
+    /// OSC 133 integration, the block manager never transitions out of Executing,
+    /// making the flag permanently stuck. We treat it as stale once this counter
+    /// exceeds STALE_BLOCK_EXECUTING_THRESHOLD so the metric guard verify path
+    /// can still run in agent sessions.
+    pub consecutive_block_executing_count: u32,
+}
+
+/// Consecutive `block_executing = true` observations after which the flag is
+/// considered unreliable. Empirically, a real shell command producing no output
+/// rarely stays "executing" across this many silence triggers without interim
+/// state transitions; a stuck flag (agent CLI session, broken shell
+/// integration) climbs monotonically.
+pub const STALE_BLOCK_EXECUTING_THRESHOLD: u32 = 3;
+
+/// Whether the `block_executing` flag should gate the metric guard verify path.
+/// Returns `false` (don't gate) once the flag has been continuously true for
+/// `STALE_BLOCK_EXECUTING_THRESHOLD` or more consecutive silence observations.
+pub fn should_gate_on_block_executing(block_executing: bool, consecutive_true_count: u32) -> bool {
+    block_executing && consecutive_true_count < STALE_BLOCK_EXECUTING_THRESHOLD
 }
 
 impl OrchestratorState {
@@ -791,6 +812,7 @@ impl OrchestratorState {
             last_trigger_silence_duration: None,
             last_trigger_block_executing: None,
             last_trigger_source: None,
+            consecutive_block_executing_count: 0,
         }
     }
 
@@ -809,6 +831,28 @@ impl OrchestratorState {
     /// Check if automatic checkpoint should trigger.
     pub fn should_auto_checkpoint(&self) -> bool {
         self.checkpoint_interval > 0 && self.iterations_since_checkpoint >= self.checkpoint_interval
+    }
+
+    /// Record an observation of the current git HEAD and return `true` if the
+    /// observation represents a newly-counted commit made during the run.
+    ///
+    /// Called once per silence-triggered iteration once HEAD has been read from
+    /// git. The first observation in a run establishes the starting HEAD
+    /// without counting a commit; subsequent observations that change the SHA
+    /// increment `feedback_commit_count`. Identical consecutive observations
+    /// increment `iterations_since_last_commit`.
+    pub fn record_head_observation(&mut self, head_sha: &str) -> bool {
+        if self.last_known_head.as_deref() == Some(head_sha) {
+            self.iterations_since_last_commit = self.iterations_since_last_commit.saturating_add(1);
+            return false;
+        }
+        let counted = self.last_known_head.is_some();
+        if counted {
+            self.feedback_commit_count = self.feedback_commit_count.saturating_add(1);
+        }
+        self.iterations_since_last_commit = 0;
+        self.last_known_head = Some(head_sha.to_string());
+        counted
     }
 
     /// Record a response and check if we're stuck (N identical consecutive responses).
@@ -2768,14 +2812,111 @@ mod tests {
             return;
         }
         let result = detect_project_from_diff(tools_dir.to_str().unwrap(), None);
-        assert!(result.is_some(), "should detect repo root from subdirectory");
+        assert!(
+            result.is_some(),
+            "should detect repo root from subdirectory"
+        );
         let (found_dir, commands) = result.unwrap();
         assert_eq!(commands[0].name, "cargo test");
         assert!(
-            std::path::Path::new(&found_dir)
-                .join("Cargo.toml")
-                .exists(),
+            std::path::Path::new(&found_dir).join("Cargo.toml").exists(),
             "found_dir should have Cargo.toml"
         );
+    }
+
+    #[test]
+    fn block_executing_gate_active_when_fresh() {
+        // First observation of block_executing=true must still gate the verify path —
+        // this is the normal case where a real shell command is running.
+        assert!(should_gate_on_block_executing(true, 0));
+        assert!(should_gate_on_block_executing(true, 1));
+        assert!(should_gate_on_block_executing(
+            true,
+            STALE_BLOCK_EXECUTING_THRESHOLD - 1
+        ));
+    }
+
+    #[test]
+    fn block_executing_gate_disabled_when_stale() {
+        // After THRESHOLD consecutive true observations the flag is treated as
+        // stuck — common in agent CLI sessions where OSC 133 events never fire.
+        assert!(!should_gate_on_block_executing(
+            true,
+            STALE_BLOCK_EXECUTING_THRESHOLD
+        ));
+        assert!(!should_gate_on_block_executing(
+            true,
+            STALE_BLOCK_EXECUTING_THRESHOLD + 10
+        ));
+    }
+
+    #[test]
+    fn block_executing_gate_disabled_when_not_executing() {
+        // When the flag is false there is nothing to gate on, regardless of
+        // historical count.
+        assert!(!should_gate_on_block_executing(false, 0));
+        assert!(!should_gate_on_block_executing(false, 100));
+    }
+
+    #[test]
+    fn record_head_observation_first_does_not_count() {
+        let mut state = OrchestratorState::new(3);
+        let counted = state.record_head_observation("abc123");
+        assert!(
+            !counted,
+            "first observation establishes baseline, not a commit"
+        );
+        assert_eq!(state.feedback_commit_count, 0);
+        assert_eq!(state.last_known_head.as_deref(), Some("abc123"));
+        assert_eq!(state.iterations_since_last_commit, 0);
+    }
+
+    #[test]
+    fn record_head_observation_changed_counts() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("abc123");
+        let counted = state.record_head_observation("def456");
+        assert!(counted, "new SHA after a baseline is a commit");
+        assert_eq!(state.feedback_commit_count, 1);
+        assert_eq!(state.last_known_head.as_deref(), Some("def456"));
+        assert_eq!(state.iterations_since_last_commit, 0);
+    }
+
+    #[test]
+    fn record_head_observation_unchanged_increments_idle_counter() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("abc123");
+        state.record_head_observation("abc123");
+        state.record_head_observation("abc123");
+        assert_eq!(state.feedback_commit_count, 0);
+        assert_eq!(state.iterations_since_last_commit, 2);
+        assert_eq!(state.last_known_head.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn record_head_observation_counts_multiple_commits() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("sha0"); // baseline
+        state.record_head_observation("sha1");
+        state.record_head_observation("sha1"); // idle iteration
+        state.record_head_observation("sha2");
+        state.record_head_observation("sha3");
+        assert_eq!(
+            state.feedback_commit_count, 3,
+            "three distinct SHAs observed after baseline"
+        );
+        assert_eq!(state.iterations_since_last_commit, 0);
+    }
+
+    #[test]
+    fn record_head_observation_resets_idle_counter_on_new_commit() {
+        let mut state = OrchestratorState::new(3);
+        state.record_head_observation("sha0");
+        state.record_head_observation("sha0"); // idle
+        state.record_head_observation("sha0"); // idle
+        assert_eq!(state.iterations_since_last_commit, 2);
+        state.record_head_observation("sha1"); // new commit
+        assert_eq!(state.iterations_since_last_commit, 0);
+        assert_eq!(state.feedback_commit_count, 1);
     }
 }
