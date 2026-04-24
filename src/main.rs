@@ -1591,12 +1591,20 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
 
     static RE_RUST: OnceLock<regex::Regex> = OnceLock::new();
     static RE_JEST: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_VITEST: OnceLock<regex::Regex> = OnceLock::new();
     static RE_PASSED: OnceLock<regex::Regex> = OnceLock::new();
     static RE_FAILED: OnceLock<regex::Regex> = OnceLock::new();
 
     let re_rust = RE_RUST.get_or_init(|| regex::Regex::new(r"(\d+) passed; (\d+) failed").unwrap());
     let re_jest = RE_JEST
         .get_or_init(|| regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed").unwrap());
+    // Vitest: "     Tests  127 passed (127)" or "     Tests  2 failed | 125 passed (127)"
+    // Must run before the generic RE_PASSED fallback because the preceding
+    // "Test Files  45 passed (45)" line would otherwise match first and return
+    // the file count instead of the test count.
+    let re_vitest = RE_VITEST.get_or_init(|| {
+        regex::Regex::new(r"(?m)^\s*Tests\s+(?:(\d+)\s+failed\s*[|,]\s*)?(\d+)\s+passed").unwrap()
+    });
     let re_passed = RE_PASSED.get_or_init(|| regex::Regex::new(r"(\d+) passed").unwrap());
     let re_failed = RE_FAILED.get_or_init(|| regex::Regex::new(r"(\d+) failed").unwrap());
 
@@ -1608,6 +1616,12 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
     }
     // Jest/Node: "Tests: 2 failed, 45 passed, 47 total"
     if let Some(caps) = re_jest.captures(output) {
+        let failed = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let passed = caps.get(2).and_then(|m| m.as_str().parse().ok());
+        return (passed, failed.or(Some(0)));
+    }
+    // Vitest: distinguishes "Test Files" (file count) from "Tests" (test count).
+    if let Some(caps) = re_vitest.captures(output) {
         let failed = caps.get(1).and_then(|m| m.as_str().parse().ok());
         let passed = caps.get(2).and_then(|m| m.as_str().parse().ok());
         return (passed, failed.or(Some(0)));
@@ -1624,6 +1638,62 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
     }
     // Go: "ok" or "FAIL" — no counts, exit code only
     (None, None)
+}
+
+#[cfg(test)]
+mod parse_test_counts_tests {
+    use super::*;
+
+    #[test]
+    fn rust_output() {
+        let out = "test result: ok. 45 passed; 2 failed; 0 ignored";
+        assert_eq!(parse_test_counts_from_output(out), (Some(45), Some(2)));
+    }
+
+    #[test]
+    fn jest_output() {
+        let out = "Tests:       2 failed, 45 passed, 47 total";
+        assert_eq!(parse_test_counts_from_output(out), (Some(45), Some(2)));
+    }
+
+    #[test]
+    fn vitest_prefers_tests_line_over_test_files_line() {
+        // Vitest emits both "Test Files  N passed" (file count) and
+        // "Tests  M passed" (test count). Must return M, not N.
+        let out = "\
+ Test Files  45 passed (45)\n\
+      Tests  127 passed (127)\n\
+   Start at  10:56:46\n\
+   Duration  2.04s";
+        assert_eq!(parse_test_counts_from_output(out), (Some(127), Some(0)));
+    }
+
+    #[test]
+    fn vitest_with_failures() {
+        // Vitest uses a `|` separator between failed and passed counts.
+        let out = "\
+ Test Files  1 failed | 44 passed (45)\n\
+      Tests  3 failed | 124 passed (127)";
+        assert_eq!(parse_test_counts_from_output(out), (Some(124), Some(3)));
+    }
+
+    #[test]
+    fn pytest_output() {
+        let out = "5 passed, 2 failed";
+        assert_eq!(parse_test_counts_from_output(out), (Some(5), Some(2)));
+    }
+
+    #[test]
+    fn pytest_passed_only() {
+        let out = "5 passed";
+        assert_eq!(parse_test_counts_from_output(out), (Some(5), Some(0)));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        let out = "hello world, no test results here";
+        assert_eq!(parse_test_counts_from_output(out), (None, None));
+    }
 }
 
 /// Parse numbered instructions from agent text (e.g., "1. Do X\n2. Do Y").
