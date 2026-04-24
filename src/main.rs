@@ -10271,6 +10271,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.orchestrator.usage_paused = false;
                     self.orchestrator.active = true;
                     let cwd = self.orchestrator.project_root.clone();
+
+                    // Re-initialize feedback_state. run_feedback_on_end() at pause
+                    // consumed it via .take(), so any subsequent run-end (GLASS_DONE,
+                    // bounded stop, crash) would otherwise silently skip post-mortem
+                    // writing. We start a fresh feedback session for the resumed
+                    // portion — the pause-time report and the resume-time report
+                    // together capture the full run.
+                    if self.feedback_state.is_none() {
+                        let feedback_config = self.build_feedback_config(&cwd);
+                        self.feedback_state =
+                            Some(glass_feedback::on_run_start(&cwd, &feedback_config));
+                    }
+
                     let handoff =
                         "Resume from usage pause. Read .glass/checkpoint.md and continue.\n"
                             .to_string();
