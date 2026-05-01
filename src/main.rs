@@ -10882,8 +10882,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(cost) = resp.cost_usd {
                                     tracing::info!("Tier 4 script generation cost: ${:.4}", cost);
                                 }
-                                match parse_script_response(&resp.text) {
-                                    Some((name, hooks, source)) => {
+                                match glass_feedback::parse_script_response(&resp.text) {
+                                    glass_feedback::ScriptResponse::Script {
+                                        name,
+                                        hooks,
+                                        source,
+                                    } => {
                                         // Successful parse — reset consecutive failure counter.
                                         self.script_gen_parse_failures = 0;
                                         let scripts_dir = std::path::Path::new(&project_root)
@@ -10943,7 +10947,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             self.script_bridge.reload();
                                         }
                                     }
-                                    None => {
+                                    glass_feedback::ScriptResponse::TomlSufficient => {
+                                        // LLM judged a TOML rule sufficient — that is a
+                                        // valid, deliberate non-script answer. Don't burn
+                                        // the consecutive-failure budget on it.
+                                        self.script_gen_parse_failures = 0;
+                                        tracing::info!(
+                                            "Tier 4: LLM reported TOML_SUFFICIENT — no script generated"
+                                        );
+                                    }
+                                    glass_feedback::ScriptResponse::Unparseable => {
                                         self.script_gen_parse_failures += 1;
                                         tracing::warn!(
                                             "Tier 4: could not parse script from LLM response (consecutive failures: {})",
@@ -11040,41 +11053,6 @@ impl Processor {
         }
         self.power_request_active = desired;
     }
-}
-
-/// Parse a Tier 4 script generation response from an ephemeral LLM agent.
-///
-/// Expected format:
-/// ```text
-/// SCRIPT_NAME: my-script-name
-/// SCRIPT_HOOKS: command_complete, orchestrator_iteration
-/// ```rhai
-/// // ... Rhai source code ...
-/// ```
-/// ```
-///
-/// Returns `(name, hooks_csv_quoted, source)` on success.
-fn parse_script_response(text: &str) -> Option<(String, String, String)> {
-    let name = text
-        .lines()
-        .find(|l| l.starts_with("SCRIPT_NAME:"))
-        .map(|l| l.trim_start_matches("SCRIPT_NAME:").trim().to_string())?;
-    let hooks_raw = text
-        .lines()
-        .find(|l| l.starts_with("SCRIPT_HOOKS:"))
-        .map(|l| l.trim_start_matches("SCRIPT_HOOKS:").trim().to_string())?;
-    let hooks = hooks_raw
-        .split(',')
-        .map(|h| format!("\"{}\"", h.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let source_start = text.find("```rhai").map(|i| i + 7)?;
-    let source_end = text[source_start..].find("```").map(|i| source_start + i)?;
-    let source = text[source_start..source_end].trim().to_string();
-    if name.is_empty() || source.is_empty() {
-        return None;
-    }
-    Some((name, hooks, source))
 }
 
 /// Embedded shell integration scripts, compiled into the binary.

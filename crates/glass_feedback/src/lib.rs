@@ -615,8 +615,74 @@ pub fn apply_llm_findings(project_root: &str, llm_response: &str, max_prompt_hin
 }
 
 // ---------------------------------------------------------------------------
-// Tier 4: Script generation prompt
+// Tier 4: Script generation prompt + response parser
 // ---------------------------------------------------------------------------
+
+/// Parsed result of a Tier 4 ephemeral-agent response.
+///
+/// The LLM has three valid outcomes:
+/// 1. It writes a Rhai script (`Script`) to install via the scripting layer.
+/// 2. It decides a TOML rule already covers the issue (`TomlSufficient`) —
+///    treated as a successful, no-action response.
+/// 3. The response can't be interpreted (`Unparseable`) — counts toward the
+///    consecutive-failure budget that suppresses Tier 4.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScriptResponse {
+    Script {
+        name: String,
+        hooks: String,
+        source: String,
+    },
+    TomlSufficient,
+    Unparseable,
+}
+
+/// Parse a Tier 4 ephemeral-agent response.
+///
+/// Looks for `SCRIPT_NAME:` and `SCRIPT_HOOKS:` headers and a fenced
+/// ```` ```rhai ```` source block. If the response begins (anywhere on a
+/// line) with `TOML_SUFFICIENT`, that is recognized as a deliberate
+/// "no script needed" answer and reported as `TomlSufficient` rather than
+/// `Unparseable`, so it does not count against the failure budget.
+pub fn parse_script_response(text: &str) -> ScriptResponse {
+    if text
+        .lines()
+        .any(|l| l.trim_start().starts_with("TOML_SUFFICIENT"))
+    {
+        return ScriptResponse::TomlSufficient;
+    }
+
+    let name = match text.lines().find(|l| l.starts_with("SCRIPT_NAME:")) {
+        Some(l) => l.trim_start_matches("SCRIPT_NAME:").trim().to_string(),
+        None => return ScriptResponse::Unparseable,
+    };
+    let hooks_raw = match text.lines().find(|l| l.starts_with("SCRIPT_HOOKS:")) {
+        Some(l) => l.trim_start_matches("SCRIPT_HOOKS:").trim().to_string(),
+        None => return ScriptResponse::Unparseable,
+    };
+    let hooks = hooks_raw
+        .split(',')
+        .map(|h| format!("\"{}\"", h.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source_start = match text.find("```rhai") {
+        Some(i) => i + 7,
+        None => return ScriptResponse::Unparseable,
+    };
+    let source_end = match text[source_start..].find("```") {
+        Some(i) => source_start + i,
+        None => return ScriptResponse::Unparseable,
+    };
+    let source = text[source_start..source_end].trim().to_string();
+    if name.is_empty() || source.is_empty() {
+        return ScriptResponse::Unparseable;
+    }
+    ScriptResponse::Script {
+        name,
+        hooks,
+        source,
+    }
+}
 
 /// Build a prompt instructing an LLM to produce a Rhai script that addresses
 /// the root cause of high waste/stuck rates when Tier 1-3 findings are
@@ -677,12 +743,14 @@ EVENT DATA (available as `event` variable, fields depend on hook):
 
 INSTRUCTIONS:
 1. Analyze the run metrics above to identify the likely root cause.
-2. If a TOML rule (trigger + action pair) can fix it, say TOML_SUFFICIENT
-   and describe the rule — do not write a script.
-3. Otherwise, write a Rhai script with this structure:
+2. If a TOML rule (trigger + action pair) can fix it, respond with a single
+   line beginning with TOML_SUFFICIENT followed by a description of the
+   rule — do not write a script.
+3. Otherwise, write a Rhai script using EXACTLY this format (the headers are
+   parsed literally; do not rename them):
 
-HOOK: <hook_point>
-SCRIPT:
+SCRIPT_NAME: <kebab-case-slug>
+SCRIPT_HOOKS: <hook_name>[, <hook_name>...]
 ```rhai
 // Description of what this script does
 if <condition> {{
@@ -691,6 +759,8 @@ if <condition> {{
 }}
 ```
 
+SCRIPT_NAME must be a short kebab-case identifier (e.g. commit-on-stuck).
+SCRIPT_HOOKS is a comma-separated list of hook names from the list above.
 Respond with at most ONE script. Keep it under 30 lines.",
         iterations = run_data.iterations,
         stuck = run_data.stuck_count,
@@ -1415,5 +1485,75 @@ mod tests {
             result.script_prompt.is_none(),
             "Tier 4 should not fire without any rules"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 4 prompt/parser format contract
+    //
+    // Regression guard: these tests link the prompt builder to the parser.
+    // A bug existed where the prompt instructed the LLM to emit `HOOK:` and
+    // `SCRIPT:`, while the parser looked for `SCRIPT_NAME:` and
+    // `SCRIPT_HOOKS:` — making every Tier 4 response silently unparseable.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tier4_prompt_documents_fields_parser_requires() {
+        let data = make_run_data("/tmp/x");
+        let prompt = build_script_prompt(&data);
+        assert!(
+            prompt.contains("SCRIPT_NAME:"),
+            "prompt must instruct LLM to emit SCRIPT_NAME:, otherwise parser fails"
+        );
+        assert!(
+            prompt.contains("SCRIPT_HOOKS:"),
+            "prompt must instruct LLM to emit SCRIPT_HOOKS:, otherwise parser fails"
+        );
+    }
+
+    #[test]
+    fn tier4_compliant_response_parses_to_script() {
+        let response = "\
+SCRIPT_NAME: commit-on-stuck
+SCRIPT_HOOKS: orchestrator_iteration, command_complete
+```rhai
+glass.log(\"info\", \"committing because stuck\");
+glass.commit(\"checkpoint\");
+```
+";
+        match parse_script_response(response) {
+            ScriptResponse::Script {
+                name,
+                hooks,
+                source,
+            } => {
+                assert_eq!(name, "commit-on-stuck");
+                assert!(hooks.contains("orchestrator_iteration"), "hooks: {hooks}");
+                assert!(hooks.contains("command_complete"), "hooks: {hooks}");
+                assert!(source.contains("glass.commit"), "source: {source}");
+            }
+            other => panic!("expected Script variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tier4_toml_sufficient_response_recognized() {
+        let response =
+            "TOML_SUFFICIENT: a force_commit rule keyed on iterations_since_last_commit > 5";
+        assert!(
+            matches!(
+                parse_script_response(response),
+                ScriptResponse::TomlSufficient
+            ),
+            "TOML_SUFFICIENT must be a recognized response, not Unparseable"
+        );
+    }
+
+    #[test]
+    fn tier4_malformed_response_returns_unparseable() {
+        let response = "I think you should write a script that does something cool.";
+        assert!(matches!(
+            parse_script_response(response),
+            ScriptResponse::Unparseable
+        ));
     }
 }

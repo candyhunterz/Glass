@@ -525,15 +525,15 @@ When `script_generation = true` in config (default) and lower tiers have been tr
 
 1. `on_run_end` returns `script_prompt = Some(...)` containing run metrics, all 20 hook points, the full GlassApi reference, and instructions to write a Rhai script
 2. `run_feedback_on_end` captures `project_root` at spawn time, then spawns an ephemeral agent (60s timeout) with `EphemeralPurpose::ScriptGeneration`
-3. The LLM responds with structured blocks: `SCRIPT_NAME:`, `SCRIPT_HOOKS:`, and fenced `\`\`\`rhai` source
-4. `EphemeralAgentComplete` handler calls `parse_script_response()` which extracts name, hooks, and source
-5. The handler writes a `.toml` manifest + `.rhai` source to `<project>/.glass/scripts/feedback/` with `status = "provisional"`
+3. The LLM responds with one of: structured blocks (`SCRIPT_NAME:`, `SCRIPT_HOOKS:`, fenced `\`\`\`rhai` source), or a single `TOML_SUFFICIENT: ...` line if it judges a TOML rule is enough
+4. `EphemeralAgentComplete` handler calls `glass_feedback::parse_script_response()` which returns one of `Script { name, hooks, source }`, `TomlSufficient`, or `Unparseable`
+5. On `Script`, the handler writes a `.toml` manifest + `.rhai` source to `<project>/.glass/scripts/feedback/` with `status = "provisional"`
 6. `script_bridge.reload()` picks up the new script for the next run
 7. The script's lifecycle follows the same promotion/rejection path as rules (see Script Lifecycle below)
 
 **Deduplication:** Before writing, the handler checks if a script with the same name already exists. If the existing script is not archived, the new one is skipped. Archived scripts are safe to overwrite.
 
-**Parse failure suppression:** If `parse_script_response` fails 3 consecutive times, Tier 4 generation is suppressed until a successful parse resets the counter.
+**Parse failure suppression:** If `parse_script_response` returns `Unparseable` 3 times in a row, Tier 4 generation is suppressed until a successful parse resets the counter. `TomlSufficient` is a valid non-script outcome and resets the counter rather than incrementing it.
 
 **Fire-and-forget:** Same pattern as Tier 3. If the ephemeral agent fails or times out, Tier 1-3 findings are already persisted.
 
