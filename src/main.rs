@@ -3267,7 +3267,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                 }
 
                 // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
-                if self.agent_runtime.is_none() {
+                // Skip if a more specific error was already set upstream (e.g., Codex pre-flight).
+                if self.agent_runtime.is_none() && self.config_error.is_none() {
                     self.config_error = Some(glass_core::config::ConfigError {
                         message: "'claude' CLI not found on PATH. Install from https://claude.ai/download, or set agent.mode = \"off\" in ~/.glass/config.toml".to_string(),
                         line: None,
