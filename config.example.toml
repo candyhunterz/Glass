@@ -64,7 +64,7 @@
 # max_budget_usd = 1.0
 # cooldown_secs = 30
 # allowed_tools = "glass_query,glass_query_trend,glass_query_drill,glass_context,Bash,Read"
-# provider = "claude-code"    # "claude-code", "anthropic-api", "openai-api", "ollama", "custom"
+# provider = "claude-code"    # "claude-code", "anthropic-api", "openai-api", "codex-cli", "ollama", "custom"
 # model = ""                  # empty = provider default
 # api_key = ""                # optional — env var used if empty (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
 # api_endpoint = ""           # optional — for custom/self-hosted endpoints
@@ -97,6 +97,8 @@
 # ablation_enabled = true
 # ablation_sweep_interval = 20
 # implementer = "claude-code"       # "claude-code", "codex", "aider", "gemini", "custom"
+                                    # NOTE: implementer = "codex" requires running `codex login` once.
+                                    # NOTE: provider = "codex-cli" reuses the same Codex login for the reviewer.
 # implementer_command = ""          # custom launch command (when implementer = "custom")
 # implementer_name = "Claude Code"  # display name used in system prompt
 # persona = ""                      # inline persona string, or path to .md file

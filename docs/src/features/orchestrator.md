@@ -371,7 +371,7 @@ feedback_llm = false           # Enable LLM qualitative analysis after each run 
 # max_prompt_hints = 10        # Max Tier 3 prompt hints per project
 
 # Multi-provider backend
-# provider = "claude-code"         # "claude-code", "anthropic-api", "openai-api", "ollama", "custom"
+# provider = "claude-code"         # "claude-code", "anthropic-api", "openai-api", "codex-cli", "ollama", "custom"
 # model = ""                       # Provider default. Examples: "gpt-4o", "claude-opus-4-6"
 # implementer = "claude-code"      # "claude-code", "codex", "aider", "gemini", "custom"
 # implementer_name = "Claude Code" # Display name in system prompt
@@ -379,6 +379,42 @@ feedback_llm = false           # Enable LLM qualitative analysis after each run 
 ```
 
 The orchestrator requires Agent Mode to be configured (the `[agent]` section). By default, the Glass Agent uses the Claude CLI. Set `provider` in `[agent]` to use other models (OpenAI, Anthropic API, Ollama, or any OpenAI-compatible endpoint). The `implementer` field controls which CLI runs in the terminal.
+
+---
+
+## Using ChatGPT OAuth (Codex)
+
+Glass can route both the implementer and the reviewer through the local
+[Codex CLI](https://github.com/openai/codex), reusing your ChatGPT Plus / Pro / Team
+plan with no API key required.
+
+1. Install Codex (`npm i -g @openai/codex` or your platform's equivalent).
+2. Run `codex login` once — this opens a browser and stores tokens in `~/.codex/auth.json`.
+3. In `~/.glass/config.toml`:
+
+   ```toml
+   [agent]
+   provider = "codex-cli"     # reviewer uses Codex via OAuth
+   model = "gpt-5-codex"
+
+   [agent.orchestrator]
+   enabled = true
+   implementer = "codex"      # implementer also uses Codex
+   ```
+
+Glass does not perform OAuth itself — Codex owns login, token refresh, and endpoint
+selection. If `~/.codex/auth.json` is missing, Glass surfaces a clear error in the
+config error banner pointing you at `codex login`, and a one-time onboarding toast
+on first hit, then refuses to start the orchestrator until you log in.
+
+Note: ChatGPT plans don't expose a public usage API, so the 5-hour / 7-day usage
+indicator and auto-pause thresholds in the status bar do **not** apply to
+`codex-cli` or `openai-api` providers — they only work for Claude OAuth.
+
+**Caveat**: When the implementer is Codex, Glass cannot send `/clear` between
+checkpoints (Codex has no equivalent command), so context-clear is a no-op for
+that implementer. Checkpoint cycles still work; only the freshness reset is
+skipped.
 
 ---
 

@@ -17,6 +17,7 @@ The orchestrator supports multiple LLM providers for the Glass Agent (the review
 | Claude Code CLI | `provider = "claude-code"` | CLI's own OAuth | (CLI decides) |
 | Anthropic API | `provider = "anthropic-api"` | `ANTHROPIC_API_KEY` env var | `claude-sonnet-4-6` |
 | OpenAI API | `provider = "openai-api"` | `OPENAI_API_KEY` env var | `gpt-4o` |
+| ChatGPT (Codex OAuth) | `provider = "codex-cli"` | `~/.codex/auth.json` (run `codex login`) | `gpt-5-codex` |
 | Ollama (local) | `provider = "ollama"` | None required | `llama3` |
 | Custom endpoint | `provider = "custom"` | Optional `GLASS_API_KEY` | `gpt-4o` |
 
@@ -38,7 +39,7 @@ implementer = "claude-code"     # Claude Code writes the code
 | Implementer | Config Value | Crash Recovery Command |
 |-------------|-------------|----------------------|
 | Claude Code | `"claude-code"` | `claude --dangerously-skip-permissions -p` |
-| Codex | `"codex"` | `codex --full-auto` |
+| Codex | `"codex"` | `codex --full-auto` (requires `codex login`) |
 | Aider | `"aider"` | `aider --yes-always` |
 | Gemini | `"gemini"` | `gemini` |
 | Custom | `"custom"` | Uses `implementer_command` value |
