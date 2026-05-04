@@ -389,7 +389,7 @@ Glass can route both the implementer and the reviewer through the local
 plan with no API key required.
 
 1. Install Codex (`npm i -g @openai/codex` or your platform's equivalent).
-2. Run `codex login` once — this opens a browser and stores tokens in `~/.codex/auth.json`.
+2. Run `codex login` once — this opens a browser and stores tokens in `~/.codex/auth.json` (on Windows: `%USERPROFILE%\.codex\auth.json`).
 3. In `~/.glass/config.toml`:
 
    ```toml
@@ -403,7 +403,7 @@ plan with no API key required.
    ```
 
 Glass does not perform OAuth itself — Codex owns login, token refresh, and endpoint
-selection. If `~/.codex/auth.json` is missing, Glass surfaces a clear error in the
+selection. If the Codex token file is missing, Glass surfaces a clear error in the
 config error banner pointing you at `codex login`, and a one-time onboarding toast
 on first hit, then refuses to start the orchestrator until you log in.
 
