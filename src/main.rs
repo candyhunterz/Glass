@@ -2568,17 +2568,26 @@ impl Processor {
         self.orchestrator.instruction_buffer.clear();
         self.orchestrator.bounded_stop_pending = false;
 
-        // Restart usage poller if it died (stale data for >2 minutes means thread crashed)
+        // Restart usage poller if it died (stale data for >2 minutes means thread crashed).
+        // Skip restart if the active provider doesn't use Anthropic OAuth (e.g., codex-cli).
         if let Some(ref state) = self.usage_state {
-            let stale = state
-                .lock()
-                .ok()
-                .and_then(|st| st.last_poll_at)
-                .map(|t| t.elapsed().as_secs() > 120)
-                .unwrap_or(true);
-            if stale {
-                tracing::warn!("Usage tracker: polling thread appears dead, restarting");
-                self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+            let provider = self
+                .config
+                .agent
+                .as_ref()
+                .map(|a| a.provider.as_str())
+                .unwrap_or("");
+            if usage_tracker::should_poll_for_provider(provider) {
+                let stale = state
+                    .lock()
+                    .ok()
+                    .and_then(|st| st.last_poll_at)
+                    .map(|t| t.elapsed().as_secs() > 120)
+                    .unwrap_or(true);
+                if stale {
+                    tracing::warn!("Usage tracker: polling thread appears dead, restarting");
+                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                }
             }
         }
 
@@ -3221,13 +3230,20 @@ impl ApplicationHandler<AppEvent> for Processor {
                     api_key,
                     api_endpoint,
                 });
-                // Start usage polling if orchestrator is configured
+                // Start usage polling if orchestrator is configured and provider uses Anthropic OAuth
+                let provider = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .map(|a| a.provider.as_str())
+                    .unwrap_or("");
                 if self
                     .config
                     .agent
                     .as_ref()
                     .and_then(|a| a.orchestrator.as_ref())
                     .is_some()
+                    && usage_tracker::should_poll_for_provider(provider)
                 {
                     self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
                 }
