@@ -3215,32 +3215,55 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .agent
                     .as_ref()
                     .and_then(|a| a.api_endpoint.as_deref());
-                self.agent_runtime = try_spawn_agent(AgentSpawnParams {
-                    config: agent_config,
-                    activity_rx: rx,
-                    proxy: self.proxy.clone(),
-                    restart_count: 0,
-                    last_crash: None,
-                    project_root: cwd,
-                    initial_message: None,
-                    system_prompt,
-                    generation: self.agent_generation,
-                    provider,
-                    model,
-                    api_key,
-                    api_endpoint,
-                });
-                // Start usage polling. Skip if the provider doesn't use Anthropic OAuth
-                // (codex-cli, openai-api, etc.) — those don't have a usage API analog.
-                if self
+
+                // Pre-flight check: if Codex is configured but not logged in, surface an error.
+                let implementer = self
                     .config
                     .agent
                     .as_ref()
                     .and_then(|a| a.orchestrator.as_ref())
-                    .is_some()
-                    && usage_tracker::should_poll_for_provider(provider)
-                {
-                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                    .map(|o| o.implementer.as_str())
+                    .unwrap_or("claude-code");
+                let needs_codex = implementer == "codex" || provider == "codex-cli";
+                if needs_codex && !glass_agent_backend::codex_cli::auth::is_logged_in() {
+                    let msg = "Codex is not signed in. Run `codex login` in any terminal, \
+                               then restart Glass."
+                        .to_string();
+                    tracing::warn!("{}", msg);
+                    self.config_error = Some(glass_core::config::ConfigError {
+                        message: msg,
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    });
+                } else {
+                    self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+                        config: agent_config,
+                        activity_rx: rx,
+                        proxy: self.proxy.clone(),
+                        restart_count: 0,
+                        last_crash: None,
+                        project_root: cwd,
+                        initial_message: None,
+                        system_prompt,
+                        generation: self.agent_generation,
+                        provider,
+                        model,
+                        api_key,
+                        api_endpoint,
+                    });
+                    // Start usage polling. Skip if the provider doesn't use Anthropic OAuth
+                    // (codex-cli, openai-api, etc.) — those don't have a usage API analog.
+                    if self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.orchestrator.as_ref())
+                        .is_some()
+                        && usage_tracker::should_poll_for_provider(provider)
+                    {
+                        self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                    }
                 }
 
                 // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
