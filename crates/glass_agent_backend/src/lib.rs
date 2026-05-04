@@ -10,6 +10,7 @@ pub use glass_core::agent_runtime::AgentMode;
 
 pub mod anthropic;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod ipc_tools;
 pub mod model_cache;
 pub mod ollama;
