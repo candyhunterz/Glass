@@ -3240,6 +3240,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                         glass_core::onboarding::OnboardingEvent::CodexNotLoggedIn,
                         false,
                     );
+                } else if needs_codex {
+                    // Codex auth is present, but the Codex backend's runtime spawn is
+                    // not implemented yet. Surface a clear message rather than letting
+                    // the orchestrator fall through to the generic "claude CLI not found"
+                    // hint downstream.
+                    let msg = "Codex backend is in foundation phase: login is wired up but \
+                               agent execution is not implemented yet. Use \
+                               provider = \"claude-code\" or \"anthropic-api\" for now."
+                        .to_string();
+                    tracing::warn!("{}", msg);
+                    self.config_error = Some(glass_core::config::ConfigError {
+                        message: msg,
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    });
                 } else {
                     self.agent_runtime = try_spawn_agent(AgentSpawnParams {
                         config: agent_config,

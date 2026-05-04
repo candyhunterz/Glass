@@ -99,6 +99,8 @@
 # implementer = "claude-code"       # "claude-code", "codex", "aider", "gemini", "custom"
                                     # NOTE: implementer = "codex" requires running `codex login` once.
                                     # NOTE: provider = "codex-cli" reuses the same Codex login for the reviewer.
+                                    # NOTE: provider = "codex-cli" is currently in foundation phase —
+                                    # login is wired up, but agent execution is not yet implemented.
 # implementer_command = ""          # custom launch command (when implementer = "custom")
 # implementer_name = "Claude Code"  # display name used in system prompt
 # persona = ""                      # inline persona string, or path to .md file
