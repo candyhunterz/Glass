@@ -208,10 +208,10 @@ impl fmt::Display for BackendError {
                 write!(f, "backend binary '{binary}' not found on PATH")
             }
             BackendError::SpawnFailed(msg) => write!(f, "failed to spawn backend process: {msg}"),
-            BackendError::LoginRequired { provider, command_hint } => write!(
-                f,
-                "{provider} requires a login — run `{command_hint}`"
-            ),
+            BackendError::LoginRequired {
+                provider,
+                command_hint,
+            } => write!(f, "{provider} requires a login — run `{command_hint}`"),
         }
     }
 }
