@@ -187,6 +187,14 @@ pub enum BackendError {
     },
     /// The backend process could not be spawned (OS error or similar).
     SpawnFailed(String),
+    /// The provider requires an interactive login (e.g. `codex login`) that Glass
+    /// will not perform itself. Surfaces an actionable hint to the user.
+    LoginRequired {
+        /// Provider name (e.g. `"codex-cli"`).
+        provider: String,
+        /// Shell command the user should run (e.g. `"codex login"`).
+        command_hint: String,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -200,6 +208,10 @@ impl fmt::Display for BackendError {
                 write!(f, "backend binary '{binary}' not found on PATH")
             }
             BackendError::SpawnFailed(msg) => write!(f, "failed to spawn backend process: {msg}"),
+            BackendError::LoginRequired { provider, command_hint } => write!(
+                f,
+                "{provider} requires a login — run `{command_hint}`"
+            ),
         }
     }
 }
@@ -343,5 +355,17 @@ mod tests {
         let b =
             resolve_backend("custom", "local-model", None, Some("http://localhost:8080")).unwrap();
         assert_eq!(b.name(), "OpenAI API");
+    }
+
+    #[test]
+    fn login_required_display_includes_command_hint() {
+        let err = BackendError::LoginRequired {
+            provider: "codex-cli".into(),
+            command_hint: "codex login".into(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("codex-cli"), "msg was: {msg}");
+        assert!(msg.contains("codex login"), "msg was: {msg}");
+        assert!(msg.contains("login"), "msg was: {msg}");
     }
 }
