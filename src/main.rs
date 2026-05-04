@@ -3230,13 +3230,8 @@ impl ApplicationHandler<AppEvent> for Processor {
                     api_key,
                     api_endpoint,
                 });
-                // Start usage polling if orchestrator is configured and provider uses Anthropic OAuth
-                let provider = self
-                    .config
-                    .agent
-                    .as_ref()
-                    .map(|a| a.provider.as_str())
-                    .unwrap_or("");
+                // Start usage polling. Skip if the provider doesn't use Anthropic OAuth
+                // (codex-cli, openai-api, etc.) — those don't have a usage API analog.
                 if self
                     .config
                     .agent
