@@ -152,6 +152,11 @@ fn hint_content(hint_id: HintId, pipe_stages: Option<usize>) -> (&'static str, S
             "Agent has a proposal ready".to_string(),
             "Ctrl+Shift+A to review changes".to_string(),
         ),
+        HintId::CodexLogin => (
+            "\u{1F511}", // 🔑
+            "Codex isn't signed in".to_string(),
+            "Run `codex login` in any terminal".to_string(),
+        ),
     }
 }
 
@@ -167,6 +172,7 @@ mod tests {
             HintId::HistorySearch,
             HintId::Soi,
             HintId::AgentProposals,
+            HintId::CodexLogin,
         ];
         for hint in variants {
             let (icon, desc, shortcut) = hint_content(hint, Some(3));

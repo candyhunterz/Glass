@@ -3236,6 +3236,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         column: None,
                         snippet: None,
                     });
+                    self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CodexNotLoggedIn,
+                        false,
+                    );
                 } else {
                     self.agent_runtime = try_spawn_agent(AgentSpawnParams {
                         config: agent_config,

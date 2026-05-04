@@ -16,6 +16,7 @@ pub enum OnboardingEvent {
     SoiParsed,
     ProposalReady,
     CommandCount(u32),
+    CodexNotLoggedIn,
 }
 
 /// Actions the coordinator returns to main.rs.
@@ -33,6 +34,7 @@ pub enum HintId {
     HistorySearch,
     Soi,
     AgentProposals,
+    CodexLogin,
 }
 
 impl HintId {
@@ -43,6 +45,7 @@ impl HintId {
             Self::HistorySearch => "history_search",
             Self::Soi => "soi",
             Self::AgentProposals => "agent_proposals",
+            Self::CodexLogin => "codex_login",
         }
     }
 
@@ -53,6 +56,7 @@ impl HintId {
             "history_search" => Some(Self::HistorySearch),
             "soi" => Some(Self::Soi),
             "agent_proposals" => Some(Self::AgentProposals),
+            "codex_login" => Some(Self::CodexLogin),
             _ => None,
         }
     }
@@ -188,6 +192,7 @@ impl OnboardingCoordinator {
             OnboardingEvent::SoiParsed => Some(HintId::Soi),
             OnboardingEvent::ProposalReady => Some(HintId::AgentProposals),
             OnboardingEvent::CommandCount(n) if *n >= 10 => Some(HintId::HistorySearch),
+            OnboardingEvent::CodexNotLoggedIn => Some(HintId::CodexLogin),
             _ => None,
         };
 
@@ -351,5 +356,26 @@ mod tests {
         coord.process(OnboardingEvent::SessionStart, false);
         let actions = coord.process(OnboardingEvent::CommandModifiedFiles, false);
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn codex_login_hint_id_roundtrips() {
+        assert_eq!(HintId::CodexLogin.as_str(), "codex_login");
+        assert_eq!(HintId::parse_id("codex_login"), Some(HintId::CodexLogin));
+    }
+
+    #[test]
+    fn codex_not_logged_in_event_triggers_codex_login_hint() {
+        let state = GlassState {
+            welcome_completed: true,
+            ..Default::default()
+        };
+        let mut coord = OnboardingCoordinator::from_state(&state);
+        coord.process(OnboardingEvent::SessionStart, false);
+        let actions = coord.process(OnboardingEvent::CodexNotLoggedIn, false);
+        assert_eq!(
+            actions,
+            vec![OnboardingAction::ShowToast(HintId::CodexLogin)]
+        );
     }
 }
