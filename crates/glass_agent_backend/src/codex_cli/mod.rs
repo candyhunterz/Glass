@@ -5,8 +5,9 @@
 //! token-file existence for a friendly pre-flight error.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -20,8 +21,9 @@ pub mod auth;
 pub mod parse;
 
 struct CodexShutdownState {
-    child: Option<std::process::Child>,
+    child: Arc<Mutex<Option<std::process::Child>>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    stop: Arc<AtomicBool>,
 }
 
 /// Codex CLI backend. Construct cheaply; binary and login checks run at `spawn` time.
@@ -67,12 +69,6 @@ impl AgentBackend for CodexCliBackend {
 
         let initial_prompt = format_initial_prompt(&config.system_prompt, &config.initial_message);
         let mcp_command = std::env::current_exe().ok();
-        let args = build_codex_args(
-            &self.model,
-            &config.project_root,
-            &initial_prompt,
-            mcp_command.as_deref(),
-        );
 
         if !config.mcp_config_path.is_empty() {
             tracing::warn!(
@@ -80,129 +76,53 @@ impl AgentBackend for CodexCliBackend {
             );
         }
 
-        let mut cmd = Command::new("codex");
-        cmd.args(&args);
-        cmd.current_dir(&config.project_root);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                    Ok(())
-                });
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                cmd.pre_exec(|| {
-                    std::thread::Builder::new()
-                        .name("glass-codex-orphan-watchdog".into())
-                        .spawn(|| loop {
-                            std::thread::sleep(std::time::Duration::from_secs(2));
-                            if libc::getppid() == 1 {
-                                std::process::exit(1);
-                            }
-                        })
-                        .ok();
-                    Ok(())
-                });
-            }
-        }
-
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(BackendError::BinaryNotFound {
-                    binary: "codex".into(),
-                });
-            }
-            Err(e) => {
-                return Err(BackendError::SpawnFailed(format!(
-                    "failed to spawn codex: {e}"
-                )));
-            }
-        };
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| BackendError::SpawnFailed("stdout was not piped".to_string()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| BackendError::SpawnFailed("stderr was not piped".to_string()))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| BackendError::SpawnFailed("stdin was not piped".to_string()))?;
-
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>();
         let (message_tx, message_rx) = mpsc::channel::<String>();
         let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(50)));
+        let child = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
 
-        let stdout_events = event_tx.clone();
-        let stdout_stderr_tail = Arc::clone(&stderr_tail);
         let model = self.model.clone();
+        let project_root = config.project_root.clone();
+        let mcp_command = mcp_command.clone();
+        let event_tx_worker = event_tx;
+        let stderr_tail_worker = Arc::clone(&stderr_tail);
+        let child_worker = Arc::clone(&child);
+        let stop_worker = Arc::clone(&stop);
         std::thread::Builder::new()
-            .name("glass-codex-stdout".into())
+            .name("glass-codex-worker".into())
             .spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
-                    if let Some(event) = parse::parse_codex_event(&line, &model) {
-                        if stdout_events.send(event).is_err() {
-                            return;
-                        }
-                    }
-                }
-                let tail = stderr_tail_to_string(&stdout_stderr_tail);
-                if !tail.is_empty() {
-                    tracing::warn!("CodexCliBackend: codex stdout closed; stderr tail:\n{tail}");
-                }
-                let _ = stdout_events.send(AgentEvent::Crashed);
-            })
-            .map_err(|e| {
-                BackendError::SpawnFailed(format!("failed to spawn stdout thread: {e}"))
-            })?;
+                let _ = run_codex_turn(CodexTurn {
+                    model: &model,
+                    project_root: &project_root,
+                    prompt: &initial_prompt,
+                    mcp_command: mcp_command.as_deref(),
+                    event_tx: &event_tx_worker,
+                    stderr_tail: &stderr_tail_worker,
+                    child_slot: &child_worker,
+                    stop: &stop_worker,
+                });
 
-        let stderr_tail_reader = Arc::clone(&stderr_tail);
-        std::thread::Builder::new()
-            .name("glass-codex-stderr".into())
-            .spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    push_stderr_tail(&stderr_tail_reader, line);
-                }
-            })
-            .map_err(|e| {
-                BackendError::SpawnFailed(format!("failed to spawn stderr thread: {e}"))
-            })?;
-
-        std::thread::Builder::new()
-            .name("glass-codex-stdin".into())
-            .spawn(move || {
-                let mut writer = BufWriter::new(stdin);
                 for content in message_rx.iter() {
+                    if stop_worker.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let content = extract_user_content(&content);
-                    if writeln!(writer, "{content}").is_err() || writer.flush().is_err() {
+                    if !run_codex_turn(CodexTurn {
+                        model: &model,
+                        project_root: &project_root,
+                        prompt: &content,
+                        mcp_command: mcp_command.as_deref(),
+                        event_tx: &event_tx_worker,
+                        stderr_tail: &stderr_tail_worker,
+                        child_slot: &child_worker,
+                        stop: &stop_worker,
+                    }) {
                         break;
                     }
                 }
             })
-            .map_err(|e| BackendError::SpawnFailed(format!("failed to spawn stdin thread: {e}")))?;
+            .map_err(|e| BackendError::SpawnFailed(format!("failed to spawn codex worker: {e}")))?;
 
         tracing::info!(
             "CodexCliBackend: codex subprocess spawned (model={}, generation={}, restart_count={})",
@@ -220,8 +140,9 @@ impl AgentBackend for CodexCliBackend {
             event_rx,
             generation,
             shutdown_token: ShutdownToken::new(CodexShutdownState {
-                child: Some(child),
+                child,
                 stderr_tail,
+                stop,
             }),
         })
     }
@@ -232,7 +153,9 @@ impl AgentBackend for CodexCliBackend {
             return;
         };
 
-        if let Some(ref mut child) = state.child {
+        state.stop.store(true, Ordering::Relaxed);
+
+        if let Some(ref mut child) = *state.child.lock() {
             match child.try_wait() {
                 Ok(Some(_status)) => {}
                 _ => {
@@ -241,11 +164,133 @@ impl AgentBackend for CodexCliBackend {
                 }
             }
         }
-        state.child = None;
+        *state.child.lock() = None;
 
         let tail = stderr_tail_to_string(&state.stderr_tail);
         if !tail.is_empty() {
             tracing::debug!("CodexCliBackend::shutdown stderr tail:\n{tail}");
+        }
+    }
+}
+
+struct CodexTurn<'a> {
+    model: &'a str,
+    project_root: &'a str,
+    prompt: &'a str,
+    mcp_command: Option<&'a std::path::Path>,
+    event_tx: &'a mpsc::Sender<AgentEvent>,
+    stderr_tail: &'a Arc<Mutex<VecDeque<String>>>,
+    child_slot: &'a Arc<Mutex<Option<std::process::Child>>>,
+    stop: &'a Arc<AtomicBool>,
+}
+
+fn run_codex_turn(turn: CodexTurn<'_>) -> bool {
+    let args = build_codex_args(turn.model, turn.project_root, turn.prompt, turn.mcp_command);
+    let mut cmd = codex_command(&args);
+    cmd.current_dir(turn.project_root);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_child_options(&mut cmd);
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::warn!("CodexCliBackend: failed to spawn codex: {e}");
+            let _ = turn.event_tx.send(AgentEvent::Crashed);
+            return false;
+        }
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => return false,
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => return false,
+    };
+
+    *turn.child_slot.lock() = Some(child);
+
+    let stderr_tail = Arc::clone(turn.stderr_tail);
+    let _ = std::thread::Builder::new()
+        .name("glass-codex-stderr".into())
+        .spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                push_stderr_tail(&stderr_tail, line);
+            }
+        });
+
+    let reader = BufReader::new(stdout);
+    for line in reader.lines().map_while(Result::ok) {
+        if turn.stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(event) = parse::parse_codex_event(&line, turn.model) {
+            if turn.event_tx.send(event).is_err() {
+                return false;
+            }
+        }
+    }
+
+    let status = {
+        let mut child = turn.child_slot.lock();
+        child.as_mut().and_then(|child| child.wait().ok())
+    };
+    *turn.child_slot.lock() = None;
+
+    if turn.stop.load(Ordering::Relaxed) {
+        return false;
+    }
+
+    if !status.map(|status| status.success()).unwrap_or(false) {
+        let tail = stderr_tail_to_string(turn.stderr_tail);
+        if !tail.is_empty() {
+            tracing::warn!("CodexCliBackend: codex exited unsuccessfully; stderr tail:\n{tail}");
+        }
+        let _ = turn.event_tx.send(AgentEvent::Crashed);
+        return false;
+    }
+
+    true
+}
+
+fn apply_child_options(cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                std::thread::Builder::new()
+                    .name("glass-codex-orphan-watchdog".into())
+                    .spawn(|| loop {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        if libc::getppid() == 1 {
+                            std::process::exit(1);
+                        }
+                    })
+                    .ok();
+                Ok(())
+            });
         }
     }
 }
@@ -264,8 +309,6 @@ fn build_codex_args(
         "--ephemeral".to_string(),
         "--sandbox".to_string(),
         "read-only".to_string(),
-        "--ask-for-approval".to_string(),
-        "never".to_string(),
     ];
 
     if !model.trim().is_empty() {
@@ -286,9 +329,27 @@ fn build_codex_args(
     args
 }
 
+fn codex_command(args: &[String]) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.arg("/C").arg("codex").args(args);
+        cmd
+    } else {
+        let mut cmd = Command::new("codex");
+        cmd.args(args);
+        cmd
+    }
+}
+
 fn format_initial_prompt(system_prompt: &str, initial_message: &Option<String>) -> String {
     let user_message = initial_message.as_deref().unwrap_or("GLASS_WAIT");
-    format!("{system_prompt}\n\nUSER MESSAGE:\n{user_message}")
+    sanitize_prompt_arg(&format!(
+        "SYSTEM INSTRUCTIONS:\n{system_prompt}\n\nUSER MESSAGE:\n{user_message}"
+    ))
+}
+
+fn sanitize_prompt_arg(prompt: &str) -> String {
+    prompt.replace("\r\n", "\n").replace('\n', "\\n")
 }
 
 fn extract_user_content(raw: &str) -> String {
@@ -360,7 +421,6 @@ mod tests {
         assert!(args.contains(&"--cd".to_string()));
         assert!(args.contains(&"C:\\repo".to_string()));
         assert!(args.contains(&"--ephemeral".to_string()));
-        assert!(args.contains(&"--ask-for-approval".to_string()));
         assert!(!args.contains(&"--model".to_string()));
         assert_eq!(args.last().map(String::as_str), Some("hello"));
     }
@@ -387,5 +447,24 @@ mod tests {
         let raw = r#"{"type":"user","message":{"role":"user","content":"hello"}}"#;
         assert_eq!(extract_user_content(raw), "hello");
         assert_eq!(extract_user_content("plain"), "plain");
+    }
+
+    #[test]
+    fn initial_prompt_escapes_newlines_for_shell_wrappers() {
+        let prompt = format_initial_prompt("line1\nline2", &Some("hello\nthere".to_string()));
+        assert!(prompt.contains(r"line1\nline2"));
+        assert!(prompt.contains(r"hello\nthere"));
+        assert!(!prompt.contains('\n'));
+    }
+
+    #[test]
+    fn uses_cmd_wrapper_on_windows() {
+        let args = vec!["exec".to_string(), "--json".to_string()];
+        let command = codex_command(&args);
+        if cfg!(target_os = "windows") {
+            assert_eq!(command.get_program(), "cmd.exe");
+        } else {
+            assert_eq!(command.get_program(), "codex");
+        }
     }
 }
