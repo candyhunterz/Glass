@@ -226,12 +226,27 @@ impl AgentBackend for CodexCliBackend {
         })
     }
 
-    fn shutdown(&self, token: ShutdownToken) {
-        if let Some(state) = token.downcast::<CodexShutdownState>() {
-            let _ = state.child.as_ref().map(|child| child.id());
-            let _ = state.stderr_tail.lock().len();
+    fn shutdown(&self, mut token: ShutdownToken) {
+        let Some(state) = token.downcast_mut::<CodexShutdownState>() else {
+            tracing::warn!("CodexCliBackend::shutdown: token type mismatch");
+            return;
+        };
+
+        if let Some(ref mut child) = state.child {
+            match child.try_wait() {
+                Ok(Some(_status)) => {}
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
         }
-        // Implemented in Plan-Task 7 (deferred).
+        state.child = None;
+
+        let tail = stderr_tail_to_string(&state.stderr_tail);
+        if !tail.is_empty() {
+            tracing::debug!("CodexCliBackend::shutdown stderr tail:\n{tail}");
+        }
     }
 }
 
