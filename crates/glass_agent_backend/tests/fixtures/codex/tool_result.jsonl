@@ -1,0 +1,1 @@
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'Get-ChildItem -Name Cargo.toml'","aggregated_output":"Cargo.toml\r\n","exit_code":0,"status":"completed"}}

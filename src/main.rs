@@ -2568,17 +2568,26 @@ impl Processor {
         self.orchestrator.instruction_buffer.clear();
         self.orchestrator.bounded_stop_pending = false;
 
-        // Restart usage poller if it died (stale data for >2 minutes means thread crashed)
+        // Restart usage poller if it died (stale data for >2 minutes means thread crashed).
+        // Skip restart if the active provider doesn't use Anthropic OAuth (e.g., codex-cli).
         if let Some(ref state) = self.usage_state {
-            let stale = state
-                .lock()
-                .ok()
-                .and_then(|st| st.last_poll_at)
-                .map(|t| t.elapsed().as_secs() > 120)
-                .unwrap_or(true);
-            if stale {
-                tracing::warn!("Usage tracker: polling thread appears dead, restarting");
-                self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+            let provider = self
+                .config
+                .agent
+                .as_ref()
+                .map(|a| a.provider.as_str())
+                .unwrap_or("");
+            if usage_tracker::should_poll_for_provider(provider) {
+                let stale = state
+                    .lock()
+                    .ok()
+                    .and_then(|st| st.last_poll_at)
+                    .map(|t| t.elapsed().as_secs() > 120)
+                    .unwrap_or(true);
+                if stale {
+                    tracing::warn!("Usage tracker: polling thread appears dead, restarting");
+                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                }
             }
         }
 
@@ -2839,7 +2848,7 @@ impl Processor {
             .unwrap_or("claude-code");
 
         // Determine the clear command based on implementer type.
-        // Some implementers support /clear, others need exit+restart.
+        // Codex has no verified context-clear command in codex-cli 0.128.0.
         let clear_cmd = match implementer {
             "claude-code" => "/clear",
             "aider" => "/clear",
@@ -3206,34 +3215,64 @@ impl ApplicationHandler<AppEvent> for Processor {
                     .agent
                     .as_ref()
                     .and_then(|a| a.api_endpoint.as_deref());
-                self.agent_runtime = try_spawn_agent(AgentSpawnParams {
-                    config: agent_config,
-                    activity_rx: rx,
-                    proxy: self.proxy.clone(),
-                    restart_count: 0,
-                    last_crash: None,
-                    project_root: cwd,
-                    initial_message: None,
-                    system_prompt,
-                    generation: self.agent_generation,
-                    provider,
-                    model,
-                    api_key,
-                    api_endpoint,
-                });
-                // Start usage polling if orchestrator is configured
-                if self
+
+                // Pre-flight check: if Codex is configured but not logged in, surface an error.
+                let implementer = self
                     .config
                     .agent
                     .as_ref()
                     .and_then(|a| a.orchestrator.as_ref())
-                    .is_some()
-                {
-                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                    .map(|o| o.implementer.as_str())
+                    .unwrap_or("claude-code");
+                let needs_codex = implementer == "codex" || provider == "codex-cli";
+                if needs_codex && !glass_agent_backend::codex_cli::auth::is_logged_in() {
+                    let msg = "Codex is not signed in. Run `codex login` in any terminal, \
+                               then restart Glass."
+                        .to_string();
+                    tracing::warn!("{}", msg);
+                    self.config_error = Some(glass_core::config::ConfigError {
+                        message: msg,
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    });
+                    self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CodexNotLoggedIn,
+                        false,
+                    );
+                } else {
+                    self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+                        config: agent_config,
+                        activity_rx: rx,
+                        proxy: self.proxy.clone(),
+                        restart_count: 0,
+                        last_crash: None,
+                        project_root: cwd,
+                        initial_message: None,
+                        system_prompt,
+                        generation: self.agent_generation,
+                        provider,
+                        model,
+                        api_key,
+                        api_endpoint,
+                    });
+                    // Start usage polling. Skip if the provider doesn't use Anthropic OAuth
+                    // (codex-cli, openai-api, etc.) — those don't have a usage API analog.
+                    if self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.orchestrator.as_ref())
+                        .is_some()
+                        && usage_tracker::should_poll_for_provider(provider)
+                    {
+                        self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                    }
                 }
 
                 // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
-                if self.agent_runtime.is_none() {
+                // Skip if a more specific error was already set upstream (e.g., Codex pre-flight).
+                if self.agent_runtime.is_none() && self.config_error.is_none() {
                     self.config_error = Some(glass_core::config::ConfigError {
                         message: "'claude' CLI not found on PATH. Install from https://claude.ai/download, or set agent.mode = \"off\" in ~/.glass/config.toml".to_string(),
                         line: None,

@@ -7,6 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
+/// Returns `true` if this provider uses Anthropic's OAuth usage API.
+/// The poller is a no-op for any other provider (codex-cli, openai-api, ollama, custom).
+pub fn should_poll_for_provider(provider: &str) -> bool {
+    matches!(provider, "claude-code" | "anthropic-api" | "")
+}
+
 /// Cached usage data from the Anthropic usage API.
 #[derive(Debug, Clone)]
 pub struct UsageData {
@@ -242,6 +248,26 @@ pub fn usage_color_tier(utilization: f64) -> u8 {
         1 // yellow
     } else {
         0 // green
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn polls_for_claude_providers() {
+        assert!(should_poll_for_provider("claude-code"));
+        assert!(should_poll_for_provider("anthropic-api"));
+        assert!(should_poll_for_provider("")); // empty = default = claude-code
+    }
+
+    #[test]
+    fn does_not_poll_for_other_providers() {
+        assert!(!should_poll_for_provider("codex-cli"));
+        assert!(!should_poll_for_provider("openai-api"));
+        assert!(!should_poll_for_provider("ollama"));
+        assert!(!should_poll_for_provider("custom"));
     }
 }
 
