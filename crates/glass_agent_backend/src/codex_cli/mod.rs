@@ -7,6 +7,7 @@
 use crate::{AgentBackend, AgentHandle, BackendError, BackendSpawnConfig, ShutdownToken};
 
 pub mod auth;
+pub mod parse;
 
 /// Codex CLI backend. Construct cheaply; binary and login checks run at `spawn` time.
 pub struct CodexCliBackend;
