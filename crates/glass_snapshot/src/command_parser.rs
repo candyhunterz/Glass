@@ -149,30 +149,27 @@ fn strip_redirects(text: &str) -> String {
                 }
             }
             // Also skip fd redirects like 2>
-            b'0'..=b'9' if !in_single_quote && !in_double_quote => {
-                // Check if next char is >
-                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
-                    // Skip the digit and let the > handler above deal with it
-                    i += 1;
-                    // Now skip > or >>
-                    i += 1;
-                    if i < bytes.len() && bytes[i] == b'>' {
-                        i += 1;
-                    }
-                    while i < bytes.len() && bytes[i] == b' ' {
-                        i += 1;
-                    }
-                    while i < bytes.len()
-                        && bytes[i] != b' '
-                        && bytes[i] != b'\t'
-                        && bytes[i] != b'>'
-                    {
-                        i += 1;
-                    }
-                } else {
-                    result.push(bytes[i] as char);
+            b'0'..=b'9'
+                if !in_single_quote
+                    && !in_double_quote
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1] == b'>' =>
+            {
+                // Skip the digit and the > or >> redirect operator.
+                i += 2;
+                if i < bytes.len() && bytes[i] == b'>' {
                     i += 1;
                 }
+                while i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
+                while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' && bytes[i] != b'>' {
+                    i += 1;
+                }
+            }
+            b'0'..=b'9' => {
+                result.push(bytes[i] as char);
+                i += 1;
             }
             _ => {
                 result.push(bytes[i] as char);
@@ -264,30 +261,29 @@ fn extract_redirect_targets(command_text: &str, cwd: &Path) -> Vec<PathBuf> {
                 continue;
             }
             // Handle fd redirects like 2>
-            b'0'..=b'9' if !in_single_quote && !in_double_quote => {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
-                    let mut j = i + 2;
-                    if j < bytes.len() && bytes[j] == b'>' {
-                        j += 1;
-                    }
-                    while j < bytes.len() && bytes[j] == b' ' {
-                        j += 1;
-                    }
-                    let start = j;
-                    while j < bytes.len()
-                        && bytes[j] != b' '
-                        && bytes[j] != b'\t'
-                        && bytes[j] != b'>'
-                    {
-                        j += 1;
-                    }
-                    if start < j {
-                        let filename = &command_text[start..j];
-                        targets.push(resolve_path(filename, cwd));
-                    }
-                    i = j;
-                    continue;
+            b'0'..=b'9'
+                if !in_single_quote
+                    && !in_double_quote
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1] == b'>' =>
+            {
+                let mut j = i + 2;
+                if j < bytes.len() && bytes[j] == b'>' {
+                    j += 1;
                 }
+                while j < bytes.len() && bytes[j] == b' ' {
+                    j += 1;
+                }
+                let start = j;
+                while j < bytes.len() && bytes[j] != b' ' && bytes[j] != b'\t' && bytes[j] != b'>' {
+                    j += 1;
+                }
+                if start < j {
+                    let filename = &command_text[start..j];
+                    targets.push(resolve_path(filename, cwd));
+                }
+                i = j;
+                continue;
             }
             _ => {}
         }

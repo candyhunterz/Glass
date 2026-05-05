@@ -7,6 +7,14 @@ use alacritty_terminal::vte::ansi::Rgb;
 
 use crate::rect_renderer::RectInstance;
 
+/// Navigation and editing state for the settings overlay.
+pub struct SettingsNavState<'a> {
+    pub section_index: usize,
+    pub field_index: usize,
+    pub editing: bool,
+    pub edit_buffer: &'a str,
+}
+
 /// Active tab in the settings overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
@@ -173,6 +181,20 @@ pub const SETTINGS_SECTIONS: &[&str] = &[
     "History",
     "Orchestrator",
 ];
+
+/// Number of fields in each settings section (for keyboard navigation).
+pub fn field_count_for_section(section_index: usize) -> usize {
+    match section_index {
+        0 => 2,  // Font: family, size
+        1 => 4,  // Agent Mode: enabled, mode, budget, cooldown
+        2 => 3,  // SOI: enabled, shell_summary, min_lines
+        3 => 3,  // Snapshots: enabled, max_mb, retention_days
+        4 => 3,  // Pipes: enabled, auto_expand, max_capture_mb
+        5 => 1,  // History: max_output_kb
+        6 => 15, // Orchestrator: provider..checkpoint_interval
+        _ => 0,
+    }
+}
 
 /// A single shortcut entry for display.
 struct ShortcutEntry {
@@ -627,17 +649,17 @@ impl SettingsOverlayRenderer {
     }
 
     /// Build text labels for the Settings tab (sidebar + fields for selected section).
-    #[allow(clippy::too_many_arguments)]
     pub fn build_settings_text(
         &self,
         viewport_width: f32,
         viewport_height: f32,
         config: &SettingsConfigSnapshot,
-        section_index: usize,
-        field_index: usize,
-        editing: bool,
-        edit_buffer: &str,
+        nav: &SettingsNavState<'_>,
     ) -> Vec<SettingsOverlayTextLabel> {
+        let section_index = nav.section_index;
+        let field_index = nav.field_index;
+        let editing = nav.editing;
+        let edit_buffer = nav.edit_buffer;
         let mut labels = Vec::new();
         let padding = self.cell_width;
         let content_y = self.cell_height * 4.5;
@@ -766,12 +788,33 @@ impl SettingsOverlayRenderer {
                 }
             };
 
-            let indicator = if is_selected { "> " } else { "  " };
+            // Show edit buffer with cursor when editing the selected field
+            let display_value = if is_selected && editing && !*is_toggle && !*is_display_only {
+                format!("{}_", edit_buffer)
+            } else {
+                value.clone()
+            };
+            let indicator = if is_selected && editing && !*is_toggle && !*is_display_only {
+                "# "
+            } else if is_selected {
+                "> "
+            } else {
+                "  "
+            };
+            let display_color = if is_selected && editing && !*is_toggle && !*is_display_only {
+                Rgb {
+                    r: 56,
+                    g: 189,
+                    b: 248,
+                } // cyan for edit mode
+            } else {
+                value_color
+            };
             labels.push(SettingsOverlayTextLabel {
-                text: format!("{}{}", indicator, value),
+                text: format!("{}{}", indicator, display_value),
                 x: panel_x + 22.0 * self.cell_width,
                 y: field_y,
-                color: value_color,
+                color: display_color,
             });
 
             field_y += self.cell_height * 1.3;
@@ -813,22 +856,13 @@ impl SettingsOverlayRenderer {
         &self,
         section_index: usize,
         config: &SettingsConfigSnapshot,
-        editing: bool,
-        edit_buffer: &str,
+        _editing: bool,
+        _edit_buffer: &str,
     ) -> Vec<(&'static str, String, bool, bool)> {
         match section_index {
             0 => vec![
                 // Font
-                (
-                    "Font Family",
-                    if editing {
-                        edit_buffer.to_string()
-                    } else {
-                        config.font_family.clone()
-                    },
-                    false,
-                    false,
-                ),
+                ("Font Family", config.font_family.clone(), false, false),
                 (
                     "Font Size",
                     format!("{:.1}", config.font_size),
@@ -1105,7 +1139,17 @@ mod tests {
     fn test_settings_text_has_sections_and_fields() {
         let renderer = SettingsOverlayRenderer::new(10.0, 20.0);
         let config = SettingsConfigSnapshot::default();
-        let labels = renderer.build_settings_text(800.0, 600.0, &config, 0, 0, false, "");
+        let labels = renderer.build_settings_text(
+            800.0,
+            600.0,
+            &config,
+            &SettingsNavState {
+                section_index: 0,
+                field_index: 0,
+                editing: false,
+                edit_buffer: "",
+            },
+        );
         let text: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
         // Sidebar sections present (prefixed with "> " or "  ")
         assert!(text
@@ -1123,7 +1167,17 @@ mod tests {
         let renderer = SettingsOverlayRenderer::new(10.0, 20.0);
         let config = SettingsConfigSnapshot::default();
         // section_index=1 is Agent Mode
-        let labels = renderer.build_settings_text(800.0, 600.0, &config, 1, 0, false, "");
+        let labels = renderer.build_settings_text(
+            800.0,
+            600.0,
+            &config,
+            &SettingsNavState {
+                section_index: 1,
+                field_index: 0,
+                editing: false,
+                edit_buffer: "",
+            },
+        );
         let text: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
         assert!(text.iter().any(|t| t.contains("Enabled")));
         assert!(text.iter().any(|t| t.contains("Mode")));

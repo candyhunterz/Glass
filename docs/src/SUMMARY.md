@@ -6,7 +6,7 @@
 
 # Getting Started
 
-- [Installation](./installation/windows.md)
+- [Installation]()
   - [Windows](./installation/windows.md)
   - [macOS](./installation/macos.md)
   - [Linux](./installation/linux.md)
@@ -16,6 +16,7 @@
 
 # Features
 
+- [AI Integration](./features/ai-integration.md)
 - [Command Blocks](./features/blocks.md)
 - [Structured Output Intelligence](./features/soi.md)
 - [Agent Mode](./features/agent-mode.md)

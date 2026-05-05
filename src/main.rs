@@ -3,9 +3,12 @@
 #![windows_subsystem = "windows"]
 
 mod agent_instructions;
+mod analyze;
 mod checkpoint_synth;
+mod doctor;
 mod ephemeral_agent;
 mod history;
+mod mcp_register;
 mod orchestrator;
 mod orchestrator_context;
 mod orchestrator_events;
@@ -76,6 +79,39 @@ fn show_fatal_error(msg: &str) -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// Orchestrator spinner helper
+// ---------------------------------------------------------------------------
+
+/// Compute spinner character for the given elapsed seconds.
+fn orchestrator_spinner(elapsed_secs: u64) -> char {
+    const SPINNER: [char; 10] = [
+        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
+        '\u{2827}', '\u{2807}', '\u{280F}',
+    ];
+    SPINNER[elapsed_secs as usize % SPINNER.len()]
+}
+
+#[cfg(test)]
+mod orchestrator_spinner_tests {
+    use super::*;
+
+    #[test]
+    fn spinner_cycles_through_all_characters() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..10 {
+            seen.insert(orchestrator_spinner(i));
+        }
+        assert_eq!(seen.len(), 10, "all 10 spinner chars should be distinct");
+    }
+
+    #[test]
+    fn spinner_wraps_at_10() {
+        assert_eq!(orchestrator_spinner(0), orchestrator_spinner(10));
+        assert_eq!(orchestrator_spinner(3), orchestrator_spinner(13));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI definition (clap derive)
 // ---------------------------------------------------------------------------
 
@@ -108,8 +144,33 @@ enum Commands {
         #[command(subcommand)]
         action: ProfileAction,
     },
-    /// Run system diagnostics (GPU, shell, config, integration)
+    /// Comprehensive system diagnostics
+    Doctor {
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+        /// Attempt automatic fixes
+        #[arg(long)]
+        fix: bool,
+        /// Run only checks in a specific category
+        #[arg(long, value_enum)]
+        category: Option<doctor::Category>,
+    },
+    /// Run system diagnostics (alias for doctor)
+    #[command(hide = true)]
     Check,
+    /// Open the orchestrator run analyzer dashboard
+    Analyze {
+        /// Path to .glass/ directory (default: .glass/ in CWD)
+        #[arg(long)]
+        dir: Option<String>,
+        /// HTTP server port (default: 3927)
+        #[arg(long, default_value_t = 3927)]
+        port: u16,
+        /// Don't auto-open browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -289,6 +350,13 @@ struct ProposalToast {
     created_at: std::time::Instant,
 }
 
+/// Transient state for the onboarding hint toast notification.
+struct OnboardingToastState {
+    hint_id: glass_core::onboarding::HintId,
+    pipe_stages: Option<usize>,
+    created_at: std::time::Instant,
+}
+
 /// Encapsulates the agent subprocess lifecycle.
 ///
 /// Lives as `Option<AgentRuntime>` on Processor -- None when agent.mode == Off
@@ -328,8 +396,6 @@ struct Processor {
     config_error: Option<glass_core::config::ConfigError>,
     /// Whether the config file watcher has been spawned (only once).
     watcher_spawned: bool,
-    /// Show settings hint in status bar for the first few sessions (UX-1).
-    show_settings_hint: bool,
     /// Available update info, if a newer version was found.
     update_info: Option<glass_core::updater::UpdateInfo>,
     /// Current coordination state from background poller.
@@ -368,6 +434,16 @@ struct Processor {
     )>,
     /// Active toast notification for the most recent proposal. Auto-dismisses after 30s.
     active_toast: Option<ProposalToast>,
+    /// Onboarding coordinator: manages welcome overlay and contextual hints.
+    onboarding: glass_core::onboarding::OnboardingCoordinator,
+    /// Active onboarding toast notification. Auto-dismisses after 5s.
+    onboarding_toast: Option<OnboardingToastState>,
+    /// Running count of commands completed this session (for history search hint).
+    onboarding_command_count: u32,
+    /// Whether the welcome overlay is visible.
+    welcome_overlay_visible: bool,
+    /// Current step in the welcome overlay wizard.
+    welcome_overlay_step: glass_renderer::WelcomeStep,
     /// Whether the activity stream overlay is visible.
     activity_overlay_visible: bool,
     /// Current filter tab in the activity overlay.
@@ -396,6 +472,12 @@ struct Processor {
     settings_editing: bool,
     /// Buffer for inline text editing.
     settings_edit_buffer: String,
+    /// Config section for the field being edited (e.g. Some("agent"), None for top-level).
+    settings_edit_section: Option<&'static str>,
+    /// Config key for the field being edited (e.g. "font_size").
+    settings_edit_key: &'static str,
+    /// Whether the edited value needs TOML quotes (string vs numeric).
+    settings_edit_needs_quotes: bool,
     /// Scroll offset for the Shortcuts tab.
     settings_shortcuts_scroll: usize,
     /// Transient status message displayed in the status bar center text.
@@ -413,10 +495,16 @@ struct Processor {
     /// (via `JobObjectHandle`'s `Drop` impl), which triggers kill-on-close
     /// for all processes in the job.
     #[cfg(target_os = "windows")]
-    #[allow(dead_code)]
-    job_object_handle: Option<JobObjectHandle>,
+    _job_object_handle: Option<JobObjectHandle>,
     /// Thread handle for the artifact completion watcher (if active).
     artifact_watcher_thread: Option<std::thread::JoinHandle<()>>,
+    /// Postmortem report content, captured for combining with feedback summary.
+    orchestrator_postmortem: Option<String>,
+    /// Whether `SetThreadExecutionState` currently has a system-required request
+    /// active. Tracked so `about_to_wait` can apply transitions without calling
+    /// the Windows API every tick. Only meaningful on Windows; always `false`
+    /// elsewhere.
+    power_request_active: bool,
     /// Feedback loop state for the current orchestrator run.
     feedback_state: Option<glass_feedback::FeedbackState>,
     /// Guard to prevent config reload from overwriting feedback-written values.
@@ -440,6 +528,8 @@ struct Processor {
     script_gen_parse_failures: u32,
     /// Centered toast message, auto-dismisses after 5 seconds.
     centered_toast: Option<(String, std::time::Instant)>,
+    /// AtomicBool flag for the orchestrator redraw tick thread. Set to false to stop.
+    orchestrator_redraw_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Drop for AgentRuntime {
@@ -639,22 +729,31 @@ fn resize_all_panes(
     }
 }
 
+/// Window layout metrics needed when creating a new terminal session.
+struct SessionLayout {
+    cell_w: f32,
+    cell_h: f32,
+    window_width: u32,
+    window_height: u32,
+    tab_bar_lines: u16,
+}
+
 /// Create a new terminal session with PTY, shell integration, history DB, and snapshot store.
 ///
 /// Encapsulates all the setup needed when creating a new tab.
-#[allow(clippy::too_many_arguments)]
 fn create_session(
     proxy: &EventLoopProxy<AppEvent>,
     window_id: WindowId,
     session_id: SessionId,
     config: &GlassConfig,
     working_directory: Option<&std::path::Path>,
-    cell_w: f32,
-    cell_h: f32,
-    window_width: u32,
-    window_height: u32,
-    tab_bar_lines: u16,
+    layout: &SessionLayout,
 ) -> anyhow::Result<Session> {
+    let cell_w = layout.cell_w;
+    let cell_h = layout.cell_h;
+    let window_width = layout.window_width;
+    let window_height = layout.window_height;
+    let tab_bar_lines = layout.tab_bar_lines;
     let event_proxy = EventProxy::new(proxy.clone(), window_id, session_id);
 
     let max_output_kb = config
@@ -683,19 +782,28 @@ fn create_session(
         .as_ref()
         .and_then(|a| a.orchestrator.as_ref())
         .and_then(|o| o.agent_prompt_pattern.clone());
+    let min_output_bytes = config
+        .agent
+        .as_ref()
+        .and_then(|a| a.orchestrator.as_ref())
+        .map(|o| o.min_output_bytes)
+        .unwrap_or(512);
     let scrollback = config.terminal.as_ref().map(|t| t.scrollback);
     let (pty_sender, term) = glass_terminal::spawn_pty(
         event_proxy,
         proxy.clone(),
         window_id,
-        config.shell.as_deref(),
-        working_directory,
-        max_output_kb,
-        pipes_enabled,
-        orchestrator_silence_secs,
-        fast_trigger,
-        prompt_pattern,
-        scrollback,
+        &glass_terminal::PtySpawnConfig {
+            shell_override: config.shell.as_deref(),
+            working_directory,
+            max_output_capture_kb: max_output_kb,
+            pipes_enabled,
+            orchestrator_silence_secs,
+            orchestrator_fast_trigger_secs: fast_trigger,
+            orchestrator_prompt_pattern: prompt_pattern,
+            min_output_bytes,
+            scrollback,
+        },
     )?;
 
     // Compute terminal size: subtract 1 line for status bar + tab_bar_lines
@@ -942,11 +1050,12 @@ fn implementer_launch_command(config: &glass_core::config::GlassConfig) -> Strin
 fn build_system_prompt(
     config: &glass_core::agent_runtime::AgentRuntimeConfig,
     project_root: &str,
+    hints: &[String],
 ) -> String {
     let orchestrator_config = config.orchestrator.as_ref();
     let orchestrator_enabled = orchestrator_config.map(|o| o.enabled).unwrap_or(false);
 
-    if orchestrator_enabled {
+    let mut prompt = if orchestrator_enabled {
         let artifact_path = orchestrator_config
             .map(|o| o.completion_artifact.as_str())
             .unwrap_or(".glass/done");
@@ -1089,16 +1198,20 @@ Session Continuity:
 - The next agent session will receive your handoff as context
 "#
         .to_string()
+    };
+
+    if !hints.is_empty() {
+        prompt.push_str("\n[FEEDBACK_HINTS]\nThese are learned insights from previous orchestrator runs. Follow them:\n");
+        for hint in hints {
+            prompt.push_str(&format!("- {}\n", hint));
+        }
     }
+
+    prompt
 }
 
-/// Attempt to spawn the agent subprocess via the backend trait and wire up
-/// event drain and activity stream bridge threads.
-///
-/// Returns Some(AgentRuntime) if spawn succeeded, None if the backend binary
-/// was not found or spawn failed (graceful degradation per AGTR-04).
-#[allow(clippy::too_many_arguments)]
-fn try_spawn_agent(
+/// Parameters for spawning the Glass Agent backend.
+struct AgentSpawnParams<'a> {
     config: glass_core::agent_runtime::AgentRuntimeConfig,
     activity_rx: std::sync::mpsc::Receiver<glass_core::activity_stream::ActivityEvent>,
     proxy: winit::event_loop::EventLoopProxy<glass_core::event::AppEvent>,
@@ -1108,18 +1221,36 @@ fn try_spawn_agent(
     initial_message: Option<String>,
     system_prompt: String,
     generation: u64,
-    provider: &str,
-    model: &str,
-    api_key: Option<&str>,
-    api_endpoint: Option<&str>,
-) -> Option<AgentRuntime> {
-    let backend = glass_agent_backend::resolve_backend(
-        provider, model, api_key, api_endpoint,
-    )
-    .unwrap_or_else(|e| {
-        tracing::warn!("resolve_backend: {}, falling back to Claude CLI", e);
-        Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new())
-    });
+    provider: &'a str,
+    model: &'a str,
+    api_key: Option<&'a str>,
+    api_endpoint: Option<&'a str>,
+}
+
+/// Attempt to spawn the agent subprocess via the backend trait and wire up
+/// event drain and activity stream bridge threads.
+///
+/// Returns Some(AgentRuntime) if spawn succeeded, None if the backend binary
+/// was not found or spawn failed (graceful degradation per AGTR-04).
+fn try_spawn_agent(params: AgentSpawnParams<'_>) -> Option<AgentRuntime> {
+    let config = params.config;
+    let activity_rx = params.activity_rx;
+    let proxy = params.proxy;
+    let restart_count = params.restart_count;
+    let last_crash = params.last_crash;
+    let project_root = params.project_root;
+    let initial_message = params.initial_message;
+    let system_prompt = params.system_prompt;
+    let generation = params.generation;
+    let provider = params.provider;
+    let model = params.model;
+    let api_key = params.api_key;
+    let api_endpoint = params.api_endpoint;
+    let backend = glass_agent_backend::resolve_backend(provider, model, api_key, api_endpoint)
+        .unwrap_or_else(|e| {
+            tracing::warn!("resolve_backend: {}, falling back to Claude CLI", e);
+            Box::new(glass_agent_backend::claude_cli::ClaudeCliBackend::new())
+        });
 
     // Compute allowed tools — orchestrator always gets full MCP access.
     let orchestrator_active = config
@@ -1203,6 +1334,11 @@ fn try_spawn_agent(
                     let mut buffered_response: Option<String> = None;
                     let mut tool_id_to_name: std::collections::HashMap<String, String> =
                         std::collections::HashMap::new();
+                    // Track whether a tool was called in the current turn sequence.
+                    // When the agent uses MCP tools, it produces multiple TurnComplete
+                    // events per context send. We only want to emit OrchestratorResponse
+                    // on the FINAL turn (no tool calls), not on intermediate tool turns.
+                    let mut saw_tool_this_turn = false;
 
                     for event in event_rx_owned.iter() {
                         match event {
@@ -1239,6 +1375,7 @@ fn try_spawn_agent(
                                 );
                             }
                             glass_agent_backend::AgentEvent::ToolCall { name, id, input } => {
+                                saw_tool_this_turn = true;
                                 let summary = orchestrator_events::truncate_display(&input, 200);
                                 tool_id_to_name.insert(id, name.clone());
                                 let _ = proxy_drain.send_event(
@@ -1266,7 +1403,13 @@ fn try_spawn_agent(
                                 let _ = proxy_drain.send_event(
                                     glass_core::event::AppEvent::AgentQueryResult { cost_usd },
                                 );
-                                if let Some(response) = buffered_response.take() {
+                                if saw_tool_this_turn {
+                                    // Intermediate turn — agent called tools and will continue.
+                                    // Keep buffered_response for the final turn.
+                                    saw_tool_this_turn = false;
+                                    tracing::debug!("AgentRuntime: intermediate TurnComplete (tool turn), holding response");
+                                } else if let Some(response) = buffered_response.take() {
+                                    // Final turn — no tools called, emit the response.
                                     let _ = proxy_drain.send_event(
                                         glass_core::event::AppEvent::OrchestratorResponse {
                                             response,
@@ -1367,6 +1510,7 @@ fn resolve_tab_index(mux: &SessionMux, params: &serde_json::Value) -> Result<usi
 /// Extract the last `n` text lines from a terminal grid.
 /// Create a `git` command with `CREATE_NO_WINDOW` on Windows to prevent console flashing.
 fn git_cmd() -> std::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = std::process::Command::new("git");
     #[cfg(target_os = "windows")]
     {
@@ -1452,12 +1596,20 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
 
     static RE_RUST: OnceLock<regex::Regex> = OnceLock::new();
     static RE_JEST: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_VITEST: OnceLock<regex::Regex> = OnceLock::new();
     static RE_PASSED: OnceLock<regex::Regex> = OnceLock::new();
     static RE_FAILED: OnceLock<regex::Regex> = OnceLock::new();
 
     let re_rust = RE_RUST.get_or_init(|| regex::Regex::new(r"(\d+) passed; (\d+) failed").unwrap());
     let re_jest = RE_JEST
         .get_or_init(|| regex::Regex::new(r"Tests:\s*(?:(\d+) failed,\s*)?(\d+) passed").unwrap());
+    // Vitest: "     Tests  127 passed (127)" or "     Tests  2 failed | 125 passed (127)"
+    // Must run before the generic RE_PASSED fallback because the preceding
+    // "Test Files  45 passed (45)" line would otherwise match first and return
+    // the file count instead of the test count.
+    let re_vitest = RE_VITEST.get_or_init(|| {
+        regex::Regex::new(r"(?m)^\s*Tests\s+(?:(\d+)\s+failed\s*[|,]\s*)?(\d+)\s+passed").unwrap()
+    });
     let re_passed = RE_PASSED.get_or_init(|| regex::Regex::new(r"(\d+) passed").unwrap());
     let re_failed = RE_FAILED.get_or_init(|| regex::Regex::new(r"(\d+) failed").unwrap());
 
@@ -1469,6 +1621,12 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
     }
     // Jest/Node: "Tests: 2 failed, 45 passed, 47 total"
     if let Some(caps) = re_jest.captures(output) {
+        let failed = caps.get(1).and_then(|m| m.as_str().parse().ok());
+        let passed = caps.get(2).and_then(|m| m.as_str().parse().ok());
+        return (passed, failed.or(Some(0)));
+    }
+    // Vitest: distinguishes "Test Files" (file count) from "Tests" (test count).
+    if let Some(caps) = re_vitest.captures(output) {
         let failed = caps.get(1).and_then(|m| m.as_str().parse().ok());
         let passed = caps.get(2).and_then(|m| m.as_str().parse().ok());
         return (passed, failed.or(Some(0)));
@@ -1485,6 +1643,62 @@ fn parse_test_counts_from_output(output: &str) -> (Option<u32>, Option<u32>) {
     }
     // Go: "ok" or "FAIL" — no counts, exit code only
     (None, None)
+}
+
+#[cfg(test)]
+mod parse_test_counts_tests {
+    use super::*;
+
+    #[test]
+    fn rust_output() {
+        let out = "test result: ok. 45 passed; 2 failed; 0 ignored";
+        assert_eq!(parse_test_counts_from_output(out), (Some(45), Some(2)));
+    }
+
+    #[test]
+    fn jest_output() {
+        let out = "Tests:       2 failed, 45 passed, 47 total";
+        assert_eq!(parse_test_counts_from_output(out), (Some(45), Some(2)));
+    }
+
+    #[test]
+    fn vitest_prefers_tests_line_over_test_files_line() {
+        // Vitest emits both "Test Files  N passed" (file count) and
+        // "Tests  M passed" (test count). Must return M, not N.
+        let out = "\
+ Test Files  45 passed (45)\n\
+      Tests  127 passed (127)\n\
+   Start at  10:56:46\n\
+   Duration  2.04s";
+        assert_eq!(parse_test_counts_from_output(out), (Some(127), Some(0)));
+    }
+
+    #[test]
+    fn vitest_with_failures() {
+        // Vitest uses a `|` separator between failed and passed counts.
+        let out = "\
+ Test Files  1 failed | 44 passed (45)\n\
+      Tests  3 failed | 124 passed (127)";
+        assert_eq!(parse_test_counts_from_output(out), (Some(124), Some(3)));
+    }
+
+    #[test]
+    fn pytest_output() {
+        let out = "5 passed, 2 failed";
+        assert_eq!(parse_test_counts_from_output(out), (Some(5), Some(2)));
+    }
+
+    #[test]
+    fn pytest_passed_only() {
+        let out = "5 passed";
+        assert_eq!(parse_test_counts_from_output(out), (Some(5), Some(0)));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        let out = "hello world, no test results here";
+        assert_eq!(parse_test_counts_from_output(out), (None, None));
+    }
 }
 
 /// Parse numbered instructions from agent text (e.g., "1. Do X\n2. Do Y").
@@ -1568,7 +1782,10 @@ fn start_artifact_watcher(
 
     // Ensure parent directory exists so the watcher can be created.
     if let Err(e) = std::fs::create_dir_all(&watch_dir) {
-        tracing::warn!("Failed to create artifact watch dir {}: {e}", watch_dir.display());
+        tracing::warn!(
+            "Failed to create artifact watch dir {}: {e}",
+            watch_dir.display()
+        );
     }
 
     let handle = std::thread::Builder::new()
@@ -1592,6 +1809,8 @@ fn start_artifact_watcher(
                             let _ = proxy_clone.send_event(AppEvent::OrchestratorSilence {
                                 window_id,
                                 session_id,
+                                trigger_source: glass_core::event::TriggerSource::Slow,
+                                silence_duration_ms: 0, // artifact watcher — not silence-based
                             });
                         }
                     }
@@ -1651,6 +1870,13 @@ fn parse_iteration_log(project_root: &str) -> Vec<glass_renderer::IterationLogEn
 }
 
 impl Processor {
+    /// Stop the orchestrator redraw tick thread (if running).
+    fn stop_orchestrator_redraw_tick(&mut self) {
+        if let Some(pending) = self.orchestrator_redraw_pending.take() {
+            pending.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Get the CWD of the focused session, falling back to the process CWD.
     fn get_focused_cwd(&self) -> String {
         self.windows
@@ -1664,6 +1890,31 @@ impl Processor {
                     .to_string_lossy()
                     .to_string()
             })
+    }
+
+    /// Process onboarding coordinator actions, updating overlay/toast state.
+    fn handle_onboarding_actions(
+        &mut self,
+        actions: Vec<glass_core::onboarding::OnboardingAction>,
+        pipe_stages: Option<usize>,
+    ) {
+        for action in actions {
+            match action {
+                glass_core::onboarding::OnboardingAction::ShowWelcome => {
+                    self.welcome_overlay_visible = true;
+                }
+                glass_core::onboarding::OnboardingAction::ShowToast(hint_id) => {
+                    self.onboarding_toast = Some(OnboardingToastState {
+                        hint_id,
+                        pipe_stages,
+                        created_at: std::time::Instant::now(),
+                    });
+                    let mut state = glass_core::state::GlassState::load();
+                    self.onboarding.save_to_state(&mut state);
+                    state.save();
+                }
+            }
+        }
     }
 
     /// Run the feedback loop on_run_end, applying any config changes and logging results.
@@ -1715,22 +1966,42 @@ impl Processor {
                     attribution_scores: &attribution_scores,
                 };
                 let summary = glass_feedback::build_run_summary(&summary_input);
+
+                // Build trigger source breakdown
+                let trigger_section = format!(
+                    "## Trigger Sources\n\n| Source | Count |\n|--------|-------|\n| Prompt regex | {} |\n| Shell prompt | {} |\n| Fast (velocity) | {} |\n| Slow (fallback) | {} |\n| **Total** | **{}** |\n",
+                    self.orchestrator.feedback_trigger_prompt_count,
+                    self.orchestrator.feedback_trigger_shell_count,
+                    self.orchestrator.feedback_trigger_fast_count,
+                    self.orchestrator.feedback_trigger_slow_count,
+                    self.orchestrator.feedback_trigger_prompt_count
+                        + self.orchestrator.feedback_trigger_shell_count
+                        + self.orchestrator.feedback_trigger_fast_count
+                        + self.orchestrator.feedback_trigger_slow_count,
+                );
+
+                // Combine postmortem + trigger sources + feedback into single report
+                let postmortem_content = self.orchestrator_postmortem.take().unwrap_or_default();
+                let combined = format!("{postmortem_content}\n{trigger_section}\n{summary}");
+
                 let summary_path = std::path::Path::new(&self.orchestrator.project_root)
                     .join(".glass")
                     .join(format!(
-                        "feedback-{}.md",
+                        "run-report-{}.md",
                         chrono::Local::now().format("%Y%m%d-%H%M%S")
                     ));
                 if let Some(parent) = summary_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        tracing::warn!("Failed to create feedback summary dir {}: {e}", parent.display());
+                        tracing::warn!("Failed to create run report dir {}: {e}", parent.display());
                     }
                 }
-                if let Err(e) = std::fs::write(&summary_path, &summary) {
-                    tracing::warn!("Failed to write feedback summary: {e}");
+                if let Err(e) = std::fs::write(&summary_path, &combined) {
+                    tracing::warn!("Failed to write run report: {e}");
                 } else {
-                    tracing::info!("Feedback summary written to {}", summary_path.display());
+                    tracing::info!("Run report written to {}", summary_path.display());
                 }
+                // Prune iteration details to prevent unbounded growth
+                orchestrator::prune_iteration_details(&self.orchestrator.project_root, 2000);
             }
 
             // Apply script lifecycle transitions based on regression result.
@@ -1899,6 +2170,10 @@ impl Processor {
             agent_responses: self.orchestrator.feedback_agent_responses.clone(),
             silence_interruptions: 0,
             fast_trigger_during_output: self.orchestrator.feedback_fast_trigger_during_output,
+            trigger_prompt_count: self.orchestrator.feedback_trigger_prompt_count,
+            trigger_shell_count: self.orchestrator.feedback_trigger_shell_count,
+            trigger_fast_count: self.orchestrator.feedback_trigger_fast_count,
+            trigger_slow_count: self.orchestrator.feedback_trigger_slow_count,
             avg_idle_between_iterations_secs: avg_idle,
             fingerprint_sequence: fingerprint_seq,
             config_silence_timeout: self
@@ -1964,6 +2239,23 @@ impl Processor {
             .map(|o| o.checkpoint_interval)
             .unwrap_or(orchestrator::AUTO_CHECKPOINT_INTERVAL);
 
+        // Auto-register project-level .mcp.json for AI tool discovery.
+        if let Ok(binary) = std::env::current_exe() {
+            let cwd = self
+                .windows
+                .get(&window_id)
+                .and_then(|ctx| ctx.session_mux.focused_session())
+                .map(|s| s.status.cwd().to_string())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                });
+            let project_root = std::path::Path::new(&cwd);
+            mcp_register::register_project_mcp(project_root, &binary.to_string_lossy());
+        }
+
         // 1b. Kill existing agent EARLY — before context gathering.
         // On Windows, the old `claude` process holds ~/.glass/agent-system-prompt.txt
         // locked. If we kill it and immediately spawn a new one (as respawn_orchestrator_agent
@@ -2026,6 +2318,10 @@ impl Processor {
             &current_cwd,
             config_prd_path.as_deref().unwrap_or("(no PRD)"),
         );
+        orchestrator::append_iteration_detail_run_separator(
+            &current_cwd,
+            config_prd_path.as_deref().unwrap_or("(no PRD)"),
+        );
 
         // 8. Config instructions fallback
         let config_instructions: Option<String> = self
@@ -2046,6 +2342,7 @@ impl Processor {
         // 10. No context files found — abort activation
         if context.has_no_files() {
             self.orchestrator.active = false;
+            self.stop_orchestrator_redraw_tick();
             self.centered_toast = Some((
                 format!(
                     "Orchestrator: no context files found in {} (add PRD.md or .glass/agent-instructions.md)",
@@ -2100,6 +2397,10 @@ impl Processor {
             .map(|o| o.verify_mode.as_str())
             .unwrap_or("floor");
 
+        // Store the user's original config intent for late auto-detection.
+        // This distinguishes "user disabled verification" from "auto-detection found no markers."
+        self.orchestrator.config_verify_mode = config_verify.to_string();
+
         if config_mode == "auto" {
             let prd_content_for_detect = config_prd_path.as_ref().and_then(|p| {
                 std::fs::read_to_string(std::path::Path::new(&current_cwd).join(p)).ok()
@@ -2133,8 +2434,31 @@ impl Processor {
         // 13. Build initial message from gathered context
         let initial_message = context.build_initial_message();
 
+        // Emit activity stream entry for context gathered
+        {
+            let file_list: Vec<&str> = context
+                .files
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            let total_bytes: usize = context.files.iter().map(|(_, content)| content.len()).sum();
+            let files_str = file_list.join(" + ");
+            self.orchestrator_event_buffer.push(
+                orchestrator_events::OrchestratorEvent::ContextGathered {
+                    files: files_str,
+                    size_bytes: total_bytes,
+                },
+                0,
+            );
+        }
+
         // 14. Respawn agent
         self.respawn_orchestrator_agent(&current_cwd, initial_message);
+
+        // Emit activity stream entry for agent spawn (initial activation only)
+        self.orchestrator_event_buffer
+            .push(orchestrator_events::OrchestratorEvent::AgentSpawned, 0);
+        self.orchestrator.awaiting_first_response = true;
 
         // 15. Initialize metric guard (use resolved verify mode)
         let verify_mode = self.orchestrator.resolved_verify_mode.as_str();
@@ -2222,6 +2546,7 @@ impl Processor {
         self.orchestrator.dependency_block_iterations = 0;
         self.orchestrator.iterations_since_last_commit = 0;
         self.orchestrator.last_known_head = None;
+        self.orchestrator.consecutive_block_executing_count = 0;
     }
 
     /// Kill the current agent and respawn with a fresh system prompt.
@@ -2242,6 +2567,29 @@ impl Processor {
         // Clear instruction buffer and bounded stop flag on respawn (fresh context)
         self.orchestrator.instruction_buffer.clear();
         self.orchestrator.bounded_stop_pending = false;
+
+        // Restart usage poller if it died (stale data for >2 minutes means thread crashed).
+        // Skip restart if the active provider doesn't use Anthropic OAuth (e.g., codex-cli).
+        if let Some(ref state) = self.usage_state {
+            let provider = self
+                .config
+                .agent
+                .as_ref()
+                .map(|a| a.provider.as_str())
+                .unwrap_or("");
+            if usage_tracker::should_poll_for_provider(provider) {
+                let stale = state
+                    .lock()
+                    .ok()
+                    .and_then(|st| st.last_poll_at)
+                    .map(|t| t.elapsed().as_secs() > 120)
+                    .unwrap_or(true);
+                if stale {
+                    tracing::warn!("Usage tracker: polling thread appears dead, restarting");
+                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                }
+            }
+        }
 
         // Build agent config — mark orchestrator enabled and inject resolved mode
         // since this function is only called when the orchestrator is active at runtime
@@ -2273,32 +2621,55 @@ impl Processor {
         // Spawn new agent with handoff as the initial stdin message.
         // Claude CLI 2.1.77+ needs a message on stdin before it completes init.
         // Retry up to 2 times with a brief delay if spawn fails (process cleanup race).
-        let system_prompt = build_system_prompt(&agent_config, cwd);
-        let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-        let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-        let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-        let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
+        let hints = if let Some(ref mut fs) = self.feedback_state {
+            glass_feedback::prompt_hints(fs)
+        } else {
+            vec![]
+        };
+        let system_prompt = build_system_prompt(&agent_config, cwd, &hints);
+        let provider = self
+            .config
+            .agent
+            .as_ref()
+            .map(|a| a.provider.as_str())
+            .unwrap_or("claude-code");
+        let model = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.model.as_deref())
+            .unwrap_or("");
+        let api_key = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.api_key.as_deref());
+        let api_endpoint = self
+            .config
+            .agent
+            .as_ref()
+            .and_then(|a| a.api_endpoint.as_deref());
 
         // Create new activity channel
         let activity_config = glass_core::activity_stream::ActivityStreamConfig::default();
         let (new_tx, new_rx) = glass_core::activity_stream::create_channel(&activity_config);
         self.activity_stream_tx = Some(new_tx);
 
-        self.agent_runtime = try_spawn_agent(
-            agent_config,
-            new_rx,
-            self.proxy.clone(),
-            0,
-            None,
-            cwd.to_string(),
-            Some(handoff_content),
+        self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+            config: agent_config,
+            activity_rx: new_rx,
+            proxy: self.proxy.clone(),
+            restart_count: 0,
+            last_crash: None,
+            project_root: cwd.to_string(),
+            initial_message: Some(handoff_content),
             system_prompt,
-            self.agent_generation,
+            generation: self.agent_generation,
             provider,
             model,
             api_key,
             api_endpoint,
-        );
+        });
 
         // If spawn failed, deactivate orchestrator — can't orchestrate without an agent
         if self.agent_runtime.is_none() {
@@ -2322,6 +2693,7 @@ impl Processor {
             self.run_feedback_on_end();
             self.orchestrator.active = false;
             self.orchestrator.response_pending = false;
+            self.stop_orchestrator_redraw_tick();
             for ctx in self.windows.values_mut() {
                 ctx.mark_dirty_and_redraw();
             }
@@ -2332,6 +2704,26 @@ impl Processor {
         // Suppress silence trigger until the agent responds.
         self.orchestrator.response_pending = true;
         self.orchestrator.response_pending_since = Some(std::time::Instant::now());
+
+        // Spawn a 1-second redraw tick so the status bar spinner animates.
+        {
+            // Stop any existing tick thread first
+            self.stop_orchestrator_redraw_tick();
+            let proxy = self.proxy.clone();
+            let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            self.orchestrator_redraw_pending = Some(pending.clone());
+            std::thread::spawn(move || {
+                while pending.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    if pending.load(std::sync::atomic::Ordering::Relaxed)
+                        && proxy.send_event(AppEvent::RedrawRequest).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+
         tracing::info!(
             "Orchestrator: respawned agent gen={} for {}",
             self.agent_generation,
@@ -2446,7 +2838,7 @@ impl Processor {
     /// Types the appropriate clear command into the PTY based on the configured
     /// implementer. This ensures both the Glass Agent (reviewer) AND the
     /// implementer start with fresh context after a checkpoint.
-    fn clear_implementer_context(&self) {
+    fn clear_implementer_context(&mut self) {
         let implementer = self
             .config
             .agent
@@ -2456,7 +2848,7 @@ impl Processor {
             .unwrap_or("claude-code");
 
         // Determine the clear command based on implementer type.
-        // Some implementers support /clear, others need exit+restart.
+        // Codex has no verified context-clear command in codex-cli 0.128.0.
         let clear_cmd = match implementer {
             "claude-code" => "/clear",
             "aider" => "/clear",
@@ -2471,7 +2863,7 @@ impl Processor {
             }
         };
 
-        if let Some(ctx) = self.windows.values().next() {
+        if let Some(ctx) = self.windows.values_mut().next() {
             if let Some(session) = ctx.session_mux.focused_session() {
                 tracing::info!(
                     "Orchestrator: clearing implementer context ({}): {}",
@@ -2489,13 +2881,14 @@ impl Processor {
                     .name("glass-orch-enter".into())
                     .spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(150));
-                        pty_send(
-                            &sender,
-                            PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
-                        );
+                        pty_send(&sender, PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")));
                     })
                     .ok();
             }
+            // Force a redraw after /clear to prevent terminal freeze.
+            // The /clear command resets terminal content; without an explicit
+            // redraw, the screen can stay frozen if the surface was lost.
+            ctx.mark_dirty_and_redraw();
         }
     }
 
@@ -2552,14 +2945,14 @@ impl Processor {
                 }
             }
 
-            orchestrator::generate_postmortem(
+            self.orchestrator_postmortem = Some(orchestrator::generate_postmortem(
                 &self.orchestrator.project_root,
                 self.orchestrator.iteration,
                 self.orchestrator_activated_at.map(|t| t.elapsed()),
                 self.orchestrator.metric_baseline.as_ref(),
                 &format!("Bounded limit ({})", self.orchestrator.iteration),
                 &[],
-            );
+            ));
 
             {
                 let mut event = glass_scripting::HookEventData::new();
@@ -2574,6 +2967,7 @@ impl Processor {
             self.run_feedback_on_end();
             self.agent_runtime = None;
             self.orchestrator.active = false;
+            self.stop_orchestrator_redraw_tick();
             self.orchestrator.bounded_stop_pending = false;
             if let Some(handle) = self.artifact_watcher_thread.take() {
                 handle.thread().unpark();
@@ -2677,11 +3071,13 @@ impl ApplicationHandler<AppEvent> for Processor {
             session_id,
             &self.config,
             None, // working_directory -- initial session uses current dir
-            cell_w,
-            cell_h,
-            size.width,
-            size.height,
-            1, // 1 tab bar line
+            &SessionLayout {
+                cell_w,
+                cell_h,
+                window_width: size.width,
+                window_height: size.height,
+                tab_bar_lines: 1,
+            },
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2708,12 +3104,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                             return;
                         }
                     };
-                    let (retention_days, max_count, max_size_mb) = match snap_config {
-                        Some(ref cfg) => (cfg.retention_days, cfg.max_count, cfg.max_size_mb),
-                        None => (30, 1000, 500), // defaults matching SnapshotSection
+                    let (retention_days, max_count) = match snap_config {
+                        Some(ref cfg) => (cfg.retention_days, cfg.max_count),
+                        None => (30, 1000), // defaults matching SnapshotSection
                     };
-                    let pruner =
-                        glass_snapshot::Pruner::new(&store, retention_days, max_count, max_size_mb);
+                    let pruner = glass_snapshot::Pruner::new(&store, retention_days, max_count);
                     match pruner.prune() {
                         Ok(result) => tracing::info!(
                             "Pruning complete: {} snapshots, {} blobs removed",
@@ -2792,39 +3187,92 @@ impl ApplicationHandler<AppEvent> for Processor {
 
             if agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                 let cwd = self.get_focused_cwd();
-                let system_prompt = build_system_prompt(&agent_config, &cwd);
-                let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-                let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-                let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-                let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
-                self.agent_runtime = try_spawn_agent(
-                    agent_config,
-                    rx,
-                    self.proxy.clone(),
-                    0,
-                    None,
-                    cwd,
-                    None,
-                    system_prompt,
-                    self.agent_generation,
-                    provider,
-                    model,
-                    api_key,
-                    api_endpoint,
-                );
-                // Start usage polling if orchestrator is configured
-                if self
+                let hints = if let Some(ref mut fs) = self.feedback_state {
+                    glass_feedback::prompt_hints(fs)
+                } else {
+                    vec![]
+                };
+                let system_prompt = build_system_prompt(&agent_config, &cwd, &hints);
+                let provider = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .map(|a| a.provider.as_str())
+                    .unwrap_or("claude-code");
+                let model = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.model.as_deref())
+                    .unwrap_or("");
+                let api_key = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.api_key.as_deref());
+                let api_endpoint = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.api_endpoint.as_deref());
+
+                // Pre-flight check: if Codex is configured but not logged in, surface an error.
+                let implementer = self
                     .config
                     .agent
                     .as_ref()
                     .and_then(|a| a.orchestrator.as_ref())
-                    .is_some()
-                {
-                    self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                    .map(|o| o.implementer.as_str())
+                    .unwrap_or("claude-code");
+                let needs_codex = implementer == "codex" || provider == "codex-cli";
+                if needs_codex && !glass_agent_backend::codex_cli::auth::is_logged_in() {
+                    let msg = "Codex is not signed in. Run `codex login` in any terminal, \
+                               then restart Glass."
+                        .to_string();
+                    tracing::warn!("{}", msg);
+                    self.config_error = Some(glass_core::config::ConfigError {
+                        message: msg,
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    });
+                    self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CodexNotLoggedIn,
+                        false,
+                    );
+                } else {
+                    self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+                        config: agent_config,
+                        activity_rx: rx,
+                        proxy: self.proxy.clone(),
+                        restart_count: 0,
+                        last_crash: None,
+                        project_root: cwd,
+                        initial_message: None,
+                        system_prompt,
+                        generation: self.agent_generation,
+                        provider,
+                        model,
+                        api_key,
+                        api_endpoint,
+                    });
+                    // Start usage polling. Skip if the provider doesn't use Anthropic OAuth
+                    // (codex-cli, openai-api, etc.) — those don't have a usage API analog.
+                    if self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.orchestrator.as_ref())
+                        .is_some()
+                        && usage_tracker::should_poll_for_provider(provider)
+                    {
+                        self.usage_state = Some(usage_tracker::start_polling(self.proxy.clone()));
+                    }
                 }
 
                 // AGTC-04: Show config hint when claude binary is missing (mode != Off but spawn failed).
-                if self.agent_runtime.is_none() {
+                // Skip if a more specific error was already set upstream (e.g., Codex pre-flight).
+                if self.agent_runtime.is_none() && self.config_error.is_none() {
                     self.config_error = Some(glass_core::config::ConfigError {
                         message: "'claude' CLI not found on PATH. Install from https://claude.ai/download, or set agent.mode = \"off\" in ~/.glass/config.toml".to_string(),
                         line: None,
@@ -2917,10 +3365,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // floods with mailbox present mode this prevents wasted GPU work.
                 let now = std::time::Instant::now();
                 if now.duration_since(ctx.last_redraw) < std::time::Duration::from_millis(1) {
-                    // Too soon — the next natural redraw will pick it up.
+                    // Too soon — keep render_dirty set so about_to_wait() retries.
                     return;
                 }
                 ctx.last_redraw = now;
+                // Clear dirty AFTER all early-return checks pass. This ensures
+                // render_dirty stays true if we bail out before actually rendering
+                // (surface lost, throttle, etc.), preventing terminal freeze.
                 ctx.render_dirty = false;
 
                 // Determine if we have multiple panes in the active tab
@@ -2932,6 +3383,10 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 // Get surface texture
                 let Some(frame) = ctx.renderer.get_current_texture() else {
+                    // Surface lost/outdated — re-set dirty so we retry on next loop iteration.
+                    // Without this, render_dirty stays false (cleared above), about_to_wait()
+                    // switches to Wait mode, and the terminal freezes until a keypress.
+                    ctx.render_dirty = true;
                     return;
                 };
                 let view = frame.texture.create_view(&Default::default());
@@ -3029,12 +3484,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 format!("Update v{} available (Ctrl+Shift+U)", info.latest)
                             })
                         }
-                    } else if let Some(ref info) = self.update_info {
-                        Some(format!("Update v{} available (Ctrl+Shift+U)", info.latest))
-                    } else if self.show_settings_hint {
-                        Some("Tip: Ctrl+Shift+, = settings & shortcuts".to_string())
                     } else {
-                        None
+                        self.update_info
+                            .as_ref()
+                            .map(|info| format!("Update v{} available (Ctrl+Shift+U)", info.latest))
                     };
 
                     let has_agents = !self.coordination_state.agents.is_empty();
@@ -3105,6 +3558,25 @@ impl ApplicationHandler<AppEvent> for Processor {
                     });
 
                     // Agent mode and proposal count for status bar display.
+                    let orch_status_cached = {
+                        let pending = self.orchestrator.response_pending;
+                        let elapsed = self
+                            .orchestrator
+                            .response_pending_since
+                            .map(|t| t.elapsed().as_secs())
+                            .unwrap_or(0);
+                        let iteration = self.orchestrator.iteration;
+                        if pending {
+                            let spinner = orchestrator_spinner(elapsed);
+                            if iteration == 0 {
+                                format!("[orchestrating | agent working {spinner} {elapsed}s]")
+                            } else {
+                                format!("[orchestrating | iter #{iteration} | agent working {spinner} {elapsed}s]")
+                            }
+                        } else {
+                            format!("[orchestrating | iter #{iteration}]")
+                        }
+                    };
                     let agent_mode_text = self.agent_runtime.as_ref().map(|_r| {
                         let usage_prefix = self
                             .usage_state
@@ -3113,18 +3585,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            let orch_status = if self.orchestrator.iteration == 0
-                                && !self.orchestrator_event_buffer.events.is_empty()
-                            {
-                                "[orchestrating | agent working (first turn)]".to_string()
-                            } else if self.orchestrator.response_pending {
-                                format!(
-                                    "[orchestrating | iter #{} | waiting for agent]",
-                                    self.orchestrator.iteration
-                                )
-                            } else {
-                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-                            };
+                            let orch_status = orch_status_cached.clone();
                             if usage_prefix.is_empty() {
                                 orch_status
                             } else {
@@ -3206,31 +3667,66 @@ impl ApplicationHandler<AppEvent> for Processor {
                             None
                         };
 
+                    // Auto-dismiss onboarding toast after 5 seconds
+                    let onboarding_toast_data = self.onboarding_toast.as_ref().and_then(|t| {
+                        let elapsed = t.created_at.elapsed().as_secs();
+                        if elapsed >= 5 {
+                            None
+                        } else {
+                            Some(glass_renderer::OnboardingToastRenderData {
+                                hint_id: t.hint_id,
+                                remaining_secs: 5 - elapsed,
+                                pipe_stages: t.pipe_stages,
+                            })
+                        }
+                    });
+                    if self
+                        .onboarding_toast
+                        .as_ref()
+                        .is_some_and(|t| t.created_at.elapsed().as_secs() >= 5)
+                    {
+                        self.onboarding_toast = None;
+                        self.onboarding.toast_dismissed();
+                    }
+
+                    let welcome_overlay_data = if self.welcome_overlay_visible {
+                        Some(glass_renderer::WelcomeOverlayRenderData {
+                            step: self.welcome_overlay_step,
+                            providers: self.onboarding.providers().to_vec(),
+                        })
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
                         &view,
                         sc.width,
                         sc.height,
-                        &snapshot,
-                        &visible_block_refs,
-                        Some(&status_clone),
-                        search_overlay_data.as_ref(),
-                        Some(&tab_display),
-                        ctx.tab_bar_hovered_tab,
-                        drop_index,
-                        update_text.as_deref(),
-                        coordination_text.as_deref(),
-                        agent_cost_display.as_deref(),
-                        self.agent_proposals_paused,
-                        ctx.scrollbar_hovered_pane.is_some(),
-                        ctx.scrollbar_dragging.is_some(),
-                        agent_mode_text.as_deref(),
-                        proposal_count_text.as_deref(),
-                        proposal_toast_data.as_ref(),
-                        proposal_overlay_data.as_ref(),
-                        agent_activity_line.as_deref(),
-                        self.orchestrator.active,
+                        &glass_renderer::FrameRenderContext {
+                            snapshot: &snapshot,
+                            blocks: &visible_block_refs,
+                            status: Some(&status_clone),
+                            search_overlay: search_overlay_data.as_ref(),
+                            tab_bar_info: Some(&tab_display),
+                            hovered_tab: ctx.tab_bar_hovered_tab,
+                            drop_index,
+                            update_text: update_text.as_deref(),
+                            coordination_text: coordination_text.as_deref(),
+                            agent_cost_text: agent_cost_display.as_deref(),
+                            agent_paused: self.agent_proposals_paused,
+                            scrollbar_hovered: ctx.scrollbar_hovered_pane.is_some(),
+                            scrollbar_dragging: ctx.scrollbar_dragging.is_some(),
+                            agent_mode_text: agent_mode_text.as_deref(),
+                            proposal_count_text: proposal_count_text.as_deref(),
+                            proposal_toast: proposal_toast_data.as_ref(),
+                            proposal_overlay: proposal_overlay_data.as_ref(),
+                            agent_activity_line: agent_activity_line.as_deref(),
+                            orchestrating: self.orchestrator.active,
+                            onboarding_toast: onboarding_toast_data.as_ref(),
+                            welcome_overlay: welcome_overlay_data.as_ref(),
+                        },
                     );
                 } else {
                     // Multi-pane path: compute layout, snapshot all panes, render with offsets
@@ -3410,6 +3906,25 @@ impl ApplicationHandler<AppEvent> for Processor {
                     });
 
                     // Agent mode and proposal count for multi-pane status bar.
+                    let orch_status_cached_mp = {
+                        let pending = self.orchestrator.response_pending;
+                        let elapsed = self
+                            .orchestrator
+                            .response_pending_since
+                            .map(|t| t.elapsed().as_secs())
+                            .unwrap_or(0);
+                        let iteration = self.orchestrator.iteration;
+                        if pending {
+                            let spinner = orchestrator_spinner(elapsed);
+                            if iteration == 0 {
+                                format!("[orchestrating | agent working {spinner} {elapsed}s]")
+                            } else {
+                                format!("[orchestrating | iter #{iteration} | agent working {spinner} {elapsed}s]")
+                            }
+                        } else {
+                            format!("[orchestrating | iter #{iteration}]")
+                        }
+                    };
                     let agent_mode_text_mp = self.agent_runtime.as_ref().map(|_r| {
                         let usage_prefix = self
                             .usage_state
@@ -3418,18 +3933,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             .map(|st| usage_tracker::format_status_bar(&st))
                             .unwrap_or_default();
                         if self.orchestrator.active {
-                            let orch_status = if self.orchestrator.iteration == 0
-                                && !self.orchestrator_event_buffer.events.is_empty()
-                            {
-                                "[orchestrating | agent working (first turn)]".to_string()
-                            } else if self.orchestrator.response_pending {
-                                format!(
-                                    "[orchestrating | iter #{} | waiting for agent]",
-                                    self.orchestrator.iteration
-                                )
-                            } else {
-                                format!("[orchestrating | iter #{}]", self.orchestrator.iteration)
-                            };
+                            let orch_status = orch_status_cached_mp.clone();
                             if usage_prefix.is_empty() {
                                 orch_status
                             } else {
@@ -3511,29 +4015,64 @@ impl ApplicationHandler<AppEvent> for Processor {
                             None
                         };
 
+                    // Auto-dismiss onboarding toast after 5 seconds (multi-pane path)
+                    let onboarding_toast_data_mp = self.onboarding_toast.as_ref().and_then(|t| {
+                        let elapsed = t.created_at.elapsed().as_secs();
+                        if elapsed >= 5 {
+                            None
+                        } else {
+                            Some(glass_renderer::OnboardingToastRenderData {
+                                hint_id: t.hint_id,
+                                remaining_secs: 5 - elapsed,
+                                pipe_stages: t.pipe_stages,
+                            })
+                        }
+                    });
+                    if self
+                        .onboarding_toast
+                        .as_ref()
+                        .is_some_and(|t| t.created_at.elapsed().as_secs() >= 5)
+                    {
+                        self.onboarding_toast = None;
+                        self.onboarding.toast_dismissed();
+                    }
+
+                    let welcome_overlay_data_mp = if self.welcome_overlay_visible {
+                        Some(glass_renderer::WelcomeOverlayRenderData {
+                            step: self.welcome_overlay_step,
+                            providers: self.onboarding.providers().to_vec(),
+                        })
+                    } else {
+                        None
+                    };
+
                     ctx.frame_renderer.draw_multi_pane_frame(
                         ctx.renderer.device(),
                         ctx.renderer.queue(),
                         &view,
                         sc.width,
                         sc.height,
-                        &panes,
-                        &dividers,
-                        Some(&status_clone),
-                        Some(&tab_display),
-                        ctx.tab_bar_hovered_tab,
-                        drop_index_mp,
-                        update_text.as_deref(),
-                        coordination_text.as_deref(),
-                        agent_cost_display_mp.as_deref(),
-                        self.agent_proposals_paused,
-                        &scrollbar_state,
-                        agent_mode_text_mp.as_deref(),
-                        proposal_count_text_mp.as_deref(),
-                        proposal_toast_data_mp.as_ref(),
-                        proposal_overlay_data_mp.as_ref(),
-                        agent_activity_line_mp.as_deref(),
-                        self.orchestrator.active,
+                        &glass_renderer::MultiPaneRenderContext {
+                            panes: &panes,
+                            dividers: &dividers,
+                            status: Some(&status_clone),
+                            tab_bar_info: Some(&tab_display),
+                            hovered_tab: ctx.tab_bar_hovered_tab,
+                            drop_index: drop_index_mp,
+                            update_text: update_text.as_deref(),
+                            coordination_text: coordination_text.as_deref(),
+                            agent_cost_text: agent_cost_display_mp.as_deref(),
+                            agent_paused: self.agent_proposals_paused,
+                            scrollbar_state: &scrollbar_state,
+                            agent_mode_text: agent_mode_text_mp.as_deref(),
+                            proposal_count_text: proposal_count_text_mp.as_deref(),
+                            proposal_toast: proposal_toast_data_mp.as_ref(),
+                            proposal_overlay: proposal_overlay_data_mp.as_ref(),
+                            agent_activity_line: agent_activity_line_mp.as_deref(),
+                            orchestrating: self.orchestrator.active,
+                            onboarding_toast: onboarding_toast_data_mp.as_ref(),
+                            welcome_overlay: welcome_overlay_data_mp.as_ref(),
+                        },
                     );
                 }
 
@@ -3559,8 +4098,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                         &view,
                         sc.width,
                         sc.height,
-                        self.coordination_state.agent_count,
-                        self.coordination_state.lock_count,
+                        &glass_renderer::ConflictInfo {
+                            agent_count: self.coordination_state.agent_count,
+                            lock_count: self.coordination_state.lock_count,
+                        },
                     );
                 }
 
@@ -3786,6 +4327,29 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             false,
                                         )
                                     }
+                                    orchestrator_events::OrchestratorEvent::ContextGathered {
+                                        files,
+                                        size_bytes,
+                                    } => {
+                                        let kb = *size_bytes as f64 / 1024.0;
+                                        (
+                                            glass_renderer::OrchestratorEventKind::ContextGathered,
+                                            format!("Context gathered: {files} ({kb:.1} KB)"),
+                                            false,
+                                        )
+                                    }
+                                    orchestrator_events::OrchestratorEvent::AgentSpawned => (
+                                        glass_renderer::OrchestratorEventKind::AgentSpawned,
+                                        "Agent spawned, waiting for first response".to_string(),
+                                        false,
+                                    ),
+                                    orchestrator_events::OrchestratorEvent::AgentResponded {
+                                        elapsed_secs,
+                                    } => (
+                                        glass_renderer::OrchestratorEventKind::AgentResponded,
+                                        format!("Agent responded after {elapsed_secs}s"),
+                                        false,
+                                    ),
                                 };
 
                                 let expanded = if expandable {
@@ -4292,196 +4856,178 @@ impl ApplicationHandler<AppEvent> for Processor {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    let modifiers = self.modifiers;
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let modifiers = self.modifiers;
 
-                    // Search overlay input interception -- must be FIRST to prevent PTY forwarding
-                    // Uses an enum to capture what action to take, avoiding borrow conflicts
-                    // between session_mux (for overlay) and window (for request_redraw).
-                    enum OverlayAction {
-                        None,
-                        Handled,
-                        Close,
-                    }
-                    let overlay_action = {
-                        let Some(session) = ctx.session_mux.focused_session_mut() else {
-                            return;
-                        };
-                        if let Some(ref mut overlay) = session.search_overlay {
-                            match &event.logical_key {
-                                Key::Named(NamedKey::Escape) => {
-                                    session.search_overlay = None;
-                                    OverlayAction::Close
-                                }
-                                Key::Named(NamedKey::ArrowUp) => {
-                                    overlay.move_up();
-                                    OverlayAction::Handled
-                                }
-                                Key::Named(NamedKey::ArrowDown) => {
-                                    overlay.move_down();
-                                    OverlayAction::Handled
-                                }
-                                Key::Named(NamedKey::Enter) => {
-                                    // Scroll-to-block: find the block whose started_epoch matches
-                                    // the selected search result's started_at timestamp.
-                                    if overlay.selected < overlay.results.len() {
-                                        let result_epoch =
-                                            overlay.results[overlay.selected].started_at;
-                                        let all_blocks = session.block_manager.blocks();
-                                        let matched_block = all_blocks
-                                            .iter()
-                                            .find(|b| b.started_epoch == Some(result_epoch));
-                                        if let Some(block) = matched_block {
-                                            let target_line = block.prompt_start_line;
-                                            let mut term = session.term.lock();
-                                            let history_size = term.grid().history_size();
-                                            let current_offset = term.grid().display_offset();
-                                            let target_offset =
-                                                history_size.saturating_sub(target_line);
-                                            let delta =
-                                                target_offset as i32 - current_offset as i32;
-                                            if delta != 0 {
-                                                term.scroll_display(Scroll::Delta(delta));
-                                            }
+                // Search overlay input interception -- must be FIRST to prevent PTY forwarding
+                // Uses an enum to capture what action to take, avoiding borrow conflicts
+                // between session_mux (for overlay) and window (for request_redraw).
+                enum OverlayAction {
+                    None,
+                    Handled,
+                    Close,
+                }
+                let overlay_action = {
+                    let Some(session) = ctx.session_mux.focused_session_mut() else {
+                        return;
+                    };
+                    if let Some(ref mut overlay) = session.search_overlay {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                session.search_overlay = None;
+                                OverlayAction::Close
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                overlay.move_up();
+                                OverlayAction::Handled
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                overlay.move_down();
+                                OverlayAction::Handled
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                // Scroll-to-block: find the block whose started_epoch matches
+                                // the selected search result's started_at timestamp.
+                                if overlay.selected < overlay.results.len() {
+                                    let result_epoch = overlay.results[overlay.selected].started_at;
+                                    let all_blocks = session.block_manager.blocks();
+                                    let matched_block = all_blocks
+                                        .iter()
+                                        .find(|b| b.started_epoch == Some(result_epoch));
+                                    if let Some(block) = matched_block {
+                                        let target_line = block.prompt_start_line;
+                                        let mut term = session.term.lock();
+                                        let history_size = term.grid().history_size();
+                                        let current_offset = term.grid().display_offset();
+                                        let target_offset =
+                                            history_size.saturating_sub(target_line);
+                                        let delta = target_offset as i32 - current_offset as i32;
+                                        if delta != 0 {
+                                            term.scroll_display(Scroll::Delta(delta));
                                         }
                                     }
+                                }
+                                session.search_overlay = None;
+                                OverlayAction::Close
+                            }
+                            Key::Named(NamedKey::Backspace) => {
+                                overlay.pop_char();
+                                OverlayAction::Handled
+                            }
+                            Key::Character(c) => {
+                                // Allow Ctrl+Shift+F to toggle overlay closed even when open
+                                if modifiers.control_key()
+                                    && modifiers.shift_key()
+                                    && c.as_str().eq_ignore_ascii_case("f")
+                                {
                                     session.search_overlay = None;
                                     OverlayAction::Close
-                                }
-                                Key::Named(NamedKey::Backspace) => {
-                                    overlay.pop_char();
+                                } else {
+                                    overlay.push_char(c.as_str());
                                     OverlayAction::Handled
                                 }
-                                Key::Character(c) => {
-                                    // Allow Ctrl+Shift+F to toggle overlay closed even when open
-                                    if modifiers.control_key()
-                                        && modifiers.shift_key()
-                                        && c.as_str().eq_ignore_ascii_case("f")
-                                    {
-                                        session.search_overlay = None;
-                                        OverlayAction::Close
-                                    } else {
-                                        overlay.push_char(c.as_str());
-                                        OverlayAction::Handled
-                                    }
-                                }
-                                _ => OverlayAction::Handled, // Swallow all other keys while overlay is open
                             }
-                        } else {
-                            OverlayAction::None
+                            _ => OverlayAction::Handled, // Swallow all other keys while overlay is open
                         }
-                    };
-                    match overlay_action {
-                        OverlayAction::None => {} // No overlay open, continue to normal key handling
-                        OverlayAction::Handled | OverlayAction::Close => {
+                    } else {
+                        OverlayAction::None
+                    }
+                };
+                match overlay_action {
+                    OverlayAction::None => {} // No overlay open, continue to normal key handling
+                    OverlayAction::Handled | OverlayAction::Close => {
+                        ctx.mark_dirty_and_redraw();
+                        return;
+                    }
+                }
+
+                // Welcome overlay: intercept all keys while visible.
+                if self.welcome_overlay_visible {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::ArrowRight) => {
+                            self.welcome_overlay_step = self.welcome_overlay_step.next();
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            self.welcome_overlay_step = self.welcome_overlay_step.prev();
+                        }
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
+                            self.welcome_overlay_visible = false;
+                            self.onboarding.complete_welcome();
+                            let mut state = glass_core::state::GlassState::load();
+                            self.onboarding.save_to_state(&mut state);
+                            state.save();
+                        }
+                        _ => {}
+                    }
+                    ctx.mark_dirty_and_redraw();
+                    return; // Consume input while welcome is showing
+                }
+
+                let Some(session) = ctx.session() else {
+                    return;
+                };
+                let mode = *session.term.lock().mode();
+
+                // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
+                if glass_mux::is_glass_shortcut(modifiers) {
+                    match &event.logical_key {
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
+                            // New tab: inherit CWD from current session
+                            let cwd = ctx
+                                .session()
+                                .map(|s| s.status.cwd().to_string())
+                                .unwrap_or_default();
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+                            let session = match create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                &self.config,
+                                Some(std::path::Path::new(&cwd)),
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for new tab: {e}");
+                                    return;
+                                }
+                            };
+                            ctx.session_mux.add_tab(session, false);
+                            {
+                                let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
+                                let mut event = glass_scripting::HookEventData::new();
+                                event.set("tab_index", tab_idx as i64);
+                                fire_hook_on_bridge(
+                                    &mut self.script_bridge,
+                                    &self.orchestrator.project_root,
+                                    glass_scripting::HookPoint::TabCreate,
+                                    &event,
+                                );
+                            }
                             ctx.mark_dirty_and_redraw();
                             return;
                         }
-                    }
-
-                    let Some(session) = ctx.session() else {
-                        return;
-                    };
-                    let mode = *session.term.lock().mode();
-
-                    // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
-                    if glass_mux::is_glass_shortcut(modifiers) {
-                        match &event.logical_key {
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
-                                // New tab: inherit CWD from current session
-                                let cwd = ctx
-                                    .session()
-                                    .map(|s| s.status.cwd().to_string())
-                                    .unwrap_or_default();
-                                let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                let size = ctx.window.inner_size();
-                                let session = match create_session(
-                                    &self.proxy,
-                                    window_id,
-                                    session_id,
-                                    &self.config,
-                                    Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h,
-                                    size.width,
-                                    size.height,
-                                    1,
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!("PTY spawn failed for new tab: {e}");
-                                        return;
-                                    }
-                                };
-                                ctx.session_mux.add_tab(session, false);
-                                {
-                                    let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
-                                    let mut event = glass_scripting::HookEventData::new();
-                                    event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(
-                                        &mut self.script_bridge,
-                                        &self.orchestrator.project_root,
-                                        glass_scripting::HookPoint::TabCreate,
-                                        &event,
-                                    );
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
-                                // Close pane if multiple panes, otherwise close tab
-                                if ctx.session_mux.active_tab_pane_count() > 1 {
-                                    // Close focused pane
-                                    if let Some(focused_id) = ctx.session_mux.focused_session_id() {
-                                        let tab_count_before = ctx.session_mux.tab_count();
-                                        if let Some(session) =
-                                            ctx.session_mux.close_pane(focused_id)
-                                        {
-                                            cleanup_session(session);
-                                        }
-                                        // If close_pane closed the tab (shouldn't happen with >1 pane, but guard)
-                                        if ctx.session_mux.tab_count() < tab_count_before
-                                            && ctx.session_mux.tab_count() == 0
-                                        {
-                                            fire_hook_on_bridge(
-                                                &mut self.script_bridge,
-                                                &self.orchestrator.project_root,
-                                                glass_scripting::HookPoint::SessionEnd,
-                                                &glass_scripting::HookEventData::new(),
-                                            );
-                                            self.windows.remove(&window_id);
-                                            event_loop.exit();
-                                            return;
-                                        }
-                                        // Resize remaining panes' PTYs
-                                        let size = ctx.window.inner_size();
-                                        resize_all_panes(
-                                            &mut ctx.session_mux,
-                                            &ctx.frame_renderer,
-                                            size.width,
-                                            size.height,
-                                        );
-                                    }
-                                } else {
-                                    // Single pane: close the entire tab
-                                    let idx = ctx.session_mux.active_tab_index();
-                                    {
-                                        let mut event = glass_scripting::HookEventData::new();
-                                        event.set("tab_index", idx as i64);
-                                        fire_hook_on_bridge(
-                                            &mut self.script_bridge,
-                                            &self.orchestrator.project_root,
-                                            glass_scripting::HookPoint::TabClose,
-                                            &event,
-                                        );
-                                    }
-                                    if let Some(session) = ctx.session_mux.close_tab(idx) {
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
+                            // Close pane if multiple panes, otherwise close tab
+                            if ctx.session_mux.active_tab_pane_count() > 1 {
+                                // Close focused pane
+                                if let Some(focused_id) = ctx.session_mux.focused_session_id() {
+                                    let tab_count_before = ctx.session_mux.tab_count();
+                                    if let Some(session) = ctx.session_mux.close_pane(focused_id) {
                                         cleanup_session(session);
                                     }
-                                    ctx.tab_bar_hovered_tab = None;
-                                    if ctx.session_mux.tab_count() == 0 {
+                                    // If close_pane closed the tab (shouldn't happen with >1 pane, but guard)
+                                    if ctx.session_mux.tab_count() < tab_count_before
+                                        && ctx.session_mux.tab_count() == 0
+                                    {
                                         fire_hook_on_bridge(
                                             &mut self.script_bridge,
                                             &self.orchestrator.project_root,
@@ -4492,890 +5038,1037 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         event_loop.exit();
                                         return;
                                     }
+                                    // Resize remaining panes' PTYs
+                                    let size = ctx.window.inner_size();
+                                    resize_all_panes(
+                                        &mut ctx.session_mux,
+                                        &ctx.frame_renderer,
+                                        size.width,
+                                        size.height,
+                                    );
                                 }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
-                                // Horizontal split (new pane to the right)
-                                let cwd = ctx
-                                    .session()
-                                    .map(|s| s.status.cwd().to_string())
-                                    .unwrap_or_default();
-                                let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                let size = ctx.window.inner_size();
-                                let session = match create_session(
-                                    &self.proxy,
-                                    window_id,
-                                    session_id,
-                                    &self.config,
-                                    Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h,
-                                    size.width,
-                                    size.height,
-                                    1,
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "PTY spawn failed for horizontal split: {e}"
-                                        );
-                                        return;
-                                    }
-                                };
-                                if ctx
-                                    .session_mux
-                                    .split_pane(SplitDirection::Horizontal, session)
-                                    .is_none()
-                                {
-                                    // UX-20: notify user when max split depth reached
-                                    self.status_message = Some((
-                                        "Maximum split depth reached".to_string(),
-                                        std::time::Instant::now(),
-                                    ));
-                                    ctx.mark_dirty_and_redraw();
-                                    return;
-                                }
-
-                                // Resize all panes' PTYs with per-pane dimensions
-                                resize_all_panes(
-                                    &mut ctx.session_mux,
-                                    &ctx.frame_renderer,
-                                    size.width,
-                                    size.height,
-                                );
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
-                                // Vertical split (new pane below)
-                                let cwd = ctx
-                                    .session()
-                                    .map(|s| s.status.cwd().to_string())
-                                    .unwrap_or_default();
-                                let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                let size = ctx.window.inner_size();
-                                let session = match create_session(
-                                    &self.proxy,
-                                    window_id,
-                                    session_id,
-                                    &self.config,
-                                    Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h,
-                                    size.width,
-                                    size.height,
-                                    1,
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!("PTY spawn failed for vertical split: {e}");
-                                        return;
-                                    }
-                                };
-                                if ctx
-                                    .session_mux
-                                    .split_pane(SplitDirection::Vertical, session)
-                                    .is_none()
-                                {
-                                    // UX-20: notify user when max split depth reached
-                                    self.status_message = Some((
-                                        "Maximum split depth reached".to_string(),
-                                        std::time::Instant::now(),
-                                    ));
-                                    ctx.mark_dirty_and_redraw();
-                                    return;
-                                }
-                                // Resize all panes' PTYs with per-pane dimensions
-                                resize_all_panes(
-                                    &mut ctx.session_mux,
-                                    &ctx.frame_renderer,
-                                    size.width,
-                                    size.height,
-                                );
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {} // Fall through to existing Ctrl+Shift shortcuts
-                        }
-                    }
-
-                    // Check for Glass-handled keys first
-                    if modifiers.control_key() && modifiers.shift_key() {
-                        match &event.logical_key {
-                            // Ctrl+Shift+A: Toggle agent proposal review overlay.
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("a") => {
-                                if self.agent_runtime.is_some() {
-                                    self.agent_review_open = !self.agent_review_open;
-                                    if self.agent_review_open {
-                                        self.proposal_review_selected = 0;
-                                        self.proposal_diff_cache = None;
-                                    }
-                                    ctx.mark_dirty_and_redraw();
-                                    return;
-                                }
-                            }
-                            // Ctrl+Shift+G: Toggle activity stream overlay.
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("g") => {
-                                self.activity_overlay_visible = !self.activity_overlay_visible;
-                                if !self.activity_overlay_visible {
-                                    self.activity_view_filter = Default::default();
-                                    self.activity_scroll_offset = 0;
-                                    self.activity_verbose = false;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Ctrl+Shift+,: Toggle settings overlay.
-                            Key::Character(c) if c.as_str() == "<" || c.as_str() == "," => {
-                                self.settings_overlay_visible = !self.settings_overlay_visible;
-                                if !self.settings_overlay_visible {
-                                    self.settings_overlay_tab = Default::default();
-                                    self.settings_section_index = 0;
-                                    self.settings_field_index = 0;
-                                    self.settings_editing = false;
-                                    self.settings_edit_buffer.clear();
-                                    self.settings_shortcuts_scroll = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("y")
-                                    && self.agent_review_open =>
-                            {
-                                if !self.agent_proposal_worktrees.is_empty() {
-                                    let idx = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len() - 1);
-                                    let (_proposal, handle_opt) =
-                                        self.agent_proposal_worktrees.remove(idx);
-                                    if let (Some(wm), Some(handle)) =
-                                        (self.worktree_manager.as_ref(), handle_opt)
-                                    {
-                                        if let Err(e) = wm.apply(handle) {
-                                            tracing::error!("Failed to apply proposal: {e}");
-                                        }
-                                    }
-                                    self.proposal_review_selected = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len().saturating_sub(1));
-                                    self.proposal_diff_cache = None;
-                                    if self.agent_proposal_worktrees.is_empty() {
-                                        self.agent_review_open = false;
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Ctrl+Shift+N: Reject selected proposal (only when overlay open).
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("n")
-                                    && self.agent_review_open =>
-                            {
-                                if !self.agent_proposal_worktrees.is_empty() {
-                                    let idx = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len() - 1);
-                                    let (_proposal, handle_opt) =
-                                        self.agent_proposal_worktrees.remove(idx);
-                                    if let (Some(wm), Some(handle)) =
-                                        (self.worktree_manager.as_ref(), handle_opt)
-                                    {
-                                        if let Err(e) = wm.dismiss(handle) {
-                                            tracing::error!("Failed to dismiss proposal: {e}");
-                                        }
-                                    }
-                                    self.proposal_review_selected = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len().saturating_sub(1));
-                                    self.proposal_diff_cache = None;
-                                    if self.agent_proposal_worktrees.is_empty() {
-                                        self.agent_review_open = false;
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
-                                if let Some(session) = ctx.session() {
-                                    clipboard_copy(&session.term);
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
-                                if let Some(session) = ctx.session() {
-                                    clipboard_paste(&session.pty_sender, mode);
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
-                                if let Some(session) = ctx.session_mut() {
-                                    session.search_overlay = Some(SearchOverlay::new());
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
-                                if let Some(session) = ctx.session_mux.focused_session_mut() {
-                                    if let Some(ref store) = session.snapshot_store {
-                                        let engine = glass_snapshot::UndoEngine::new(store);
-                                        match engine.undo_latest() {
-                                            Ok(Some(result)) => {
-                                                // Count outcomes for summary line
-                                                let (
-                                                    mut restored,
-                                                    mut deleted,
-                                                    mut skipped,
-                                                    mut conflicts,
-                                                    mut errors,
-                                                ) = (0u32, 0u32, 0u32, 0u32, 0u32);
-                                                for (path, outcome) in &result.files {
-                                                    match outcome {
-                                                        glass_snapshot::FileOutcome::Restored => {
-                                                            restored += 1;
-                                                            tracing::info!(
-                                                                "Undo: restored {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Deleted => {
-                                                            deleted += 1;
-                                                            tracing::info!(
-                                                                "Undo: deleted {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Conflict {
-                                                            ..
-                                                        } => {
-                                                            conflicts += 1;
-                                                            tracing::warn!(
-                                                                "Undo: CONFLICT {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Error(e) => {
-                                                            errors += 1;
-                                                            tracing::error!(
-                                                                "Undo: error {}: {}",
-                                                                path.display(),
-                                                                e
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Skipped => {
-                                                            skipped += 1;
-                                                            tracing::info!(
-                                                                "Undo: skipped {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                                let undo_summary = format!(
-                                                    "Undo: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
-                                                    restored, deleted, skipped, conflicts, errors,
-                                                );
-                                                tracing::info!("{}", undo_summary);
-                                                self.status_message =
-                                                    Some((undo_summary, std::time::Instant::now()));
-                                                // Remove [undo] label from the undone block (visual feedback).
-                                                let epoch_to_clear = session
-                                                    .block_manager
-                                                    .blocks()
-                                                    .iter()
-                                                    .rev()
-                                                    .find(|b| b.has_snapshot)
-                                                    .and_then(|b| b.started_epoch);
-                                                if let Some(ep) = epoch_to_clear {
-                                                    if let Some(b) = session
-                                                        .block_manager
-                                                        .find_block_by_epoch_mut(ep)
-                                                    {
-                                                        b.has_snapshot = false;
-                                                    }
-                                                }
-                                            }
-                                            Ok(None) => {
-                                                tracing::info!("Nothing to undo -- no file-modifying commands found");
-                                                self.status_message = Some((
-                                                    "Nothing to undo".to_string(),
-                                                    std::time::Instant::now(),
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                tracing::error!("Undo failed: {}", e);
-                                                self.status_message = Some((
-                                                    format!("Undo failed: {}", e),
-                                                    std::time::Instant::now(),
-                                                ));
-                                            }
-                                        }
-                                    } else {
-                                        tracing::debug!("Undo unavailable -- no snapshot store");
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("u") => {
-                                // Ctrl+Shift+U: Apply available update
-                                if let Some(ref info) = self.update_info {
-                                    if let Err(e) = glass_core::updater::apply_update(info) {
-                                        tracing::warn!("Failed to apply update: {}", e);
-                                    }
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
-                                // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
-                                if let Some(session) = ctx.session_mux.focused_session_mut() {
-                                    if let Some(block) =
-                                        session.block_manager.blocks_mut().iter_mut().rev().find(
-                                            |b| {
-                                                b.pipeline_stage_count.unwrap_or(0) > 0
-                                                    || b.pipeline_stage_commands.len() > 1
-                                            },
-                                        )
-                                    {
-                                        block.toggle_pipeline_expanded();
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("o") => {
-                                // Ctrl+Shift+O: Toggle orchestrator on/off
-                                self.orchestrator.active = !self.orchestrator.active;
-                                if self.orchestrator.active {
-                                    tracing::info!("Orchestrator: enabled by user");
-                                    let _ = ctx;
-                                    self.activate_orchestrator(window_id);
-                                } else {
-                                    tracing::info!("Orchestrator: disabled by user");
-                                    // Fire scripting OrchestratorRunEnd hook
-                                    {
-                                        let mut event = glass_scripting::HookEventData::new();
-                                        event.set("iterations", self.orchestrator.iteration as i64);
-                                        fire_hook_on_bridge(
-                                            &mut self.script_bridge,
-                                            &self.orchestrator.project_root,
-                                            glass_scripting::HookPoint::OrchestratorRunEnd,
-                                            &event,
-                                        );
-                                    }
-                                    self.orchestrator.feedback_completion_reason =
-                                        "user_cancelled".to_string();
-                                    // Handle active synthesis: write fallback checkpoint
-                                    if matches!(
-                                        self.orchestrator.checkpoint_phase,
-                                        orchestrator::CheckpointPhase::Synthesizing { .. }
-                                    ) {
-                                        tracing::info!("Orchestrator disabled during synthesis — writing fallback checkpoint");
-                                        let cwd = ctx
-                                            .session_mux
-                                            .focused_session()
-                                            .map(|s| s.status.cwd().to_string())
-                                            .unwrap_or_default();
-                                        let cp_path = std::path::Path::new(&cwd)
-                                            .join(".glass")
-                                            .join("checkpoint.md");
-                                        if let Some(parent) = cp_path.parent() {
-                                            if let Err(e) = std::fs::create_dir_all(parent) {
-                                                tracing::warn!("Failed to create checkpoint dir {}: {e}", parent.display());
-                                            }
-                                        }
-                                        if let Some(fallback) =
-                                            self.orchestrator.cached_checkpoint_fallback.take()
-                                        {
-                                            if let Err(e) = std::fs::write(&cp_path, &fallback) {
-                                                tracing::warn!("Failed to write fallback checkpoint {}: {e}", cp_path.display());
-                                            }
-                                        }
-                                        self.orchestrator.checkpoint_phase =
-                                            orchestrator::CheckpointPhase::Idle;
-                                        self.orchestrator.cached_checkpoint_fallback = None;
-                                    }
-                                    let _ = ctx;
-                                    self.run_feedback_on_end();
-                                    // Stop artifact watcher
-                                    if let Some(handle) = self.artifact_watcher_thread.take() {
-                                        handle.thread().unpark();
-                                    }
-                                }
-                                if let Some(ctx) = self.windows.get_mut(&window_id) {
-                                    ctx.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Shift+PageUp/Down/ArrowUp/ArrowDown: scrollback (UX-9)
-                    if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::PageUp) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::PageUp);
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::PageDown) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::PageDown);
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::Delta(1));
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::Delta(-1));
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
-                    if modifiers.control_key() {
-                        if let Key::Named(NamedKey::Tab) = &event.logical_key {
-                            if modifiers.shift_key() {
-                                ctx.session_mux.prev_tab();
                             } else {
-                                ctx.session_mux.next_tab();
+                                // Single pane: close the entire tab
+                                let idx = ctx.session_mux.active_tab_index();
+                                {
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("tab_index", idx as i64);
+                                    fire_hook_on_bridge(
+                                        &mut self.script_bridge,
+                                        &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::TabClose,
+                                        &event,
+                                    );
+                                }
+                                if let Some(session) = ctx.session_mux.close_tab(idx) {
+                                    cleanup_session(session);
+                                }
+                                ctx.tab_bar_hovered_tab = None;
+                                if ctx.session_mux.tab_count() == 0 {
+                                    fire_hook_on_bridge(
+                                        &mut self.script_bridge,
+                                        &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::SessionEnd,
+                                        &glass_scripting::HookEventData::new(),
+                                    );
+                                    self.windows.remove(&window_id);
+                                    event_loop.exit();
+                                    return;
+                                }
                             }
                             ctx.mark_dirty_and_redraw();
                             return;
                         }
-                    }
-
-                    // Ctrl+1-9 / Cmd+1-9: jump to tab by index
-                    if glass_mux::is_action_modifier(modifiers) {
-                        if let Key::Character(c) = &event.logical_key {
-                            if let Some(digit) =
-                                c.as_str().chars().next().and_then(|ch| ch.to_digit(10))
-                            {
-                                if (1..=9).contains(&digit) {
-                                    ctx.session_mux.activate_tab((digit as usize) - 1);
-                                    ctx.mark_dirty_and_redraw();
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
+                            // Horizontal split (new pane to the right)
+                            let cwd = ctx
+                                .session()
+                                .map(|s| s.status.cwd().to_string())
+                                .unwrap_or_default();
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+                            let session = match create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                &self.config,
+                                Some(std::path::Path::new(&cwd)),
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for horizontal split: {e}");
                                     return;
                                 }
-                            }
-                        }
-                    }
-
-                    // Alt+Arrow: move focus between panes
-                    // Alt+Shift+Arrow: resize split ratio
-                    if modifiers.alt_key() && !modifiers.control_key() {
-                        let arrow_dir = match &event.logical_key {
-                            Key::Named(NamedKey::ArrowLeft) => Some(FocusDirection::Left),
-                            Key::Named(NamedKey::ArrowRight) => Some(FocusDirection::Right),
-                            Key::Named(NamedKey::ArrowUp) => Some(FocusDirection::Up),
-                            Key::Named(NamedKey::ArrowDown) => Some(FocusDirection::Down),
-                            _ => None,
-                        };
-
-                        if let Some(dir) = arrow_dir {
-                            if modifiers.shift_key() {
-                                // Alt+Shift+Arrow: resize split ratio
-                                let (split_dir, delta) = match dir {
-                                    FocusDirection::Left => (SplitDirection::Horizontal, -0.05f32),
-                                    FocusDirection::Right => (SplitDirection::Horizontal, 0.05f32),
-                                    FocusDirection::Up => (SplitDirection::Vertical, -0.05f32),
-                                    FocusDirection::Down => (SplitDirection::Vertical, 0.05f32),
-                                };
-                                ctx.session_mux.resize_focused_split(split_dir, delta);
-                                // Resize all panes' PTYs with new dimensions
-                                let size = ctx.window.inner_size();
-                                resize_all_panes(
-                                    &mut ctx.session_mux,
-                                    &ctx.frame_renderer,
-                                    size.width,
-                                    size.height,
-                                );
+                            };
+                            if ctx
+                                .session_mux
+                                .split_pane(SplitDirection::Horizontal, session)
+                                .is_none()
+                            {
+                                // UX-20: notify user when max split depth reached
+                                self.status_message = Some((
+                                    "Maximum split depth reached".to_string(),
+                                    std::time::Instant::now(),
+                                ));
                                 ctx.mark_dirty_and_redraw();
                                 return;
+                            }
+
+                            // Resize all panes' PTYs with per-pane dimensions
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
+                            // Vertical split (new pane below)
+                            let cwd = ctx
+                                .session()
+                                .map(|s| s.status.cwd().to_string())
+                                .unwrap_or_default();
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+                            let session = match create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                &self.config,
+                                Some(std::path::Path::new(&cwd)),
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for vertical split: {e}");
+                                    return;
+                                }
+                            };
+                            if ctx
+                                .session_mux
+                                .split_pane(SplitDirection::Vertical, session)
+                                .is_none()
+                            {
+                                // UX-20: notify user when max split depth reached
+                                self.status_message = Some((
+                                    "Maximum split depth reached".to_string(),
+                                    std::time::Instant::now(),
+                                ));
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            // Resize all panes' PTYs with per-pane dimensions
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {} // Fall through to existing Ctrl+Shift shortcuts
+                    }
+                }
+
+                // Check for Glass-handled keys first
+                if modifiers.control_key() && modifiers.shift_key() {
+                    match &event.logical_key {
+                        // Ctrl+Shift+A: Toggle agent proposal review overlay.
+                        Key::Character(c)
+                            if c.as_str().eq_ignore_ascii_case("a")
+                                && self.agent_runtime.is_some() =>
+                        {
+                            self.agent_review_open = !self.agent_review_open;
+                            if self.agent_review_open {
+                                self.proposal_review_selected = 0;
+                                self.proposal_diff_cache = None;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+G: Toggle activity stream overlay.
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("g") => {
+                            self.activity_overlay_visible = !self.activity_overlay_visible;
+                            if self.activity_overlay_visible {
+                                // Default to Orchestrator tab when orchestrator is active
+                                if self.orchestrator.active {
+                                    self.activity_view_filter =
+                                        glass_renderer::ActivityViewFilter::Orchestrator;
+                                }
                             } else {
-                                // Alt+Arrow: move focus (only when multi-pane and not in alternate screen) (UX-11)
-                                let in_alt_screen = ctx
-                                    .session_mux
-                                    .focused_session()
-                                    .map(|s| s.term.lock().mode().contains(TermMode::ALT_SCREEN))
-                                    .unwrap_or(false);
-                                if ctx.session_mux.active_tab_pane_count() > 1 && !in_alt_screen {
-                                    let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                    let sc = ctx.renderer.surface_config();
-                                    let container = ViewportLayout {
-                                        x: 0,
-                                        y: cell_h as u32,
-                                        width: sc.width,
-                                        height: sc.height.saturating_sub((cell_h as u32) * 2),
-                                    };
-                                    if let Some(focused) = ctx.session_mux.focused_session_id() {
-                                        if let Some(root) = ctx.session_mux.active_tab_root() {
-                                            if let Some(target) =
-                                                root.find_neighbor(focused, dir, &container)
-                                            {
-                                                ctx.session_mux.set_focused_pane(target);
-                                                ctx.mark_dirty_and_redraw();
-                                                return;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // When the settings overlay is open, intercept all navigation keys.
-                    if self.settings_overlay_visible && event.state == ElementState::Pressed {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => {
-                                if self.settings_editing {
-                                    // Cancel inline edit
-                                    self.settings_editing = false;
-                                    self.settings_edit_buffer.clear();
-                                } else {
-                                    self.settings_overlay_visible = false;
-                                    self.settings_overlay_tab = Default::default();
-                                    self.settings_section_index = 0;
-                                    self.settings_field_index = 0;
-                                    self.settings_shortcuts_scroll = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
-                                self.settings_overlay_tab = self.settings_overlay_tab.prev();
-                                self.settings_field_index = 0;
-                                self.settings_shortcuts_scroll = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Tab) => {
-                                self.settings_overlay_tab = self.settings_overlay_tab.next();
-                                self.settings_field_index = 0;
-                                self.settings_shortcuts_scroll = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                match self.settings_overlay_tab {
-                                    glass_renderer::SettingsTab::Settings => {
-                                        if self.settings_field_index > 0 {
-                                            self.settings_field_index -= 1;
-                                        } else if self.settings_section_index > 0 {
-                                            self.settings_section_index -= 1;
-                                            self.settings_field_index = 0;
-                                        }
-                                    }
-                                    glass_renderer::SettingsTab::Shortcuts => {
-                                        self.settings_shortcuts_scroll =
-                                            self.settings_shortcuts_scroll.saturating_sub(1);
-                                    }
-                                    _ => {}
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                match self.settings_overlay_tab {
-                                    glass_renderer::SettingsTab::Settings => {
-                                        self.settings_field_index += 1;
-                                        // Clamping happens in renderer (fields_for_section length)
-                                    }
-                                    glass_renderer::SettingsTab::Shortcuts => {
-                                        self.settings_shortcuts_scroll += 1;
-                                    }
-                                    _ => {}
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowLeft) => {
-                                if self.settings_section_index > 0 {
-                                    self.settings_section_index -= 1;
-                                    self.settings_field_index = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowRight) => {
-                                if self.settings_section_index
-                                    < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1
-                                {
-                                    self.settings_section_index += 1;
-                                    self.settings_field_index = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
-                                if matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
-                                ) {
-                                    if let Some((section, key, value)) = handle_settings_activate(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                    ) {
-                                        if let Some(config_path) =
-                                            glass_core::config::GlassConfig::config_path()
-                                        {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
-                                                tracing::warn!(
-                                                    "Settings: failed to write config: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    ctx.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
-                                if matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
-                                ) {
-                                    if let Some((section, key, value)) = handle_settings_increment(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                        true,
-                                    ) {
-                                        if let Some(config_path) =
-                                            glass_core::config::GlassConfig::config_path()
-                                        {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
-                                                tracing::warn!(
-                                                    "Settings: failed to write config: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    ctx.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str() == "-" => {
-                                if matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
-                                ) {
-                                    if let Some((section, key, value)) = handle_settings_increment(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                        false,
-                                    ) {
-                                        if let Some(config_path) =
-                                            glass_core::config::GlassConfig::config_path()
-                                        {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
-                                                tracing::warn!(
-                                                    "Settings: failed to write config: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    ctx.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                            _ => {
-                                return; // Consume all other keys
-                            }
-                        }
-                    }
-
-                    // When the activity overlay is open, intercept navigation keys.
-                    if self.activity_overlay_visible && event.state == ElementState::Pressed {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => {
-                                self.activity_overlay_visible = false;
                                 self.activity_view_filter = Default::default();
                                 self.activity_scroll_offset = 0;
-                                self.orchestrator_scroll_offset = 0;
                                 self.activity_verbose = false;
-                                ctx.mark_dirty_and_redraw();
-                                return;
                             }
-                            Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
-                                self.activity_view_filter = self.activity_view_filter.prev();
-                                self.activity_scroll_offset = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+,: Toggle settings overlay.
+                        Key::Character(c) if c.as_str() == "<" || c.as_str() == "," => {
+                            self.settings_overlay_visible = !self.settings_overlay_visible;
+                            if !self.settings_overlay_visible {
+                                self.settings_overlay_tab = Default::default();
+                                self.settings_section_index = 0;
+                                self.settings_field_index = 0;
+                                self.settings_editing = false;
+                                self.settings_edit_buffer.clear();
+                                self.settings_shortcuts_scroll = 0;
                             }
-                            Key::Named(NamedKey::Tab) => {
-                                self.activity_view_filter = self.activity_view_filter.next();
-                                self.activity_scroll_offset = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
+                        Key::Character(c)
+                            if c.as_str().eq_ignore_ascii_case("y") && self.agent_review_open =>
+                        {
+                            if !self.agent_proposal_worktrees.is_empty() {
+                                let idx = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len() - 1);
+                                let (_proposal, handle_opt) =
+                                    self.agent_proposal_worktrees.remove(idx);
+                                if let (Some(wm), Some(handle)) =
+                                    (self.worktree_manager.as_ref(), handle_opt)
+                                {
+                                    if let Err(e) = wm.apply(handle) {
+                                        tracing::error!("Failed to apply proposal: {e}");
+                                    }
+                                }
+                                self.proposal_review_selected = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len().saturating_sub(1));
+                                self.proposal_diff_cache = None;
+                                if self.agent_proposal_worktrees.is_empty() {
+                                    self.agent_review_open = false;
+                                }
                             }
-                            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp)
-                                if self.activity_view_filter
-                                    == glass_renderer::ActivityViewFilter::Orchestrator =>
-                            {
-                                let step =
-                                    if matches!(event.logical_key, Key::Named(NamedKey::PageUp)) {
-                                        20
-                                    } else {
-                                        1
-                                    };
-                                self.orchestrator_scroll_offset =
-                                    self.orchestrator_scroll_offset.saturating_add(step);
-                                ctx.mark_dirty_and_redraw();
-                                return;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+N: Reject selected proposal (only when overlay open).
+                        Key::Character(c)
+                            if c.as_str().eq_ignore_ascii_case("n") && self.agent_review_open =>
+                        {
+                            if !self.agent_proposal_worktrees.is_empty() {
+                                let idx = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len() - 1);
+                                let (_proposal, handle_opt) =
+                                    self.agent_proposal_worktrees.remove(idx);
+                                if let (Some(wm), Some(handle)) =
+                                    (self.worktree_manager.as_ref(), handle_opt)
+                                {
+                                    if let Err(e) = wm.dismiss(handle) {
+                                        tracing::error!("Failed to dismiss proposal: {e}");
+                                    }
+                                }
+                                self.proposal_review_selected = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len().saturating_sub(1));
+                                self.proposal_diff_cache = None;
+                                if self.agent_proposal_worktrees.is_empty() {
+                                    self.agent_review_open = false;
+                                }
                             }
-                            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::PageDown)
-                                if self.activity_view_filter
-                                    == glass_renderer::ActivityViewFilter::Orchestrator =>
-                            {
-                                let step = if matches!(
-                                    event.logical_key,
-                                    Key::Named(NamedKey::PageDown)
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
+                            if let Some(session) = ctx.session() {
+                                clipboard_copy(&session.term);
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
+                            if let Some(session) = ctx.session() {
+                                clipboard_paste(&session.pty_sender, mode);
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
+                            if let Some(session) = ctx.session_mut() {
+                                session.search_overlay = Some(SearchOverlay::new());
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
+                            if let Some(session) = ctx.session_mux.focused_session_mut() {
+                                if let Some(ref store) = session.snapshot_store {
+                                    let engine = glass_snapshot::UndoEngine::new(store);
+                                    match engine.undo_latest() {
+                                        Ok(Some(result)) => {
+                                            // Count outcomes for summary line
+                                            let (
+                                                mut restored,
+                                                mut deleted,
+                                                mut skipped,
+                                                mut conflicts,
+                                                mut errors,
+                                            ) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                                            for (path, outcome) in &result.files {
+                                                match outcome {
+                                                    glass_snapshot::FileOutcome::Restored => {
+                                                        restored += 1;
+                                                        tracing::info!(
+                                                            "Undo: restored {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Deleted => {
+                                                        deleted += 1;
+                                                        tracing::info!(
+                                                            "Undo: deleted {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Conflict {
+                                                        ..
+                                                    } => {
+                                                        conflicts += 1;
+                                                        tracing::warn!(
+                                                            "Undo: CONFLICT {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Error(e) => {
+                                                        errors += 1;
+                                                        tracing::error!(
+                                                            "Undo: error {}: {}",
+                                                            path.display(),
+                                                            e
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Skipped => {
+                                                        skipped += 1;
+                                                        tracing::info!(
+                                                            "Undo: skipped {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            let undo_summary = format!(
+                                                    "Undo: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
+                                                    restored, deleted, skipped, conflicts, errors,
+                                                );
+                                            tracing::info!("{}", undo_summary);
+                                            self.status_message =
+                                                Some((undo_summary, std::time::Instant::now()));
+                                            // Remove [undo] label from the undone block (visual feedback).
+                                            let epoch_to_clear = session
+                                                .block_manager
+                                                .blocks()
+                                                .iter()
+                                                .rev()
+                                                .find(|b| b.has_snapshot)
+                                                .and_then(|b| b.started_epoch);
+                                            if let Some(ep) = epoch_to_clear {
+                                                if let Some(b) = session
+                                                    .block_manager
+                                                    .find_block_by_epoch_mut(ep)
+                                                {
+                                                    b.has_snapshot = false;
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            tracing::info!("Nothing to undo -- no file-modifying commands found");
+                                            self.status_message = Some((
+                                                "Nothing to undo".to_string(),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Undo failed: {}", e);
+                                            self.status_message = Some((
+                                                format!("Undo failed: {}", e),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    tracing::debug!("Undo unavailable -- no snapshot store");
+                                }
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("u") => {
+                            // Ctrl+Shift+U: Apply available update
+                            if let Some(ref info) = self.update_info {
+                                if let Err(e) = glass_core::updater::apply_update(info) {
+                                    tracing::warn!("Failed to apply update: {}", e);
+                                }
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
+                            // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
+                            if let Some(session) = ctx.session_mux.focused_session_mut() {
+                                if let Some(block) = session
+                                    .block_manager
+                                    .blocks_mut()
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|b| {
+                                        b.pipeline_stage_count.unwrap_or(0) > 0
+                                            || b.pipeline_stage_commands.len() > 1
+                                    })
+                                {
+                                    block.toggle_pipeline_expanded();
+                                }
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("o") => {
+                            // Ctrl+Shift+O: Toggle orchestrator on/off
+                            self.orchestrator.active = !self.orchestrator.active;
+                            if self.orchestrator.active {
+                                tracing::info!("Orchestrator: enabled by user");
+                                let _ = ctx;
+                                self.activate_orchestrator(window_id);
+                            } else {
+                                tracing::info!("Orchestrator: disabled by user");
+                                // Fire scripting OrchestratorRunEnd hook
+                                {
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("iterations", self.orchestrator.iteration as i64);
+                                    fire_hook_on_bridge(
+                                        &mut self.script_bridge,
+                                        &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::OrchestratorRunEnd,
+                                        &event,
+                                    );
+                                }
+                                self.orchestrator.feedback_completion_reason =
+                                    "user_cancelled".to_string();
+                                // Handle active synthesis: write fallback checkpoint
+                                if matches!(
+                                    self.orchestrator.checkpoint_phase,
+                                    orchestrator::CheckpointPhase::Synthesizing { .. }
                                 ) {
+                                    tracing::info!("Orchestrator disabled during synthesis — writing fallback checkpoint");
+                                    let cwd = ctx
+                                        .session_mux
+                                        .focused_session()
+                                        .map(|s| s.status.cwd().to_string())
+                                        .unwrap_or_default();
+                                    let cp_path = std::path::Path::new(&cwd)
+                                        .join(".glass")
+                                        .join("checkpoint.md");
+                                    if let Some(parent) = cp_path.parent() {
+                                        if let Err(e) = std::fs::create_dir_all(parent) {
+                                            tracing::warn!(
+                                                "Failed to create checkpoint dir {}: {e}",
+                                                parent.display()
+                                            );
+                                        }
+                                    }
+                                    if let Some(fallback) =
+                                        self.orchestrator.cached_checkpoint_fallback.take()
+                                    {
+                                        if let Err(e) = std::fs::write(&cp_path, &fallback) {
+                                            tracing::warn!(
+                                                "Failed to write fallback checkpoint {}: {e}",
+                                                cp_path.display()
+                                            );
+                                        }
+                                    }
+                                    self.orchestrator.checkpoint_phase =
+                                        orchestrator::CheckpointPhase::Idle;
+                                    self.orchestrator.cached_checkpoint_fallback = None;
+                                }
+                                let _ = ctx;
+                                self.run_feedback_on_end();
+                                // Stop artifact watcher
+                                if let Some(handle) = self.artifact_watcher_thread.take() {
+                                    handle.thread().unpark();
+                                }
+                            }
+                            if let Some(ctx) = self.windows.get_mut(&window_id) {
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Shift+PageUp/Down/ArrowUp/ArrowDown: scrollback (UX-9)
+                if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::PageUp) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::PageUp);
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::PageDown) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::PageDown);
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::Delta(1));
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::Delta(-1));
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
+                if modifiers.control_key() {
+                    if let Key::Named(NamedKey::Tab) = &event.logical_key {
+                        if modifiers.shift_key() {
+                            ctx.session_mux.prev_tab();
+                        } else {
+                            ctx.session_mux.next_tab();
+                        }
+                        ctx.mark_dirty_and_redraw();
+                        return;
+                    }
+                }
+
+                // Ctrl+1-9 / Cmd+1-9: jump to tab by index
+                if glass_mux::is_action_modifier(modifiers) {
+                    if let Key::Character(c) = &event.logical_key {
+                        if let Some(digit) =
+                            c.as_str().chars().next().and_then(|ch| ch.to_digit(10))
+                        {
+                            if (1..=9).contains(&digit) {
+                                ctx.session_mux.activate_tab((digit as usize) - 1);
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Alt+Arrow: move focus between panes
+                // Alt+Shift+Arrow: resize split ratio
+                if modifiers.alt_key() && !modifiers.control_key() {
+                    let arrow_dir = match &event.logical_key {
+                        Key::Named(NamedKey::ArrowLeft) => Some(FocusDirection::Left),
+                        Key::Named(NamedKey::ArrowRight) => Some(FocusDirection::Right),
+                        Key::Named(NamedKey::ArrowUp) => Some(FocusDirection::Up),
+                        Key::Named(NamedKey::ArrowDown) => Some(FocusDirection::Down),
+                        _ => None,
+                    };
+
+                    if let Some(dir) = arrow_dir {
+                        if modifiers.shift_key() {
+                            // Alt+Shift+Arrow: resize split ratio
+                            let (split_dir, delta) = match dir {
+                                FocusDirection::Left => (SplitDirection::Horizontal, -0.05f32),
+                                FocusDirection::Right => (SplitDirection::Horizontal, 0.05f32),
+                                FocusDirection::Up => (SplitDirection::Vertical, -0.05f32),
+                                FocusDirection::Down => (SplitDirection::Vertical, 0.05f32),
+                            };
+                            ctx.session_mux.resize_focused_split(split_dir, delta);
+                            // Resize all panes' PTYs with new dimensions
+                            let size = ctx.window.inner_size();
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        } else {
+                            // Alt+Arrow: move focus (only when multi-pane and not in alternate screen) (UX-11)
+                            let in_alt_screen = ctx
+                                .session_mux
+                                .focused_session()
+                                .map(|s| s.term.lock().mode().contains(TermMode::ALT_SCREEN))
+                                .unwrap_or(false);
+                            if ctx.session_mux.active_tab_pane_count() > 1 && !in_alt_screen {
+                                let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                                let sc = ctx.renderer.surface_config();
+                                let container = ViewportLayout {
+                                    x: 0,
+                                    y: cell_h as u32,
+                                    width: sc.width,
+                                    height: sc.height.saturating_sub((cell_h as u32) * 2),
+                                };
+                                if let Some(focused) = ctx.session_mux.focused_session_id() {
+                                    if let Some(root) = ctx.session_mux.active_tab_root() {
+                                        if let Some(target) =
+                                            root.find_neighbor(focused, dir, &container)
+                                        {
+                                            ctx.session_mux.set_focused_pane(target);
+                                            ctx.mark_dirty_and_redraw();
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // When the settings overlay is open, intercept all navigation keys.
+                if self.settings_overlay_visible && event.state == ElementState::Pressed {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            if self.settings_editing {
+                                // Cancel inline edit
+                                self.settings_editing = false;
+                                self.settings_edit_buffer.clear();
+                            } else {
+                                self.settings_overlay_visible = false;
+                                self.settings_overlay_tab = Default::default();
+                                self.settings_section_index = 0;
+                                self.settings_field_index = 0;
+                                self.settings_shortcuts_scroll = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // When editing inline, capture text input
+                        Key::Named(NamedKey::Enter) if self.settings_editing => {
+                            // Commit the edit buffer
+                            let value = if self.settings_edit_needs_quotes {
+                                format!("\"{}\"", self.settings_edit_buffer)
+                            } else {
+                                self.settings_edit_buffer.clone()
+                            };
+                            if let Some(config_path) =
+                                glass_core::config::GlassConfig::config_path()
+                            {
+                                if let Err(e) = glass_core::config::update_config_field(
+                                    &config_path,
+                                    self.settings_edit_section,
+                                    self.settings_edit_key,
+                                    &value,
+                                ) {
+                                    tracing::warn!("Settings: failed to write config: {}", e);
+                                }
+                            }
+                            self.settings_editing = false;
+                            self.settings_edit_buffer.clear();
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Backspace) if self.settings_editing => {
+                            self.settings_edit_buffer.pop();
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if self.settings_editing => {
+                            self.settings_edit_buffer.push_str(c.as_str());
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Block navigation while editing
+                        _ if self.settings_editing => {
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
+                            self.settings_overlay_tab = self.settings_overlay_tab.prev();
+                            self.settings_field_index = 0;
+                            self.settings_shortcuts_scroll = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) => {
+                            self.settings_overlay_tab = self.settings_overlay_tab.next();
+                            self.settings_field_index = 0;
+                            self.settings_shortcuts_scroll = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            match self.settings_overlay_tab {
+                                glass_renderer::SettingsTab::Settings => {
+                                    if self.settings_field_index > 0 {
+                                        self.settings_field_index -= 1;
+                                    } else if self.settings_section_index > 0 {
+                                        // Move to previous section
+                                        self.settings_section_index -= 1;
+                                        self.settings_field_index = 0;
+                                    }
+                                }
+                                glass_renderer::SettingsTab::Shortcuts => {
+                                    self.settings_shortcuts_scroll =
+                                        self.settings_shortcuts_scroll.saturating_sub(1);
+                                }
+                                _ => {}
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            match self.settings_overlay_tab {
+                                glass_renderer::SettingsTab::Settings => {
+                                    // Try to move to next field; if at end of section, move to next section
+                                    let field_count =
+                                        glass_renderer::settings_overlay::field_count_for_section(
+                                            self.settings_section_index,
+                                        );
+                                    if self.settings_field_index + 1 < field_count {
+                                        self.settings_field_index += 1;
+                                    } else if self.settings_section_index
+                                        < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len()
+                                            - 1
+                                    {
+                                        // Move to next section
+                                        self.settings_section_index += 1;
+                                        self.settings_field_index = 0;
+                                    }
+                                }
+                                glass_renderer::SettingsTab::Shortcuts => {
+                                    self.settings_shortcuts_scroll += 1;
+                                }
+                                _ => {}
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if self.settings_section_index > 0 {
+                                self.settings_section_index -= 1;
+                                self.settings_field_index = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if self.settings_section_index
+                                < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1
+                            {
+                                self.settings_section_index += 1;
+                                self.settings_field_index = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if !matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
+                                return;
+                            }
+
+                            if let Some((section, key, value)) = handle_settings_activate(
+                                &self.config,
+                                self.settings_section_index,
+                                self.settings_field_index,
+                            ) {
+                                // Toggle field
+                                if let Some(config_path) =
+                                    glass_core::config::GlassConfig::config_path()
+                                {
+                                    if let Err(e) = glass_core::config::update_config_field(
+                                        &config_path,
+                                        section,
+                                        key,
+                                        &value,
+                                    ) {
+                                        tracing::warn!("Settings: failed to write config: {}", e);
+                                    }
+                                }
+                            } else if let Some((section, key, current_value, needs_quotes)) =
+                                settings_editable_field(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                )
+                            {
+                                // Enter inline edit mode
+                                self.settings_editing = true;
+                                self.settings_edit_buffer = current_value;
+                                self.settings_edit_section = section;
+                                self.settings_edit_key = key;
+                                self.settings_edit_needs_quotes = needs_quotes;
+                            }
+
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            // Space only toggles (not edit mode)
+                            if matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
+                                if let Some((section, key, value)) = handle_settings_activate(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                ) {
+                                    if let Some(config_path) =
+                                        glass_core::config::GlassConfig::config_path()
+                                    {
+                                        if let Err(e) = glass_core::config::update_config_field(
+                                            &config_path,
+                                            section,
+                                            key,
+                                            &value,
+                                        ) {
+                                            tracing::warn!(
+                                                "Settings: failed to write config: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
+                            if matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
+                                if let Some((section, key, value)) = handle_settings_increment(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                    true,
+                                ) {
+                                    if let Some(config_path) =
+                                        glass_core::config::GlassConfig::config_path()
+                                    {
+                                        if let Err(e) = glass_core::config::update_config_field(
+                                            &config_path,
+                                            section,
+                                            key,
+                                            &value,
+                                        ) {
+                                            tracing::warn!(
+                                                "Settings: failed to write config: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str() == "-" => {
+                            if matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
+                                if let Some((section, key, value)) = handle_settings_increment(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                    false,
+                                ) {
+                                    if let Some(config_path) =
+                                        glass_core::config::GlassConfig::config_path()
+                                    {
+                                        if let Err(e) = glass_core::config::update_config_field(
+                                            &config_path,
+                                            section,
+                                            key,
+                                            &value,
+                                        ) {
+                                            tracing::warn!(
+                                                "Settings: failed to write config: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            return;
+                        }
+                        _ => {
+                            return; // Consume all other keys
+                        }
+                    }
+                }
+
+                // When the activity overlay is open, intercept navigation keys.
+                if self.activity_overlay_visible && event.state == ElementState::Pressed {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.activity_overlay_visible = false;
+                            self.activity_view_filter = Default::default();
+                            self.activity_scroll_offset = 0;
+                            self.orchestrator_scroll_offset = 0;
+                            self.activity_verbose = false;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
+                            self.activity_view_filter = self.activity_view_filter.prev();
+                            self.activity_scroll_offset = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) => {
+                            self.activity_view_filter = self.activity_view_filter.next();
+                            self.activity_scroll_offset = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp)
+                            if self.activity_view_filter
+                                == glass_renderer::ActivityViewFilter::Orchestrator =>
+                        {
+                            let step = if matches!(event.logical_key, Key::Named(NamedKey::PageUp))
+                            {
+                                20
+                            } else {
+                                1
+                            };
+                            self.orchestrator_scroll_offset =
+                                self.orchestrator_scroll_offset.saturating_add(step);
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::PageDown)
+                            if self.activity_view_filter
+                                == glass_renderer::ActivityViewFilter::Orchestrator =>
+                        {
+                            let step =
+                                if matches!(event.logical_key, Key::Named(NamedKey::PageDown)) {
                                     20
                                 } else {
                                     1
                                 };
-                                self.orchestrator_scroll_offset =
-                                    self.orchestrator_scroll_offset.saturating_sub(step);
+                            self.orchestrator_scroll_offset =
+                                self.orchestrator_scroll_offset.saturating_sub(step);
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.activity_scroll_offset =
+                                self.activity_scroll_offset.saturating_sub(1);
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            self.activity_scroll_offset += 1;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
+                            self.activity_verbose = !self.activity_verbose;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {} // Fall through to PTY
+                    }
+                }
+
+                // When the proposal review overlay is open, intercept arrow keys and Escape
+                // for navigation. All other keys fall through to PTY (AGTU-05).
+                if self.agent_review_open && event.state == ElementState::Pressed {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.proposal_review_selected =
+                                self.proposal_review_selected.saturating_sub(1);
+                            self.proposal_diff_cache = None;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            let max = self.agent_proposal_worktrees.len().saturating_sub(1);
+                            self.proposal_review_selected =
+                                (self.proposal_review_selected + 1).min(max);
+                            self.proposal_diff_cache = None;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.agent_review_open = false;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
+                    }
+                }
+
+                // Escape: collapse any expanded pipeline panel (UX-4)
+                if event.state == ElementState::Pressed {
+                    if let Key::Named(NamedKey::Escape) = &event.logical_key {
+                        if let Some(session) = ctx.session_mux.focused_session_mut() {
+                            let collapsed =
+                                session.block_manager.blocks_mut().iter_mut().any(|b| {
+                                    if b.pipeline_expanded {
+                                        b.pipeline_expanded = false;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                            if collapsed {
                                 ctx.mark_dirty_and_redraw();
                                 return;
                             }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                self.activity_scroll_offset =
-                                    self.activity_scroll_offset.saturating_sub(1);
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                self.activity_scroll_offset += 1;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
-                                self.activity_verbose = !self.activity_verbose;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {} // Fall through to PTY
                         }
                     }
+                }
 
-                    // When the proposal review overlay is open, intercept arrow keys and Escape
-                    // for navigation. All other keys fall through to PTY (AGTU-05).
-                    if self.agent_review_open && event.state == ElementState::Pressed {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::ArrowUp) => {
-                                self.proposal_review_selected =
-                                    self.proposal_review_selected.saturating_sub(1);
-                                self.proposal_diff_cache = None;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                let max = self.agent_proposal_worktrees.len().saturating_sub(1);
-                                self.proposal_review_selected =
-                                    (self.proposal_review_selected + 1).min(max);
-                                self.proposal_diff_cache = None;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Escape) => {
-                                self.agent_review_open = false;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
-                        }
-                    }
-
-                    // Escape: collapse any expanded pipeline panel (UX-4)
-                    if event.state == ElementState::Pressed {
-                        if let Key::Named(NamedKey::Escape) = &event.logical_key {
-                            if let Some(session) = ctx.session_mux.focused_session_mut() {
-                                let collapsed =
-                                    session.block_manager.blocks_mut().iter_mut().any(|b| {
-                                        if b.pipeline_expanded {
-                                            b.pipeline_expanded = false;
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    });
-                                if collapsed {
+                // UX-14: Ctrl+C copies when selection is active instead of SIGINT
+                if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
+                    if let Key::Character(ref c) = event.logical_key {
+                        if c.as_str().eq_ignore_ascii_case("c") {
+                            if let Some(session) = ctx.session() {
+                                let has_selection =
+                                    session.term.lock().selection_to_string().is_some();
+                                if has_selection {
+                                    clipboard_copy(&session.term);
                                     ctx.mark_dirty_and_redraw();
                                     return;
                                 }
                             }
+                            // No selection — fall through to send ETX/SIGINT via encoder
                         }
                     }
+                }
 
-                    // UX-14: Ctrl+C copies when selection is active instead of SIGINT
-                    if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
-                        if let Key::Character(ref c) = event.logical_key {
-                            if c.as_str().eq_ignore_ascii_case("c") {
-                                if let Some(session) = ctx.session() {
-                                    let has_selection =
-                                        session.term.lock().selection_to_string().is_some();
-                                    if has_selection {
-                                        clipboard_copy(&session.term);
-                                        ctx.mark_dirty_and_redraw();
-                                        return;
-                                    }
-                                }
-                                // No selection — fall through to send ETX/SIGINT via encoder
-                            }
-                        }
+                // Forward to PTY via encoder
+                let key_start = std::time::Instant::now();
+                if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
+                    // Orchestrator no longer auto-pauses on user input.
+                    // Only Ctrl+Shift+O toggles orchestration on/off.
+                    if let Some(session) = ctx.session() {
+                        pty_send(&session.pty_sender, PtyMsg::Input(Cow::Owned(bytes)));
                     }
-
-                    // Forward to PTY via encoder
-                    let key_start = std::time::Instant::now();
-                    if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
-                        // Orchestrator no longer auto-pauses on user input.
-                        // Only Ctrl+Shift+O toggles orchestration on/off.
-                        if let Some(session) = ctx.session() {
-                            pty_send(&session.pty_sender, PtyMsg::Input(Cow::Owned(bytes)));
-                        }
-                        tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
-                    }
+                    tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -5461,9 +6154,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         scrollbar_x,
                                         vp_y,
                                         vp_h,
-                                        display_offset,
-                                        history_size,
-                                        screen_lines,
+                                        &glass_renderer::scrollbar::ScrollState {
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        },
                                     )
                                     .is_some()
                                 {
@@ -5493,9 +6188,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         scrollbar_x,
                                         grid_y_offset,
                                         pane_height,
-                                        display_offset,
-                                        history_size,
-                                        screen_lines,
+                                        &glass_renderer::scrollbar::ScrollState {
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        },
                                     )
                                     .is_some()
                                 {
@@ -5661,11 +6358,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     session_id,
                                     &self.config,
                                     Some(std::path::Path::new(&cwd)),
-                                    cell_w,
-                                    cell_h_inner,
-                                    size.width,
-                                    size.height,
-                                    1,
+                                    &SessionLayout {
+                                        cell_w,
+                                        cell_h: cell_h_inner,
+                                        window_width: size.width,
+                                        window_height: size.height,
+                                        tab_bar_lines: 1,
+                                    },
                                 ) {
                                     Ok(s) => s,
                                     Err(e) => {
@@ -5748,9 +6447,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     scrollbar_x,
                                     vp_y,
                                     vp_h,
-                                    display_offset,
-                                    history_size,
-                                    screen_lines,
+                                    &glass_renderer::scrollbar::ScrollState {
+                                        display_offset,
+                                        history_size,
+                                        screen_lines,
+                                    },
                                 ) {
                                     found = Some((
                                         *sid,
@@ -5785,9 +6486,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         scrollbar_x,
                                         grid_y_offset,
                                         pane_height,
-                                        display_offset,
-                                        history_size,
-                                        screen_lines,
+                                        &glass_renderer::scrollbar::ScrollState {
+                                            display_offset,
+                                            history_size,
+                                            screen_lines,
+                                        },
                                     )
                                     .map(|hit| {
                                         (
@@ -6152,13 +6855,15 @@ impl ApplicationHandler<AppEvent> for Processor {
             AppEvent::TerminalDirty { window_id } => {
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     tracing::trace!("Terminal output received — marking dirty");
-                    // Only set the dirty flag — do NOT call request_redraw() here.
-                    // On Windows, TerminalDirty floods the message queue via PostMessage.
-                    // PostMessage has higher priority than WM_PAINT, so request_redraw()
-                    // (which generates WM_PAINT) never gets processed during continuous
-                    // output. Instead, about_to_wait() coalesces all dirty flags into a
-                    // single request_redraw() call when the event queue is drained.
-                    ctx.render_dirty = true;
+                    // Call request_redraw() directly. The PTY thread throttles Wakeup
+                    // events to ~60/sec (16ms interval), so PostMessage can't starve
+                    // WM_PAINT at this rate. The original design avoided request_redraw()
+                    // here because TerminalDirty used to fire at raw PTY read speed
+                    // (thousands/sec), but the throttle makes that concern obsolete.
+                    // Relying solely on about_to_wait() left a gap: if the event loop
+                    // was in ControlFlow::Wait and about_to_wait() had already run,
+                    // render_dirty=true sat unacted upon until the next event arrived.
+                    ctx.mark_dirty_and_redraw();
                 }
             }
             AppEvent::SetTitle {
@@ -6272,6 +6977,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Holds data for scripting hooks (fired outside windows borrow).
                 let mut hook_command_start_text: Option<String> = None;
                 let mut hook_command_complete_data: Option<(String, Option<i32>, i64)> = None;
+                // Onboarding trigger flags (processed outside session borrow).
+                let mut onboarding_files_modified = false;
+                let mut onboarding_command_finished = false;
+                let mut onboarding_pipe_stages: Option<usize> = None;
 
                 if let Some(ctx) = self.windows.get_mut(&window_id) {
                     // Route to session by session_id
@@ -6307,6 +7016,11 @@ impl ApplicationHandler<AppEvent> for Processor {
                         // resize delta computation is accurate.
                         let current_history = session.term.lock().grid().history_size();
                         session.block_manager.update_history_size(current_history);
+
+                        // Onboarding: capture pipe detection event
+                        if let ShellEvent::PipelineStart { stage_count } = &shell_event {
+                            onboarding_pipe_stages = Some(*stage_count);
+                        }
 
                         // Fix #3: Orchestrator crash recovery with grace period.
                         // Only trigger if orchestrating, had iterations, AND not within
@@ -6563,6 +7277,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
 
                         // Insert CommandRecord on CommandFinished
+                        if matches!(shell_event, ShellEvent::CommandFinished { .. }) {
+                            onboarding_command_finished = true;
+                        }
                         if let ShellEvent::CommandFinished { exit_code } = &shell_event {
                             if let Some(ref db) = session.history_db {
                                 let now = std::time::SystemTime::now();
@@ -6689,6 +7406,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             if let Some(watcher) = session.active_watcher.take() {
                                 let events = watcher.drain_events();
                                 if !events.is_empty() {
+                                    onboarding_files_modified = true;
                                     tracing::debug!("FS watcher captured {} events", events.len());
                                     if let Some(ref store) = session.snapshot_store {
                                         let command_id = session.last_command_id.unwrap_or(0);
@@ -6830,6 +7548,32 @@ impl ApplicationHandler<AppEvent> for Processor {
                         glass_scripting::HookPoint::CommandComplete,
                         &event,
                     );
+                }
+
+                // Onboarding triggers (outside session/windows borrow)
+                if onboarding_files_modified {
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CommandModifiedFiles,
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, None);
+                }
+                if let Some(stages) = onboarding_pipe_stages {
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::PipeDetected { stages },
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, Some(stages));
+                }
+                if onboarding_command_finished {
+                    self.onboarding_command_count += 1;
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::CommandCount(
+                            self.onboarding_command_count,
+                        ),
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, None);
                 }
             }
             AppEvent::CommandOutput {
@@ -7036,6 +7780,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         // Clear response_pending to prevent hang if a verify thread is in-flight
                         self.orchestrator.response_pending = false;
+                        self.stop_orchestrator_redraw_tick();
                         // Drop old runtime (triggers Drop -> kill child + deregister).
                         self.agent_runtime = None;
 
@@ -7064,26 +7809,50 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                         if new_agent_config.mode != glass_core::agent_runtime::AgentMode::Off {
                             let cwd = self.get_focused_cwd();
-                            let system_prompt = build_system_prompt(&new_agent_config, &cwd);
-                            let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-                            let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-                            let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-                            let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
-                            self.agent_runtime = try_spawn_agent(
-                                new_agent_config.clone(),
-                                new_rx,
-                                self.proxy.clone(),
-                                0,
-                                None,
-                                cwd,
-                                None,
+                            let hints = if let Some(ref mut fs) = self.feedback_state {
+                                glass_feedback::prompt_hints(fs)
+                            } else {
+                                vec![]
+                            };
+                            let system_prompt =
+                                build_system_prompt(&new_agent_config, &cwd, &hints);
+                            let provider = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .map(|a| a.provider.as_str())
+                                .unwrap_or("claude-code");
+                            let model = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.model.as_deref())
+                                .unwrap_or("");
+                            let api_key = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.api_key.as_deref());
+                            let api_endpoint = self
+                                .config
+                                .agent
+                                .as_ref()
+                                .and_then(|a| a.api_endpoint.as_deref());
+                            self.agent_runtime = try_spawn_agent(AgentSpawnParams {
+                                config: new_agent_config.clone(),
+                                activity_rx: new_rx,
+                                proxy: self.proxy.clone(),
+                                restart_count: 0,
+                                last_crash: None,
+                                project_root: cwd,
+                                initial_message: None,
                                 system_prompt,
-                                self.agent_generation,
+                                generation: self.agent_generation,
                                 provider,
                                 model,
                                 api_key,
                                 api_endpoint,
-                            );
+                            });
                             // AGTC-04: Show hint if mode != Off but spawn failed.
                             if self.agent_runtime.is_none() {
                                 self.config_error = Some(glass_core::config::ConfigError {
@@ -7146,6 +7915,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                             }
                             self.run_feedback_on_end();
                             self.orchestrator.active = false;
+                            self.stop_orchestrator_redraw_tick();
                             tracing::info!(
                                 "Orchestrator: deactivated via config reload (settings overlay)"
                             );
@@ -7351,6 +8121,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                 }
+
+                // Onboarding: SOI parsed trigger
+                {
+                    let actions = self.onboarding.process(
+                        glass_core::onboarding::OnboardingEvent::SoiParsed,
+                        self.active_toast.is_some(),
+                    );
+                    self.handle_onboarding_actions(actions, None);
+                }
             }
             AppEvent::AgentProposal(proposal) => {
                 tracing::info!(
@@ -7457,6 +8236,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                         });
                     }
 
+                    // Onboarding: agent proposal trigger
+                    {
+                        let actions = self.onboarding.process(
+                            glass_core::onboarding::OnboardingEvent::ProposalReady,
+                            self.active_toast.is_some(),
+                        );
+                        self.handle_onboarding_actions(actions, None);
+                    }
+
                     for ctx in self.windows.values_mut() {
                         ctx.mark_dirty_and_redraw();
                     }
@@ -7479,7 +8267,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.mark_dirty_and_redraw();
                 }
             }
-            AppEvent::AgentCrashed { generation: crash_gen } => {
+            AppEvent::AgentCrashed {
+                generation: crash_gen,
+            } => {
                 // Ignore stale crashes from orphaned reader threads of previously
                 // killed agents. The crash event carries the generation of the agent
                 // that died. Only process if it matches the CURRENT agent's generation.
@@ -7555,27 +8345,50 @@ impl ApplicationHandler<AppEvent> for Processor {
                         None
                     };
 
-                    let system_prompt = build_system_prompt(&config, &cwd);
+                    let hints = if let Some(ref mut fs) = self.feedback_state {
+                        glass_feedback::prompt_hints(fs)
+                    } else {
+                        vec![]
+                    };
+                    let system_prompt = build_system_prompt(&config, &cwd, &hints);
                     self.agent_generation += 1;
-                    let provider = self.config.agent.as_ref().map(|a| a.provider.as_str()).unwrap_or("claude-code");
-                    let model = self.config.agent.as_ref().and_then(|a| a.model.as_deref()).unwrap_or("");
-                    let api_key = self.config.agent.as_ref().and_then(|a| a.api_key.as_deref());
-                    let api_endpoint = self.config.agent.as_ref().and_then(|a| a.api_endpoint.as_deref());
-                    self.agent_runtime = try_spawn_agent(
+                    let provider = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .map(|a| a.provider.as_str())
+                        .unwrap_or("claude-code");
+                    let model = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.model.as_deref())
+                        .unwrap_or("");
+                    let api_key = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.api_key.as_deref());
+                    let api_endpoint = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.api_endpoint.as_deref());
+                    self.agent_runtime = try_spawn_agent(AgentSpawnParams {
                         config,
-                        new_rx,
-                        self.proxy.clone(),
+                        activity_rx: new_rx,
+                        proxy: self.proxy.clone(),
                         restart_count,
-                        Some(std::time::Instant::now()),
-                        cwd,
-                        restart_msg,
+                        last_crash: Some(std::time::Instant::now()),
+                        project_root: cwd,
+                        initial_message: restart_msg,
                         system_prompt,
-                        self.agent_generation,
+                        generation: self.agent_generation,
                         provider,
                         model,
                         api_key,
                         api_endpoint,
-                    );
+                    });
                 } else {
                     tracing::error!(
                         "AgentRuntime: restart limit reached or backoff not elapsed -- agent disabled"
@@ -7603,6 +8416,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         self.run_feedback_on_end();
                         self.orchestrator.active = false;
                         self.orchestrator.response_pending = false;
+                        self.stop_orchestrator_redraw_tick();
                         tracing::error!(
                             "Orchestrator: deactivated — agent crashed and could not be restarted"
                         );
@@ -7668,6 +8482,24 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 self.orchestrator.response_pending = false;
 
+                // Emit activity entry for first response after spawn
+                if self.orchestrator.awaiting_first_response {
+                    self.orchestrator.awaiting_first_response = false;
+                    let elapsed = self
+                        .orchestrator
+                        .response_pending_since
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0);
+                    self.orchestrator_event_buffer.push(
+                        orchestrator_events::OrchestratorEvent::AgentResponded {
+                            elapsed_secs: elapsed,
+                        },
+                        self.orchestrator.iteration,
+                    );
+                }
+
+                self.stop_orchestrator_redraw_tick();
+
                 // Push to orchestrator transcript
                 self.orchestrator_event_buffer.push(
                     orchestrator_events::OrchestratorEvent::AgentText {
@@ -7679,6 +8511,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 let parsed = orchestrator::parse_agent_response(&response);
                 self.orchestrator.iteration += 1;
                 self.orchestrator.iterations_since_checkpoint += 1;
+                self.orchestrator.fingerprint_recorded_this_iteration = false;
                 self.orchestrator
                     .feedback_iteration_timestamps
                     .push(std::time::Instant::now());
@@ -7719,9 +8552,33 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return;
                 }
 
+                // Snapshot HEAD before this iteration for files-changed diff later
+                let pre_iteration_head =
+                    orchestrator::git_head_short(&self.orchestrator.project_root);
+
                 match parsed {
                     orchestrator::AgentResponse::Wait => {
                         tracing::debug!("Orchestrator: agent says WAIT");
+                        // Log WAIT to both TSV and details for full iteration visibility
+                        orchestrator::append_iteration_log(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            "wait",
+                            "wait",
+                            "Agent: GLASS_WAIT (implementer still working)",
+                        );
+                        orchestrator::append_iteration_detail(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("wait".to_string()),
+                                note: Some(
+                                    "Agent responded GLASS_WAIT — implementer still working"
+                                        .to_string(),
+                                ),
+                                ..Default::default()
+                            },
+                        );
                     }
                     orchestrator::AgentResponse::TypeText(text) => {
                         let text_stuck = self.orchestrator.record_response(&text);
@@ -7746,8 +8603,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 &format!(
                                     "Stuck after {} identical responses: {}",
                                     self.orchestrator.max_retries,
-                                    &text[..text.len().min(80)]
+                                    orchestrator::truncate_str(&text, 80)
                                 ),
+                            );
+                            orchestrator::append_iteration_detail(
+                                &self.orchestrator.project_root,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    action: Some("stuck".to_string()),
+                                    instruction: Some(orchestrator::truncate_str(&text, 300).to_string()),
+                                    note: Some(format!(
+                                        "Stuck after {} identical responses — sent course-correction",
+                                        self.orchestrator.max_retries
+                                    )),
+                                    files_changed: pre_iteration_head.as_deref().map(|h| {
+                                        orchestrator::git_files_changed_since(&self.orchestrator.project_root, h)
+                                    }).unwrap_or_default(),
+                                    ..Default::default()
+                                },
                             );
 
                             // Tell Claude Code to revert
@@ -7764,7 +8637,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     std::thread::Builder::new()
                                         .name("glass-orch-enter".into())
                                         .spawn(move || {
-                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                150,
+                                            ));
                                             pty_send(
                                                 &sender,
                                                 PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
@@ -7776,6 +8651,58 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                             self.orchestrator.reset_stuck();
                             return;
+                        }
+
+                        // Log instruction to iterations.tsv (for overlay display)
+                        orchestrator::append_iteration_log(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            "instruction",
+                            "instruction",
+                            orchestrator::truncate_str(&text, 80),
+                        );
+
+                        // Log iteration detail for the instruction
+                        {
+                            let trigger_info = self.orchestrator.last_trigger_source.take();
+                            let silence_dur =
+                                self.orchestrator.last_trigger_silence_duration.take();
+                            let block_exec = self.orchestrator.last_trigger_block_executing.take();
+
+                            let mut trigger_desc = trigger_info.unwrap_or_default();
+                            if let Some(dur) = silence_dur {
+                                trigger_desc.push_str(&format!(", silence={}ms", dur.as_millis()));
+                            }
+                            if let Some(true) = block_exec {
+                                trigger_desc.push_str(" [BLOCK STILL EXECUTING]");
+                            }
+
+                            let note = if block_exec == Some(true) {
+                                Some("WARNING: Trigger fired while a command block was still executing — possible rendering stall or premature trigger".to_string())
+                            } else {
+                                None
+                            };
+
+                            orchestrator::append_iteration_detail(
+                                &self.orchestrator.project_root,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    trigger_source: Some(trigger_desc),
+                                    action: Some("instruction".to_string()),
+                                    instruction: Some(text.clone()),
+                                    files_changed: pre_iteration_head
+                                        .as_deref()
+                                        .map(|h| {
+                                            orchestrator::git_files_changed_since(
+                                                &self.orchestrator.project_root,
+                                                h,
+                                            )
+                                        })
+                                        .unwrap_or_default(),
+                                    note,
+                                    ..Default::default()
+                                },
+                            );
                         }
 
                         // Cap at 50 most recent responses for instruction overload analysis
@@ -7839,8 +8766,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 } else {
                                     // Collapse newlines to spaces so Claude Code treats
                                     // it as typed input, not a multi-line paste.
-                                    let single_line =
-                                        text_to_type.replace(['\n', '\r'], " ");
+                                    let single_line = text_to_type.replace(['\n', '\r'], " ");
 
                                     // Send text and Enter as SEPARATE writes with a delay.
                                     // When sent together in one write, Claude Code's readline
@@ -7863,7 +8789,9 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     std::thread::Builder::new()
                                         .name("glass-orch-enter".into())
                                         .spawn(move || {
-                                            std::thread::sleep(std::time::Duration::from_millis(150));
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                150,
+                                            ));
                                             pty_send(
                                                 &sender,
                                                 PtyMsg::Input(std::borrow::Cow::Borrowed(b"\r")),
@@ -7891,6 +8819,24 @@ impl ApplicationHandler<AppEvent> for Processor {
                             "checkpoint",
                             &format!("Context refresh: completed {completed}, next {next}"),
                         );
+                        orchestrator::append_iteration_detail(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("checkpoint".to_string()),
+                                note: Some(format!("Completed: {completed} | Next: {next}")),
+                                files_changed: pre_iteration_head
+                                    .as_deref()
+                                    .map(|h| {
+                                        orchestrator::git_files_changed_since(
+                                            &self.orchestrator.project_root,
+                                            h,
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                                ..Default::default()
+                            },
+                        );
 
                         // Start the refresh cycle with checkpoint synthesis
                         self.trigger_checkpoint_synthesis(&completed, &next);
@@ -7914,9 +8860,31 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 summary.clone()
                             },
                         );
+                        orchestrator::append_iteration_detail(
+                            &self.orchestrator.project_root,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("done".to_string()),
+                                note: Some(if summary.is_empty() {
+                                    "Project complete".to_string()
+                                } else {
+                                    summary.clone()
+                                }),
+                                files_changed: pre_iteration_head
+                                    .as_deref()
+                                    .map(|h| {
+                                        orchestrator::git_files_changed_since(
+                                            &self.orchestrator.project_root,
+                                            h,
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                                ..Default::default()
+                            },
+                        );
 
                         // Generate post-mortem report
-                        orchestrator::generate_postmortem(
+                        self.orchestrator_postmortem = Some(orchestrator::generate_postmortem(
                             &self.orchestrator.project_root,
                             self.orchestrator.iteration,
                             self.orchestrator_activated_at.map(|t| t.elapsed()),
@@ -7930,7 +8898,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 }
                             ),
                             &[],
-                        );
+                        ));
 
                         {
                             let mut event = glass_scripting::HookEventData::new();
@@ -7944,6 +8912,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                         self.run_feedback_on_end();
                         self.orchestrator.active = false;
+                        self.stop_orchestrator_redraw_tick();
                         if let Some(handle) = self.artifact_watcher_thread.take() {
                             handle.thread().unpark();
                             // Don't join — notify Drop on Windows blocks on I/O completion.
@@ -7995,9 +8964,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                     ctx.mark_dirty_and_redraw();
                 }
             }
+            AppEvent::RedrawRequest => {
+                for ctx in self.windows.values_mut() {
+                    if !ctx.render_dirty {
+                        ctx.render_dirty = true;
+                        ctx.window.request_redraw();
+                    }
+                }
+            }
             AppEvent::OrchestratorSilence {
                 window_id,
                 session_id,
+                trigger_source,
+                silence_duration_ms,
             } => {
                 if !self.orchestrator.active {
                     return;
@@ -8005,6 +8984,24 @@ impl ApplicationHandler<AppEvent> for Processor {
 
                 if self.agent_runtime.is_none() {
                     return;
+                }
+
+                // Accumulate trigger source counts for the feedback loop.
+                // Count ALL silence events (even skipped ones) for accurate trigger
+                // frequency tracking in the run report.
+                match trigger_source {
+                    glass_core::event::TriggerSource::Prompt => {
+                        self.orchestrator.feedback_trigger_prompt_count += 1
+                    }
+                    glass_core::event::TriggerSource::ShellPrompt => {
+                        self.orchestrator.feedback_trigger_shell_count += 1
+                    }
+                    glass_core::event::TriggerSource::Fast => {
+                        self.orchestrator.feedback_trigger_fast_count += 1
+                    }
+                    glass_core::event::TriggerSource::Slow => {
+                        self.orchestrator.feedback_trigger_slow_count += 1
+                    }
                 }
 
                 // Backpressure: skip if waiting for agent response.
@@ -8021,10 +9018,46 @@ impl ApplicationHandler<AppEvent> for Processor {
                             "Orchestrator: response_pending timeout (>120s) — clearing to unblock"
                         );
                         self.orchestrator.response_pending = false;
+                        self.stop_orchestrator_redraw_tick();
                         self.orchestrator.response_pending_since = None;
                     } else {
                         tracing::debug!("Orchestrator: skipping context send (response pending)");
                         return;
+                    }
+                }
+
+                // Capture trigger diagnostics for iteration detail logging.
+                // MUST be AFTER response_pending guard — skipped silence events must
+                // NOT overwrite trigger info, otherwise the response handler associates
+                // the wrong trigger source with the iteration (or gets blank trigger
+                // when the guard fires between the real silence and its response).
+                self.orchestrator.last_trigger_silence_duration =
+                    Some(std::time::Duration::from_millis(silence_duration_ms));
+                self.orchestrator.last_trigger_source = Some(format!("{:?}", trigger_source));
+
+                // Check if a block is currently executing (rendering stall detection)
+                if let Some(ctx) = self.windows.get(&window_id) {
+                    if let Some(session) = ctx.session_mux.session(session_id) {
+                        let block_executing = session
+                            .block_manager
+                            .current_block_index()
+                            .and_then(|idx| session.block_manager.blocks().get(idx))
+                            .map(|b| {
+                                b.state == glass_terminal::block_manager::BlockState::Executing
+                            })
+                            .unwrap_or(false);
+                        self.orchestrator.last_trigger_block_executing = Some(block_executing);
+                        // Track consecutive stuck observations so the verify gate can
+                        // detect unreliable block_executing (agent CLI session with no
+                        // shell integration). Reset on any false observation.
+                        if block_executing {
+                            self.orchestrator.consecutive_block_executing_count = self
+                                .orchestrator
+                                .consecutive_block_executing_count
+                                .saturating_add(1);
+                        } else {
+                            self.orchestrator.consecutive_block_executing_count = 0;
+                        }
                     }
                 }
 
@@ -8068,608 +9101,739 @@ impl ApplicationHandler<AppEvent> for Processor {
                     return; // Don't send context while synthesizing
                 }
 
-                // Capture terminal context
+                // Capture terminal context on UI thread, then spawn background
+                // thread for git subprocess calls to avoid blocking rendering.
                 if let Some(ctx) = self.windows.get(&window_id) {
                     if let Some(session) = ctx.session_mux.session(session_id) {
                         let lines = extract_term_lines(&session.term, 80);
                         let (exit_code, soi_summary, soi_errors) =
                             fetch_latest_soi_context(session);
-                        let mut context = orchestrator::build_orchestrator_context(
-                            &lines,
-                            exit_code,
-                            soi_summary.as_deref(),
-                            &soi_errors,
-                        );
-                        if !self.orchestrator.coverage_gaps_context.is_empty() {
-                            context.push_str(&self.orchestrator.coverage_gaps_context);
-                        }
-
-                        // Build environment fingerprint for stuck detection
                         let cwd = session.status.cwd().to_string();
-                        let git_diff = git_cmd()
-                            .args(["diff", "--stat"])
-                            .current_dir(&cwd)
-                            .output()
-                            .ok()
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    String::from_utf8(o.stdout).ok()
-                                } else {
-                                    None
-                                }
-                            });
 
-                        // Reuse the 80-line extraction for fingerprint (last 50 of 80)
-                        let fp_start = lines.len().saturating_sub(50);
-                        let soi_for_fp = if exit_code.is_some_and(|c| c != 0) {
-                            Some(soi_errors.as_slice())
-                        } else {
-                            None
-                        };
-                        let fingerprint = orchestrator::StateFingerprint::compute(
-                            &lines[fp_start..],
-                            soi_for_fp,
-                            git_diff.as_deref(),
-                        );
-                        self.orchestrator.fingerprint_stuck =
-                            self.orchestrator.record_fingerprint(fingerprint);
+                        // Set response_pending before spawning background thread
+                        self.orchestrator.response_pending = true;
+                        self.orchestrator.response_pending_since = Some(std::time::Instant::now());
 
-                        // Commit detection: track HEAD changes
-                        let current_head = git_cmd()
-                            .args(["rev-parse", "HEAD"])
-                            .current_dir(&cwd)
-                            .output()
-                            .ok()
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    String::from_utf8(o.stdout)
-                                        .ok()
-                                        .map(|s| s.trim().to_string())
-                                } else {
-                                    None
-                                }
-                            });
-                        if let Some(ref head_sha) = current_head {
-                            if self.orchestrator.last_known_head.as_ref() != Some(head_sha) {
-                                self.orchestrator.iterations_since_last_commit = 0;
-                                self.orchestrator.last_known_head = Some(head_sha.clone());
-                            } else {
-                                self.orchestrator.iterations_since_last_commit += 1;
-                            }
-                        }
-
-                        // Fix #4/#5: Check for nudge.md (course correction while running)
-                        let nudge_path = std::path::Path::new(&cwd).join(".glass").join("nudge.md");
-                        let nudge = std::fs::read_to_string(&nudge_path).ok();
-                        if nudge.is_some() {
-                            if let Err(e) = std::fs::remove_file(&nudge_path) {
-                                tracing::warn!("Failed to remove nudge file {}: {e}", nudge_path.display());
-                            }
-                        }
-
-                        // Clean up artifact file if it exists (one-shot signal)
-                        let artifact_path_cfg = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.completion_artifact.clone())
-                            .unwrap_or_default();
-                        if !artifact_path_cfg.is_empty() {
-                            let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
-                            if full.exists() {
-                                if let Err(e) = std::fs::remove_file(&full) {
-                                    tracing::warn!("Failed to remove artifact file {}: {e}", full.display());
-                                }
-                            }
-                        }
-
-                        // Record current commit for metric guard revert (reuse HEAD from commit detection above)
-                        if self.orchestrator.metric_baseline.is_some() {
-                            self.orchestrator.last_good_commit = current_head.clone();
-                        }
-
-                        // Metric guard: run verification on background thread
-                        let verify_mode = self
-                            .config
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.orchestrator.as_ref())
-                            .map(|o| o.verify_mode.as_str())
-                            .unwrap_or("floor");
-
-                        let already_verified = self
-                            .orchestrator
-                            .last_verified_iteration
-                            .map(|v| v == self.orchestrator.iteration)
-                            .unwrap_or(false);
-
-                        if verify_mode == "floor" && !already_verified {
-                            if let Some(ref baseline) = self.orchestrator.metric_baseline {
-                                if !baseline.commands.is_empty() {
-                                    let commands = baseline.commands.clone();
-                                    let verify_cwd = cwd.clone();
-                                    let proxy = self.proxy.clone();
-                                    let spawn_result = std::thread::Builder::new()
-                                        .name("Glass verify".into())
-                                        .spawn(move || {
-                                            let deadline = std::time::Instant::now()
-                                                + std::time::Duration::from_secs(300); // 5 min timeout
-                                            let results: Vec<VerifyEventResult> = commands
-                                                .iter()
-                                                .map(|cmd| {
-                                                    // Check deadline before starting each command
-                                                    if std::time::Instant::now() > deadline {
-                                                        return VerifyEventResult {
-                                                            command_name: cmd.name.clone(),
-                                                            exit_code: -1,
-                                                            tests_passed: None,
-                                                            tests_failed: None,
-                                                            output: "Verification timeout (5 min)"
-                                                                .to_string(),
-                                                        };
-                                                    }
-                                                    let mut proc = if cfg!(target_os = "windows") {
-                                                        let mut c = std::process::Command::new("cmd");
-                                                        c.args(["/C", &cmd.cmd]);
-                                                        #[cfg(target_os = "windows")]
-                                                        {
-                                                            use std::os::windows::process::CommandExt;
-                                                            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                                                        }
-                                                        c
-                                                    } else {
-                                                        let mut c = std::process::Command::new("sh");
-                                                        c.args(["-c", &cmd.cmd]);
-                                                        c
-                                                    };
-                                                    let output = proc.current_dir(&verify_cwd)
-                                                            .output();
-                                                    match output {
-                                                        Ok(o) => {
-                                                            let stdout =
-                                                                String::from_utf8_lossy(&o.stdout)
-                                                                    .to_string();
-                                                            let stderr =
-                                                                String::from_utf8_lossy(&o.stderr)
-                                                                    .to_string();
-                                                            let combined =
-                                                                format!("{stdout}\n{stderr}");
-                                                            let (passed, failed) =
-                                                                parse_test_counts_from_output(
-                                                                    &combined,
-                                                                );
-                                                            let exit_code =
-                                                                o.status.code().unwrap_or(-1);
-                                                            // If exit code is non-zero but parser
-                                                            // found no test counts, it's a build
-                                                            // failure — report 0/0 so the metric
-                                                            // guard display isn't "? / ?".
-                                                            let (passed, failed) =
-                                                                if exit_code != 0
-                                                                    && passed.is_none()
-                                                                    && failed.is_none()
-                                                                {
-                                                                    (Some(0), Some(0))
-                                                                } else {
-                                                                    (passed, failed)
-                                                                };
-                                                            VerifyEventResult {
-                                                                command_name: cmd.name.clone(),
-                                                                exit_code,
-                                                                tests_passed: passed,
-                                                                tests_failed: failed,
-                                                                output: combined,
-                                                            }
-                                                        }
-                                                        Err(e) => VerifyEventResult {
-                                                            command_name: cmd.name.clone(),
-                                                            exit_code: -1,
-                                                            tests_passed: None,
-                                                            tests_failed: None,
-                                                            output: format!("Failed to run: {e}"),
-                                                        },
-                                                    }
-                                                })
-                                                .collect();
-                                            let _ = proxy.send_event(AppEvent::VerifyComplete {
-                                                window_id,
-                                                session_id,
-                                                results,
-                                            });
-                                        });
-                                    if spawn_result.is_ok() {
-                                        // Block sending context until verification completes
-                                        self.orchestrator.response_pending = true;
-                                        self.orchestrator.response_pending_since =
-                                            Some(std::time::Instant::now());
-                                        self.orchestrator.last_verified_iteration =
-                                            Some(self.orchestrator.iteration);
-                                        return;
-                                    } else {
-                                        tracing::warn!(
-                                            "Orchestrator: failed to spawn verify thread"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // File-based verification for general mode
-                        if verify_mode == "files" && !already_verified {
-                            let verify_files = self
-                                .config
-                                .agent
-                                .as_ref()
-                                .and_then(|a| a.orchestrator.as_ref())
-                                .map(|o| o.verify_files.clone())
-                                .unwrap_or_default();
-                            if !verify_files.is_empty() {
-                                let (regressed, summary) = orchestrator::check_file_verification(
-                                    &cwd,
-                                    &verify_files,
-                                    &mut self.file_verify_baseline,
-                                );
-                                orchestrator::append_iteration_log(
-                                    &cwd,
-                                    self.orchestrator.iteration,
-                                    "verify",
-                                    if regressed { "revert" } else { "keep" },
-                                    &summary,
-                                );
-                                if regressed {
-                                    if let Some(ref commit) = self.orchestrator.last_good_commit {
-                                        let _ = git_cmd()
-                                            .args(["reset", "--hard", commit])
-                                            .current_dir(&cwd)
-                                            .output();
-                                        tracing::info!("File verify: reverted to {commit}");
-                                    }
-                                }
-                                self.orchestrator.last_verified_iteration =
-                                    Some(self.orchestrator.iteration);
-                            }
-                        }
-
-                        // Dependency block check: if blocked, repeat the block message
-                        if let Some(block_msg) = self.orchestrator.dependency_block.clone() {
-                            self.orchestrator.dependency_block_iterations += 1;
-
-                            // Check if resolved: look at last block's exit code
-                            let resolved = if let Some(ctx_ref) = self.windows.get(&window_id) {
-                                ctx_ref
-                                    .session_mux
-                                    .session(session_id)
-                                    .and_then(|s| {
-                                        s.block_manager
-                                            .current_block_index()
-                                            .and_then(|idx| s.block_manager.blocks().get(idx))
-                                            .and_then(|b| b.exit_code)
-                                    })
-                                    .map(|code| code == 0)
-                                    .unwrap_or(false)
-                            } else {
-                                false
-                            };
-
-                            if resolved
-                                || self.orchestrator.dependency_block_iterations
-                                    >= orchestrator::DEPENDENCY_BLOCK_MAX_ITERATIONS
-                            {
-                                self.orchestrator.dependency_block = None;
-                                self.orchestrator.dependency_block_iterations = 0;
-                                tracing::info!("Orchestrator: dependency block cleared");
-                            } else {
-                                // Type block message directly into PTY
-                                if let Some(ctx_ref) = self.windows.get(&window_id) {
-                                    if let Some(session_ref) =
-                                        ctx_ref.session_mux.session(session_id)
-                                    {
-                                        let msg = format!("STOP current task. {}\r", block_msg);
-                                        pty_send(
-                                            &session_ref.pty_sender,
-                                            PtyMsg::Input(std::borrow::Cow::Owned(
-                                                msg.into_bytes(),
-                                            )),
-                                        );
-                                        self.orchestrator.mark_pty_write();
-                                    }
-                                }
-                                self.orchestrator.response_pending = true;
-                                self.orchestrator.response_pending_since =
-                                    Some(std::time::Instant::now());
-                                for ctx_ref in self.windows.values_mut() {
-                                    ctx_ref.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                        }
-
-                        // Feedback loop: check rules and enforce actions
-                        let mut feedback_notifications = Vec::new();
-                        if let Some(ref mut feedback_state) = self.feedback_state {
-                            let run_state = glass_feedback::RunState {
-                                iteration: self.orchestrator.iteration,
-                                iterations_since_last_commit: self
-                                    .orchestrator
-                                    .iterations_since_last_commit,
-                                revert_rate: if self.orchestrator.iteration > 0 {
-                                    self.orchestrator
-                                        .metric_baseline
-                                        .as_ref()
-                                        .map(|m| {
-                                            m.revert_count as f64
-                                                / self.orchestrator.iteration as f64
-                                        })
-                                        .unwrap_or(0.0)
-                                } else {
-                                    0.0
-                                },
-                                stuck_rate: if self.orchestrator.iteration > 0 {
-                                    self.orchestrator.feedback_stuck_count as f64
-                                        / self.orchestrator.iteration as f64
-                                } else {
-                                    0.0
-                                },
-                                waste_rate: if self.orchestrator.iteration > 0 {
-                                    self.orchestrator.feedback_waste_iterations as f64
-                                        / self.orchestrator.iteration as f64
-                                } else {
-                                    0.0
-                                },
-                                recent_reverted_files: self
-                                    .orchestrator
-                                    .feedback_reverted_files
-                                    .clone(),
-                                verify_alternations: self
-                                    .orchestrator
-                                    .feedback_verify_sequence
-                                    .windows(2)
-                                    .filter(|w| w[0] != w[1])
-                                    .count()
-                                    as u32,
-                            };
-                            let actions = glass_feedback::check_rules(feedback_state, &run_state);
-                            for action in &actions {
-                                match action {
-                                    glass_feedback::RuleAction::ForceCommit => {
-                                        // Check last verify wasn't regression before committing
-                                        let last_regressed = self
-                                            .orchestrator
-                                            .metric_baseline
-                                            .as_ref()
-                                            .map(|m| {
-                                                orchestrator::MetricBaseline::check_regression(
-                                                    &m.baseline_results,
-                                                    &m.last_results,
-                                                )
-                                            })
-                                            .unwrap_or(false);
-                                        if !last_regressed {
-                                            let result = git_cmd()
-                                                .args([
-                                                    "commit",
-                                                    "-am",
-                                                    "checkpoint: auto-commit by orchestrator",
-                                                ])
-                                                .current_dir(&cwd)
-                                                .output();
-                                            if let Ok(o) = result {
-                                                if o.status.success() {
-                                                    self.orchestrator.last_good_commit = git_cmd()
-                                                        .args(["rev-parse", "HEAD"])
-                                                        .current_dir(&cwd)
-                                                        .output()
-                                                        .ok()
-                                                        .and_then(|o2| {
-                                                            if o2.status.success() {
-                                                                String::from_utf8(o2.stdout)
-                                                                    .ok()
-                                                                    .map(|s| s.trim().to_string())
-                                                            } else {
-                                                                None
-                                                            }
-                                                        });
-                                                    self.orchestrator
-                                                        .iterations_since_last_commit = 0;
-                                                    self.orchestrator.feedback_commit_count += 1;
-                                                    tracing::info!(
-                                                        "Enforcement: force-committed changes"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    glass_feedback::RuleAction::IsolateCommit { file } => {
-                                        // Check if file appears in git diff
-                                        let in_diff = git_diff
-                                            .as_deref()
-                                            .map(|d| {
-                                                parse_diff_stat_files(d).iter().any(|f| f == file)
-                                            })
-                                            .unwrap_or(false);
-                                        if in_diff {
-                                            let _ = git_cmd()
-                                                .args(["add", file])
-                                                .current_dir(&cwd)
-                                                .output();
-                                            let msg =
-                                                format!("checkpoint: isolate-commit {}", file);
-                                            let result = git_cmd()
-                                                .args(["commit", "-m", &msg])
-                                                .current_dir(&cwd)
-                                                .output();
-                                            if let Ok(o) = result {
-                                                if o.status.success() {
-                                                    self.orchestrator.last_good_commit = git_cmd()
-                                                        .args(["rev-parse", "HEAD"])
-                                                        .current_dir(&cwd)
-                                                        .output()
-                                                        .ok()
-                                                        .and_then(|o2| {
-                                                            if o2.status.success() {
-                                                                String::from_utf8(o2.stdout)
-                                                                    .ok()
-                                                                    .map(|s| s.trim().to_string())
-                                                            } else {
-                                                                None
-                                                            }
-                                                        });
-                                                    self.orchestrator
-                                                        .iterations_since_last_commit = 0;
-                                                    tracing::info!(
-                                                        "Enforcement: isolate-committed {}",
-                                                        file
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    glass_feedback::RuleAction::RevertOutOfScope { .. } => {
-                                        // Compute out-of-scope files from git diff vs prd_deliverable_files
-                                        let diff_files = git_diff
-                                            .as_deref()
-                                            .map(parse_diff_stat_files)
-                                            .unwrap_or_default();
-                                        let deliverables = &self.orchestrator.prd_deliverable_files;
-                                        if !deliverables.is_empty() {
-                                            let out_of_scope: Vec<String> = diff_files
-                                                .iter()
-                                                .filter(|f| {
-                                                    !deliverables.iter().any(|d| {
-                                                        f.contains(d) || d.contains(f.as_str())
-                                                    })
-                                                })
-                                                .cloned()
-                                                .collect();
-                                            if out_of_scope.len() >= 3 {
-                                                for oos_file in &out_of_scope {
-                                                    let _ = git_cmd()
-                                                        .args(["checkout", "--", oos_file])
-                                                        .current_dir(&cwd)
-                                                        .output();
-                                                }
-                                                tracing::info!(
-                                                    "Enforcement: reverted {} out-of-scope files",
-                                                    out_of_scope.len()
-                                                );
-                                                feedback_notifications.push(format!(
-                                                    "Reverted {} out-of-scope files. Stay focused on PRD deliverables.",
-                                                    out_of_scope.len()
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    glass_feedback::RuleAction::BlockUntilResolved { message } => {
-                                        self.orchestrator.dependency_block = Some(message.clone());
-                                        self.orchestrator.dependency_block_iterations = 0;
-                                        tracing::info!(
-                                            "Enforcement: dependency block set — {}",
-                                            message
-                                        );
-                                    }
-                                    glass_feedback::RuleAction::SplitInstructions => {
-                                        // Handled in OrchestratorResponse handler
-                                    }
-                                    glass_feedback::RuleAction::ExtendSilence { .. }
-                                    | glass_feedback::RuleAction::RunVerifyTwice
-                                    | glass_feedback::RuleAction::EarlyStuck { .. } => {
-                                        // These are flag-based; handled elsewhere
-                                    }
-                                    glass_feedback::RuleAction::TextInjection(text) => {
-                                        feedback_notifications.push(text.clone());
-                                    }
-                                }
-                            }
-                        }
-
-                        // Fire scripting OrchestratorIteration hook
+                        // Start redraw tick for spinner animation before thread spawn
                         {
-                            let mut event = glass_scripting::HookEventData::new();
-                            event.set("iteration", self.orchestrator.iteration as i64);
-                            fire_hook_on_bridge(
-                                &mut self.script_bridge,
-                                &self.orchestrator.project_root,
-                                glass_scripting::HookPoint::OrchestratorIteration,
-                                &event,
-                            );
-                        }
-
-                        // If no verification needed, proceed with normal context send
-                        let has_nudge = nudge.is_some();
-                        let mut content = String::from("[TERMINAL_CONTEXT]\n");
-                        if let Some(nudge_text) = nudge {
-                            content.push_str(&format!(
-                                "[USER_NUDGE] The user left this course correction:\n{}\n\n",
-                                nudge_text.trim()
-                            ));
-                            tracing::info!("Orchestrator: including nudge.md in context");
-                        }
-                        content.push_str(&context);
-
-                        // Append feedback rule notifications
-                        if !feedback_notifications.is_empty() {
-                            content.push_str("\n[FEEDBACK_RULES]\n");
-                            for instr in &feedback_notifications {
-                                content.push_str(&format!("- {}\n", instr));
-                            }
-                        }
-
-                        // Instruction buffer: if buffered instructions exist, send next one
-                        if !self.orchestrator.instruction_buffer.is_empty() {
-                            let next = self.orchestrator.instruction_buffer.remove(0);
-                            if let Some(ctx_ib) = self.windows.get(&window_id) {
-                                if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
-                                    let msg = format!("{}\r", next);
-                                    pty_send(
-                                        &session_ib.pty_sender,
-                                        PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
-                                    );
-                                    self.orchestrator.mark_pty_write();
+                            self.stop_orchestrator_redraw_tick();
+                            let tick_proxy = self.proxy.clone();
+                            let pending =
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                            self.orchestrator_redraw_pending = Some(pending.clone());
+                            std::thread::spawn(move || {
+                                while pending.load(std::sync::atomic::Ordering::Relaxed) {
+                                    std::thread::sleep(std::time::Duration::from_secs(1));
+                                    if pending.load(std::sync::atomic::Ordering::Relaxed)
+                                        && tick_proxy.send_event(AppEvent::RedrawRequest).is_err()
+                                    {
+                                        break;
+                                    }
                                 }
-                            }
-                            self.orchestrator.response_pending = true;
-                            self.orchestrator.response_pending_since =
-                                Some(std::time::Instant::now());
-                            tracing::info!(
-                                "Orchestrator: sent buffered instruction ({} remaining)",
-                                self.orchestrator.instruction_buffer.len()
-                            );
-                            return;
+                            });
                         }
 
-                        let msg = serde_json::json!({
-                            "type": "user",
-                            "message": {
-                                "role": "user",
-                                "content": content
-                            }
-                        })
-                        .to_string();
+                        // Spawn background thread for git + nudge I/O
+                        let bg_lines = lines;
+                        let bg_exit_code = exit_code;
+                        let bg_soi_summary = soi_summary;
+                        let bg_soi_errors = soi_errors;
+                        let bg_cwd = cwd;
+                        let bg_proxy = self.proxy.clone();
+                        let bg_window_id = window_id;
+                        let bg_session_id = session_id;
 
-                        // Send to agent via message_tx channel
-                        if let Some(ref runtime) = self.agent_runtime {
-                            let _ = runtime.handle.message_tx.send(msg);
-                            self.orchestrator.response_pending = true;
-                            self.orchestrator.response_pending_since =
-                                Some(std::time::Instant::now());
+                        std::thread::Builder::new()
+                            .name("Glass orch-context".into())
+                            .spawn(move || {
+                                // git diff --stat
+                                let git_diff_stat = git_cmd()
+                                    .args(["diff", "--stat"])
+                                    .current_dir(&bg_cwd)
+                                    .output()
+                                    .ok()
+                                    .and_then(|o| {
+                                        if o.status.success() {
+                                            String::from_utf8(o.stdout).ok()
+                                        } else {
+                                            None
+                                        }
+                                    });
 
-                            self.orchestrator_event_buffer.push(
-                                orchestrator_events::OrchestratorEvent::ContextSent {
-                                    line_count: lines.len(),
-                                    has_soi: soi_summary.is_some(),
-                                    has_nudge,
-                                },
-                                self.orchestrator.iteration,
-                            );
-                        }
+                                // git rev-parse HEAD
+                                let current_head = git_cmd()
+                                    .args(["rev-parse", "HEAD"])
+                                    .current_dir(&bg_cwd)
+                                    .output()
+                                    .ok()
+                                    .and_then(|o| {
+                                        if o.status.success() {
+                                            String::from_utf8(o.stdout)
+                                                .ok()
+                                                .map(|s| s.trim().to_string())
+                                        } else {
+                                            None
+                                        }
+                                    });
 
-                        tracing::debug!(
-                            "Orchestrator: sent {} lines of terminal context to agent",
-                            lines.len()
-                        );
+                                // Read nudge.md
+                                let nudge_path = std::path::Path::new(&bg_cwd)
+                                    .join(".glass")
+                                    .join("nudge.md");
+                                let nudge = std::fs::read_to_string(&nudge_path).ok();
+                                if nudge.is_some() {
+                                    let _ = std::fs::remove_file(&nudge_path);
+                                }
+
+                                let _ = bg_proxy.send_event(AppEvent::OrchestratorContextReady {
+                                    window_id: bg_window_id,
+                                    session_id: bg_session_id,
+                                    terminal_lines: bg_lines,
+                                    exit_code: bg_exit_code,
+                                    soi_summary: bg_soi_summary,
+                                    soi_errors: bg_soi_errors,
+                                    git_diff_stat,
+                                    current_head,
+                                    nudge,
+                                    cwd: bg_cwd,
+                                });
+                            })
+                            .ok();
                     }
                 }
+            }
+            AppEvent::OrchestratorContextReady {
+                window_id,
+                session_id,
+                terminal_lines: lines,
+                exit_code,
+                soi_summary,
+                soi_errors,
+                git_diff_stat,
+                current_head,
+                nudge,
+                cwd,
+            } => {
+                // Alias git_diff_stat as git_diff so existing code referencing it continues to work
+                let git_diff = git_diff_stat;
+
+                let mut context = orchestrator::build_orchestrator_context(
+                    &lines,
+                    exit_code,
+                    soi_summary.as_deref(),
+                    &soi_errors,
+                );
+                if !self.orchestrator.coverage_gaps_context.is_empty() {
+                    context.push_str(&self.orchestrator.coverage_gaps_context);
+                }
+
+                // Build environment fingerprint for stuck detection
+                // Reuse the 80-line extraction for fingerprint (last 50 of 80)
+                let fp_start = lines.len().saturating_sub(50);
+                let soi_for_fp = if exit_code.is_some_and(|c| c != 0) {
+                    Some(soi_errors.as_slice())
+                } else {
+                    None
+                };
+                let fingerprint = orchestrator::StateFingerprint::compute(
+                    &lines[fp_start..],
+                    soi_for_fp,
+                    git_diff.as_deref(),
+                );
+                // Only record one fingerprint per iteration. Multiple silence
+                // triggers can fire within a single iteration (while the agent is
+                // thinking or the implementer hasn't produced output yet). Recording
+                // a fingerprint for each trigger causes false stuck detection —
+                // e.g., 6 triggers during the agent's first 100s thinking period
+                // all produce identical fingerprints → stuck on iteration 1.
+                if !self.orchestrator.fingerprint_recorded_this_iteration {
+                    self.orchestrator.fingerprint_stuck =
+                        self.orchestrator.record_fingerprint(fingerprint);
+                    self.orchestrator.fingerprint_recorded_this_iteration = true;
+                }
+
+                // Commit detection: track HEAD changes
+                if let Some(ref head_sha) = current_head {
+                    self.orchestrator.record_head_observation(head_sha);
+                }
+
+                // Clean up artifact file if it exists (one-shot signal)
+                let artifact_path_cfg = self
+                    .config
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.orchestrator.as_ref())
+                    .map(|o| o.completion_artifact.clone())
+                    .unwrap_or_default();
+                if !artifact_path_cfg.is_empty() {
+                    let full = std::path::Path::new(&cwd).join(&artifact_path_cfg);
+                    if full.exists() {
+                        if let Err(e) = std::fs::remove_file(&full) {
+                            tracing::warn!(
+                                "Failed to remove artifact file {}: {e}",
+                                full.display()
+                            );
+                        }
+                    }
+                }
+
+                // Record current commit for metric guard revert (reuse HEAD from commit detection above)
+                if self.orchestrator.metric_baseline.is_some() {
+                    self.orchestrator.last_good_commit = current_head.clone();
+                }
+
+                // Late auto-detection: if no metric baseline exists and we're past
+                // iteration 1, try re-detecting project markers. This handles projects
+                // that start empty (no package.json/Cargo.toml at activation time) but
+                // acquire build markers during the run (e.g., scaffolding a new project).
+                // Check config_verify_mode (user intent) not resolved_verify_mode (auto-detect result).
+                // When auto-detect sets resolved to "off" because no markers were found,
+                // we still want to re-detect if the user's config says "floor".
+                if self.orchestrator.metric_baseline.is_none()
+                    && self.orchestrator.iteration > 1
+                    && self.orchestrator.config_verify_mode != "off"
+                {
+                    let commands =
+                        orchestrator::auto_detect_verify_commands(&self.orchestrator.project_root);
+                    if !commands.is_empty() {
+                        tracing::info!(
+                            "Orchestrator: late auto-detection found {} verify commands, upgrading to build mode",
+                            commands.len()
+                        );
+                        self.orchestrator.resolved_mode = "build".to_string();
+                        self.orchestrator.resolved_verify_mode = "floor".to_string();
+                        let mut baseline = orchestrator::MetricBaseline::new();
+                        baseline.commands = commands;
+                        self.orchestrator.metric_baseline = Some(baseline);
+                    } else if let Some((work_dir, cmds)) = orchestrator::detect_project_from_diff(
+                        &self.orchestrator.project_root,
+                        git_diff.as_deref(),
+                    ) {
+                        // Cross-project detection: found project markers in a
+                        // subdirectory via git diff paths or directory scanning.
+                        tracing::info!(
+                            "Orchestrator: cross-project detection found {} verify commands in {}",
+                            cmds.len(),
+                            work_dir
+                        );
+                        self.orchestrator.resolved_mode = "build".to_string();
+                        self.orchestrator.resolved_verify_mode = "floor".to_string();
+                        let mut baseline = orchestrator::MetricBaseline::new();
+                        baseline.commands = cmds;
+                        baseline.verify_cwd = Some(work_dir);
+                        self.orchestrator.metric_baseline = Some(baseline);
+                    }
+                }
+
+                // Metric guard: run verification on background thread
+                // Use resolved mode from activation, not config re-read.
+                let verify_mode = self.orchestrator.resolved_verify_mode.clone();
+
+                let already_verified = self
+                    .orchestrator
+                    .last_verified_iteration
+                    .map(|v| v == self.orchestrator.iteration)
+                    .unwrap_or(false);
+
+                // Don't verify while the implementer is actively executing a command.
+                // When the flag has been stuck at true across multiple silence triggers
+                // (agent CLI sessions without shell integration — see
+                // `should_gate_on_block_executing`) we treat it as stale and let
+                // verification proceed.
+                let block_executing_raw = if let Some(ctx) = self.windows.values().next() {
+                    ctx.session_mux
+                        .focused_session()
+                        .and_then(|s| {
+                            s.block_manager
+                                .current_block_index()
+                                .and_then(|idx| s.block_manager.blocks().get(idx))
+                                .map(|b| {
+                                    b.state == glass_terminal::block_manager::BlockState::Executing
+                                })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                let block_executing = orchestrator::should_gate_on_block_executing(
+                    block_executing_raw,
+                    self.orchestrator.consecutive_block_executing_count,
+                );
+
+                if block_executing {
+                    tracing::debug!("Orchestrator: skipping verification — block still executing");
+                    // Don't set response_pending, let next silence trigger try again
+                    self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
+                } else if verify_mode == "floor" && !already_verified {
+                    if let Some(ref baseline) = self.orchestrator.metric_baseline {
+                        if !baseline.commands.is_empty() {
+                            let commands = baseline.commands.clone();
+                            // Use cross-project verify_cwd if set, else PTY CWD
+                            let verify_cwd =
+                                baseline.verify_cwd.clone().unwrap_or_else(|| cwd.clone());
+                            let proxy = self.proxy.clone();
+                            let spawn_result = std::thread::Builder::new()
+                                .name("Glass verify".into())
+                                .spawn(move || {
+                                    let deadline = std::time::Instant::now()
+                                        + std::time::Duration::from_secs(300); // 5 min timeout
+                                    let results: Vec<VerifyEventResult> = commands
+                                        .iter()
+                                        .map(|cmd| {
+                                            // Check deadline before starting each command
+                                            if std::time::Instant::now() > deadline {
+                                                return VerifyEventResult {
+                                                    command_name: cmd.name.clone(),
+                                                    exit_code: -1,
+                                                    tests_passed: None,
+                                                    tests_failed: None,
+                                                    output: "Verification timeout (5 min)"
+                                                        .to_string(),
+                                                };
+                                            }
+                                            let mut proc = if cfg!(target_os = "windows") {
+                                                let mut c = std::process::Command::new("cmd");
+                                                c.args(["/C", &cmd.cmd]);
+                                                #[cfg(target_os = "windows")]
+                                                {
+                                                    use std::os::windows::process::CommandExt;
+                                                    c.creation_flags(0x08000000);
+                                                    // CREATE_NO_WINDOW
+                                                }
+                                                c
+                                            } else {
+                                                let mut c = std::process::Command::new("sh");
+                                                c.args(["-c", &cmd.cmd]);
+                                                c
+                                            };
+                                            let output = proc.current_dir(&verify_cwd).output();
+                                            match output {
+                                                Ok(o) => {
+                                                    let stdout = String::from_utf8_lossy(&o.stdout)
+                                                        .to_string();
+                                                    let stderr = String::from_utf8_lossy(&o.stderr)
+                                                        .to_string();
+                                                    let combined = format!("{stdout}\n{stderr}");
+                                                    let (passed, failed) =
+                                                        parse_test_counts_from_output(&combined);
+                                                    let exit_code = o.status.code().unwrap_or(-1);
+                                                    // If exit code is non-zero but parser
+                                                    // found no test counts, it's a build
+                                                    // failure — report 0/0 so the metric
+                                                    // guard display isn't "? / ?".
+                                                    let (passed, failed) = if exit_code != 0
+                                                        && passed.is_none()
+                                                        && failed.is_none()
+                                                    {
+                                                        (Some(0), Some(0))
+                                                    } else {
+                                                        (passed, failed)
+                                                    };
+                                                    VerifyEventResult {
+                                                        command_name: cmd.name.clone(),
+                                                        exit_code,
+                                                        tests_passed: passed,
+                                                        tests_failed: failed,
+                                                        output: combined,
+                                                    }
+                                                }
+                                                Err(e) => VerifyEventResult {
+                                                    command_name: cmd.name.clone(),
+                                                    exit_code: -1,
+                                                    tests_passed: None,
+                                                    tests_failed: None,
+                                                    output: format!("Failed to run: {e}"),
+                                                },
+                                            }
+                                        })
+                                        .collect();
+                                    let _ = proxy.send_event(AppEvent::VerifyComplete {
+                                        window_id,
+                                        session_id,
+                                        results,
+                                    });
+                                });
+                            if spawn_result.is_ok() {
+                                // Block sending context until verification completes
+                                // response_pending already set by OrchestratorSilence
+                                self.orchestrator.last_verified_iteration =
+                                    Some(self.orchestrator.iteration);
+                                return;
+                            } else {
+                                tracing::warn!("Orchestrator: failed to spawn verify thread");
+                            }
+                        }
+                    }
+                }
+
+                // File-based verification for general mode
+                if verify_mode == "files" && !already_verified {
+                    let verify_files = self
+                        .config
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.orchestrator.as_ref())
+                        .map(|o| o.verify_files.clone())
+                        .unwrap_or_default();
+                    if !verify_files.is_empty() {
+                        let (regressed, summary) = orchestrator::check_file_verification(
+                            &cwd,
+                            &verify_files,
+                            &mut self.file_verify_baseline,
+                        );
+                        orchestrator::append_iteration_log(
+                            &cwd,
+                            self.orchestrator.iteration,
+                            "verify",
+                            if regressed { "revert" } else { "keep" },
+                            &summary,
+                        );
+                        orchestrator::append_iteration_detail(
+                            &cwd,
+                            self.orchestrator.iteration,
+                            &orchestrator::IterationDetail {
+                                action: Some("verify".to_string()),
+                                verify_result: Some(if regressed {
+                                    format!("REVERT (file regression): {summary}")
+                                } else {
+                                    format!("KEEP: {summary}")
+                                }),
+                                ..Default::default()
+                            },
+                        );
+                        if regressed {
+                            if let Some(ref commit) = self.orchestrator.last_good_commit {
+                                let _ = git_cmd()
+                                    .args(["reset", "--hard", commit])
+                                    .current_dir(&cwd)
+                                    .output();
+                                tracing::info!("File verify: reverted to {commit}");
+                            }
+                        }
+                        self.orchestrator.last_verified_iteration =
+                            Some(self.orchestrator.iteration);
+                    }
+                }
+
+                // Dependency block check: if blocked, repeat the block message
+                if let Some(block_msg) = self.orchestrator.dependency_block.clone() {
+                    self.orchestrator.dependency_block_iterations += 1;
+
+                    // Check if resolved: look at last block's exit code
+                    let resolved = if let Some(ctx_ref) = self.windows.get(&window_id) {
+                        ctx_ref
+                            .session_mux
+                            .session(session_id)
+                            .and_then(|s| {
+                                s.block_manager
+                                    .current_block_index()
+                                    .and_then(|idx| s.block_manager.blocks().get(idx))
+                                    .and_then(|b| b.exit_code)
+                            })
+                            .map(|code| code == 0)
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
+                    if resolved
+                        || self.orchestrator.dependency_block_iterations
+                            >= orchestrator::DEPENDENCY_BLOCK_MAX_ITERATIONS
+                    {
+                        self.orchestrator.dependency_block = None;
+                        self.orchestrator.dependency_block_iterations = 0;
+                        tracing::info!("Orchestrator: dependency block cleared");
+                    } else {
+                        // Type block message directly into PTY
+                        if let Some(ctx_ref) = self.windows.get(&window_id) {
+                            if let Some(session_ref) = ctx_ref.session_mux.session(session_id) {
+                                let msg = format!("STOP current task. {}\r", block_msg);
+                                pty_send(
+                                    &session_ref.pty_sender,
+                                    PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
+                                );
+                                self.orchestrator.mark_pty_write();
+                            }
+                        }
+                        // response_pending already set by OrchestratorSilence
+                        for ctx_ref in self.windows.values_mut() {
+                            ctx_ref.mark_dirty_and_redraw();
+                        }
+                        return;
+                    }
+                }
+
+                // Feedback loop: check rules and enforce actions
+                let mut feedback_notifications = Vec::new();
+                if let Some(ref mut feedback_state) = self.feedback_state {
+                    let run_state = glass_feedback::RunState {
+                        iteration: self.orchestrator.iteration,
+                        iterations_since_last_commit: self
+                            .orchestrator
+                            .iterations_since_last_commit,
+                        revert_rate: if self.orchestrator.iteration > 0 {
+                            self.orchestrator
+                                .metric_baseline
+                                .as_ref()
+                                .map(|m| m.revert_count as f64 / self.orchestrator.iteration as f64)
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        },
+                        stuck_rate: if self.orchestrator.iteration > 0 {
+                            self.orchestrator.feedback_stuck_count as f64
+                                / self.orchestrator.iteration as f64
+                        } else {
+                            0.0
+                        },
+                        waste_rate: if self.orchestrator.iteration > 0 {
+                            self.orchestrator.feedback_waste_iterations as f64
+                                / self.orchestrator.iteration as f64
+                        } else {
+                            0.0
+                        },
+                        recent_reverted_files: self.orchestrator.feedback_reverted_files.clone(),
+                        verify_alternations: self
+                            .orchestrator
+                            .feedback_verify_sequence
+                            .windows(2)
+                            .filter(|w| w[0] != w[1])
+                            .count() as u32,
+                    };
+                    let actions = glass_feedback::check_rules(feedback_state, &run_state);
+                    for action in &actions {
+                        match action {
+                            glass_feedback::RuleAction::ForceCommit => {
+                                // Check last verify wasn't regression before committing
+                                let last_regressed = self
+                                    .orchestrator
+                                    .metric_baseline
+                                    .as_ref()
+                                    .map(|m| {
+                                        orchestrator::MetricBaseline::check_regression(
+                                            &m.baseline_results,
+                                            &m.last_results,
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                                if !last_regressed {
+                                    let result = git_cmd()
+                                        .args([
+                                            "commit",
+                                            "-am",
+                                            "checkpoint: auto-commit by orchestrator",
+                                        ])
+                                        .current_dir(&cwd)
+                                        .output();
+                                    if let Ok(o) = result {
+                                        if o.status.success() {
+                                            let new_head = git_cmd()
+                                                .args(["rev-parse", "HEAD"])
+                                                .current_dir(&cwd)
+                                                .output()
+                                                .ok()
+                                                .and_then(|o2| {
+                                                    if o2.status.success() {
+                                                        String::from_utf8(o2.stdout)
+                                                            .ok()
+                                                            .map(|s| s.trim().to_string())
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            self.orchestrator.last_good_commit = new_head.clone();
+                                            self.orchestrator.iterations_since_last_commit = 0;
+                                            self.orchestrator.feedback_commit_count += 1;
+                                            // Sync last_known_head so next iteration's HEAD
+                                            // detection doesn't double-count this commit.
+                                            if new_head.is_some() {
+                                                self.orchestrator.last_known_head = new_head;
+                                            }
+                                            tracing::info!("Enforcement: force-committed changes");
+                                        }
+                                    }
+                                }
+                            }
+                            glass_feedback::RuleAction::IsolateCommit { file } => {
+                                // Check if file appears in git diff
+                                let in_diff = git_diff
+                                    .as_deref()
+                                    .map(|d| parse_diff_stat_files(d).iter().any(|f| f == file))
+                                    .unwrap_or(false);
+                                if in_diff {
+                                    let _ =
+                                        git_cmd().args(["add", file]).current_dir(&cwd).output();
+                                    let msg = format!("checkpoint: isolate-commit {}", file);
+                                    let result = git_cmd()
+                                        .args(["commit", "-m", &msg])
+                                        .current_dir(&cwd)
+                                        .output();
+                                    if let Ok(o) = result {
+                                        if o.status.success() {
+                                            self.orchestrator.last_good_commit = git_cmd()
+                                                .args(["rev-parse", "HEAD"])
+                                                .current_dir(&cwd)
+                                                .output()
+                                                .ok()
+                                                .and_then(|o2| {
+                                                    if o2.status.success() {
+                                                        String::from_utf8(o2.stdout)
+                                                            .ok()
+                                                            .map(|s| s.trim().to_string())
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            self.orchestrator.iterations_since_last_commit = 0;
+                                            tracing::info!(
+                                                "Enforcement: isolate-committed {}",
+                                                file
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            glass_feedback::RuleAction::RevertOutOfScope { .. } => {
+                                // Compute out-of-scope files from git diff vs prd_deliverable_files
+                                let diff_files = git_diff
+                                    .as_deref()
+                                    .map(parse_diff_stat_files)
+                                    .unwrap_or_default();
+                                let deliverables = &self.orchestrator.prd_deliverable_files;
+                                if !deliverables.is_empty() {
+                                    let out_of_scope: Vec<String> = diff_files
+                                        .iter()
+                                        .filter(|f| {
+                                            !deliverables
+                                                .iter()
+                                                .any(|d| f.contains(d) || d.contains(f.as_str()))
+                                        })
+                                        .cloned()
+                                        .collect();
+                                    if out_of_scope.len() >= 3 {
+                                        for oos_file in &out_of_scope {
+                                            let _ = git_cmd()
+                                                .args(["checkout", "--", oos_file])
+                                                .current_dir(&cwd)
+                                                .output();
+                                        }
+                                        tracing::info!(
+                                            "Enforcement: reverted {} out-of-scope files",
+                                            out_of_scope.len()
+                                        );
+                                        feedback_notifications.push(format!(
+                                            "Reverted {} out-of-scope files. Stay focused on PRD deliverables.",
+                                            out_of_scope.len()
+                                        ));
+                                    }
+                                }
+                            }
+                            glass_feedback::RuleAction::BlockUntilResolved { message } => {
+                                self.orchestrator.dependency_block = Some(message.clone());
+                                self.orchestrator.dependency_block_iterations = 0;
+                                tracing::info!("Enforcement: dependency block set — {}", message);
+                            }
+                            glass_feedback::RuleAction::SplitInstructions => {
+                                // Handled in OrchestratorResponse handler
+                            }
+                            glass_feedback::RuleAction::ExtendSilence { .. }
+                            | glass_feedback::RuleAction::RunVerifyTwice
+                            | glass_feedback::RuleAction::EarlyStuck { .. } => {
+                                // These are flag-based; handled elsewhere
+                            }
+                            glass_feedback::RuleAction::TextInjection(text) => {
+                                feedback_notifications.push(text.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Fire scripting OrchestratorIteration hook
+                {
+                    let mut event = glass_scripting::HookEventData::new();
+                    event.set("iteration", self.orchestrator.iteration as i64);
+                    fire_hook_on_bridge(
+                        &mut self.script_bridge,
+                        &self.orchestrator.project_root,
+                        glass_scripting::HookPoint::OrchestratorIteration,
+                        &event,
+                    );
+                }
+
+                // If no verification needed, proceed with normal context send
+                let has_nudge = nudge.is_some();
+                let mut content = String::from("[TERMINAL_CONTEXT]\n");
+                if let Some(nudge_text) = nudge {
+                    content.push_str(&format!(
+                        "[USER_NUDGE] The user left this course correction:\n{}\n\n",
+                        nudge_text.trim()
+                    ));
+                    tracing::info!("Orchestrator: including nudge.md in context");
+                }
+                content.push_str(&context);
+
+                // Append feedback rule notifications
+                if !feedback_notifications.is_empty() {
+                    content.push_str("\n[FEEDBACK_RULES]\n");
+                    for instr in &feedback_notifications {
+                        content.push_str(&format!("- {}\n", instr));
+                    }
+                }
+
+                // Instruction buffer: if buffered instructions exist, send next one
+                if !self.orchestrator.instruction_buffer.is_empty() {
+                    let next = self.orchestrator.instruction_buffer.remove(0);
+                    if let Some(ctx_ib) = self.windows.get(&window_id) {
+                        if let Some(session_ib) = ctx_ib.session_mux.session(session_id) {
+                            let msg = format!("{}\r", next);
+                            pty_send(
+                                &session_ib.pty_sender,
+                                PtyMsg::Input(std::borrow::Cow::Owned(msg.into_bytes())),
+                            );
+                            self.orchestrator.mark_pty_write();
+                        }
+                    }
+                    // response_pending already set by OrchestratorSilence
+                    tracing::info!(
+                        "Orchestrator: sent buffered instruction ({} remaining)",
+                        self.orchestrator.instruction_buffer.len()
+                    );
+                    return;
+                }
+
+                let msg = serde_json::json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": content
+                    }
+                })
+                .to_string();
+
+                // Send to agent via message_tx channel
+                if let Some(ref runtime) = self.agent_runtime {
+                    let _ = runtime.handle.message_tx.send(msg);
+                    // response_pending already set by OrchestratorSilence
+
+                    self.orchestrator_event_buffer.push(
+                        orchestrator_events::OrchestratorEvent::ContextSent {
+                            line_count: lines.len(),
+                            has_soi: soi_summary.is_some(),
+                            has_nudge,
+                        },
+                        self.orchestrator.iteration,
+                    );
+                } else {
+                    // No agent runtime — clear response_pending since nothing was sent
+                    self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
+                }
+
+                tracing::debug!(
+                    "Orchestrator: sent {} lines of terminal context to agent",
+                    lines.len()
+                );
             }
             AppEvent::VerifyComplete {
                 window_id,
@@ -8678,6 +9842,7 @@ impl ApplicationHandler<AppEvent> for Processor {
             } => {
                 if !self.orchestrator.active {
                     self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
                     return;
                 }
 
@@ -8756,13 +9921,49 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
 
                         if regressed {
-                            // Revert via git
-                            if let Some(ref commit) = revert_commit {
-                                let _ = git_cmd()
-                                    .args(["reset", "--hard", commit])
-                                    .current_dir(&revert_cwd)
-                                    .output();
-                                tracing::info!("Metric guard: reverted to {commit}");
+                            // Check if implementer is still executing before reverting.
+                            // Apply the same staleness logic as the verify gate — a
+                            // permanently-stuck Executing state (agent CLI session) must
+                            // not block reverts forever.
+                            let block_executing_raw = if let Some(ctx) =
+                                self.windows.values().next()
+                            {
+                                ctx.session_mux
+                                        .focused_session()
+                                        .and_then(|s| {
+                                            s.block_manager
+                                                .current_block_index()
+                                                .and_then(|idx| {
+                                                    s.block_manager.blocks().get(idx)
+                                                })
+                                                .map(|b| {
+                                                    b.state
+                                                        == glass_terminal::block_manager::BlockState::Executing
+                                                })
+                                        })
+                                        .unwrap_or(false)
+                            } else {
+                                false
+                            };
+                            let block_executing = orchestrator::should_gate_on_block_executing(
+                                block_executing_raw,
+                                self.orchestrator.consecutive_block_executing_count,
+                            );
+
+                            if block_executing {
+                                tracing::warn!(
+                                    "Metric guard: skipping revert — implementer still executing"
+                                );
+                                // Skip revert, next verification cycle will catch if regression persists
+                            } else {
+                                // Revert via git
+                                if let Some(ref commit) = revert_commit {
+                                    let _ = git_cmd()
+                                        .args(["reset", "--hard", commit])
+                                        .current_dir(&revert_cwd)
+                                        .output();
+                                    tracing::info!("Metric guard: reverted to {commit}");
+                                }
                             }
                             baseline.revert_count += 1;
                             baseline.last_results = verify_results.clone();
@@ -8792,6 +9993,22 @@ impl ApplicationHandler<AppEvent> for Processor {
                                     "Regression detected, reverted to {}: {revert_desc}",
                                     revert_commit.as_deref().unwrap_or("unknown")
                                 ),
+                            );
+                            orchestrator::append_iteration_detail(
+                                &revert_cwd,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    action: Some("verify".to_string()),
+                                    verify_result: Some(format!(
+                                        "REVERT to {}: {revert_desc}",
+                                        revert_commit.as_deref().unwrap_or("unknown")
+                                    )),
+                                    error: Some(
+                                        "Metric regression detected — changes rolled back"
+                                            .to_string(),
+                                    ),
+                                    ..Default::default()
+                                },
                             );
 
                             // Build METRIC_GUARD message for agent context
@@ -8856,6 +10073,15 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 "verify",
                                 "keep",
                                 &keep_desc,
+                            );
+                            orchestrator::append_iteration_detail(
+                                &revert_cwd,
+                                self.orchestrator.iteration,
+                                &orchestrator::IterationDetail {
+                                    action: Some("verify".to_string()),
+                                    verify_result: Some(format!("KEEP: {keep_desc}")),
+                                    ..Default::default()
+                                },
                             );
 
                             baseline.last_results = verify_results;
@@ -8948,6 +10174,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // response_pending was already set to true inside the block.
                 if !self.orchestrator.response_pending {
                     self.orchestrator.response_pending = false;
+                    self.stop_orchestrator_redraw_tick();
                 }
 
                 // Request redraw for status bar update
@@ -8986,9 +10213,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
                         if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
-                            tracing::warn!("Failed to create checkpoint dir {}: {e}", checkpoint_dir.display());
+                            tracing::warn!(
+                                "Failed to create checkpoint dir {}: {e}",
+                                checkpoint_dir.display()
+                            );
                         }
-                        if let Err(e) = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint) {
+                        if let Err(e) =
+                            std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint)
+                        {
                             tracing::warn!("Failed to write usage-pause checkpoint: {e}");
                         }
                     }
@@ -8997,6 +10229,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 // Kill agent so resume gets fresh context
                 self.agent_runtime = None;
                 self.orchestrator.active = false;
+                self.stop_orchestrator_redraw_tick();
                 self.orchestrator.usage_paused = true;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
@@ -9020,6 +10253,7 @@ impl ApplicationHandler<AppEvent> for Processor {
                 self.run_feedback_on_end();
                 self.agent_runtime = None;
                 self.orchestrator.active = false;
+                self.stop_orchestrator_redraw_tick();
                 self.orchestrator.usage_paused = true;
                 if let Some(handle) = self.artifact_watcher_thread.take() {
                     handle.thread().unpark();
@@ -9043,9 +10277,14 @@ impl ApplicationHandler<AppEvent> for Processor {
                         );
                         let checkpoint_dir = std::path::Path::new(&cwd).join(".glass");
                         if let Err(e) = std::fs::create_dir_all(&checkpoint_dir) {
-                            tracing::warn!("Failed to create checkpoint dir {}: {e}", checkpoint_dir.display());
+                            tracing::warn!(
+                                "Failed to create checkpoint dir {}: {e}",
+                                checkpoint_dir.display()
+                            );
                         }
-                        if let Err(e) = std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint) {
+                        if let Err(e) =
+                            std::fs::write(checkpoint_dir.join("checkpoint.md"), &checkpoint)
+                        {
                             tracing::warn!("Failed to write hard-stop checkpoint: {e}");
                         }
                     }
@@ -9063,6 +10302,19 @@ impl ApplicationHandler<AppEvent> for Processor {
                     self.orchestrator.usage_paused = false;
                     self.orchestrator.active = true;
                     let cwd = self.orchestrator.project_root.clone();
+
+                    // Re-initialize feedback_state. run_feedback_on_end() at pause
+                    // consumed it via .take(), so any subsequent run-end (GLASS_DONE,
+                    // bounded stop, crash) would otherwise silently skip post-mortem
+                    // writing. We start a fresh feedback session for the resumed
+                    // portion — the pause-time report and the resume-time report
+                    // together capture the full run.
+                    if self.feedback_state.is_none() {
+                        let feedback_config = self.build_feedback_config(&cwd);
+                        self.feedback_state =
+                            Some(glass_feedback::on_run_start(&cwd, &feedback_config));
+                    }
+
                     let handoff =
                         "Resume from usage pause. Read .glass/checkpoint.md and continue.\n"
                             .to_string();
@@ -9201,11 +10453,13 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 session_id,
                                 config_ref,
                                 cwd_path.as_deref(),
-                                cell_w,
-                                cell_h,
-                                size.width,
-                                size.height,
-                                1,
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
                             ) {
                                 Err(e) => {
                                     tracing::error!("PTY spawn failed for MCP tab_create: {e}");
@@ -9247,37 +10501,42 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                     "tab_send" => {
-                        if let Some(ctx) = self.windows.values().next() {
-                            match resolve_tab_index(&ctx.session_mux, &request.params) {
-                                Ok(tab_idx) => {
-                                    let command = request
-                                        .params
-                                        .get("command")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
-                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
-                                        let input = format!("{}\r", command).into_bytes();
-                                        pty_send(
-                                            &session.pty_sender,
-                                            PtyMsg::Input(Cow::Owned(input)),
-                                        );
-                                        glass_core::ipc::McpResponse::ok(
-                                            request.id,
-                                            serde_json::json!({
-                                                "sent": true,
-                                                "session_id": focused_sid.val(),
-                                            }),
-                                        )
-                                    } else {
-                                        glass_core::ipc::McpResponse::err(
-                                            request.id,
-                                            format!("Session {} not found", focused_sid.val()),
-                                        )
+                        if let Some(ctx) = self.windows.values_mut().next() {
+                            let response =
+                                match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                    Ok(tab_idx) => {
+                                        let command = request
+                                            .params
+                                            .get("command")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let focused_sid =
+                                            ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                        if let Some(session) = ctx.session_mux.session(focused_sid)
+                                        {
+                                            let input = format!("{}\r", command).into_bytes();
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(Cow::Owned(input)),
+                                            );
+                                            glass_core::ipc::McpResponse::ok(
+                                                request.id,
+                                                serde_json::json!({
+                                                    "sent": true,
+                                                    "session_id": focused_sid.val(),
+                                                }),
+                                            )
+                                        } else {
+                                            glass_core::ipc::McpResponse::err(
+                                                request.id,
+                                                format!("Session {} not found", focused_sid.val()),
+                                            )
+                                        }
                                     }
-                                }
-                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
-                            }
+                                    Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                                };
+                            ctx.mark_dirty_and_redraw();
+                            response
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
@@ -9449,42 +10708,49 @@ impl ApplicationHandler<AppEvent> for Processor {
                         }
                     }
                     "cancel_command" => {
-                        if let Some(ctx) = self.windows.values().next() {
-                            match resolve_tab_index(&ctx.session_mux, &request.params) {
-                                Ok(tab_idx) => {
-                                    let focused_sid = ctx.session_mux.tabs()[tab_idx].focused_pane;
-                                    if let Some(session) = ctx.session_mux.session(focused_sid) {
-                                        let was_running = session
-                                            .block_manager
-                                            .current_block_index()
-                                            .and_then(|idx| session.block_manager.blocks().get(idx))
-                                            .map(|b| {
-                                                b.state == glass_terminal::BlockState::Executing
-                                            })
-                                            .unwrap_or(false);
-                                        // Send ETX byte (Ctrl+C) to PTY
-                                        let input = vec![0x03u8];
-                                        pty_send(
-                                            &session.pty_sender,
-                                            PtyMsg::Input(Cow::Owned(input)),
-                                        );
-                                        glass_core::ipc::McpResponse::ok(
-                                            request.id,
-                                            serde_json::json!({
-                                                "signal_sent": true,
-                                                "was_running": was_running,
-                                                "session_id": focused_sid.val(),
-                                            }),
-                                        )
-                                    } else {
-                                        glass_core::ipc::McpResponse::err(
-                                            request.id,
-                                            format!("Session {} not found", focused_sid.val()),
-                                        )
+                        if let Some(ctx) = self.windows.values_mut().next() {
+                            let response =
+                                match resolve_tab_index(&ctx.session_mux, &request.params) {
+                                    Ok(tab_idx) => {
+                                        let focused_sid =
+                                            ctx.session_mux.tabs()[tab_idx].focused_pane;
+                                        if let Some(session) = ctx.session_mux.session(focused_sid)
+                                        {
+                                            let was_running = session
+                                                .block_manager
+                                                .current_block_index()
+                                                .and_then(|idx| {
+                                                    session.block_manager.blocks().get(idx)
+                                                })
+                                                .map(|b| {
+                                                    b.state == glass_terminal::BlockState::Executing
+                                                })
+                                                .unwrap_or(false);
+                                            // Send ETX byte (Ctrl+C) to PTY
+                                            let input = vec![0x03u8];
+                                            pty_send(
+                                                &session.pty_sender,
+                                                PtyMsg::Input(Cow::Owned(input)),
+                                            );
+                                            glass_core::ipc::McpResponse::ok(
+                                                request.id,
+                                                serde_json::json!({
+                                                    "signal_sent": true,
+                                                    "was_running": was_running,
+                                                    "session_id": focused_sid.val(),
+                                                }),
+                                            )
+                                        } else {
+                                            glass_core::ipc::McpResponse::err(
+                                                request.id,
+                                                format!("Session {} not found", focused_sid.val()),
+                                            )
+                                        }
                                     }
-                                }
-                                Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
-                            }
+                                    Err(e) => glass_core::ipc::McpResponse::err(request.id, e),
+                                };
+                            ctx.mark_dirty_and_redraw();
+                            response
                         } else {
                             glass_core::ipc::McpResponse::err(
                                 request.id,
@@ -9642,8 +10908,12 @@ impl ApplicationHandler<AppEvent> for Processor {
                                 if let Some(cost) = resp.cost_usd {
                                     tracing::info!("Tier 4 script generation cost: ${:.4}", cost);
                                 }
-                                match parse_script_response(&resp.text) {
-                                    Some((name, hooks, source)) => {
+                                match glass_feedback::parse_script_response(&resp.text) {
+                                    glass_feedback::ScriptResponse::Script {
+                                        name,
+                                        hooks,
+                                        source,
+                                    } => {
                                         // Successful parse — reset consecutive failure counter.
                                         self.script_gen_parse_failures = 0;
                                         let scripts_dir = std::path::Path::new(&project_root)
@@ -9651,7 +10921,10 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             .join("scripts")
                                             .join("feedback");
                                         if let Err(e) = std::fs::create_dir_all(&scripts_dir) {
-                                            tracing::warn!("Failed to create scripts dir {}: {e}", scripts_dir.display());
+                                            tracing::warn!(
+                                                "Failed to create scripts dir {}: {e}",
+                                                scripts_dir.display()
+                                            );
                                         }
 
                                         // Deduplicate: skip if a non-archived manifest already exists.
@@ -9700,7 +10973,16 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             self.script_bridge.reload();
                                         }
                                     }
-                                    None => {
+                                    glass_feedback::ScriptResponse::TomlSufficient => {
+                                        // LLM judged a TOML rule sufficient — that is a
+                                        // valid, deliberate non-script answer. Don't burn
+                                        // the consecutive-failure budget on it.
+                                        self.script_gen_parse_failures = 0;
+                                        tracing::info!(
+                                            "Tier 4: LLM reported TOML_SUFFICIENT — no script generated"
+                                        );
+                                    }
+                                    glass_feedback::ScriptResponse::Unparseable => {
                                         self.script_gen_parse_failures += 1;
                                         tracing::warn!(
                                             "Tier 4: could not parse script from LLM response (consecutive failures: {})",
@@ -9721,18 +11003,19 @@ impl ApplicationHandler<AppEvent> for Processor {
 
     /// Called when the event queue is drained.
     ///
-    /// On Windows, `request_redraw()` generates WM_PAINT which has the LOWEST
-    /// message priority — `PeekMessage` only returns it when no posted messages
-    /// exist. PTY output generates `PostMessage` events (TerminalDirty, Shell,
-    /// etc.) that can starve WM_PAINT during continuous output.
-    ///
-    /// Fix: use `ControlFlow::Poll` when any window is dirty. Poll mode runs
-    /// the event loop without blocking, so `PeekMessage` is called in a tight
-    /// loop. Combined with the 16ms Wakeup throttle in the PTY reader (at most
-    /// ~60 TerminalDirty events/sec), there are many poll iterations between
-    /// PostMessage events where WM_PAINT can be returned. When all windows are
-    /// clean, switch back to `Wait` to avoid burning CPU.
+    /// Serves as a secondary redraw mechanism alongside TerminalDirty's direct
+    /// `mark_dirty_and_redraw()`. If any window is still dirty when the queue
+    /// drains (e.g., a redraw was throttled or surface was lost), this ensures
+    /// a request_redraw() is issued and the event loop stays in Poll mode until
+    /// the render completes. When all windows are clean, switches to Wait to
+    /// avoid burning CPU.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Keep the OS power-request state in sync with orchestrator activity.
+        // Centralized here (rather than in each `active = true/false` site) so
+        // every activation/deactivation path gets the correct power state on
+        // the next event-loop idle without bespoke plumbing.
+        self.sync_power_request();
+
         let mut any_dirty = false;
         for ctx in self.windows.values() {
             if ctx.render_dirty {
@@ -9748,39 +11031,54 @@ impl ApplicationHandler<AppEvent> for Processor {
     }
 }
 
-/// Parse a Tier 4 script generation response from an ephemeral LLM agent.
-///
-/// Expected format:
-/// ```text
-/// SCRIPT_NAME: my-script-name
-/// SCRIPT_HOOKS: command_complete, orchestrator_iteration
-/// ```rhai
-/// // ... Rhai source code ...
-/// ```
-/// ```
-///
-/// Returns `(name, hooks_csv_quoted, source)` on success.
-fn parse_script_response(text: &str) -> Option<(String, String, String)> {
-    let name = text
-        .lines()
-        .find(|l| l.starts_with("SCRIPT_NAME:"))
-        .map(|l| l.trim_start_matches("SCRIPT_NAME:").trim().to_string())?;
-    let hooks_raw = text
-        .lines()
-        .find(|l| l.starts_with("SCRIPT_HOOKS:"))
-        .map(|l| l.trim_start_matches("SCRIPT_HOOKS:").trim().to_string())?;
-    let hooks = hooks_raw
-        .split(',')
-        .map(|h| format!("\"{}\"", h.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let source_start = text.find("```rhai").map(|i| i + 7)?;
-    let source_end = text[source_start..].find("```").map(|i| source_start + i)?;
-    let source = text[source_start..source_end].trim().to_string();
-    if name.is_empty() || source.is_empty() {
-        return None;
+impl Processor {
+    /// Reconcile OS power-request state with `self.orchestrator.active`.
+    ///
+    /// On Windows, when the orchestrator becomes active we tell the OS that
+    /// this thread needs the system to stay awake via
+    /// `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`. This
+    /// prevents the PC from sleeping during long-running orchestrator sessions
+    /// (overnight minimize + idle would otherwise suspend Glass, freezing the
+    /// silence tracker).
+    ///
+    /// When the orchestrator deactivates we clear the request with
+    /// `SetThreadExecutionState(ES_CONTINUOUS)` so the system can sleep
+    /// normally again.
+    ///
+    /// No-op on non-Windows platforms (Linux/macOS don't exhibit the same
+    /// aggressive background-app suspension behavior for terminal apps).
+    fn sync_power_request(&mut self) {
+        let desired = self.orchestrator.active;
+        if desired == self.power_request_active {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::System::Power::{
+                SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+            };
+            // SAFETY: SetThreadExecutionState is a thread-local system call
+            // that returns the previous flags. Calling it from the main thread
+            // is standard usage.
+            let flags = if desired {
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            } else {
+                ES_CONTINUOUS
+            };
+            let prev = unsafe { SetThreadExecutionState(flags) };
+            if prev == 0 {
+                tracing::warn!(
+                    "SetThreadExecutionState(0x{flags:x}) returned 0 — power request not applied"
+                );
+                return;
+            }
+            tracing::debug!(
+                "Power request {} (flags=0x{flags:x})",
+                if desired { "enabled" } else { "cleared" }
+            );
+        }
+        self.power_request_active = desired;
     }
-    Some((name, hooks, source))
 }
 
 /// Embedded shell integration scripts, compiled into the binary.
@@ -9838,7 +11136,10 @@ fn find_shell_integration(shell_name: &str) -> Option<std::path::PathBuf> {
 
     let temp_dir = std::env::temp_dir().join("glass-shell-integration");
     if let Err(e) = std::fs::create_dir_all(&temp_dir) {
-        tracing::warn!("Failed to create shell integration dir {}: {e}", temp_dir.display());
+        tracing::warn!(
+            "Failed to create shell integration dir {}: {e}",
+            temp_dir.display()
+        );
     }
     let temp_path = temp_dir.join(script_name);
     match std::fs::write(&temp_path, embedded) {
@@ -9946,7 +11247,10 @@ fn install_crash_handler() {
         if let Some(home) = dirs::home_dir() {
             let glass_dir = home.join(".glass");
             if let Err(e) = std::fs::create_dir_all(&glass_dir) {
-                tracing::warn!("Failed to create crash log dir {}: {e}", glass_dir.display());
+                tracing::warn!(
+                    "Failed to create crash log dir {}: {e}",
+                    glass_dir.display()
+                );
             }
             let crash_log = glass_dir.join("crash.log");
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -10030,14 +11334,16 @@ fn emit_observe_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
     if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
         let _ = glass_coordination::event_log::insert_event(
             db.conn(),
-            &project,
-            "observe",
-            None,
-            Some("agent-mode"),
-            event_type,
-            summary,
-            None,
-            false,
+            &glass_coordination::event_log::InsertEventData {
+                project: &project,
+                category: "observe",
+                agent_id: None,
+                agent_name: Some("agent-mode"),
+                event_type,
+                summary,
+                detail: None,
+                pinned: false,
+            },
         );
     }
 }
@@ -10052,87 +11358,18 @@ fn emit_command_event(agent_runtime: &Option<AgentRuntime>, event_type: &str, su
     if let Ok(db) = glass_coordination::CoordinationDb::open_default() {
         let _ = glass_coordination::event_log::insert_event(
             db.conn(),
-            &project,
-            "command",
-            None,
-            None,
-            event_type,
-            summary,
-            None,
-            false,
+            &glass_coordination::event_log::InsertEventData {
+                project: &project,
+                category: "command",
+                agent_id: None,
+                agent_name: None,
+                event_type,
+                summary,
+                detail: None,
+                pinned: false,
+            },
         );
     }
-}
-
-/// Run system diagnostics: GPU adapter, detected shell, shell integration, config path.
-fn run_check() -> anyhow::Result<()> {
-    println!("Glass System Check");
-    println!("==================\n");
-
-    // Version
-    println!("Version: {}", env!("CARGO_PKG_VERSION"));
-
-    // Config
-    match glass_core::config::GlassConfig::config_path() {
-        Some(p) if p.exists() => println!("Config:  {} (found)", p.display()),
-        Some(p) => println!("Config:  {} (not found -- using defaults)", p.display()),
-        None => println!("Config:  <unable to determine home directory>"),
-    }
-
-    // Data directory
-    if let Some(home) = dirs::home_dir() {
-        let data_dir = home.join(".glass");
-        if data_dir.exists() {
-            println!("Data:    {}", data_dir.display());
-        } else {
-            println!("Data:    {} (not created yet)", data_dir.display());
-        }
-    }
-
-    // Shell detection
-    let shell = std::env::var("SHELL")
-        .or_else(|_| std::env::var("COMSPEC"))
-        .unwrap_or_else(|_| "<not detected>".to_string());
-    println!("Shell:   {}", shell);
-
-    // Shell integration
-    let shell_lower = shell.to_lowercase();
-    let known = ["bash", "zsh", "fish", "pwsh", "powershell"];
-    let supported = known.iter().any(|s| shell_lower.contains(s));
-    if supported {
-        println!("Shell integration: supported");
-        println!("Shell scripts:     embedded in binary");
-    } else {
-        println!("Shell integration: NOT supported (need bash, zsh, fish, or PowerShell)");
-    }
-
-    // GPU check
-    println!("\nGPU Diagnostics:");
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        #[cfg(target_os = "windows")]
-        backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
-        #[cfg(not(target_os = "windows"))]
-        backends: wgpu::Backends::all(),
-        ..Default::default()
-    });
-
-    let adapters: Vec<wgpu::Adapter> =
-        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-    if adapters.is_empty() {
-        println!("  No GPU adapters found!");
-        println!("  Glass requires a GPU with DX12 (Windows), Metal (macOS), or Vulkan (Linux).");
-    } else {
-        for adapter in &adapters {
-            let info = adapter.get_info();
-            println!(
-                "  {} -- {:?} ({:?})",
-                info.name, info.backend, info.device_type
-            );
-        }
-    }
-
-    println!("\nAll checks complete.");
-    Ok(())
 }
 
 fn main() {
@@ -10147,6 +11384,10 @@ fn main() {
         SetConsoleCP(65001);
         SetConsoleOutputCP(65001);
     }
+
+    // Save original CWD before changing it — CLI subcommands need the
+    // directory the user invoked the command from, not the home directory.
+    let original_cwd = std::env::current_dir().ok();
 
     // Default to the user's home directory when launched without a terminal
     // (e.g. double-clicking glass.exe) so the shell starts in ~/ instead of
@@ -10192,6 +11433,9 @@ fn main() {
             // No subcommand: launch the terminal GUI (default behavior)
             tracing::info!("Glass starting");
 
+            // Auto-register MCP server with installed AI tools (fire-and-forget).
+            mcp_register::auto_register();
+
             GlassConfig::ensure_default_config();
             let config = GlassConfig::load();
             tracing::info!(
@@ -10222,14 +11466,34 @@ fn main() {
 
             let script_bridge = script_bridge::ScriptBridge::new(&config);
 
-            // Load persistent state and increment session count (UX-1 onboarding)
-            let show_settings_hint = {
-                let mut glass_state = glass_core::state::GlassState::load();
-                let hint = glass_state.should_show_hint();
-                glass_state.session_count += 1;
-                glass_state.save();
-                hint
+            // Load persistent state and increment session count (onboarding)
+            let glass_state = {
+                let mut s = glass_core::state::GlassState::load();
+                s.session_count += 1;
+                s.save();
+                s
             };
+            let mut onboarding =
+                glass_core::onboarding::OnboardingCoordinator::from_state(&glass_state);
+
+            // Detect LLM providers (async — Ollama probe has 200ms timeout)
+            let detected_providers = {
+                let rt =
+                    tokio::runtime::Runtime::new().expect("tokio runtime for provider detection");
+                rt.block_on(glass_core::provider_detect::detect_providers())
+            };
+            onboarding.set_providers(detected_providers);
+
+            // Process initial session start
+            let mut welcome_overlay_visible = false;
+            let welcome_overlay_step = glass_renderer::WelcomeStep::default();
+            let onboarding_actions =
+                onboarding.process(glass_core::onboarding::OnboardingEvent::SessionStart, false);
+            for action in onboarding_actions {
+                if let glass_core::onboarding::OnboardingAction::ShowWelcome = action {
+                    welcome_overlay_visible = true;
+                }
+            }
 
             let mut processor = Processor {
                 windows: HashMap::new(),
@@ -10239,7 +11503,6 @@ fn main() {
                 cold_start,
                 config_error: None,
                 watcher_spawned: false,
-                show_settings_hint,
                 update_info: None,
                 coordination_state: Default::default(),
                 last_ticker_event_id: None,
@@ -10271,6 +11534,11 @@ fn main() {
                 },
                 agent_proposal_worktrees: Vec::new(),
                 active_toast: None,
+                onboarding,
+                onboarding_toast: None,
+                onboarding_command_count: 0,
+                welcome_overlay_visible,
+                welcome_overlay_step,
                 activity_overlay_visible: false,
                 activity_view_filter: Default::default(),
                 activity_scroll_offset: 0,
@@ -10285,14 +11553,19 @@ fn main() {
                 settings_field_index: 0,
                 settings_editing: false,
                 settings_edit_buffer: String::new(),
+                settings_edit_section: None,
+                settings_edit_key: "",
+                settings_edit_needs_quotes: false,
                 settings_shortcuts_scroll: 0,
                 status_message: None,
                 agent_review_open: false,
                 proposal_review_selected: 0,
                 proposal_diff_cache: None,
                 #[cfg(target_os = "windows")]
-                job_object_handle,
+                _job_object_handle: job_object_handle,
                 artifact_watcher_thread: None,
+                orchestrator_postmortem: None,
+                power_request_active: false,
                 feedback_state: None,
                 feedback_write_pending: false,
                 config_write_suppress_until: None,
@@ -10302,6 +11575,7 @@ fn main() {
                 script_bridge,
                 script_gen_parse_failures: 0,
                 centered_toast: None,
+                orchestrator_redraw_pending: None,
             };
 
             if let Err(e) = event_loop.run_app(&mut processor) {
@@ -10309,19 +11583,63 @@ fn main() {
             }
         }
         Some(Commands::History { action }) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             // Initialize structured logging for CLI mode (stdout)
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
                 .init();
             history::run_history(action);
         }
+        Some(Commands::Doctor {
+            json,
+            fix,
+            category,
+        }) => {
+            // Restore original CWD so doctor checks run in the user's directory,
+            // not ~/ (which main() changed to for the GUI).
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            let options = doctor::DoctorOptions {
+                json,
+                fix,
+                category,
+            };
+            if let Err(e) = doctor::run_doctor(options) {
+                eprintln!("Doctor failed: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Check) => {
-            if let Err(e) = run_check() {
-                eprintln!("Check failed: {e}");
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            let options = doctor::DoctorOptions {
+                json: false,
+                fix: false,
+                category: None,
+            };
+            if let Err(e) = doctor::run_doctor(options) {
+                eprintln!("Doctor failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Analyze { dir, port, no_open }) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            if let Err(e) = rt.block_on(analyze::run(dir, port, no_open)) {
+                eprintln!("Analyze error: {e}");
                 std::process::exit(1);
             }
         }
         Some(Commands::Undo { command_id }) => {
+            if let Some(ref cwd) = original_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
             // Initialize structured logging for CLI mode (stdout)
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -10516,8 +11834,8 @@ fn handle_settings_activate(
             let current = config.pipes.as_ref().map(|p| p.auto_expand).unwrap_or(true);
             Some((Some("pipes"), "auto_expand", (!current).to_string()))
         }
-        // Orchestrator: enabled
-        (6, 0) => {
+        // Orchestrator: enabled (field 4: after Provider, Model, Implementer, Persona)
+        (6, 4) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10530,8 +11848,8 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
-        // Orchestrator: feedback_llm toggle (field index 6)
-        (6, 6) => {
+        // Orchestrator: feedback_llm toggle (field 10)
+        (6, 10) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10544,8 +11862,8 @@ fn handle_settings_activate(
                 (!current).to_string(),
             ))
         }
-        // Orchestrator: ablation_enabled toggle (field index 8)
-        (6, 8) => {
+        // Orchestrator: ablation_enabled toggle (field 12)
+        (6, 12) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10645,8 +11963,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator max_iterations: step 10 (field index 1)
-        (6, 1) => {
+        // Orchestrator max_iterations: step 10 (field 5)
+        (6, 5) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10660,8 +11978,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator silence_timeout_secs: step 10 (field index 2)
-        (6, 2) => {
+        // Orchestrator silence_timeout_secs: step 10 (field 6)
+        (6, 6) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10675,8 +11993,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator max_prompt_hints: step 1 (field index 7)
-        (6, 7) => {
+        // Orchestrator max_prompt_hints: step 1 (field 11)
+        (6, 11) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10690,8 +12008,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator: ablation_sweep_interval: step 5 (field index 9)
-        (6, 9) => {
+        // Orchestrator: ablation_sweep_interval: step 5 (field 13)
+        (6, 13) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10705,8 +12023,8 @@ fn handle_settings_increment(
                 new_val.to_string(),
             ))
         }
-        // Orchestrator: checkpoint_interval: step 5 (field index 10)
-        (6, 10) => {
+        // Orchestrator: checkpoint_interval: step 5 (field 14)
+        (6, 14) => {
             let current = config
                 .agent
                 .as_ref()
@@ -10718,6 +12036,158 @@ fn handle_settings_increment(
                 Some("agent.orchestrator"),
                 "checkpoint_interval",
                 new_val.to_string(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Get info for an inline-editable (non-toggle) field.
+/// Returns (toml_section, toml_key, current_value, needs_quotes) if the field supports text entry.
+/// Toggle fields and display-only fields return None.
+fn settings_editable_field(
+    config: &glass_core::config::GlassConfig,
+    section_index: usize,
+    field_index: usize,
+) -> Option<(Option<&'static str>, &'static str, String, bool)> {
+    match (section_index, field_index) {
+        // Font Family (text, needs quotes)
+        (0, 0) => Some((None, "font_family", config.font_family.clone(), true)),
+        // Font Size (numeric)
+        (0, 1) => Some((None, "font_size", format!("{:.1}", config.font_size), false)),
+        // Agent Budget (numeric)
+        (1, 2) => {
+            let v = config
+                .agent
+                .as_ref()
+                .map(|a| a.max_budget_usd)
+                .unwrap_or(1.0);
+            Some((Some("agent"), "max_budget_usd", format!("{:.2}", v), false))
+        }
+        // Agent Cooldown (numeric)
+        (1, 3) => {
+            let v = config.agent.as_ref().map(|a| a.cooldown_secs).unwrap_or(30);
+            Some((Some("agent"), "cooldown_secs", v.to_string(), false))
+        }
+        // SOI Min Lines (numeric)
+        (2, 2) => {
+            let v = config.soi.as_ref().map(|s| s.min_lines).unwrap_or(0);
+            Some((Some("soi"), "min_lines", v.to_string(), false))
+        }
+        // Snapshot Max Storage MB (numeric)
+        (3, 1) => {
+            let v = config
+                .snapshot
+                .as_ref()
+                .map(|s| s.max_size_mb)
+                .unwrap_or(500);
+            Some((Some("snapshot"), "max_size_mb", v.to_string(), false))
+        }
+        // Snapshot Retention Days (numeric)
+        (3, 2) => {
+            let v = config
+                .snapshot
+                .as_ref()
+                .map(|s| s.retention_days)
+                .unwrap_or(30);
+            Some((Some("snapshot"), "retention_days", v.to_string(), false))
+        }
+        // Pipes Max Capture MB (numeric)
+        (4, 2) => {
+            let v = config
+                .pipes
+                .as_ref()
+                .map(|p| p.max_capture_mb)
+                .unwrap_or(10);
+            Some((Some("pipes"), "max_capture_mb", v.to_string(), false))
+        }
+        // History Max Output KB (numeric)
+        (5, 0) => {
+            let v = config
+                .history
+                .as_ref()
+                .map(|h| h.max_output_capture_kb)
+                .unwrap_or(50);
+            Some((
+                Some("history"),
+                "max_output_capture_kb",
+                v.to_string(),
+                false,
+            ))
+        }
+        // Orchestrator Max Iterations (numeric)
+        (6, 5) => {
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .and_then(|o| o.max_iterations)
+                .unwrap_or(0);
+            Some((
+                Some("agent.orchestrator"),
+                "max_iterations",
+                v.to_string(),
+                false,
+            ))
+        }
+        // Orchestrator Silence Timeout (numeric)
+        (6, 6) => {
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.silence_timeout_secs)
+                .unwrap_or(60);
+            Some((
+                Some("agent.orchestrator"),
+                "silence_timeout_secs",
+                v.to_string(),
+                false,
+            ))
+        }
+        // Orchestrator Max Prompt Hints (numeric)
+        (6, 11) => {
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.max_prompt_hints)
+                .unwrap_or(10);
+            Some((
+                Some("agent.orchestrator"),
+                "max_prompt_hints",
+                v.to_string(),
+                false,
+            ))
+        }
+        // Orchestrator Ablation Sweep Interval (numeric)
+        (6, 13) => {
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.ablation_sweep_interval)
+                .unwrap_or(20);
+            Some((
+                Some("agent.orchestrator"),
+                "ablation_sweep_interval",
+                v.to_string(),
+                false,
+            ))
+        }
+        // Orchestrator Checkpoint Interval (numeric)
+        (6, 14) => {
+            let v = config
+                .agent
+                .as_ref()
+                .and_then(|a| a.orchestrator.as_ref())
+                .map(|o| o.checkpoint_interval)
+                .unwrap_or(15);
+            Some((
+                Some("agent.orchestrator"),
+                "checkpoint_interval",
+                v.to_string(),
+                false,
             ))
         }
         _ => None,

@@ -10,10 +10,37 @@ pub use glass_core::agent_runtime::AgentMode;
 
 pub mod anthropic;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod ipc_tools;
 pub mod model_cache;
 pub mod ollama;
 pub mod openai;
+
+pub use codex_cli::CodexCliBackend;
+
+// ── Shared conversation config ────────────────────────────────────────────────
+
+/// Configuration shared across all API-based backend conversation loops.
+///
+/// Groups the parameters that are identical in shape across the Ollama,
+/// OpenAI, and Anthropic backends so each `conversation_loop` / `do_turn`
+/// can take a single `&ConversationConfig` instead of 6-8 separate args.
+pub(crate) struct ConversationConfig {
+    /// API key / credential (empty for Ollama which needs no auth).
+    pub api_key: String,
+    /// Model identifier (e.g. `"gpt-4o"`, `"claude-sonnet-4-6"`, `"llama3"`).
+    pub model: String,
+    /// Base URL for the API endpoint (no trailing slash).
+    pub endpoint: String,
+    /// System prompt injected at session start.
+    pub system_prompt: String,
+    /// Optional first user message sent immediately after spawn.
+    pub initial_message: Option<String>,
+    /// MCP / built-in tool names the agent is permitted to call.
+    pub allowed_tools: Vec<String>,
+    /// Monotonically increasing session counter.
+    pub generation: u64,
+}
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
@@ -163,6 +190,14 @@ pub enum BackendError {
     },
     /// The backend process could not be spawned (OS error or similar).
     SpawnFailed(String),
+    /// The provider requires an interactive login (e.g. `codex login`) that Glass
+    /// will not perform itself. Surfaces an actionable hint to the user.
+    LoginRequired {
+        /// Provider name (e.g. `"codex-cli"`).
+        provider: String,
+        /// Shell command the user should run (e.g. `"codex login"`).
+        command_hint: String,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -176,6 +211,10 @@ impl fmt::Display for BackendError {
                 write!(f, "backend binary '{binary}' not found on PATH")
             }
             BackendError::SpawnFailed(msg) => write!(f, "failed to spawn backend process: {msg}"),
+            BackendError::LoginRequired {
+                provider,
+                command_hint,
+            } => write!(f, "{provider} requires a login — run `{command_hint}`"),
         }
     }
 }
@@ -199,6 +238,7 @@ pub fn resolve_backend(
 
     match provider {
         "claude-code" | "" => Ok(Box::new(claude_cli::ClaudeCliBackend::new())),
+        "codex-cli" => Ok(Box::new(codex_cli::CodexCliBackend::with_model(model))),
         "anthropic-api" => {
             let key = std::env::var("ANTHROPIC_API_KEY")
                 .ok()
@@ -319,5 +359,36 @@ mod tests {
         let b =
             resolve_backend("custom", "local-model", None, Some("http://localhost:8080")).unwrap();
         assert_eq!(b.name(), "OpenAI API");
+    }
+
+    #[test]
+    fn login_required_display_includes_command_hint() {
+        let err = BackendError::LoginRequired {
+            provider: "codex-cli".into(),
+            command_hint: "codex login".into(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("codex-cli"), "msg was: {msg}");
+        assert!(msg.contains("codex login"), "msg was: {msg}");
+        assert!(msg.contains("login"), "msg was: {msg}");
+    }
+
+    #[test]
+    fn resolve_codex_cli_returns_codex_backend() {
+        let b = resolve_backend("codex-cli", "gpt-5-codex", None, None).unwrap();
+        assert_eq!(b.name(), "Codex CLI");
+    }
+
+    #[test]
+    fn resolve_codex_cli_no_login_check_at_resolve_time() {
+        // resolve_backend MUST succeed even when the user is not logged in.
+        // The LoginRequired error is deferred to spawn() so config validation
+        // does not force a login.
+        let tmp = std::env::temp_dir().join("glass-codex-resolve-no-check");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var("CODEX_HOME", &tmp);
+        let result = resolve_backend("codex-cli", "gpt-5-codex", None, None);
+        std::env::remove_var("CODEX_HOME");
+        assert!(result.is_ok());
     }
 }

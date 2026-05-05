@@ -157,6 +157,9 @@ pub enum OrchestratorEventKind {
     ContextSent,
     Respawn,
     Verify,
+    ContextGathered,
+    AgentSpawned,
+    AgentResponded,
 }
 
 /// Display-ready orchestrator event for the transcript.
@@ -770,11 +773,7 @@ impl ActivityOverlayRenderer {
                 };
                 // Progress bar: [====>     ] 2/5 Current Name
                 let bar_width = 20usize;
-                let filled = if total > 0 {
-                    (done * bar_width) / total
-                } else {
-                    0
-                };
+                let filled = (done * bar_width) / total;
                 let bar = format!(
                     "[{}{}] {}/{} {}",
                     "=".repeat(filled),
@@ -935,6 +934,22 @@ impl ActivityOverlayRenderer {
                                 b: 255,
                             },
                             "DONE",
+                        ),
+                        "instruction" => (
+                            Rgb {
+                                r: 140,
+                                g: 160,
+                                b: 180,
+                            },
+                            "instr",
+                        ),
+                        "wait" => (
+                            Rgb {
+                                r: 100,
+                                g: 100,
+                                b: 110,
+                            },
+                            "wait",
                         ),
                         _ => (
                             Rgb {

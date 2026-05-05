@@ -1,0 +1,18 @@
+cooldowns = []
+
+[[snapshots]]
+run_id = "run-1774683967"
+provisional_rules = []
+
+[snapshots.config_values]
+feedback_llm = "true"
+max_prompt_hints = "10"
+silence_timeout_secs = "5"
+max_retries_before_stuck = "4"
+
+[pending]
+field = "max_retries_before_stuck"
+old_value = "4"
+new_value = "5"
+finding_id = "stuck-sensitivity"
+run_id = "run-1774683967"

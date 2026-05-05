@@ -80,9 +80,7 @@ impl OrchestratorContext {
                             .join(" ");
                         out.push_str(&format!("### {path}\n\n"));
                         out.push_str(&truncated);
-                        out.push_str(&format!(
-                            "\n\n[TRUNCATED — read full file at {path}]\n\n"
-                        ));
+                        out.push_str(&format!("\n\n[TRUNCATED — read full file at {path}]\n\n"));
                         words_used += remaining;
                     }
                 }
@@ -151,21 +149,22 @@ pub fn gather_context(
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut files: Vec<(String, String)> = Vec::new();
 
-    let maybe_add = |path: &Path, files: &mut Vec<(String, String)>, seen: &mut HashSet<PathBuf>| {
-        let abs = match path.canonicalize() {
-            Ok(p) => p,
-            Err(_) => {
-                // canonicalize fails if file doesn't exist; skip
-                return;
+    let maybe_add =
+        |path: &Path, files: &mut Vec<(String, String)>, seen: &mut HashSet<PathBuf>| {
+            let abs = match path.canonicalize() {
+                Ok(p) => p,
+                Err(_) => {
+                    // canonicalize fails if file doesn't exist; skip
+                    return;
+                }
+            };
+            if !seen.insert(abs) {
+                return; // already included
+            }
+            if let Ok(content) = std::fs::read_to_string(path) {
+                files.push((path.to_string_lossy().into_owned(), content));
             }
         };
-        if !seen.insert(abs) {
-            return; // already included
-        }
-        if let Ok(content) = std::fs::read_to_string(path) {
-            files.push((path.to_string_lossy().into_owned(), content));
-        }
-    };
 
     // Priority 1: context_files from agent-instructions frontmatter.
     if let Some(ref parsed) = parsed_instructions {
@@ -211,7 +210,7 @@ pub fn gather_context(
         }
     }
     // Sort newest first.
-    recent_mds.sort_by(|a, b| b.0.cmp(&a.0));
+    recent_mds.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, p) in recent_mds {
         maybe_add(&p, &mut files, &mut seen);
     }
@@ -279,7 +278,10 @@ mod tests {
                 ("PRD.md".to_string(), "Product requirements.".to_string()),
                 ("ARCHITECTURE.md".to_string(), "System design.".to_string()),
             ],
-            terminal_lines: vec!["$ cargo build".to_string(), "   Compiling glass v0.1.0".to_string()],
+            terminal_lines: vec![
+                "$ cargo build".to_string(),
+                "   Compiling glass v0.1.0".to_string(),
+            ],
             git_log: Some("abc1234 feat: initial commit".to_string()),
             git_diff: Some(" src/main.rs | 5 ++++".to_string()),
         };

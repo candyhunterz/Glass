@@ -5,12 +5,11 @@ authors = ["Glass Contributors"]
 language = "en"
 src = "src"
 
-git-repository-url = "https://github.com/candyhunterz/Glass"
-edit-url-template = "https://github.com/candyhunterz/Glass/edit/main/docs/{path}"
-
 [build]
 build-dir = "book"
 
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/candyhunterz/Glass"
+edit-url-template = "https://github.com/candyhunterz/Glass/edit/main/docs/{path}"

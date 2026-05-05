@@ -63,6 +63,19 @@ pub enum EphemeralAgentError {
     ParseError(String),
 }
 
+/// Which SmartTrigger priority fired the silence detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerSource {
+    /// Prompt regex matched end of output.
+    Prompt,
+    /// OSC 133;A shell prompt detected.
+    ShellPrompt,
+    /// Output velocity dropped (fast trigger).
+    Fast,
+    /// Periodic slow fallback.
+    Slow,
+}
+
 /// Events produced by shell integration OSC sequences.
 ///
 /// Mirrors `OscEvent` from glass_terminal but lives in glass_core
@@ -190,6 +203,22 @@ pub enum AppEvent {
     OrchestratorSilence {
         window_id: winit::window::WindowId,
         session_id: SessionId,
+        trigger_source: TriggerSource,
+        /// How long the PTY has been silent when the trigger fired (for stall detection).
+        silence_duration_ms: u64,
+    },
+    /// Orchestrator: background context gathering completed.
+    OrchestratorContextReady {
+        window_id: winit::window::WindowId,
+        session_id: SessionId,
+        terminal_lines: Vec<String>,
+        exit_code: Option<i32>,
+        soi_summary: Option<String>,
+        soi_errors: Vec<String>,
+        git_diff_stat: Option<String>,
+        current_head: Option<String>,
+        nudge: Option<String>,
+        cwd: String,
     },
     /// Metric guard verification completed on background thread.
     VerifyComplete {
@@ -220,6 +249,8 @@ pub enum AppEvent {
         result: Result<EphemeralAgentResult, EphemeralAgentError>,
         purpose: EphemeralPurpose,
     },
+    /// Request a window redraw (used by orchestrator status spinner tick).
+    RedrawRequest,
 }
 
 #[cfg(test)]

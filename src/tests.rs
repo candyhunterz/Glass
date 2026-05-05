@@ -300,7 +300,7 @@ mod settings_sync_tests {
     #[test]
     fn activate_orchestrator_enabled_toggles() {
         let config = GlassConfig::load_from_str("");
-        let (section, key, value) = handle_settings_activate(&config, 6, 0).unwrap();
+        let (section, key, value) = handle_settings_activate(&config, 6, 4).unwrap();
         assert_eq!(section, Some("agent.orchestrator"));
         assert_eq!(key, "enabled");
         assert_eq!(value, "true"); // was false
@@ -390,7 +390,7 @@ mod settings_sync_tests {
     #[test]
     fn increment_orchestrator_max_iterations_up_from_zero() {
         let config = GlassConfig::load_from_str("");
-        let (_, key, value) = handle_settings_increment(&config, 6, 1, true).unwrap();
+        let (_, key, value) = handle_settings_increment(&config, 6, 5, true).unwrap();
         assert_eq!(key, "max_iterations");
         assert_eq!(value, "10"); // 0 + 10
     }
@@ -398,7 +398,7 @@ mod settings_sync_tests {
     #[test]
     fn increment_orchestrator_max_iterations_down_to_zero() {
         let config = GlassConfig::load_from_str("[agent.orchestrator]\nmax_iterations = 10");
-        let (_, key, value) = handle_settings_increment(&config, 6, 1, false).unwrap();
+        let (_, key, value) = handle_settings_increment(&config, 6, 5, false).unwrap();
         assert_eq!(key, "max_iterations");
         assert_eq!(value, "0"); // unlimited
     }
@@ -406,7 +406,7 @@ mod settings_sync_tests {
     #[test]
     fn increment_orchestrator_silence_up() {
         let config = GlassConfig::load_from_str("");
-        let (section, key, value) = handle_settings_increment(&config, 6, 2, true).unwrap();
+        let (section, key, value) = handle_settings_increment(&config, 6, 6, true).unwrap();
         assert_eq!(section, Some("agent.orchestrator"));
         assert_eq!(key, "silence_timeout_secs");
         assert_eq!(value, "70"); // 60 + 10

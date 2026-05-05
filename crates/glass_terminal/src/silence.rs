@@ -1,3 +1,4 @@
+use glass_core::event::TriggerSource;
 use regex::Regex;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,10 @@ pub struct SmartTrigger {
     prompt_detected: bool,
     /// Set when OSC 133;A (shell prompt) received.
     shell_prompt_returned: bool,
+    /// Minimum output bytes required before fast trigger can arm.
+    min_output_bytes: usize,
+    /// Bytes accumulated since last fire.
+    output_bytes_since_fire: usize,
 }
 
 impl SmartTrigger {
@@ -47,14 +52,23 @@ impl SmartTrigger {
             was_output_flowing: false,
             prompt_detected: false,
             shell_prompt_returned: false,
+            min_output_bytes: 0,
+            output_bytes_since_fire: 0,
         }
+    }
+
+    pub fn set_min_output_bytes(&mut self, min: usize) {
+        self.min_output_bytes = min;
     }
 
     /// Call when PTY produces output bytes. Resets timers, checks prompt regex.
     pub fn on_output_bytes(&mut self, bytes: &[u8]) {
         self.last_output_at = Instant::now();
         self.last_fired_at = None;
-        self.was_output_flowing = true;
+        self.output_bytes_since_fire += bytes.len();
+        if self.output_bytes_since_fire >= self.min_output_bytes {
+            self.was_output_flowing = true;
+        }
 
         // Check prompt regex against the last line of output
         if let Some(ref regex) = self.prompt_regex {
@@ -74,21 +88,23 @@ impl SmartTrigger {
         self.shell_prompt_returned = true;
     }
 
-    /// Check if the orchestrator should be triggered. Returns true at most once
-    /// per signal, then clears the signal.
-    pub fn should_fire(&mut self) -> bool {
+    /// Check if the orchestrator should be triggered. Returns the trigger
+    /// source if fired, or `None` if no trigger condition is met.
+    pub fn should_fire(&mut self) -> Option<TriggerSource> {
         // Priority 1: Prompt regex matched
         if self.prompt_detected {
             self.prompt_detected = false;
+            self.output_bytes_since_fire = 0;
             self.last_fired_at = Some(Instant::now());
-            return true;
+            return Some(TriggerSource::Prompt);
         }
 
         // Priority 2: Shell prompt returned (agent exited)
         if self.shell_prompt_returned {
             self.shell_prompt_returned = false;
+            self.output_bytes_since_fire = 0;
             self.last_fired_at = Some(Instant::now());
-            return true;
+            return Some(TriggerSource::ShellPrompt);
         }
 
         let silence = self.last_output_at.elapsed();
@@ -96,8 +112,9 @@ impl SmartTrigger {
         // Priority 3: Output was flowing and stopped for fast_threshold
         if self.was_output_flowing && silence >= self.fast_threshold {
             self.was_output_flowing = false;
+            self.output_bytes_since_fire = 0;
             self.last_fired_at = Some(Instant::now());
-            return true;
+            return Some(TriggerSource::Fast);
         }
 
         // Priority 4: Slow fallback (periodic fire after threshold)
@@ -107,12 +124,22 @@ impl SmartTrigger {
                 .map(|t| t.elapsed() >= self.threshold)
                 .unwrap_or(true);
             if should {
+                self.output_bytes_since_fire = 0;
                 self.last_fired_at = Some(Instant::now());
             }
-            return should;
+            return if should {
+                Some(TriggerSource::Slow)
+            } else {
+                None
+            };
         }
 
-        false
+        None
+    }
+
+    /// Returns how long since the last PTY output byte was received.
+    pub fn silence_duration(&self) -> Duration {
+        self.last_output_at.elapsed()
     }
 
     /// Returns the maximum poll timeout, ensuring we wake in time for the next check.
@@ -158,38 +185,38 @@ mod tests {
     #[test]
     fn fires_on_prompt_detected() {
         let mut trigger = SmartTrigger::new(30, 5, Some("^❯".to_string()));
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
         trigger.on_output_bytes(b"some output\n\xe2\x9d\xaf ");
-        assert!(trigger.should_fire());
+        assert_eq!(trigger.should_fire(), Some(TriggerSource::Prompt));
         // Clears after firing
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
     }
 
     #[test]
     fn fires_on_shell_prompt() {
         let mut trigger = SmartTrigger::new(30, 5, None);
         trigger.on_shell_prompt();
-        assert!(trigger.should_fire());
-        assert!(!trigger.should_fire());
+        assert_eq!(trigger.should_fire(), Some(TriggerSource::ShellPrompt));
+        assert!(trigger.should_fire().is_none());
     }
 
     #[test]
     fn fires_on_fast_trigger_after_output_stops() {
         let mut trigger = SmartTrigger::new(30, 1, None);
         trigger.on_output_bytes(b"output");
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
         thread::sleep(Duration::from_millis(1100));
-        assert!(trigger.should_fire());
+        assert_eq!(trigger.should_fire(), Some(TriggerSource::Fast));
         // was_output_flowing cleared — fast trigger won't fire again
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
     }
 
     #[test]
     fn fires_on_slow_fallback() {
         let mut trigger = SmartTrigger::new(1, 5, None);
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
         thread::sleep(Duration::from_millis(1100));
-        assert!(trigger.should_fire());
+        assert_eq!(trigger.should_fire(), Some(TriggerSource::Slow));
     }
 
     #[test]
@@ -197,7 +224,7 @@ mod tests {
         let mut trigger = SmartTrigger::new(1, 1, None);
         thread::sleep(Duration::from_millis(1100));
         trigger.on_output_bytes(b"output");
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
     }
 
     #[test]
@@ -205,7 +232,7 @@ mod tests {
         let mut trigger = SmartTrigger::new(30, 5, None);
         trigger.on_output_bytes(b"\xe2\x9d\xaf ");
         // No regex configured, so prompt detection doesn't fire
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
     }
 
     #[test]
@@ -222,12 +249,12 @@ mod tests {
     fn slow_fallback_fires_periodically() {
         let mut trigger = SmartTrigger::new(1, 5, None);
         thread::sleep(Duration::from_millis(1100));
-        assert!(trigger.should_fire());
+        assert_eq!(trigger.should_fire(), Some(TriggerSource::Slow));
         // Shouldn't double-fire immediately
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
         // Should fire again after another threshold
         thread::sleep(Duration::from_millis(1100));
-        assert!(trigger.should_fire());
+        assert_eq!(trigger.should_fire(), Some(TriggerSource::Slow));
     }
 
     #[test]
@@ -235,6 +262,47 @@ mod tests {
         // Invalid regex pattern should not panic, just disable prompt detection
         let mut trigger = SmartTrigger::new(30, 5, Some("[invalid".to_string()));
         trigger.on_output_bytes(b"some output");
-        assert!(!trigger.should_fire());
+        assert!(trigger.should_fire().is_none());
+    }
+
+    #[test]
+    fn fast_trigger_requires_minimum_output_volume() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.set_min_output_bytes(256);
+        trigger.on_output_bytes(b"short");
+        thread::sleep(Duration::from_millis(1100));
+        assert!(
+            trigger.should_fire().is_none(),
+            "fast trigger should not fire below min_output_bytes"
+        );
+    }
+
+    #[test]
+    fn fast_trigger_fires_above_volume_threshold() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.set_min_output_bytes(256);
+        let big_output = vec![b'x'; 300];
+        trigger.on_output_bytes(&big_output);
+        thread::sleep(Duration::from_millis(1100));
+        assert_eq!(
+            trigger.should_fire(),
+            Some(TriggerSource::Fast),
+            "fast trigger should fire above min_output_bytes"
+        );
+    }
+
+    #[test]
+    fn fast_trigger_accumulates_across_calls() {
+        let mut trigger = SmartTrigger::new(30, 1, None);
+        trigger.set_min_output_bytes(256);
+        for _ in 0..30 {
+            trigger.on_output_bytes(b"1234567890");
+        }
+        thread::sleep(Duration::from_millis(1100));
+        assert_eq!(
+            trigger.should_fire(),
+            Some(TriggerSource::Fast),
+            "accumulated output should arm fast trigger"
+        );
     }
 }

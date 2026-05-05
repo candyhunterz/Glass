@@ -7,19 +7,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
+/// Returns `true` if this provider uses Anthropic's OAuth usage API.
+/// The poller is a no-op for any other provider (codex-cli, openai-api, ollama, custom).
+pub fn should_poll_for_provider(provider: &str) -> bool {
+    matches!(provider, "claude-code" | "anthropic-api" | "")
+}
+
 /// Cached usage data from the Anthropic usage API.
 #[derive(Debug, Clone)]
 pub struct UsageData {
     /// 5-hour utilization (0.0 to 1.0).
     pub five_hour_utilization: f64,
     /// 5-hour reset time (ISO 8601).
-    #[allow(dead_code)] // constructed in poll_usage, read in tests only
-    pub five_hour_resets_at: String,
+    pub _five_hour_resets_at: String,
     /// 7-day utilization (0.0 to 1.0).
     pub seven_day_utilization: f64,
     /// 7-day reset time (ISO 8601).
-    #[allow(dead_code)] // constructed in poll_usage, read in tests only
-    pub seven_day_resets_at: String,
+    pub _seven_day_resets_at: String,
     /// When this data was fetched.
     pub fetched_at: Instant,
 }
@@ -33,6 +37,8 @@ pub struct UsageState {
     pub paused: bool,
     /// Consecutive API failures (disable display after 3).
     pub consecutive_failures: u32,
+    /// When the polling thread last completed a cycle.
+    pub last_poll_at: Option<std::time::Instant>,
 }
 
 /// Read the OAuth access token from `~/.claude/.credentials.json`.
@@ -82,7 +88,7 @@ fn poll_usage(token: &str) -> Result<UsageData, String> {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0),
         ),
-        five_hour_resets_at: five_hour
+        _five_hour_resets_at: five_hour
             .get("resets_at")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -93,7 +99,7 @@ fn poll_usage(token: &str) -> Result<UsageData, String> {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0),
         ),
-        seven_day_resets_at: seven_day
+        _seven_day_resets_at: seven_day
             .get("resets_at")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -118,6 +124,12 @@ pub fn start_polling(
             let poll_interval = Duration::from_secs(60);
 
             loop {
+                // Mark that the polling thread is alive
+                {
+                    let mut st = state_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    st.last_poll_at = Some(std::time::Instant::now());
+                }
+
                 // Read token fresh each cycle (may be refreshed by Claude Code)
                 let token = match read_oauth_token() {
                     Some(t) => t,
@@ -184,6 +196,9 @@ pub fn start_polling(
                 std::thread::sleep(poll_interval);
             }
         })
+        .map_err(|e| {
+            tracing::error!("Usage tracker: failed to spawn polling thread: {e}");
+        })
         .ok();
 
     state
@@ -225,7 +240,7 @@ pub fn format_status_bar(state: &UsageState) -> String {
 
 /// Get the color tier for a utilization value.
 /// Returns 0 (green, 0-70%), 1 (yellow, 70-85%), or 2 (red, 85%+).
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn usage_color_tier(utilization: f64) -> u8 {
     if utilization >= 0.85 {
         2 // red
@@ -233,6 +248,26 @@ pub fn usage_color_tier(utilization: f64) -> u8 {
         1 // yellow
     } else {
         0 // green
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn polls_for_claude_providers() {
+        assert!(should_poll_for_provider("claude-code"));
+        assert!(should_poll_for_provider("anthropic-api"));
+        assert!(should_poll_for_provider("")); // empty = default = claude-code
+    }
+
+    #[test]
+    fn does_not_poll_for_other_providers() {
+        assert!(!should_poll_for_provider("codex-cli"));
+        assert!(!should_poll_for_provider("openai-api"));
+        assert!(!should_poll_for_provider("ollama"));
+        assert!(!should_poll_for_provider("custom"));
     }
 }
 
@@ -245,13 +280,14 @@ mod tests {
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.42,
-                five_hour_resets_at: "2026-03-14T08:00:00Z".to_string(),
+                _five_hour_resets_at: "2026-03-14T08:00:00Z".to_string(),
                 seven_day_utilization: 0.15,
-                seven_day_resets_at: "2026-03-20T00:00:00Z".to_string(),
+                _seven_day_resets_at: "2026-03-20T00:00:00Z".to_string(),
                 fetched_at: Instant::now(),
             }),
             paused: false,
             consecutive_failures: 0,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "5h: 42% | 7d: 15%");
     }
@@ -268,13 +304,14 @@ mod tests {
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.50,
-                five_hour_resets_at: String::new(),
+                _five_hour_resets_at: String::new(),
                 seven_day_utilization: 0.10,
-                seven_day_resets_at: String::new(),
+                _seven_day_resets_at: String::new(),
                 fetched_at: Instant::now(),
             }),
             paused: false,
             consecutive_failures: 3,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "5h: 50% | 7d: 10%");
     }
@@ -285,13 +322,14 @@ mod tests {
         let state = UsageState {
             data: Some(UsageData {
                 five_hour_utilization: 0.50,
-                five_hour_resets_at: String::new(),
+                _five_hour_resets_at: String::new(),
                 seven_day_utilization: 0.10,
-                seven_day_resets_at: String::new(),
+                _seven_day_resets_at: String::new(),
                 fetched_at: Instant::now() - Duration::from_secs(301),
             }),
             paused: false,
             consecutive_failures: 0,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "5h: ~50% | 7d: ~10%");
     }
@@ -303,6 +341,7 @@ mod tests {
             data: None,
             paused: false,
             consecutive_failures: 3,
+            last_poll_at: None,
         };
         assert_eq!(format_status_bar(&state), "");
     }

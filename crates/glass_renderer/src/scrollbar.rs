@@ -21,6 +21,13 @@ const THUMB_COLOR_REST: [f32; 4] = [100.0 / 255.0, 100.0 / 255.0, 100.0 / 255.0,
 /// Thumb hover/drag color: brighter.
 const THUMB_COLOR_ACTIVE: [f32; 4] = [150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0, 0.7];
 
+/// Terminal scroll state needed for scrollbar rendering and hit-testing.
+pub struct ScrollState {
+    pub display_offset: usize,
+    pub history_size: usize,
+    pub screen_lines: usize,
+}
+
 /// Result of a scrollbar hit-test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollbarHit {
@@ -104,15 +111,12 @@ impl ScrollbarRenderer {
     /// - `screen_lines`: number of visible terminal lines
     /// - `is_hovered`: whether the mouse is over this scrollbar
     /// - `is_dragging`: whether the thumb is being dragged
-    #[allow(clippy::too_many_arguments)]
     pub fn build_scrollbar_rects(
         &self,
         pane_right_x: f32,
         pane_y: f32,
         pane_height: f32,
-        display_offset: usize,
-        history_size: usize,
-        screen_lines: usize,
+        scroll: &ScrollState,
         is_hovered: bool,
         is_dragging: bool,
     ) -> Vec<RectInstance> {
@@ -126,8 +130,12 @@ impl ScrollbarRenderer {
         });
 
         // Thumb
-        let (thumb_y_offset, thumb_height) =
-            self.compute_thumb_geometry(pane_height, history_size, screen_lines, display_offset);
+        let (thumb_y_offset, thumb_height) = self.compute_thumb_geometry(
+            pane_height,
+            scroll.history_size,
+            scroll.screen_lines,
+            scroll.display_offset,
+        );
 
         let thumb_color = if is_dragging || is_hovered {
             THUMB_COLOR_ACTIVE
@@ -151,7 +159,6 @@ impl ScrollbarRenderer {
     /// Hit-test: determine what part of the scrollbar (if any) the mouse is over.
     ///
     /// Returns `None` if the mouse is outside the scrollbar region.
-    #[allow(clippy::too_many_arguments)]
     pub fn hit_test(
         &self,
         mouse_x: f32,
@@ -159,9 +166,7 @@ impl ScrollbarRenderer {
         scrollbar_x: f32,
         viewport_y: f32,
         viewport_height: f32,
-        display_offset: usize,
-        history_size: usize,
-        screen_lines: usize,
+        scroll: &ScrollState,
     ) -> Option<ScrollbarHit> {
         // Check x-range
         if mouse_x < scrollbar_x || mouse_x >= scrollbar_x + self.width {
@@ -176,9 +181,9 @@ impl ScrollbarRenderer {
         // Determine thumb position
         let (thumb_y_offset, thumb_height) = self.compute_thumb_geometry(
             viewport_height,
-            history_size,
-            screen_lines,
-            display_offset,
+            scroll.history_size,
+            scroll.screen_lines,
+            scroll.display_offset,
         );
 
         let thumb_top = viewport_y + thumb_y_offset;
@@ -202,17 +207,25 @@ mod tests {
         (a - b).abs() < 0.01
     }
 
+    fn ss(display_offset: usize, history_size: usize, screen_lines: usize) -> ScrollState {
+        ScrollState {
+            display_offset,
+            history_size,
+            screen_lines,
+        }
+    }
+
     #[test]
     fn build_rects_returns_track_and_thumb() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 100, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(0, 100, 24), false, false);
         assert_eq!(rects.len(), 2, "should return track + thumb");
     }
 
     #[test]
     fn track_rect_has_correct_color_and_position() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 10.0, 480.0, 0, 100, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 10.0, 480.0, &ss(0, 100, 24), false, false);
         let track = &rects[0];
         assert_eq!(track.color, TRACK_COLOR);
         assert!(approx_eq(track.pos[0], 192.0)); // 200 - 8
@@ -225,7 +238,7 @@ mod tests {
     fn thumb_at_bottom_when_display_offset_zero() {
         let sb = ScrollbarRenderer::new();
         // display_offset=0 means at bottom (newest content), thumb should be near bottom
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 100, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(0, 100, 24), false, false);
         let thumb = &rects[1];
         let (thumb_y, _thumb_h) = sb.compute_thumb_geometry(480.0, 100, 24, 0);
         // scroll_ratio = 1.0, so thumb_y = scrollable_track * 1.0
@@ -240,7 +253,7 @@ mod tests {
     fn thumb_at_top_when_display_offset_equals_history_size() {
         let sb = ScrollbarRenderer::new();
         // display_offset=100 (= history_size) means at top (oldest history)
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 100, 100, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(100, 100, 24), false, false);
         let thumb = &rects[1];
         // scroll_ratio = 0.0, thumb_y_offset = 0
         assert!(
@@ -252,7 +265,7 @@ mod tests {
     #[test]
     fn thumb_at_middle_when_display_offset_is_half() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 50, 100, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(50, 100, 24), false, false);
         let thumb = &rects[1];
         let (_thumb_y, thumb_h) = sb.compute_thumb_geometry(480.0, 100, 24, 50);
         let expected_middle = (480.0 - thumb_h) / 2.0;
@@ -275,7 +288,7 @@ mod tests {
     #[test]
     fn empty_history_fills_entire_track() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 0, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(0, 0, 24), false, false);
         let thumb = &rects[1];
         assert!(
             approx_eq(thumb.pos[3], 480.0),
@@ -299,7 +312,7 @@ mod tests {
     #[test]
     fn hover_produces_active_color() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 100, 24, true, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(0, 100, 24), true, false);
         let thumb = &rects[1];
         assert_eq!(thumb.color, THUMB_COLOR_ACTIVE);
     }
@@ -307,7 +320,7 @@ mod tests {
     #[test]
     fn drag_produces_active_color() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 100, 24, false, true);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(0, 100, 24), false, true);
         let thumb = &rects[1];
         assert_eq!(thumb.color, THUMB_COLOR_ACTIVE);
     }
@@ -315,7 +328,7 @@ mod tests {
     #[test]
     fn rest_produces_rest_color() {
         let sb = ScrollbarRenderer::new();
-        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, 0, 100, 24, false, false);
+        let rects = sb.build_scrollbar_rects(200.0, 0.0, 480.0, &ss(0, 100, 24), false, false);
         let thumb = &rects[1];
         assert_eq!(thumb.color, THUMB_COLOR_REST);
     }
@@ -324,14 +337,14 @@ mod tests {
     fn hit_test_returns_none_outside_x_range() {
         let sb = ScrollbarRenderer::new();
         // scrollbar_x = 192 (200-8), mouse at x=100 is outside
-        let result = sb.hit_test(100.0, 240.0, 192.0, 0.0, 480.0, 0, 100, 24);
+        let result = sb.hit_test(100.0, 240.0, 192.0, 0.0, 480.0, &ss(0, 100, 24));
         assert_eq!(result, None);
     }
 
     #[test]
     fn hit_test_returns_none_outside_y_range() {
         let sb = ScrollbarRenderer::new();
-        let result = sb.hit_test(195.0, 500.0, 192.0, 0.0, 480.0, 0, 100, 24);
+        let result = sb.hit_test(195.0, 500.0, 192.0, 0.0, 480.0, &ss(0, 100, 24));
         assert_eq!(result, None);
     }
 
@@ -341,7 +354,7 @@ mod tests {
         // display_offset=0, thumb is at bottom
         let (thumb_y, thumb_h) = sb.compute_thumb_geometry(480.0, 100, 24, 0);
         let mouse_y = thumb_y + thumb_h / 2.0; // middle of thumb
-        let result = sb.hit_test(195.0, mouse_y, 192.0, 0.0, 480.0, 0, 100, 24);
+        let result = sb.hit_test(195.0, mouse_y, 192.0, 0.0, 480.0, &ss(0, 100, 24));
         assert_eq!(result, Some(ScrollbarHit::Thumb));
     }
 
@@ -349,7 +362,7 @@ mod tests {
     fn hit_test_returns_track_above_when_above_thumb() {
         let sb = ScrollbarRenderer::new();
         // display_offset=0, thumb is at bottom. Click near top of track.
-        let result = sb.hit_test(195.0, 5.0, 192.0, 0.0, 480.0, 0, 100, 24);
+        let result = sb.hit_test(195.0, 5.0, 192.0, 0.0, 480.0, &ss(0, 100, 24));
         assert_eq!(result, Some(ScrollbarHit::TrackAbove));
     }
 
@@ -357,7 +370,7 @@ mod tests {
     fn hit_test_returns_track_below_when_below_thumb() {
         let sb = ScrollbarRenderer::new();
         // display_offset=100 (at top), thumb is at top. Click near bottom of track.
-        let result = sb.hit_test(195.0, 470.0, 192.0, 0.0, 480.0, 100, 100, 24);
+        let result = sb.hit_test(195.0, 470.0, 192.0, 0.0, 480.0, &ss(100, 100, 24));
         assert_eq!(result, Some(ScrollbarHit::TrackBelow));
     }
 

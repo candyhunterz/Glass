@@ -81,11 +81,9 @@ impl RuleEngine {
             }
 
             match rule.action.as_str() {
-                "force_commit" => {
-                    if state.iterations_since_last_commit >= 5 {
-                        rule.trigger_count += 1;
-                        actions.push(RuleAction::ForceCommit);
-                    }
+                "force_commit" if state.iterations_since_last_commit >= 5 => {
+                    rule.trigger_count += 1;
+                    actions.push(RuleAction::ForceCommit);
                 }
                 "isolate_commits" => {
                     let file_param = rule
@@ -110,11 +108,9 @@ impl RuleEngine {
                     rule.trigger_count += 1;
                     actions.push(RuleAction::ExtendSilence { extra_secs: 30 });
                 }
-                "run_verify_twice" => {
-                    if state.verify_alternations >= 2 {
-                        rule.trigger_count += 1;
-                        actions.push(RuleAction::RunVerifyTwice);
-                    }
+                "run_verify_twice" if state.verify_alternations >= 2 => {
+                    rule.trigger_count += 1;
+                    actions.push(RuleAction::RunVerifyTwice);
                 }
                 "early_stuck" => {
                     rule.trigger_count += 1;
@@ -133,13 +129,11 @@ impl RuleEngine {
                     rule.trigger_count += 1;
                     actions.push(RuleAction::BlockUntilResolved { message });
                 }
-                "verify_progress" => {
-                    if state.waste_rate > 0.15 {
-                        rule.trigger_count += 1;
-                        actions.push(RuleAction::TextInjection(
-                            "Verify progress before continuing".to_string(),
-                        ));
-                    }
+                "verify_progress" if state.waste_rate > 0.15 => {
+                    rule.trigger_count += 1;
+                    actions.push(RuleAction::TextInjection(
+                        "Verify progress before continuing".to_string(),
+                    ));
                 }
                 // Unknown action strings are silently skipped.
                 _ => {}
@@ -171,6 +165,26 @@ impl RuleEngine {
                     && matches!(r.status, RuleStatus::Confirmed | RuleStatus::Provisional)
             })
             .filter_map(|r| r.action_params.get("text").cloned())
+            .collect()
+    }
+
+    /// Return hint texts, cap at 5 most recent, and increment trigger_count.
+    pub fn prompt_hints_mut(&mut self) -> Vec<String> {
+        let mut hints: Vec<&mut Rule> = self
+            .rules
+            .iter_mut()
+            .filter(|r| r.action == "prompt_hint")
+            .filter(|r| matches!(r.status, RuleStatus::Confirmed | RuleStatus::Provisional))
+            .collect();
+        // Sort by added_run descending (most recent first)
+        hints.sort_by(|a, b| b.added_run.cmp(&a.added_run));
+        hints.truncate(5);
+        hints
+            .iter_mut()
+            .map(|r| {
+                r.trigger_count += 1;
+                r.action_params.get("text").cloned().unwrap_or_default()
+            })
             .collect()
     }
 }
@@ -715,5 +729,35 @@ mod tests {
             rules: vec![make_test_rule("r1", "force_commit", RuleStatus::Rejected)],
         };
         assert!(!engine.is_rule_active("force_commit"));
+    }
+
+    // -----------------------------------------------------------------------
+    // prompt_hints_mut tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prompt_hints_mut_caps_at_5() {
+        let mut rules = Vec::new();
+        for i in 0..8 {
+            let mut r = make_test_rule(&format!("hint-{i}"), "prompt_hint", RuleStatus::Confirmed);
+            r.action_params
+                .insert("text".to_string(), format!("Hint {i}"));
+            r.added_run = format!("run-{i:03}");
+            rules.push(r);
+        }
+        let mut engine = RuleEngine { rules };
+        let hints = engine.prompt_hints_mut();
+        assert_eq!(hints.len(), 5, "should cap at 5 hints");
+    }
+
+    #[test]
+    fn prompt_hints_mut_increments_trigger_count() {
+        let mut r = make_test_rule("hint-1", "prompt_hint", RuleStatus::Confirmed);
+        r.action_params
+            .insert("text".to_string(), "Keep PRs small".to_string());
+        r.trigger_count = 0;
+        let mut engine = RuleEngine { rules: vec![r] };
+        let _ = engine.prompt_hints_mut();
+        assert_eq!(engine.rules[0].trigger_count, 1);
     }
 }

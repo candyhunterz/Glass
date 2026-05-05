@@ -1,0 +1,51 @@
+[meta]
+version = ""
+description = ""
+
+[[rules]]
+id = "uncommitted-drift"
+trigger = "behavioral"
+action = "force_commit"
+status = "provisional"
+severity = "medium"
+scope = "global"
+tags = []
+added_run = "run-1774683967"
+added_metric = ""
+confirmed_run = ""
+rejected_run = ""
+rejected_reason = ""
+last_triggered_run = ""
+trigger_count = 0
+cooldown_remaining = 0
+stale_runs = 0
+last_ablation_run = ""
+ablation_result = "untested"
+
+[rules.trigger_params]
+
+[rules.action_params]
+
+[[rules]]
+id = "oscillation"
+trigger = "behavioral"
+action = "early_stuck"
+status = "provisional"
+severity = "medium"
+scope = "global"
+tags = []
+added_run = "run-1774683967"
+added_metric = ""
+confirmed_run = ""
+rejected_run = ""
+rejected_reason = ""
+last_triggered_run = ""
+trigger_count = 0
+cooldown_remaining = 0
+stale_runs = 0
+last_ablation_run = ""
+ablation_result = "untested"
+
+[rules.trigger_params]
+
+[rules.action_params]
