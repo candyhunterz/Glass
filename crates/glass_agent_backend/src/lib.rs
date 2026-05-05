@@ -236,7 +236,7 @@ pub fn resolve_backend(
 
     match provider {
         "claude-code" | "" => Ok(Box::new(claude_cli::ClaudeCliBackend::new())),
-        "codex-cli" => Ok(Box::new(codex_cli::CodexCliBackend::new())),
+        "codex-cli" => Ok(Box::new(codex_cli::CodexCliBackend::with_model(model))),
         "anthropic-api" => {
             let key = std::env::var("ANTHROPIC_API_KEY")
                 .ok()
