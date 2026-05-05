@@ -4856,220 +4856,178 @@ impl ApplicationHandler<AppEvent> for Processor {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    let modifiers = self.modifiers;
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let modifiers = self.modifiers;
 
-                    // Search overlay input interception -- must be FIRST to prevent PTY forwarding
-                    // Uses an enum to capture what action to take, avoiding borrow conflicts
-                    // between session_mux (for overlay) and window (for request_redraw).
-                    enum OverlayAction {
-                        None,
-                        Handled,
-                        Close,
-                    }
-                    let overlay_action = {
-                        let Some(session) = ctx.session_mux.focused_session_mut() else {
-                            return;
-                        };
-                        if let Some(ref mut overlay) = session.search_overlay {
-                            match &event.logical_key {
-                                Key::Named(NamedKey::Escape) => {
-                                    session.search_overlay = None;
-                                    OverlayAction::Close
-                                }
-                                Key::Named(NamedKey::ArrowUp) => {
-                                    overlay.move_up();
-                                    OverlayAction::Handled
-                                }
-                                Key::Named(NamedKey::ArrowDown) => {
-                                    overlay.move_down();
-                                    OverlayAction::Handled
-                                }
-                                Key::Named(NamedKey::Enter) => {
-                                    // Scroll-to-block: find the block whose started_epoch matches
-                                    // the selected search result's started_at timestamp.
-                                    if overlay.selected < overlay.results.len() {
-                                        let result_epoch =
-                                            overlay.results[overlay.selected].started_at;
-                                        let all_blocks = session.block_manager.blocks();
-                                        let matched_block = all_blocks
-                                            .iter()
-                                            .find(|b| b.started_epoch == Some(result_epoch));
-                                        if let Some(block) = matched_block {
-                                            let target_line = block.prompt_start_line;
-                                            let mut term = session.term.lock();
-                                            let history_size = term.grid().history_size();
-                                            let current_offset = term.grid().display_offset();
-                                            let target_offset =
-                                                history_size.saturating_sub(target_line);
-                                            let delta =
-                                                target_offset as i32 - current_offset as i32;
-                                            if delta != 0 {
-                                                term.scroll_display(Scroll::Delta(delta));
-                                            }
+                // Search overlay input interception -- must be FIRST to prevent PTY forwarding
+                // Uses an enum to capture what action to take, avoiding borrow conflicts
+                // between session_mux (for overlay) and window (for request_redraw).
+                enum OverlayAction {
+                    None,
+                    Handled,
+                    Close,
+                }
+                let overlay_action = {
+                    let Some(session) = ctx.session_mux.focused_session_mut() else {
+                        return;
+                    };
+                    if let Some(ref mut overlay) = session.search_overlay {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                session.search_overlay = None;
+                                OverlayAction::Close
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                overlay.move_up();
+                                OverlayAction::Handled
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                overlay.move_down();
+                                OverlayAction::Handled
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                // Scroll-to-block: find the block whose started_epoch matches
+                                // the selected search result's started_at timestamp.
+                                if overlay.selected < overlay.results.len() {
+                                    let result_epoch = overlay.results[overlay.selected].started_at;
+                                    let all_blocks = session.block_manager.blocks();
+                                    let matched_block = all_blocks
+                                        .iter()
+                                        .find(|b| b.started_epoch == Some(result_epoch));
+                                    if let Some(block) = matched_block {
+                                        let target_line = block.prompt_start_line;
+                                        let mut term = session.term.lock();
+                                        let history_size = term.grid().history_size();
+                                        let current_offset = term.grid().display_offset();
+                                        let target_offset =
+                                            history_size.saturating_sub(target_line);
+                                        let delta = target_offset as i32 - current_offset as i32;
+                                        if delta != 0 {
+                                            term.scroll_display(Scroll::Delta(delta));
                                         }
                                     }
+                                }
+                                session.search_overlay = None;
+                                OverlayAction::Close
+                            }
+                            Key::Named(NamedKey::Backspace) => {
+                                overlay.pop_char();
+                                OverlayAction::Handled
+                            }
+                            Key::Character(c) => {
+                                // Allow Ctrl+Shift+F to toggle overlay closed even when open
+                                if modifiers.control_key()
+                                    && modifiers.shift_key()
+                                    && c.as_str().eq_ignore_ascii_case("f")
+                                {
                                     session.search_overlay = None;
                                     OverlayAction::Close
-                                }
-                                Key::Named(NamedKey::Backspace) => {
-                                    overlay.pop_char();
+                                } else {
+                                    overlay.push_char(c.as_str());
                                     OverlayAction::Handled
                                 }
-                                Key::Character(c) => {
-                                    // Allow Ctrl+Shift+F to toggle overlay closed even when open
-                                    if modifiers.control_key()
-                                        && modifiers.shift_key()
-                                        && c.as_str().eq_ignore_ascii_case("f")
-                                    {
-                                        session.search_overlay = None;
-                                        OverlayAction::Close
-                                    } else {
-                                        overlay.push_char(c.as_str());
-                                        OverlayAction::Handled
-                                    }
-                                }
-                                _ => OverlayAction::Handled, // Swallow all other keys while overlay is open
                             }
-                        } else {
-                            OverlayAction::None
+                            _ => OverlayAction::Handled, // Swallow all other keys while overlay is open
                         }
-                    };
-                    match overlay_action {
-                        OverlayAction::None => {} // No overlay open, continue to normal key handling
-                        OverlayAction::Handled | OverlayAction::Close => {
+                    } else {
+                        OverlayAction::None
+                    }
+                };
+                match overlay_action {
+                    OverlayAction::None => {} // No overlay open, continue to normal key handling
+                    OverlayAction::Handled | OverlayAction::Close => {
+                        ctx.mark_dirty_and_redraw();
+                        return;
+                    }
+                }
+
+                // Welcome overlay: intercept all keys while visible.
+                if self.welcome_overlay_visible {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::ArrowRight) => {
+                            self.welcome_overlay_step = self.welcome_overlay_step.next();
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            self.welcome_overlay_step = self.welcome_overlay_step.prev();
+                        }
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
+                            self.welcome_overlay_visible = false;
+                            self.onboarding.complete_welcome();
+                            let mut state = glass_core::state::GlassState::load();
+                            self.onboarding.save_to_state(&mut state);
+                            state.save();
+                        }
+                        _ => {}
+                    }
+                    ctx.mark_dirty_and_redraw();
+                    return; // Consume input while welcome is showing
+                }
+
+                let Some(session) = ctx.session() else {
+                    return;
+                };
+                let mode = *session.term.lock().mode();
+
+                // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
+                if glass_mux::is_glass_shortcut(modifiers) {
+                    match &event.logical_key {
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
+                            // New tab: inherit CWD from current session
+                            let cwd = ctx
+                                .session()
+                                .map(|s| s.status.cwd().to_string())
+                                .unwrap_or_default();
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+                            let session = match create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                &self.config,
+                                Some(std::path::Path::new(&cwd)),
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for new tab: {e}");
+                                    return;
+                                }
+                            };
+                            ctx.session_mux.add_tab(session, false);
+                            {
+                                let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
+                                let mut event = glass_scripting::HookEventData::new();
+                                event.set("tab_index", tab_idx as i64);
+                                fire_hook_on_bridge(
+                                    &mut self.script_bridge,
+                                    &self.orchestrator.project_root,
+                                    glass_scripting::HookPoint::TabCreate,
+                                    &event,
+                                );
+                            }
                             ctx.mark_dirty_and_redraw();
                             return;
                         }
-                    }
-
-                    // Welcome overlay: intercept all keys while visible.
-                    if self.welcome_overlay_visible {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::ArrowRight) => {
-                                self.welcome_overlay_step = self.welcome_overlay_step.next();
-                            }
-                            Key::Named(NamedKey::ArrowLeft) => {
-                                self.welcome_overlay_step = self.welcome_overlay_step.prev();
-                            }
-                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
-                                self.welcome_overlay_visible = false;
-                                self.onboarding.complete_welcome();
-                                let mut state = glass_core::state::GlassState::load();
-                                self.onboarding.save_to_state(&mut state);
-                                state.save();
-                            }
-                            _ => {}
-                        }
-                        ctx.mark_dirty_and_redraw();
-                        return; // Consume input while welcome is showing
-                    }
-
-                    let Some(session) = ctx.session() else {
-                        return;
-                    };
-                    let mode = *session.term.lock().mode();
-
-                    // Tab/pane management shortcuts (Ctrl+Shift on Win/Linux, Cmd on macOS)
-                    if glass_mux::is_glass_shortcut(modifiers) {
-                        match &event.logical_key {
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("t") => {
-                                // New tab: inherit CWD from current session
-                                let cwd = ctx
-                                    .session()
-                                    .map(|s| s.status.cwd().to_string())
-                                    .unwrap_or_default();
-                                let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                let size = ctx.window.inner_size();
-                                let session = match create_session(
-                                    &self.proxy,
-                                    window_id,
-                                    session_id,
-                                    &self.config,
-                                    Some(std::path::Path::new(&cwd)),
-                                    &SessionLayout {
-                                        cell_w,
-                                        cell_h,
-                                        window_width: size.width,
-                                        window_height: size.height,
-                                        tab_bar_lines: 1,
-                                    },
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!("PTY spawn failed for new tab: {e}");
-                                        return;
-                                    }
-                                };
-                                ctx.session_mux.add_tab(session, false);
-                                {
-                                    let tab_idx = ctx.session_mux.tab_count().saturating_sub(1);
-                                    let mut event = glass_scripting::HookEventData::new();
-                                    event.set("tab_index", tab_idx as i64);
-                                    fire_hook_on_bridge(
-                                        &mut self.script_bridge,
-                                        &self.orchestrator.project_root,
-                                        glass_scripting::HookPoint::TabCreate,
-                                        &event,
-                                    );
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
-                                // Close pane if multiple panes, otherwise close tab
-                                if ctx.session_mux.active_tab_pane_count() > 1 {
-                                    // Close focused pane
-                                    if let Some(focused_id) = ctx.session_mux.focused_session_id() {
-                                        let tab_count_before = ctx.session_mux.tab_count();
-                                        if let Some(session) =
-                                            ctx.session_mux.close_pane(focused_id)
-                                        {
-                                            cleanup_session(session);
-                                        }
-                                        // If close_pane closed the tab (shouldn't happen with >1 pane, but guard)
-                                        if ctx.session_mux.tab_count() < tab_count_before
-                                            && ctx.session_mux.tab_count() == 0
-                                        {
-                                            fire_hook_on_bridge(
-                                                &mut self.script_bridge,
-                                                &self.orchestrator.project_root,
-                                                glass_scripting::HookPoint::SessionEnd,
-                                                &glass_scripting::HookEventData::new(),
-                                            );
-                                            self.windows.remove(&window_id);
-                                            event_loop.exit();
-                                            return;
-                                        }
-                                        // Resize remaining panes' PTYs
-                                        let size = ctx.window.inner_size();
-                                        resize_all_panes(
-                                            &mut ctx.session_mux,
-                                            &ctx.frame_renderer,
-                                            size.width,
-                                            size.height,
-                                        );
-                                    }
-                                } else {
-                                    // Single pane: close the entire tab
-                                    let idx = ctx.session_mux.active_tab_index();
-                                    {
-                                        let mut event = glass_scripting::HookEventData::new();
-                                        event.set("tab_index", idx as i64);
-                                        fire_hook_on_bridge(
-                                            &mut self.script_bridge,
-                                            &self.orchestrator.project_root,
-                                            glass_scripting::HookPoint::TabClose,
-                                            &event,
-                                        );
-                                    }
-                                    if let Some(session) = ctx.session_mux.close_tab(idx) {
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("w") => {
+                            // Close pane if multiple panes, otherwise close tab
+                            if ctx.session_mux.active_tab_pane_count() > 1 {
+                                // Close focused pane
+                                if let Some(focused_id) = ctx.session_mux.focused_session_id() {
+                                    let tab_count_before = ctx.session_mux.tab_count();
+                                    if let Some(session) = ctx.session_mux.close_pane(focused_id) {
                                         cleanup_session(session);
                                     }
-                                    ctx.tab_bar_hovered_tab = None;
-                                    if ctx.session_mux.tab_count() == 0 {
+                                    // If close_pane closed the tab (shouldn't happen with >1 pane, but guard)
+                                    if ctx.session_mux.tab_count() < tab_count_before
+                                        && ctx.session_mux.tab_count() == 0
+                                    {
                                         fire_hook_on_bridge(
                                             &mut self.script_bridge,
                                             &self.orchestrator.project_root,
@@ -5080,723 +5038,799 @@ impl ApplicationHandler<AppEvent> for Processor {
                                         event_loop.exit();
                                         return;
                                     }
+                                    // Resize remaining panes' PTYs
+                                    let size = ctx.window.inner_size();
+                                    resize_all_panes(
+                                        &mut ctx.session_mux,
+                                        &ctx.frame_renderer,
+                                        size.width,
+                                        size.height,
+                                    );
                                 }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
-                                // Horizontal split (new pane to the right)
-                                let cwd = ctx
-                                    .session()
-                                    .map(|s| s.status.cwd().to_string())
-                                    .unwrap_or_default();
-                                let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                let size = ctx.window.inner_size();
-                                let session = match create_session(
-                                    &self.proxy,
-                                    window_id,
-                                    session_id,
-                                    &self.config,
-                                    Some(std::path::Path::new(&cwd)),
-                                    &SessionLayout {
-                                        cell_w,
-                                        cell_h,
-                                        window_width: size.width,
-                                        window_height: size.height,
-                                        tab_bar_lines: 1,
-                                    },
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "PTY spawn failed for horizontal split: {e}"
-                                        );
-                                        return;
-                                    }
-                                };
-                                if ctx
-                                    .session_mux
-                                    .split_pane(SplitDirection::Horizontal, session)
-                                    .is_none()
-                                {
-                                    // UX-20: notify user when max split depth reached
-                                    self.status_message = Some((
-                                        "Maximum split depth reached".to_string(),
-                                        std::time::Instant::now(),
-                                    ));
-                                    ctx.mark_dirty_and_redraw();
-                                    return;
-                                }
-
-                                // Resize all panes' PTYs with per-pane dimensions
-                                resize_all_panes(
-                                    &mut ctx.session_mux,
-                                    &ctx.frame_renderer,
-                                    size.width,
-                                    size.height,
-                                );
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
-                                // Vertical split (new pane below)
-                                let cwd = ctx
-                                    .session()
-                                    .map(|s| s.status.cwd().to_string())
-                                    .unwrap_or_default();
-                                let session_id = ctx.session_mux.next_session_id();
-                                let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                let size = ctx.window.inner_size();
-                                let session = match create_session(
-                                    &self.proxy,
-                                    window_id,
-                                    session_id,
-                                    &self.config,
-                                    Some(std::path::Path::new(&cwd)),
-                                    &SessionLayout {
-                                        cell_w,
-                                        cell_h,
-                                        window_width: size.width,
-                                        window_height: size.height,
-                                        tab_bar_lines: 1,
-                                    },
-                                ) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!("PTY spawn failed for vertical split: {e}");
-                                        return;
-                                    }
-                                };
-                                if ctx
-                                    .session_mux
-                                    .split_pane(SplitDirection::Vertical, session)
-                                    .is_none()
-                                {
-                                    // UX-20: notify user when max split depth reached
-                                    self.status_message = Some((
-                                        "Maximum split depth reached".to_string(),
-                                        std::time::Instant::now(),
-                                    ));
-                                    ctx.mark_dirty_and_redraw();
-                                    return;
-                                }
-                                // Resize all panes' PTYs with per-pane dimensions
-                                resize_all_panes(
-                                    &mut ctx.session_mux,
-                                    &ctx.frame_renderer,
-                                    size.width,
-                                    size.height,
-                                );
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {} // Fall through to existing Ctrl+Shift shortcuts
-                        }
-                    }
-
-                    // Check for Glass-handled keys first
-                    if modifiers.control_key() && modifiers.shift_key() {
-                        match &event.logical_key {
-                            // Ctrl+Shift+A: Toggle agent proposal review overlay.
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("a") => {
-                                if self.agent_runtime.is_some() {
-                                    self.agent_review_open = !self.agent_review_open;
-                                    if self.agent_review_open {
-                                        self.proposal_review_selected = 0;
-                                        self.proposal_diff_cache = None;
-                                    }
-                                    ctx.mark_dirty_and_redraw();
-                                    return;
-                                }
-                            }
-                            // Ctrl+Shift+G: Toggle activity stream overlay.
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("g") => {
-                                self.activity_overlay_visible = !self.activity_overlay_visible;
-                                if self.activity_overlay_visible {
-                                    // Default to Orchestrator tab when orchestrator is active
-                                    if self.orchestrator.active {
-                                        self.activity_view_filter =
-                                            glass_renderer::ActivityViewFilter::Orchestrator;
-                                    }
-                                } else {
-                                    self.activity_view_filter = Default::default();
-                                    self.activity_scroll_offset = 0;
-                                    self.activity_verbose = false;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Ctrl+Shift+,: Toggle settings overlay.
-                            Key::Character(c) if c.as_str() == "<" || c.as_str() == "," => {
-                                self.settings_overlay_visible = !self.settings_overlay_visible;
-                                if !self.settings_overlay_visible {
-                                    self.settings_overlay_tab = Default::default();
-                                    self.settings_section_index = 0;
-                                    self.settings_field_index = 0;
-                                    self.settings_editing = false;
-                                    self.settings_edit_buffer.clear();
-                                    self.settings_shortcuts_scroll = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("y")
-                                    && self.agent_review_open =>
-                            {
-                                if !self.agent_proposal_worktrees.is_empty() {
-                                    let idx = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len() - 1);
-                                    let (_proposal, handle_opt) =
-                                        self.agent_proposal_worktrees.remove(idx);
-                                    if let (Some(wm), Some(handle)) =
-                                        (self.worktree_manager.as_ref(), handle_opt)
-                                    {
-                                        if let Err(e) = wm.apply(handle) {
-                                            tracing::error!("Failed to apply proposal: {e}");
-                                        }
-                                    }
-                                    self.proposal_review_selected = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len().saturating_sub(1));
-                                    self.proposal_diff_cache = None;
-                                    if self.agent_proposal_worktrees.is_empty() {
-                                        self.agent_review_open = false;
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Ctrl+Shift+N: Reject selected proposal (only when overlay open).
-                            Key::Character(c)
-                                if c.as_str().eq_ignore_ascii_case("n")
-                                    && self.agent_review_open =>
-                            {
-                                if !self.agent_proposal_worktrees.is_empty() {
-                                    let idx = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len() - 1);
-                                    let (_proposal, handle_opt) =
-                                        self.agent_proposal_worktrees.remove(idx);
-                                    if let (Some(wm), Some(handle)) =
-                                        (self.worktree_manager.as_ref(), handle_opt)
-                                    {
-                                        if let Err(e) = wm.dismiss(handle) {
-                                            tracing::error!("Failed to dismiss proposal: {e}");
-                                        }
-                                    }
-                                    self.proposal_review_selected = self
-                                        .proposal_review_selected
-                                        .min(self.agent_proposal_worktrees.len().saturating_sub(1));
-                                    self.proposal_diff_cache = None;
-                                    if self.agent_proposal_worktrees.is_empty() {
-                                        self.agent_review_open = false;
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
-                                if let Some(session) = ctx.session() {
-                                    clipboard_copy(&session.term);
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
-                                if let Some(session) = ctx.session() {
-                                    clipboard_paste(&session.pty_sender, mode);
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
-                                if let Some(session) = ctx.session_mut() {
-                                    session.search_overlay = Some(SearchOverlay::new());
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
-                                if let Some(session) = ctx.session_mux.focused_session_mut() {
-                                    if let Some(ref store) = session.snapshot_store {
-                                        let engine = glass_snapshot::UndoEngine::new(store);
-                                        match engine.undo_latest() {
-                                            Ok(Some(result)) => {
-                                                // Count outcomes for summary line
-                                                let (
-                                                    mut restored,
-                                                    mut deleted,
-                                                    mut skipped,
-                                                    mut conflicts,
-                                                    mut errors,
-                                                ) = (0u32, 0u32, 0u32, 0u32, 0u32);
-                                                for (path, outcome) in &result.files {
-                                                    match outcome {
-                                                        glass_snapshot::FileOutcome::Restored => {
-                                                            restored += 1;
-                                                            tracing::info!(
-                                                                "Undo: restored {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Deleted => {
-                                                            deleted += 1;
-                                                            tracing::info!(
-                                                                "Undo: deleted {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Conflict {
-                                                            ..
-                                                        } => {
-                                                            conflicts += 1;
-                                                            tracing::warn!(
-                                                                "Undo: CONFLICT {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Error(e) => {
-                                                            errors += 1;
-                                                            tracing::error!(
-                                                                "Undo: error {}: {}",
-                                                                path.display(),
-                                                                e
-                                                            );
-                                                        }
-                                                        glass_snapshot::FileOutcome::Skipped => {
-                                                            skipped += 1;
-                                                            tracing::info!(
-                                                                "Undo: skipped {}",
-                                                                path.display()
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                                let undo_summary = format!(
-                                                    "Undo: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
-                                                    restored, deleted, skipped, conflicts, errors,
-                                                );
-                                                tracing::info!("{}", undo_summary);
-                                                self.status_message =
-                                                    Some((undo_summary, std::time::Instant::now()));
-                                                // Remove [undo] label from the undone block (visual feedback).
-                                                let epoch_to_clear = session
-                                                    .block_manager
-                                                    .blocks()
-                                                    .iter()
-                                                    .rev()
-                                                    .find(|b| b.has_snapshot)
-                                                    .and_then(|b| b.started_epoch);
-                                                if let Some(ep) = epoch_to_clear {
-                                                    if let Some(b) = session
-                                                        .block_manager
-                                                        .find_block_by_epoch_mut(ep)
-                                                    {
-                                                        b.has_snapshot = false;
-                                                    }
-                                                }
-                                            }
-                                            Ok(None) => {
-                                                tracing::info!("Nothing to undo -- no file-modifying commands found");
-                                                self.status_message = Some((
-                                                    "Nothing to undo".to_string(),
-                                                    std::time::Instant::now(),
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                tracing::error!("Undo failed: {}", e);
-                                                self.status_message = Some((
-                                                    format!("Undo failed: {}", e),
-                                                    std::time::Instant::now(),
-                                                ));
-                                            }
-                                        }
-                                    } else {
-                                        tracing::debug!("Undo unavailable -- no snapshot store");
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("u") => {
-                                // Ctrl+Shift+U: Apply available update
-                                if let Some(ref info) = self.update_info {
-                                    if let Err(e) = glass_core::updater::apply_update(info) {
-                                        tracing::warn!("Failed to apply update: {}", e);
-                                    }
-                                }
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
-                                // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
-                                if let Some(session) = ctx.session_mux.focused_session_mut() {
-                                    if let Some(block) =
-                                        session.block_manager.blocks_mut().iter_mut().rev().find(
-                                            |b| {
-                                                b.pipeline_stage_count.unwrap_or(0) > 0
-                                                    || b.pipeline_stage_commands.len() > 1
-                                            },
-                                        )
-                                    {
-                                        block.toggle_pipeline_expanded();
-                                    }
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("o") => {
-                                // Ctrl+Shift+O: Toggle orchestrator on/off
-                                self.orchestrator.active = !self.orchestrator.active;
-                                if self.orchestrator.active {
-                                    tracing::info!("Orchestrator: enabled by user");
-                                    let _ = ctx;
-                                    self.activate_orchestrator(window_id);
-                                } else {
-                                    tracing::info!("Orchestrator: disabled by user");
-                                    // Fire scripting OrchestratorRunEnd hook
-                                    {
-                                        let mut event = glass_scripting::HookEventData::new();
-                                        event.set("iterations", self.orchestrator.iteration as i64);
-                                        fire_hook_on_bridge(
-                                            &mut self.script_bridge,
-                                            &self.orchestrator.project_root,
-                                            glass_scripting::HookPoint::OrchestratorRunEnd,
-                                            &event,
-                                        );
-                                    }
-                                    self.orchestrator.feedback_completion_reason =
-                                        "user_cancelled".to_string();
-                                    // Handle active synthesis: write fallback checkpoint
-                                    if matches!(
-                                        self.orchestrator.checkpoint_phase,
-                                        orchestrator::CheckpointPhase::Synthesizing { .. }
-                                    ) {
-                                        tracing::info!("Orchestrator disabled during synthesis — writing fallback checkpoint");
-                                        let cwd = ctx
-                                            .session_mux
-                                            .focused_session()
-                                            .map(|s| s.status.cwd().to_string())
-                                            .unwrap_or_default();
-                                        let cp_path = std::path::Path::new(&cwd)
-                                            .join(".glass")
-                                            .join("checkpoint.md");
-                                        if let Some(parent) = cp_path.parent() {
-                                            if let Err(e) = std::fs::create_dir_all(parent) {
-                                                tracing::warn!(
-                                                    "Failed to create checkpoint dir {}: {e}",
-                                                    parent.display()
-                                                );
-                                            }
-                                        }
-                                        if let Some(fallback) =
-                                            self.orchestrator.cached_checkpoint_fallback.take()
-                                        {
-                                            if let Err(e) = std::fs::write(&cp_path, &fallback) {
-                                                tracing::warn!(
-                                                    "Failed to write fallback checkpoint {}: {e}",
-                                                    cp_path.display()
-                                                );
-                                            }
-                                        }
-                                        self.orchestrator.checkpoint_phase =
-                                            orchestrator::CheckpointPhase::Idle;
-                                        self.orchestrator.cached_checkpoint_fallback = None;
-                                    }
-                                    let _ = ctx;
-                                    self.run_feedback_on_end();
-                                    // Stop artifact watcher
-                                    if let Some(handle) = self.artifact_watcher_thread.take() {
-                                        handle.thread().unpark();
-                                    }
-                                }
-                                if let Some(ctx) = self.windows.get_mut(&window_id) {
-                                    ctx.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Shift+PageUp/Down/ArrowUp/ArrowDown: scrollback (UX-9)
-                    if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::PageUp) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::PageUp);
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::PageDown) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::PageDown);
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::Delta(1));
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                if let Some(session) = ctx.session() {
-                                    session.term.lock().scroll_display(Scroll::Delta(-1));
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
-                    if modifiers.control_key() {
-                        if let Key::Named(NamedKey::Tab) = &event.logical_key {
-                            if modifiers.shift_key() {
-                                ctx.session_mux.prev_tab();
                             } else {
-                                ctx.session_mux.next_tab();
+                                // Single pane: close the entire tab
+                                let idx = ctx.session_mux.active_tab_index();
+                                {
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("tab_index", idx as i64);
+                                    fire_hook_on_bridge(
+                                        &mut self.script_bridge,
+                                        &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::TabClose,
+                                        &event,
+                                    );
+                                }
+                                if let Some(session) = ctx.session_mux.close_tab(idx) {
+                                    cleanup_session(session);
+                                }
+                                ctx.tab_bar_hovered_tab = None;
+                                if ctx.session_mux.tab_count() == 0 {
+                                    fire_hook_on_bridge(
+                                        &mut self.script_bridge,
+                                        &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::SessionEnd,
+                                        &glass_scripting::HookEventData::new(),
+                                    );
+                                    self.windows.remove(&window_id);
+                                    event_loop.exit();
+                                    return;
+                                }
                             }
                             ctx.mark_dirty_and_redraw();
                             return;
                         }
-                    }
-
-                    // Ctrl+1-9 / Cmd+1-9: jump to tab by index
-                    if glass_mux::is_action_modifier(modifiers) {
-                        if let Key::Character(c) = &event.logical_key {
-                            if let Some(digit) =
-                                c.as_str().chars().next().and_then(|ch| ch.to_digit(10))
-                            {
-                                if (1..=9).contains(&digit) {
-                                    ctx.session_mux.activate_tab((digit as usize) - 1);
-                                    ctx.mark_dirty_and_redraw();
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("d") => {
+                            // Horizontal split (new pane to the right)
+                            let cwd = ctx
+                                .session()
+                                .map(|s| s.status.cwd().to_string())
+                                .unwrap_or_default();
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+                            let session = match create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                &self.config,
+                                Some(std::path::Path::new(&cwd)),
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for horizontal split: {e}");
                                     return;
                                 }
+                            };
+                            if ctx
+                                .session_mux
+                                .split_pane(SplitDirection::Horizontal, session)
+                                .is_none()
+                            {
+                                // UX-20: notify user when max split depth reached
+                                self.status_message = Some((
+                                    "Maximum split depth reached".to_string(),
+                                    std::time::Instant::now(),
+                                ));
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+
+                            // Resize all panes' PTYs with per-pane dimensions
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => {
+                            // Vertical split (new pane below)
+                            let cwd = ctx
+                                .session()
+                                .map(|s| s.status.cwd().to_string())
+                                .unwrap_or_default();
+                            let session_id = ctx.session_mux.next_session_id();
+                            let (cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                            let size = ctx.window.inner_size();
+                            let session = match create_session(
+                                &self.proxy,
+                                window_id,
+                                session_id,
+                                &self.config,
+                                Some(std::path::Path::new(&cwd)),
+                                &SessionLayout {
+                                    cell_w,
+                                    cell_h,
+                                    window_width: size.width,
+                                    window_height: size.height,
+                                    tab_bar_lines: 1,
+                                },
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!("PTY spawn failed for vertical split: {e}");
+                                    return;
+                                }
+                            };
+                            if ctx
+                                .session_mux
+                                .split_pane(SplitDirection::Vertical, session)
+                                .is_none()
+                            {
+                                // UX-20: notify user when max split depth reached
+                                self.status_message = Some((
+                                    "Maximum split depth reached".to_string(),
+                                    std::time::Instant::now(),
+                                ));
+                                ctx.mark_dirty_and_redraw();
+                                return;
+                            }
+                            // Resize all panes' PTYs with per-pane dimensions
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {} // Fall through to existing Ctrl+Shift shortcuts
+                    }
+                }
+
+                // Check for Glass-handled keys first
+                if modifiers.control_key() && modifiers.shift_key() {
+                    match &event.logical_key {
+                        // Ctrl+Shift+A: Toggle agent proposal review overlay.
+                        Key::Character(c)
+                            if c.as_str().eq_ignore_ascii_case("a")
+                                && self.agent_runtime.is_some() =>
+                        {
+                            self.agent_review_open = !self.agent_review_open;
+                            if self.agent_review_open {
+                                self.proposal_review_selected = 0;
+                                self.proposal_diff_cache = None;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+G: Toggle activity stream overlay.
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("g") => {
+                            self.activity_overlay_visible = !self.activity_overlay_visible;
+                            if self.activity_overlay_visible {
+                                // Default to Orchestrator tab when orchestrator is active
+                                if self.orchestrator.active {
+                                    self.activity_view_filter =
+                                        glass_renderer::ActivityViewFilter::Orchestrator;
+                                }
+                            } else {
+                                self.activity_view_filter = Default::default();
+                                self.activity_scroll_offset = 0;
+                                self.activity_verbose = false;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+,: Toggle settings overlay.
+                        Key::Character(c) if c.as_str() == "<" || c.as_str() == "," => {
+                            self.settings_overlay_visible = !self.settings_overlay_visible;
+                            if !self.settings_overlay_visible {
+                                self.settings_overlay_tab = Default::default();
+                                self.settings_section_index = 0;
+                                self.settings_field_index = 0;
+                                self.settings_editing = false;
+                                self.settings_edit_buffer.clear();
+                                self.settings_shortcuts_scroll = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+Y: Accept selected proposal (only when overlay open).
+                        Key::Character(c)
+                            if c.as_str().eq_ignore_ascii_case("y") && self.agent_review_open =>
+                        {
+                            if !self.agent_proposal_worktrees.is_empty() {
+                                let idx = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len() - 1);
+                                let (_proposal, handle_opt) =
+                                    self.agent_proposal_worktrees.remove(idx);
+                                if let (Some(wm), Some(handle)) =
+                                    (self.worktree_manager.as_ref(), handle_opt)
+                                {
+                                    if let Err(e) = wm.apply(handle) {
+                                        tracing::error!("Failed to apply proposal: {e}");
+                                    }
+                                }
+                                self.proposal_review_selected = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len().saturating_sub(1));
+                                self.proposal_diff_cache = None;
+                                if self.agent_proposal_worktrees.is_empty() {
+                                    self.agent_review_open = false;
+                                }
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Ctrl+Shift+N: Reject selected proposal (only when overlay open).
+                        Key::Character(c)
+                            if c.as_str().eq_ignore_ascii_case("n") && self.agent_review_open =>
+                        {
+                            if !self.agent_proposal_worktrees.is_empty() {
+                                let idx = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len() - 1);
+                                let (_proposal, handle_opt) =
+                                    self.agent_proposal_worktrees.remove(idx);
+                                if let (Some(wm), Some(handle)) =
+                                    (self.worktree_manager.as_ref(), handle_opt)
+                                {
+                                    if let Err(e) = wm.dismiss(handle) {
+                                        tracing::error!("Failed to dismiss proposal: {e}");
+                                    }
+                                }
+                                self.proposal_review_selected = self
+                                    .proposal_review_selected
+                                    .min(self.agent_proposal_worktrees.len().saturating_sub(1));
+                                self.proposal_diff_cache = None;
+                                if self.agent_proposal_worktrees.is_empty() {
+                                    self.agent_review_open = false;
+                                }
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
+                            if let Some(session) = ctx.session() {
+                                clipboard_copy(&session.term);
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
+                            if let Some(session) = ctx.session() {
+                                clipboard_paste(&session.pty_sender, mode);
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
+                            if let Some(session) = ctx.session_mut() {
+                                session.search_overlay = Some(SearchOverlay::new());
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("z") => {
+                            if let Some(session) = ctx.session_mux.focused_session_mut() {
+                                if let Some(ref store) = session.snapshot_store {
+                                    let engine = glass_snapshot::UndoEngine::new(store);
+                                    match engine.undo_latest() {
+                                        Ok(Some(result)) => {
+                                            // Count outcomes for summary line
+                                            let (
+                                                mut restored,
+                                                mut deleted,
+                                                mut skipped,
+                                                mut conflicts,
+                                                mut errors,
+                                            ) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                                            for (path, outcome) in &result.files {
+                                                match outcome {
+                                                    glass_snapshot::FileOutcome::Restored => {
+                                                        restored += 1;
+                                                        tracing::info!(
+                                                            "Undo: restored {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Deleted => {
+                                                        deleted += 1;
+                                                        tracing::info!(
+                                                            "Undo: deleted {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Conflict {
+                                                        ..
+                                                    } => {
+                                                        conflicts += 1;
+                                                        tracing::warn!(
+                                                            "Undo: CONFLICT {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Error(e) => {
+                                                        errors += 1;
+                                                        tracing::error!(
+                                                            "Undo: error {}: {}",
+                                                            path.display(),
+                                                            e
+                                                        );
+                                                    }
+                                                    glass_snapshot::FileOutcome::Skipped => {
+                                                        skipped += 1;
+                                                        tracing::info!(
+                                                            "Undo: skipped {}",
+                                                            path.display()
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            let undo_summary = format!(
+                                                    "Undo: {} restored, {} deleted, {} skipped, {} conflicts, {} errors",
+                                                    restored, deleted, skipped, conflicts, errors,
+                                                );
+                                            tracing::info!("{}", undo_summary);
+                                            self.status_message =
+                                                Some((undo_summary, std::time::Instant::now()));
+                                            // Remove [undo] label from the undone block (visual feedback).
+                                            let epoch_to_clear = session
+                                                .block_manager
+                                                .blocks()
+                                                .iter()
+                                                .rev()
+                                                .find(|b| b.has_snapshot)
+                                                .and_then(|b| b.started_epoch);
+                                            if let Some(ep) = epoch_to_clear {
+                                                if let Some(b) = session
+                                                    .block_manager
+                                                    .find_block_by_epoch_mut(ep)
+                                                {
+                                                    b.has_snapshot = false;
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            tracing::info!("Nothing to undo -- no file-modifying commands found");
+                                            self.status_message = Some((
+                                                "Nothing to undo".to_string(),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Undo failed: {}", e);
+                                            self.status_message = Some((
+                                                format!("Undo failed: {}", e),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    tracing::debug!("Undo unavailable -- no snapshot store");
+                                }
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("u") => {
+                            // Ctrl+Shift+U: Apply available update
+                            if let Some(ref info) = self.update_info {
+                                if let Err(e) = glass_core::updater::apply_update(info) {
+                                    tracing::warn!("Failed to apply update: {}", e);
+                                }
+                            }
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
+                            // Ctrl+Shift+P: Toggle pipeline expansion on most recent pipeline block
+                            if let Some(session) = ctx.session_mux.focused_session_mut() {
+                                if let Some(block) = session
+                                    .block_manager
+                                    .blocks_mut()
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|b| {
+                                        b.pipeline_stage_count.unwrap_or(0) > 0
+                                            || b.pipeline_stage_commands.len() > 1
+                                    })
+                                {
+                                    block.toggle_pipeline_expanded();
+                                }
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("o") => {
+                            // Ctrl+Shift+O: Toggle orchestrator on/off
+                            self.orchestrator.active = !self.orchestrator.active;
+                            if self.orchestrator.active {
+                                tracing::info!("Orchestrator: enabled by user");
+                                let _ = ctx;
+                                self.activate_orchestrator(window_id);
+                            } else {
+                                tracing::info!("Orchestrator: disabled by user");
+                                // Fire scripting OrchestratorRunEnd hook
+                                {
+                                    let mut event = glass_scripting::HookEventData::new();
+                                    event.set("iterations", self.orchestrator.iteration as i64);
+                                    fire_hook_on_bridge(
+                                        &mut self.script_bridge,
+                                        &self.orchestrator.project_root,
+                                        glass_scripting::HookPoint::OrchestratorRunEnd,
+                                        &event,
+                                    );
+                                }
+                                self.orchestrator.feedback_completion_reason =
+                                    "user_cancelled".to_string();
+                                // Handle active synthesis: write fallback checkpoint
+                                if matches!(
+                                    self.orchestrator.checkpoint_phase,
+                                    orchestrator::CheckpointPhase::Synthesizing { .. }
+                                ) {
+                                    tracing::info!("Orchestrator disabled during synthesis — writing fallback checkpoint");
+                                    let cwd = ctx
+                                        .session_mux
+                                        .focused_session()
+                                        .map(|s| s.status.cwd().to_string())
+                                        .unwrap_or_default();
+                                    let cp_path = std::path::Path::new(&cwd)
+                                        .join(".glass")
+                                        .join("checkpoint.md");
+                                    if let Some(parent) = cp_path.parent() {
+                                        if let Err(e) = std::fs::create_dir_all(parent) {
+                                            tracing::warn!(
+                                                "Failed to create checkpoint dir {}: {e}",
+                                                parent.display()
+                                            );
+                                        }
+                                    }
+                                    if let Some(fallback) =
+                                        self.orchestrator.cached_checkpoint_fallback.take()
+                                    {
+                                        if let Err(e) = std::fs::write(&cp_path, &fallback) {
+                                            tracing::warn!(
+                                                "Failed to write fallback checkpoint {}: {e}",
+                                                cp_path.display()
+                                            );
+                                        }
+                                    }
+                                    self.orchestrator.checkpoint_phase =
+                                        orchestrator::CheckpointPhase::Idle;
+                                    self.orchestrator.cached_checkpoint_fallback = None;
+                                }
+                                let _ = ctx;
+                                self.run_feedback_on_end();
+                                // Stop artifact watcher
+                                if let Some(handle) = self.artifact_watcher_thread.take() {
+                                    handle.thread().unpark();
+                                }
+                            }
+                            if let Some(ctx) = self.windows.get_mut(&window_id) {
+                                ctx.mark_dirty_and_redraw();
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Shift+PageUp/Down/ArrowUp/ArrowDown: scrollback (UX-9)
+                if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::PageUp) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::PageUp);
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::PageDown) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::PageDown);
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::Delta(1));
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            if let Some(session) = ctx.session() {
+                                session.term.lock().scroll_display(Scroll::Delta(-1));
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Ctrl+Tab / Ctrl+Shift+Tab: cycle tabs
+                if modifiers.control_key() {
+                    if let Key::Named(NamedKey::Tab) = &event.logical_key {
+                        if modifiers.shift_key() {
+                            ctx.session_mux.prev_tab();
+                        } else {
+                            ctx.session_mux.next_tab();
+                        }
+                        ctx.mark_dirty_and_redraw();
+                        return;
+                    }
+                }
+
+                // Ctrl+1-9 / Cmd+1-9: jump to tab by index
+                if glass_mux::is_action_modifier(modifiers) {
+                    if let Key::Character(c) = &event.logical_key {
+                        if let Some(digit) =
+                            c.as_str().chars().next().and_then(|ch| ch.to_digit(10))
+                        {
+                            if (1..=9).contains(&digit) {
+                                ctx.session_mux.activate_tab((digit as usize) - 1);
+                                ctx.mark_dirty_and_redraw();
+                                return;
                             }
                         }
                     }
+                }
 
-                    // Alt+Arrow: move focus between panes
-                    // Alt+Shift+Arrow: resize split ratio
-                    if modifiers.alt_key() && !modifiers.control_key() {
-                        let arrow_dir = match &event.logical_key {
-                            Key::Named(NamedKey::ArrowLeft) => Some(FocusDirection::Left),
-                            Key::Named(NamedKey::ArrowRight) => Some(FocusDirection::Right),
-                            Key::Named(NamedKey::ArrowUp) => Some(FocusDirection::Up),
-                            Key::Named(NamedKey::ArrowDown) => Some(FocusDirection::Down),
-                            _ => None,
-                        };
+                // Alt+Arrow: move focus between panes
+                // Alt+Shift+Arrow: resize split ratio
+                if modifiers.alt_key() && !modifiers.control_key() {
+                    let arrow_dir = match &event.logical_key {
+                        Key::Named(NamedKey::ArrowLeft) => Some(FocusDirection::Left),
+                        Key::Named(NamedKey::ArrowRight) => Some(FocusDirection::Right),
+                        Key::Named(NamedKey::ArrowUp) => Some(FocusDirection::Up),
+                        Key::Named(NamedKey::ArrowDown) => Some(FocusDirection::Down),
+                        _ => None,
+                    };
 
-                        if let Some(dir) = arrow_dir {
-                            if modifiers.shift_key() {
-                                // Alt+Shift+Arrow: resize split ratio
-                                let (split_dir, delta) = match dir {
-                                    FocusDirection::Left => (SplitDirection::Horizontal, -0.05f32),
-                                    FocusDirection::Right => (SplitDirection::Horizontal, 0.05f32),
-                                    FocusDirection::Up => (SplitDirection::Vertical, -0.05f32),
-                                    FocusDirection::Down => (SplitDirection::Vertical, 0.05f32),
+                    if let Some(dir) = arrow_dir {
+                        if modifiers.shift_key() {
+                            // Alt+Shift+Arrow: resize split ratio
+                            let (split_dir, delta) = match dir {
+                                FocusDirection::Left => (SplitDirection::Horizontal, -0.05f32),
+                                FocusDirection::Right => (SplitDirection::Horizontal, 0.05f32),
+                                FocusDirection::Up => (SplitDirection::Vertical, -0.05f32),
+                                FocusDirection::Down => (SplitDirection::Vertical, 0.05f32),
+                            };
+                            ctx.session_mux.resize_focused_split(split_dir, delta);
+                            // Resize all panes' PTYs with new dimensions
+                            let size = ctx.window.inner_size();
+                            resize_all_panes(
+                                &mut ctx.session_mux,
+                                &ctx.frame_renderer,
+                                size.width,
+                                size.height,
+                            );
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        } else {
+                            // Alt+Arrow: move focus (only when multi-pane and not in alternate screen) (UX-11)
+                            let in_alt_screen = ctx
+                                .session_mux
+                                .focused_session()
+                                .map(|s| s.term.lock().mode().contains(TermMode::ALT_SCREEN))
+                                .unwrap_or(false);
+                            if ctx.session_mux.active_tab_pane_count() > 1 && !in_alt_screen {
+                                let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
+                                let sc = ctx.renderer.surface_config();
+                                let container = ViewportLayout {
+                                    x: 0,
+                                    y: cell_h as u32,
+                                    width: sc.width,
+                                    height: sc.height.saturating_sub((cell_h as u32) * 2),
                                 };
-                                ctx.session_mux.resize_focused_split(split_dir, delta);
-                                // Resize all panes' PTYs with new dimensions
-                                let size = ctx.window.inner_size();
-                                resize_all_panes(
-                                    &mut ctx.session_mux,
-                                    &ctx.frame_renderer,
-                                    size.width,
-                                    size.height,
-                                );
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            } else {
-                                // Alt+Arrow: move focus (only when multi-pane and not in alternate screen) (UX-11)
-                                let in_alt_screen = ctx
-                                    .session_mux
-                                    .focused_session()
-                                    .map(|s| s.term.lock().mode().contains(TermMode::ALT_SCREEN))
-                                    .unwrap_or(false);
-                                if ctx.session_mux.active_tab_pane_count() > 1 && !in_alt_screen {
-                                    let (_cell_w, cell_h) = ctx.frame_renderer.cell_size();
-                                    let sc = ctx.renderer.surface_config();
-                                    let container = ViewportLayout {
-                                        x: 0,
-                                        y: cell_h as u32,
-                                        width: sc.width,
-                                        height: sc.height.saturating_sub((cell_h as u32) * 2),
-                                    };
-                                    if let Some(focused) = ctx.session_mux.focused_session_id() {
-                                        if let Some(root) = ctx.session_mux.active_tab_root() {
-                                            if let Some(target) =
-                                                root.find_neighbor(focused, dir, &container)
-                                            {
-                                                ctx.session_mux.set_focused_pane(target);
-                                                ctx.mark_dirty_and_redraw();
-                                                return;
-                                            }
+                                if let Some(focused) = ctx.session_mux.focused_session_id() {
+                                    if let Some(root) = ctx.session_mux.active_tab_root() {
+                                        if let Some(target) =
+                                            root.find_neighbor(focused, dir, &container)
+                                        {
+                                            ctx.session_mux.set_focused_pane(target);
+                                            ctx.mark_dirty_and_redraw();
+                                            return;
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
 
-                    // When the settings overlay is open, intercept all navigation keys.
-                    if self.settings_overlay_visible && event.state == ElementState::Pressed {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => {
-                                if self.settings_editing {
-                                    // Cancel inline edit
-                                    self.settings_editing = false;
-                                    self.settings_edit_buffer.clear();
-                                } else {
-                                    self.settings_overlay_visible = false;
-                                    self.settings_overlay_tab = Default::default();
-                                    self.settings_section_index = 0;
-                                    self.settings_field_index = 0;
-                                    self.settings_shortcuts_scroll = 0;
+                // When the settings overlay is open, intercept all navigation keys.
+                if self.settings_overlay_visible && event.state == ElementState::Pressed {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            if self.settings_editing {
+                                // Cancel inline edit
+                                self.settings_editing = false;
+                                self.settings_edit_buffer.clear();
+                            } else {
+                                self.settings_overlay_visible = false;
+                                self.settings_overlay_tab = Default::default();
+                                self.settings_section_index = 0;
+                                self.settings_field_index = 0;
+                                self.settings_shortcuts_scroll = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // When editing inline, capture text input
+                        Key::Named(NamedKey::Enter) if self.settings_editing => {
+                            // Commit the edit buffer
+                            let value = if self.settings_edit_needs_quotes {
+                                format!("\"{}\"", self.settings_edit_buffer)
+                            } else {
+                                self.settings_edit_buffer.clone()
+                            };
+                            if let Some(config_path) =
+                                glass_core::config::GlassConfig::config_path()
+                            {
+                                if let Err(e) = glass_core::config::update_config_field(
+                                    &config_path,
+                                    self.settings_edit_section,
+                                    self.settings_edit_key,
+                                    &value,
+                                ) {
+                                    tracing::warn!("Settings: failed to write config: {}", e);
                                 }
-                                ctx.mark_dirty_and_redraw();
+                            }
+                            self.settings_editing = false;
+                            self.settings_edit_buffer.clear();
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Backspace) if self.settings_editing => {
+                            self.settings_edit_buffer.pop();
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if self.settings_editing => {
+                            self.settings_edit_buffer.push_str(c.as_str());
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        // Block navigation while editing
+                        _ if self.settings_editing => {
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
+                            self.settings_overlay_tab = self.settings_overlay_tab.prev();
+                            self.settings_field_index = 0;
+                            self.settings_shortcuts_scroll = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) => {
+                            self.settings_overlay_tab = self.settings_overlay_tab.next();
+                            self.settings_field_index = 0;
+                            self.settings_shortcuts_scroll = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            match self.settings_overlay_tab {
+                                glass_renderer::SettingsTab::Settings => {
+                                    if self.settings_field_index > 0 {
+                                        self.settings_field_index -= 1;
+                                    } else if self.settings_section_index > 0 {
+                                        // Move to previous section
+                                        self.settings_section_index -= 1;
+                                        self.settings_field_index = 0;
+                                    }
+                                }
+                                glass_renderer::SettingsTab::Shortcuts => {
+                                    self.settings_shortcuts_scroll =
+                                        self.settings_shortcuts_scroll.saturating_sub(1);
+                                }
+                                _ => {}
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            match self.settings_overlay_tab {
+                                glass_renderer::SettingsTab::Settings => {
+                                    // Try to move to next field; if at end of section, move to next section
+                                    let field_count =
+                                        glass_renderer::settings_overlay::field_count_for_section(
+                                            self.settings_section_index,
+                                        );
+                                    if self.settings_field_index + 1 < field_count {
+                                        self.settings_field_index += 1;
+                                    } else if self.settings_section_index
+                                        < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len()
+                                            - 1
+                                    {
+                                        // Move to next section
+                                        self.settings_section_index += 1;
+                                        self.settings_field_index = 0;
+                                    }
+                                }
+                                glass_renderer::SettingsTab::Shortcuts => {
+                                    self.settings_shortcuts_scroll += 1;
+                                }
+                                _ => {}
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if self.settings_section_index > 0 {
+                                self.settings_section_index -= 1;
+                                self.settings_field_index = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if self.settings_section_index
+                                < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1
+                            {
+                                self.settings_section_index += 1;
+                                self.settings_field_index = 0;
+                            }
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if !matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
                                 return;
                             }
-                            // When editing inline, capture text input
-                            Key::Named(NamedKey::Enter) if self.settings_editing => {
-                                // Commit the edit buffer
-                                let value = if self.settings_edit_needs_quotes {
-                                    format!("\"{}\"", self.settings_edit_buffer)
-                                } else {
-                                    self.settings_edit_buffer.clone()
-                                };
+
+                            if let Some((section, key, value)) = handle_settings_activate(
+                                &self.config,
+                                self.settings_section_index,
+                                self.settings_field_index,
+                            ) {
+                                // Toggle field
                                 if let Some(config_path) =
                                     glass_core::config::GlassConfig::config_path()
                                 {
                                     if let Err(e) = glass_core::config::update_config_field(
                                         &config_path,
-                                        self.settings_edit_section,
-                                        self.settings_edit_key,
+                                        section,
+                                        key,
                                         &value,
                                     ) {
                                         tracing::warn!("Settings: failed to write config: {}", e);
                                     }
                                 }
-                                self.settings_editing = false;
-                                self.settings_edit_buffer.clear();
-                                ctx.mark_dirty_and_redraw();
-                                return;
+                            } else if let Some((section, key, current_value, needs_quotes)) =
+                                settings_editable_field(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                )
+                            {
+                                // Enter inline edit mode
+                                self.settings_editing = true;
+                                self.settings_edit_buffer = current_value;
+                                self.settings_edit_section = section;
+                                self.settings_edit_key = key;
+                                self.settings_edit_needs_quotes = needs_quotes;
                             }
-                            Key::Named(NamedKey::Backspace) if self.settings_editing => {
-                                self.settings_edit_buffer.pop();
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if self.settings_editing => {
-                                self.settings_edit_buffer.push_str(c.as_str());
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            // Block navigation while editing
-                            _ if self.settings_editing => {
-                                return;
-                            }
-                            Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
-                                self.settings_overlay_tab = self.settings_overlay_tab.prev();
-                                self.settings_field_index = 0;
-                                self.settings_shortcuts_scroll = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Tab) => {
-                                self.settings_overlay_tab = self.settings_overlay_tab.next();
-                                self.settings_field_index = 0;
-                                self.settings_shortcuts_scroll = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                match self.settings_overlay_tab {
-                                    glass_renderer::SettingsTab::Settings => {
-                                        if self.settings_field_index > 0 {
-                                            self.settings_field_index -= 1;
-                                        } else if self.settings_section_index > 0 {
-                                            // Move to previous section
-                                            self.settings_section_index -= 1;
-                                            self.settings_field_index = 0;
-                                        }
-                                    }
-                                    glass_renderer::SettingsTab::Shortcuts => {
-                                        self.settings_shortcuts_scroll =
-                                            self.settings_shortcuts_scroll.saturating_sub(1);
-                                    }
-                                    _ => {}
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                match self.settings_overlay_tab {
-                                    glass_renderer::SettingsTab::Settings => {
-                                        // Try to move to next field; if at end of section, move to next section
-                                        let field_count =
-                                            glass_renderer::settings_overlay::field_count_for_section(
-                                                self.settings_section_index,
-                                            );
-                                        if self.settings_field_index + 1 < field_count {
-                                            self.settings_field_index += 1;
-                                        } else if self.settings_section_index
-                                            < glass_renderer::settings_overlay::SETTINGS_SECTIONS
-                                                .len()
-                                                - 1
-                                        {
-                                            // Move to next section
-                                            self.settings_section_index += 1;
-                                            self.settings_field_index = 0;
-                                        }
-                                    }
-                                    glass_renderer::SettingsTab::Shortcuts => {
-                                        self.settings_shortcuts_scroll += 1;
-                                    }
-                                    _ => {}
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowLeft) => {
-                                if self.settings_section_index > 0 {
-                                    self.settings_section_index -= 1;
-                                    self.settings_field_index = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowRight) => {
-                                if self.settings_section_index
-                                    < glass_renderer::settings_overlay::SETTINGS_SECTIONS.len() - 1
-                                {
-                                    self.settings_section_index += 1;
-                                    self.settings_field_index = 0;
-                                }
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Enter) => {
-                                if !matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
-                                ) {
-                                    return;
-                                }
 
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            // Space only toggles (not edit mode)
+                            if matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
                                 if let Some((section, key, value)) = handle_settings_activate(
                                     &self.config,
                                     self.settings_section_index,
                                     self.settings_field_index,
                                 ) {
-                                    // Toggle field
                                     if let Some(config_path) =
                                         glass_core::config::GlassConfig::config_path()
                                     {
@@ -5812,276 +5846,229 @@ impl ApplicationHandler<AppEvent> for Processor {
                                             );
                                         }
                                     }
-                                } else if let Some((section, key, current_value, needs_quotes)) =
-                                    settings_editable_field(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                    )
-                                {
-                                    // Enter inline edit mode
-                                    self.settings_editing = true;
-                                    self.settings_edit_buffer = current_value;
-                                    self.settings_edit_section = section;
-                                    self.settings_edit_key = key;
-                                    self.settings_edit_needs_quotes = needs_quotes;
                                 }
-
                                 ctx.mark_dirty_and_redraw();
-                                return;
                             }
-                            Key::Named(NamedKey::Space) => {
-                                // Space only toggles (not edit mode)
-                                if matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
+                            return;
+                        }
+                        Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
+                            if matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
+                                if let Some((section, key, value)) = handle_settings_increment(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                    true,
                                 ) {
-                                    if let Some((section, key, value)) = handle_settings_activate(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                    ) {
-                                        if let Some(config_path) =
-                                            glass_core::config::GlassConfig::config_path()
-                                        {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
-                                                tracing::warn!(
-                                                    "Settings: failed to write config: {}",
-                                                    e
-                                                );
-                                            }
+                                    if let Some(config_path) =
+                                        glass_core::config::GlassConfig::config_path()
+                                    {
+                                        if let Err(e) = glass_core::config::update_config_field(
+                                            &config_path,
+                                            section,
+                                            key,
+                                            &value,
+                                        ) {
+                                            tracing::warn!(
+                                                "Settings: failed to write config: {}",
+                                                e
+                                            );
                                         }
                                     }
-                                    ctx.mark_dirty_and_redraw();
                                 }
-                                return;
+                                ctx.mark_dirty_and_redraw();
                             }
-                            Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
-                                if matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
+                            return;
+                        }
+                        Key::Character(c) if c.as_str() == "-" => {
+                            if matches!(
+                                self.settings_overlay_tab,
+                                glass_renderer::SettingsTab::Settings
+                            ) {
+                                if let Some((section, key, value)) = handle_settings_increment(
+                                    &self.config,
+                                    self.settings_section_index,
+                                    self.settings_field_index,
+                                    false,
                                 ) {
-                                    if let Some((section, key, value)) = handle_settings_increment(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                        true,
-                                    ) {
-                                        if let Some(config_path) =
-                                            glass_core::config::GlassConfig::config_path()
-                                        {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
-                                                tracing::warn!(
-                                                    "Settings: failed to write config: {}",
-                                                    e
-                                                );
-                                            }
+                                    if let Some(config_path) =
+                                        glass_core::config::GlassConfig::config_path()
+                                    {
+                                        if let Err(e) = glass_core::config::update_config_field(
+                                            &config_path,
+                                            section,
+                                            key,
+                                            &value,
+                                        ) {
+                                            tracing::warn!(
+                                                "Settings: failed to write config: {}",
+                                                e
+                                            );
                                         }
                                     }
-                                    ctx.mark_dirty_and_redraw();
                                 }
-                                return;
+                                ctx.mark_dirty_and_redraw();
                             }
-                            Key::Character(c) if c.as_str() == "-" => {
-                                if matches!(
-                                    self.settings_overlay_tab,
-                                    glass_renderer::SettingsTab::Settings
-                                ) {
-                                    if let Some((section, key, value)) = handle_settings_increment(
-                                        &self.config,
-                                        self.settings_section_index,
-                                        self.settings_field_index,
-                                        false,
-                                    ) {
-                                        if let Some(config_path) =
-                                            glass_core::config::GlassConfig::config_path()
-                                        {
-                                            if let Err(e) = glass_core::config::update_config_field(
-                                                &config_path,
-                                                section,
-                                                key,
-                                                &value,
-                                            ) {
-                                                tracing::warn!(
-                                                    "Settings: failed to write config: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    ctx.mark_dirty_and_redraw();
-                                }
-                                return;
-                            }
-                            _ => {
-                                return; // Consume all other keys
-                            }
+                            return;
+                        }
+                        _ => {
+                            return; // Consume all other keys
                         }
                     }
+                }
 
-                    // When the activity overlay is open, intercept navigation keys.
-                    if self.activity_overlay_visible && event.state == ElementState::Pressed {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => {
-                                self.activity_overlay_visible = false;
-                                self.activity_view_filter = Default::default();
-                                self.activity_scroll_offset = 0;
-                                self.orchestrator_scroll_offset = 0;
-                                self.activity_verbose = false;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
-                                self.activity_view_filter = self.activity_view_filter.prev();
-                                self.activity_scroll_offset = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Tab) => {
-                                self.activity_view_filter = self.activity_view_filter.next();
-                                self.activity_scroll_offset = 0;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp)
-                                if self.activity_view_filter
-                                    == glass_renderer::ActivityViewFilter::Orchestrator =>
+                // When the activity overlay is open, intercept navigation keys.
+                if self.activity_overlay_visible && event.state == ElementState::Pressed {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.activity_overlay_visible = false;
+                            self.activity_view_filter = Default::default();
+                            self.activity_scroll_offset = 0;
+                            self.orchestrator_scroll_offset = 0;
+                            self.activity_verbose = false;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) if modifiers.shift_key() => {
+                            self.activity_view_filter = self.activity_view_filter.prev();
+                            self.activity_scroll_offset = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Tab) => {
+                            self.activity_view_filter = self.activity_view_filter.next();
+                            self.activity_scroll_offset = 0;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::PageUp)
+                            if self.activity_view_filter
+                                == glass_renderer::ActivityViewFilter::Orchestrator =>
+                        {
+                            let step = if matches!(event.logical_key, Key::Named(NamedKey::PageUp))
                             {
-                                let step =
-                                    if matches!(event.logical_key, Key::Named(NamedKey::PageUp)) {
-                                        20
-                                    } else {
-                                        1
-                                    };
-                                self.orchestrator_scroll_offset =
-                                    self.orchestrator_scroll_offset.saturating_add(step);
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::PageDown)
-                                if self.activity_view_filter
-                                    == glass_renderer::ActivityViewFilter::Orchestrator =>
-                            {
-                                let step = if matches!(
-                                    event.logical_key,
-                                    Key::Named(NamedKey::PageDown)
-                                ) {
+                                20
+                            } else {
+                                1
+                            };
+                            self.orchestrator_scroll_offset =
+                                self.orchestrator_scroll_offset.saturating_add(step);
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::PageDown)
+                            if self.activity_view_filter
+                                == glass_renderer::ActivityViewFilter::Orchestrator =>
+                        {
+                            let step =
+                                if matches!(event.logical_key, Key::Named(NamedKey::PageDown)) {
                                     20
                                 } else {
                                     1
                                 };
-                                self.orchestrator_scroll_offset =
-                                    self.orchestrator_scroll_offset.saturating_sub(step);
+                            self.orchestrator_scroll_offset =
+                                self.orchestrator_scroll_offset.saturating_sub(step);
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.activity_scroll_offset =
+                                self.activity_scroll_offset.saturating_sub(1);
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            self.activity_scroll_offset += 1;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
+                            self.activity_verbose = !self.activity_verbose;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {} // Fall through to PTY
+                    }
+                }
+
+                // When the proposal review overlay is open, intercept arrow keys and Escape
+                // for navigation. All other keys fall through to PTY (AGTU-05).
+                if self.agent_review_open && event.state == ElementState::Pressed {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.proposal_review_selected =
+                                self.proposal_review_selected.saturating_sub(1);
+                            self.proposal_diff_cache = None;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            let max = self.agent_proposal_worktrees.len().saturating_sub(1);
+                            self.proposal_review_selected =
+                                (self.proposal_review_selected + 1).min(max);
+                            self.proposal_diff_cache = None;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.agent_review_open = false;
+                            ctx.mark_dirty_and_redraw();
+                            return;
+                        }
+                        _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
+                    }
+                }
+
+                // Escape: collapse any expanded pipeline panel (UX-4)
+                if event.state == ElementState::Pressed {
+                    if let Key::Named(NamedKey::Escape) = &event.logical_key {
+                        if let Some(session) = ctx.session_mux.focused_session_mut() {
+                            let collapsed =
+                                session.block_manager.blocks_mut().iter_mut().any(|b| {
+                                    if b.pipeline_expanded {
+                                        b.pipeline_expanded = false;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                            if collapsed {
                                 ctx.mark_dirty_and_redraw();
                                 return;
                             }
-                            Key::Named(NamedKey::ArrowUp) => {
-                                self.activity_scroll_offset =
-                                    self.activity_scroll_offset.saturating_sub(1);
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                self.activity_scroll_offset += 1;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
-                                self.activity_verbose = !self.activity_verbose;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {} // Fall through to PTY
                         }
                     }
+                }
 
-                    // When the proposal review overlay is open, intercept arrow keys and Escape
-                    // for navigation. All other keys fall through to PTY (AGTU-05).
-                    if self.agent_review_open && event.state == ElementState::Pressed {
-                        match &event.logical_key {
-                            Key::Named(NamedKey::ArrowUp) => {
-                                self.proposal_review_selected =
-                                    self.proposal_review_selected.saturating_sub(1);
-                                self.proposal_diff_cache = None;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                let max = self.agent_proposal_worktrees.len().saturating_sub(1);
-                                self.proposal_review_selected =
-                                    (self.proposal_review_selected + 1).min(max);
-                                self.proposal_diff_cache = None;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            Key::Named(NamedKey::Escape) => {
-                                self.agent_review_open = false;
-                                ctx.mark_dirty_and_redraw();
-                                return;
-                            }
-                            _ => {} // Fall through to PTY -- do NOT swallow (AGTU-05)
-                        }
-                    }
-
-                    // Escape: collapse any expanded pipeline panel (UX-4)
-                    if event.state == ElementState::Pressed {
-                        if let Key::Named(NamedKey::Escape) = &event.logical_key {
-                            if let Some(session) = ctx.session_mux.focused_session_mut() {
-                                let collapsed =
-                                    session.block_manager.blocks_mut().iter_mut().any(|b| {
-                                        if b.pipeline_expanded {
-                                            b.pipeline_expanded = false;
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    });
-                                if collapsed {
+                // UX-14: Ctrl+C copies when selection is active instead of SIGINT
+                if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
+                    if let Key::Character(ref c) = event.logical_key {
+                        if c.as_str().eq_ignore_ascii_case("c") {
+                            if let Some(session) = ctx.session() {
+                                let has_selection =
+                                    session.term.lock().selection_to_string().is_some();
+                                if has_selection {
+                                    clipboard_copy(&session.term);
                                     ctx.mark_dirty_and_redraw();
                                     return;
                                 }
                             }
+                            // No selection — fall through to send ETX/SIGINT via encoder
                         }
                     }
+                }
 
-                    // UX-14: Ctrl+C copies when selection is active instead of SIGINT
-                    if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
-                        if let Key::Character(ref c) = event.logical_key {
-                            if c.as_str().eq_ignore_ascii_case("c") {
-                                if let Some(session) = ctx.session() {
-                                    let has_selection =
-                                        session.term.lock().selection_to_string().is_some();
-                                    if has_selection {
-                                        clipboard_copy(&session.term);
-                                        ctx.mark_dirty_and_redraw();
-                                        return;
-                                    }
-                                }
-                                // No selection — fall through to send ETX/SIGINT via encoder
-                            }
-                        }
+                // Forward to PTY via encoder
+                let key_start = std::time::Instant::now();
+                if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
+                    // Orchestrator no longer auto-pauses on user input.
+                    // Only Ctrl+Shift+O toggles orchestration on/off.
+                    if let Some(session) = ctx.session() {
+                        pty_send(&session.pty_sender, PtyMsg::Input(Cow::Owned(bytes)));
                     }
-
-                    // Forward to PTY via encoder
-                    let key_start = std::time::Instant::now();
-                    if let Some(bytes) = encode_key(&event.logical_key, modifiers, mode) {
-                        // Orchestrator no longer auto-pauses on user input.
-                        // Only Ctrl+Shift+O toggles orchestration on/off.
-                        if let Some(session) = ctx.session() {
-                            pty_send(&session.pty_sender, PtyMsg::Input(Cow::Owned(bytes)));
-                        }
-                        tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
-                    }
+                    tracing::trace!("PERF key_latency={:?}", key_start.elapsed());
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
