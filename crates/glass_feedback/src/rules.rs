@@ -81,11 +81,9 @@ impl RuleEngine {
             }
 
             match rule.action.as_str() {
-                "force_commit" => {
-                    if state.iterations_since_last_commit >= 5 {
-                        rule.trigger_count += 1;
-                        actions.push(RuleAction::ForceCommit);
-                    }
+                "force_commit" if state.iterations_since_last_commit >= 5 => {
+                    rule.trigger_count += 1;
+                    actions.push(RuleAction::ForceCommit);
                 }
                 "isolate_commits" => {
                     let file_param = rule
@@ -110,11 +108,9 @@ impl RuleEngine {
                     rule.trigger_count += 1;
                     actions.push(RuleAction::ExtendSilence { extra_secs: 30 });
                 }
-                "run_verify_twice" => {
-                    if state.verify_alternations >= 2 {
-                        rule.trigger_count += 1;
-                        actions.push(RuleAction::RunVerifyTwice);
-                    }
+                "run_verify_twice" if state.verify_alternations >= 2 => {
+                    rule.trigger_count += 1;
+                    actions.push(RuleAction::RunVerifyTwice);
                 }
                 "early_stuck" => {
                     rule.trigger_count += 1;
@@ -133,13 +129,11 @@ impl RuleEngine {
                     rule.trigger_count += 1;
                     actions.push(RuleAction::BlockUntilResolved { message });
                 }
-                "verify_progress" => {
-                    if state.waste_rate > 0.15 {
-                        rule.trigger_count += 1;
-                        actions.push(RuleAction::TextInjection(
-                            "Verify progress before continuing".to_string(),
-                        ));
-                    }
+                "verify_progress" if state.waste_rate > 0.15 => {
+                    rule.trigger_count += 1;
+                    actions.push(RuleAction::TextInjection(
+                        "Verify progress before continuing".to_string(),
+                    ));
                 }
                 // Unknown action strings are silently skipped.
                 _ => {}

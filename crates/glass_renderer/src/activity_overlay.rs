@@ -773,11 +773,7 @@ impl ActivityOverlayRenderer {
                 };
                 // Progress bar: [====>     ] 2/5 Current Name
                 let bar_width = 20usize;
-                let filled = if total > 0 {
-                    (done * bar_width) / total
-                } else {
-                    0
-                };
+                let filled = (done * bar_width) / total;
                 let bar = format!(
                     "[{}{}] {}/{} {}",
                     "=".repeat(filled),

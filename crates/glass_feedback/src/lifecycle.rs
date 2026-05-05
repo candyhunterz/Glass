@@ -185,30 +185,29 @@ pub fn update_staleness(rules: &mut Vec<Rule>, archived: &mut Vec<Rule>, _curren
 
     for (idx, rule) in rules.iter_mut().enumerate() {
         match rule.status {
-            RuleStatus::Confirmed => {
+            RuleStatus::Confirmed if rule.trigger_count == 0 => {
                 // A rule is "inactive" if it has never fired.
-                if rule.trigger_count == 0 {
-                    rule.stale_runs += 1;
-                    if rule.stale_runs >= STALE_THRESHOLD
-                        && rule.status.can_transition_to(&RuleStatus::Stale)
-                    {
-                        rule.status = RuleStatus::Stale;
-                    }
+                rule.stale_runs += 1;
+                if rule.stale_runs >= STALE_THRESHOLD
+                    && rule.status.can_transition_to(&RuleStatus::Stale)
+                {
+                    rule.status = RuleStatus::Stale;
                 }
-                // If trigger_count > 0 the rule is active — leave it alone.
+            }
+            RuleStatus::Confirmed => {
+                // If trigger_count > 0 the rule is active -- leave it alone.
+            }
+            RuleStatus::Stale if rule.trigger_count > 0 => {
+                // Re-triggered while stale → promote back to Confirmed.
+                if rule.status.can_transition_to(&RuleStatus::Confirmed) {
+                    rule.status = RuleStatus::Confirmed;
+                    rule.stale_runs = 0;
+                }
             }
             RuleStatus::Stale => {
-                // Re-triggered while stale → promote back to Confirmed.
-                if rule.trigger_count > 0 {
-                    if rule.status.can_transition_to(&RuleStatus::Confirmed) {
-                        rule.status = RuleStatus::Confirmed;
-                        rule.stale_runs = 0;
-                    }
-                } else {
-                    rule.stale_runs += 1;
-                    if rule.stale_runs >= ARCHIVE_THRESHOLD {
-                        to_archive.push(idx);
-                    }
+                rule.stale_runs += 1;
+                if rule.stale_runs >= ARCHIVE_THRESHOLD {
+                    to_archive.push(idx);
                 }
             }
             _ => {}
