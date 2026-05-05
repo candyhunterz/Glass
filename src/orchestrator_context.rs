@@ -210,7 +210,7 @@ pub fn gather_context(
         }
     }
     // Sort newest first.
-    recent_mds.sort_by(|a, b| b.0.cmp(&a.0));
+    recent_mds.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, p) in recent_mds {
         maybe_add(&p, &mut files, &mut seen);
     }
