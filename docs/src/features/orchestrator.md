@@ -384,12 +384,6 @@ The orchestrator requires Agent Mode to be configured (the `[agent]` section). B
 
 ## Using ChatGPT OAuth (Codex)
 
-> **Status: Foundation phase.** Login detection, pre-flight checks, and onboarding
-> are complete. Agent execution via the Codex CLI is not yet wired up — until that
-> ships, configuring `provider = "codex-cli"` will surface a "foundation phase"
-> error in the config banner. Use `provider = "claude-code"` or `"anthropic-api"`
-> for active orchestration runs.
-
 Glass can route both the implementer and the reviewer through the local
 [Codex CLI](https://github.com/openai/codex), reusing your ChatGPT Plus / Pro / Team
 plan with no API key required.
