@@ -2848,7 +2848,7 @@ impl Processor {
             .unwrap_or("claude-code");
 
         // Determine the clear command based on implementer type.
-        // Some implementers support /clear, others need exit+restart.
+        // Codex has no verified context-clear command in codex-cli 0.128.0.
         let clear_cmd = match implementer {
             "claude-code" => "/clear",
             "aider" => "/clear",
