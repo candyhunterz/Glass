@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Embed)]
-#[folder = "tools/run-analyzer/dist/"]
+#[folder = "tools/run-analyzer/"]
 struct DashboardAssets;
 
 struct AppState {
@@ -30,7 +30,8 @@ async fn static_asset(Path(path): Path<String>) -> impl IntoResponse {
 
 /// Look up a file in the embedded assets and return it with the correct MIME type.
 fn serve_embedded(path: &str) -> Response {
-    match DashboardAssets::get(path) {
+    let asset_path = format!("dist/{path}");
+    match DashboardAssets::get(&asset_path) {
         Some(file) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             (

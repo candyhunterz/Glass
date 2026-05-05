@@ -119,7 +119,7 @@ pub fn parse(output: &str) -> ParsedOutput {
 
     let mut parts: Vec<String> = Vec::new();
     let mut sorted_actions: Vec<_> = action_counts.into_iter().collect();
-    sorted_actions.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_actions.sort_by_key(|action| std::cmp::Reverse(action.1));
     for (action, count) in &sorted_actions {
         parts.push(format!("{count} {action}"));
     }
