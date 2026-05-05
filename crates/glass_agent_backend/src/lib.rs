@@ -16,6 +16,8 @@ pub mod model_cache;
 pub mod ollama;
 pub mod openai;
 
+pub use codex_cli::CodexCliBackend;
+
 // ── Shared conversation config ────────────────────────────────────────────────
 
 /// Configuration shared across all API-based backend conversation loops.
