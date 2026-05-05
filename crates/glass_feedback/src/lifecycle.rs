@@ -197,12 +197,16 @@ pub fn update_staleness(rules: &mut Vec<Rule>, archived: &mut Vec<Rule>, _curren
             RuleStatus::Confirmed => {
                 // If trigger_count > 0 the rule is active -- leave it alone.
             }
+            RuleStatus::Stale
+                if rule.trigger_count > 0
+                    && rule.status.can_transition_to(&RuleStatus::Confirmed) =>
+            {
+                // Re-triggered while stale; promote back to Confirmed.
+                rule.status = RuleStatus::Confirmed;
+                rule.stale_runs = 0;
+            }
             RuleStatus::Stale if rule.trigger_count > 0 => {
-                // Re-triggered while stale → promote back to Confirmed.
-                if rule.status.can_transition_to(&RuleStatus::Confirmed) {
-                    rule.status = RuleStatus::Confirmed;
-                    rule.stale_runs = 0;
-                }
+                // Re-triggered but cannot transition; preserve current state.
             }
             RuleStatus::Stale => {
                 rule.stale_runs += 1;

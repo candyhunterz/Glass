@@ -20,6 +20,9 @@ use crate::{
 pub mod auth;
 pub mod parse;
 
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct CodexShutdownState {
     child: Arc<Mutex<Option<std::process::Child>>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -394,12 +397,19 @@ mod tests {
 
     #[test]
     fn spawn_returns_login_required_when_no_token() {
+        let _guard = super::ENV_LOCK
+            .lock()
+            .expect("CODEX_HOME test lock poisoned");
+        let previous_home = std::env::var_os("CODEX_HOME");
         let tmp = std::env::temp_dir().join("glass-codex-spawn-no-token");
         let _ = std::fs::remove_dir_all(&tmp);
         std::env::set_var("CODEX_HOME", &tmp);
         let backend = CodexCliBackend::new();
         let result = backend.spawn(&dummy_config(), 0);
-        std::env::remove_var("CODEX_HOME");
+        match previous_home {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
 
         match result {
             Err(BackendError::LoginRequired {
